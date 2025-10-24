@@ -39,11 +39,11 @@ impl std::fmt::Display for WalletScripts {
             f,
             "{}",
             match self {
-                WalletScripts::P2sh(_) => format!("P2sh"),
-                WalletScripts::P2shP2wsh(_) => format!("P2shP2wsh"),
-                WalletScripts::P2wsh(_) => format!("P2wsh"),
-                WalletScripts::P2trLegacy(_) => format!("P2trLegacy"),
-                WalletScripts::P2trMusig2(_) => format!("P2trMusig2"),
+                WalletScripts::P2sh(_) => "P2sh".to_string(),
+                WalletScripts::P2shP2wsh(_) => "P2shP2wsh".to_string(),
+                WalletScripts::P2wsh(_) => "P2wsh".to_string(),
+                WalletScripts::P2trLegacy(_) => "P2trLegacy".to_string(),
+                WalletScripts::P2trMusig2(_) => "P2trMusig2".to_string(),
             }
         )
     }
@@ -165,7 +165,7 @@ pub fn derive_xpubs_with_path(
 ) -> XpubTriple {
     let derived = xpubs
         .iter()
-        .map(|k| k.derive_pub(&ctx, &p).unwrap())
+        .map(|k| k.derive_pub(ctx, &p).unwrap())
         .collect::<Vec<_>>();
     derived.try_into().expect("could not convert vec to array")
 }
@@ -182,7 +182,7 @@ pub fn derive_xpubs(
             index: chain as u32,
         })
         .child(ChildNumber::Normal { index });
-    derive_xpubs_with_path(&xpubs, ctx, p)
+    derive_xpubs_with_path(xpubs, ctx, p)
 }
 
 #[cfg(test)]
@@ -383,14 +383,14 @@ mod tests {
             .expect("Failed to find input with script type");
 
         let (chain, index) =
-            parse_fixture_paths(&input_fixture).expect("Failed to parse fixture paths");
+            parse_fixture_paths(input_fixture).expect("Failed to parse fixture paths");
         let scripts = WalletScripts::from_xpubs(&xpubs, chain, index);
 
         // Use the new helper methods for validation
         match (scripts, input_fixture) {
             (WalletScripts::P2sh(scripts), fixtures::PsbtInputFixture::P2sh(fixture_input)) => {
                 let vout = fixture.inputs[input_index].index as usize;
-                let output_script = get_output_script_from_non_witness_utxo(&fixture_input, vout);
+                let output_script = get_output_script_from_non_witness_utxo(fixture_input, vout);
                 fixture_input
                     .assert_matches_wallet_scripts(&scripts, &output_script)
                     .expect("P2sh validation failed");

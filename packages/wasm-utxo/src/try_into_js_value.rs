@@ -283,12 +283,8 @@ impl TryIntoJsValue for SigningKeysMap {
     fn try_to_js_value(&self) -> Result<JsValue, WasmMiniscriptError> {
         let obj = js_sys::Object::new();
         for (key, value) in self.iter() {
-            js_sys::Reflect::set(
-                &obj,
-                &key.to_string().into(),
-                &value.try_to_js_value()?.into(),
-            )
-            .map_err(|_| WasmMiniscriptError::new("Failed to set object property"))?;
+            js_sys::Reflect::set(&obj, &key.to_string().into(), &value.try_to_js_value()?)
+                .map_err(|_| WasmMiniscriptError::new("Failed to set object property"))?;
         }
         Ok(obj.into())
     }

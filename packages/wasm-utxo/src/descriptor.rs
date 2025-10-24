@@ -1,9 +1,10 @@
 use crate::error::WasmMiniscriptError;
 use crate::try_into_js_value::TryIntoJsValue;
-use miniscript::bitcoin::secp256k1::{Context, Secp256k1, Signing};
+use miniscript::bitcoin::secp256k1::{Secp256k1, Signing};
 use miniscript::bitcoin::ScriptBuf;
 use miniscript::descriptor::KeyMap;
 use miniscript::{DefiniteDescriptorKey, Descriptor, DescriptorPublicKey};
+use std::fmt;
 use std::str::FromStr;
 use wasm_bindgen::prelude::*;
 
@@ -27,12 +28,9 @@ impl WrapDescriptor {
     }
 
     #[wasm_bindgen(js_name = toString)]
+    #[allow(clippy::inherent_to_string_shadow_display)]
     pub fn to_string(&self) -> String {
-        match &self.0 {
-            WrapDescriptorEnum::Derivable(desc, _) => desc.to_string(),
-            WrapDescriptorEnum::Definite(desc) => desc.to_string(),
-            WrapDescriptorEnum::String(desc) => desc.to_string(),
-        }
+        format!("{}", self)
     }
 
     #[wasm_bindgen(js_name = hasWildcard)]
@@ -115,7 +113,7 @@ impl WrapDescriptor {
         secp: &Secp256k1<C>,
         descriptor: &str,
     ) -> Result<WrapDescriptor, WasmMiniscriptError> {
-        let (desc, keys) = Descriptor::parse_descriptor(&secp, descriptor)?;
+        let (desc, keys) = Descriptor::parse_descriptor(secp, descriptor)?;
         Ok(WrapDescriptor(WrapDescriptorEnum::Derivable(desc, keys)))
     }
 
@@ -199,6 +197,16 @@ impl WrapDescriptor {
     }
 }
 
+impl fmt::Display for WrapDescriptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            WrapDescriptorEnum::Derivable(desc, _) => write!(f, "{}", desc),
+            WrapDescriptorEnum::Definite(desc) => write!(f, "{}", desc),
+            WrapDescriptorEnum::String(desc) => write!(f, "{}", desc),
+        }
+    }
+}
+
 impl FromStr for WrapDescriptor {
     type Err = WasmMiniscriptError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -217,15 +225,12 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(desc.has_wildcard(), false);
-        assert_eq!(
-            match desc {
-                WrapDescriptor {
-                    0: crate::descriptor::WrapDescriptorEnum::Definite(_),
-                } => true,
-                _ => false,
-            },
-            true
-        );
+        assert!(!desc.has_wildcard());
+        assert!(matches!(
+            desc,
+            WrapDescriptor {
+                0: crate::descriptor::WrapDescriptorEnum::Definite(_),
+            }
+        ));
     }
 }

@@ -2,6 +2,7 @@ use crate::error::WasmMiniscriptError;
 use crate::try_into_js_value::TryIntoJsValue;
 use miniscript::bitcoin::{PublicKey, XOnlyPublicKey};
 use miniscript::{bitcoin, Legacy, Miniscript, Segwitv0, Tap};
+use std::fmt;
 use std::str::FromStr;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
@@ -35,8 +36,9 @@ impl WrapMiniscript {
     }
 
     #[wasm_bindgen(js_name = toString)]
+    #[allow(clippy::inherent_to_string_shadow_display)]
     pub fn to_string(&self) -> String {
-        unwrap_apply!(&self.0, |ms| ms.to_string())
+        format!("{}", self)
     }
 
     #[wasm_bindgen(js_name = encode)]
@@ -110,5 +112,11 @@ impl From<Miniscript<PublicKey, Segwitv0>> for WrapMiniscript {
 impl From<Miniscript<PublicKey, Legacy>> for WrapMiniscript {
     fn from(miniscript: Miniscript<PublicKey, Legacy>) -> Self {
         WrapMiniscript(WrapMiniscriptEnum::Legacy(miniscript))
+    }
+}
+
+impl fmt::Display for WrapMiniscript {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        unwrap_apply!(&self.0, |ms| write!(f, "{}", ms))
     }
 }

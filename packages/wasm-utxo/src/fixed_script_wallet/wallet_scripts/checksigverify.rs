@@ -20,7 +20,7 @@ pub fn build_p2tr_ns_script(keys: &[CompressedPublicKey]) -> ScriptBuf {
     for (i, key) in keys.iter().enumerate() {
         // convert to xonly key
         let key_bytes = to_xonly_pubkey(*key);
-        builder = builder.push_slice(&key_bytes);
+        builder = builder.push_slice(key_bytes);
         if i == keys.len() - 1 {
             builder = builder.push_opcode(OP_CHECKSIG);
         } else {
@@ -89,11 +89,11 @@ impl ScriptP2tr {
 
     pub fn output_script(&self) -> ScriptBuf {
         let output_key = self.spend_info.output_key().to_inner();
-        let output_script = Builder::new()
+
+        Builder::new()
             .push_int(1)
             .push_slice(output_key.serialize())
-            .into_script();
-        output_script
+            .into_script()
     }
 }
 

@@ -265,9 +265,9 @@ fn polymod(values: &[u8]) -> u64 {
         let c0 = (c >> 35) as u8;
         c = ((c & 0x07ffffffff) << 5) ^ (d as u64);
 
-        for i in 0..5 {
+        for (i, &generator) in generators.iter().enumerate() {
             if (c0 & (1 << i)) != 0 {
-                c ^= generators[i];
+                c ^= generator;
             }
         }
     }
@@ -457,7 +457,6 @@ mod tests {
     ///
     /// Using bech32 crate's `ByteIterExt::bytes_to_fes()` or checksum functions would fail these tests
     /// because they implement Bech32/Bech32m logic, not CashAddr logic.
-
     // Test vector: 20-byte P2PKH payload
     const TEST_HASH_20: &str = "F5BF48B397DAE70BE82B3CCA4793F8EB2B6CDAC9";
 
@@ -474,7 +473,7 @@ mod tests {
         // Test roundtrip
         let (decoded_hash, is_p2sh) = decode_cashaddr(&address, "bitcoincash").unwrap();
         assert_eq!(decoded_hash, hash);
-        assert_eq!(is_p2sh, false);
+        assert!(!is_p2sh);
     }
 
     #[test]
@@ -490,7 +489,7 @@ mod tests {
         // Test roundtrip
         let (decoded_hash, is_p2sh) = decode_cashaddr(&address, "bchtest").unwrap();
         assert_eq!(decoded_hash, hash);
-        assert_eq!(is_p2sh, true);
+        assert!(is_p2sh);
     }
 
     #[test]
@@ -503,7 +502,7 @@ mod tests {
         // Test roundtrip
         let (decoded_hash, is_p2sh) = decode_cashaddr(&address, "pref").unwrap();
         assert_eq!(decoded_hash, hash);
-        assert_eq!(is_p2sh, true);
+        assert!(is_p2sh);
     }
 
     #[test]
@@ -585,7 +584,7 @@ mod tests {
         let (hash, is_p2sh) = decode_cashaddr(uppercase, "bitcoincash").unwrap();
 
         assert_eq!(hex::encode(hash).to_uppercase(), TEST_HASH_20);
-        assert_eq!(is_p2sh, false);
+        assert!(!is_p2sh);
     }
 
     #[test]
@@ -628,7 +627,7 @@ mod tests {
         // Test roundtrip
         let (decoded_hash, is_p2sh) = decode_cashaddr(&address, "ecash").unwrap();
         assert_eq!(decoded_hash, hash);
-        assert_eq!(is_p2sh, false);
+        assert!(!is_p2sh);
     }
 
     #[test]

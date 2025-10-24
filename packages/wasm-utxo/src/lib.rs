@@ -12,6 +12,7 @@ mod try_into_js_value;
 pub use ::miniscript::bitcoin;
 
 pub use address::utxolib_compat;
+pub use address::*;
 pub use descriptor::WrapDescriptor;
 pub use miniscript::WrapMiniscript;
 pub use psbt::WrapPsbt;

@@ -7,7 +7,7 @@ use crate::bitcoin::{CompressedPublicKey, ScriptBuf};
 /// Build bare p2pk script (used for p2sh-p2pk replay protection)
 pub fn build_p2pk_script(key: CompressedPublicKey) -> ScriptBuf {
     Builder::default()
-        .push_slice(&key.to_bytes())
+        .push_slice(key.to_bytes())
         .push_opcode(OP_CHECKSIG)
         .into_script()
 }
@@ -58,7 +58,7 @@ mod tests {
         let expected_redeem_script = &p2shp2pk_input.redeem_script;
         let expected_pubkey = p2shp2pk_input
             .partial_sig
-            .get(0)
+            .first()
             .map(|sig| &sig.pubkey)
             .expect("No partial signature found");
 
