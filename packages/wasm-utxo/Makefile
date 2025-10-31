@@ -2,6 +2,9 @@ WASM_PACK = wasm-pack
 WASM_OPT = wasm-opt
 WASM_PACK_FLAGS = --no-pack --weak-refs
 
+# Fix for secp256k1-sys compilation with strict compilers
+export CFLAGS = -Wno-error=implicit-function-declaration
+
 ifdef WASM_PACK_DEV
 	WASM_PACK_FLAGS += --dev
 endif
