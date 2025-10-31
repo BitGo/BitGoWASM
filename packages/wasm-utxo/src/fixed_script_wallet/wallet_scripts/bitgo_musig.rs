@@ -8,6 +8,7 @@
 //!
 
 use miniscript::bitcoin::CompressedPublicKey;
+use musig2::KeyAggContext;
 
 use crate::bitcoin::hashes::{sha256, Hash, HashEngine};
 use crate::bitcoin::secp256k1::{Parity, PublicKey, Scalar, Secp256k1, XOnlyPublicKey};
@@ -187,6 +188,50 @@ pub fn key_agg_p2tr_musig2(pubkeys: &[CompressedPublicKey]) -> Result<[u8; 32], 
     key_agg(&pubkey_bytes)
 }
 
+/// P2TR MuSig2 key aggregation using external musig2 crate.
+///
+/// This function uses the external `musig2` crate to perform BIP327-compliant
+/// key aggregation. It should produce identical results to `key_agg_p2tr_musig2`.
+pub fn key_agg_p2tr_musig2_external_crate(
+    pubkeys: &[CompressedPublicKey],
+) -> Result<[u8; 32], BitGoMusigError> {
+    if pubkeys.len() < 2 {
+        return Err(BitGoMusigError::InvalidPubkeyCount(
+            "At least two pubkeys are required for MuSig key aggregation".to_string(),
+        ));
+    }
+
+    // Check for duplicate keys
+    let first = &pubkeys[0];
+    let has_distinct = pubkeys.iter().skip(1).any(|pk| pk != first);
+    if !has_distinct {
+        return Err(BitGoMusigError::InvalidPubkeyCount(
+            "All pubkeys are identical - MuSig requires at least two distinct keys".to_string(),
+        ));
+    }
+
+    // Convert CompressedPublicKey to musig2::secp256k1::PublicKey
+    let secp_pubkeys: Result<Vec<musig2::secp256k1::PublicKey>, _> = pubkeys
+        .iter()
+        .enumerate()
+        .map(|(i, cpk)| {
+            musig2::secp256k1::PublicKey::from_slice(&cpk.to_bytes()).map_err(|e| {
+                BitGoMusigError::InvalidPubkey(format!("Invalid pubkey at index {}: {}", i, e))
+            })
+        })
+        .collect();
+    let secp_pubkeys = secp_pubkeys?;
+
+    // Use musig2 crate for key aggregation
+    let key_agg_ctx = KeyAggContext::new(secp_pubkeys).map_err(|e| {
+        BitGoMusigError::AggregationFailed(format!("KeyAggContext creation failed: {}", e))
+    })?;
+
+    // Get the aggregated x-only public key
+    let agg_pk: musig2::secp256k1::XOnlyPublicKey = key_agg_ctx.aggregated_pubkey();
+    Ok(agg_pk.serialize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,63 +246,100 @@ mod tests {
             .serialize()
     }
 
+    /// Test keys used across multiple tests
+    struct TestKeys {
+        user: CompressedPublicKey,
+        bitgo: CompressedPublicKey,
+        backup: CompressedPublicKey,
+    }
+
+    fn get_test_keys() -> TestKeys {
+        TestKeys {
+            user: pubkey_from_hex(
+                "02d20a62701c54f6eb3abb9f964b0e29ff90ffa3b4e3fcb73e7c67d4950fa6e3c7",
+            ),
+            bitgo: pubkey_from_hex(
+                "03203ab799ce28e2cca044f594c69275050af4bb0854ad730a8f74622342300e64",
+            ),
+            backup: pubkey_from_hex(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            ),
+        }
+    }
+
+    /// Expected fixtures for key aggregation tests
+    struct AggregationFixtures {
+        p2tr_legacy: [u8; 32],
+        p2tr_musig2_forward: [u8; 32],
+        p2tr_musig2_reverse: [u8; 32],
+    }
+
+    fn get_aggregation_fixtures() -> AggregationFixtures {
+        AggregationFixtures {
+            p2tr_legacy: pubkey_from_hex_xonly(
+                "cc899cac29f6243ef481be86f0d39e173c075cd57193d46332b1ec0b42c439aa",
+            ),
+            p2tr_musig2_forward: pubkey_from_hex_xonly(
+                "c0e255b4510e041ab81151091d875687a618de314344dff4b73b1bcd366cdbd8",
+            ),
+            p2tr_musig2_reverse: pubkey_from_hex_xonly(
+                "e48d309b535811eb0b148c4b0600a10e82e289899429e40aee05577504eca356",
+            ),
+        }
+    }
+
+    /// Assert that aggregation result matches expected fixture
+    fn assert_aggregation(result: [u8; 32], expected: [u8; 32], msg: &str) {
+        assert_eq!(result, expected, "{}", msg);
+    }
+
     #[test]
     fn test_bitgo_p2tr_aggregation() {
         // Test matching the Python test_agg_bitgo function
         // This is the algorithm used by the bitgo 'p2tr' output script type (chain 30, 31)
-
-        let pubkey_user =
-            pubkey_from_hex("02d20a62701c54f6eb3abb9f964b0e29ff90ffa3b4e3fcb73e7c67d4950fa6e3c7");
-        let pubkey_bitgo =
-            pubkey_from_hex("03203ab799ce28e2cca044f594c69275050af4bb0854ad730a8f74622342300e64");
-        let expected_internal_pubkey_p2tr = pubkey_from_hex_xonly(
-            "cc899cac29f6243ef481be86f0d39e173c075cd57193d46332b1ec0b42c439aa",
-        );
-        let expected_internal_pubkey_p2tr_musig2 = pubkey_from_hex_xonly(
-            "c0e255b4510e041ab81151091d875687a618de314344dff4b73b1bcd366cdbd8",
-        );
-        let expected_internal_pubkey_p2tr_musig2_reverse = pubkey_from_hex_xonly(
-            "e48d309b535811eb0b148c4b0600a10e82e289899429e40aee05577504eca356",
-        );
+        let keys = get_test_keys();
+        let fixtures = get_aggregation_fixtures();
 
         // Test 1: bitgo_p2tr_legacy aggregation using xonly conversion + sort
-        let result = key_agg_bitgo_p2tr_legacy(&[pubkey_user, pubkey_bitgo]).unwrap();
-        assert_eq!(
-            result, expected_internal_pubkey_p2tr,
-            "p2tr legacy aggregation mismatch"
+        let result = key_agg_bitgo_p2tr_legacy(&[keys.user, keys.bitgo]).unwrap();
+        assert_aggregation(
+            result,
+            fixtures.p2tr_legacy,
+            "p2tr legacy aggregation mismatch",
         );
 
         // Test 2: bitgo_p2tr_legacy aggregation in reverse order should give same result (because sort=true)
-        let result = key_agg_bitgo_p2tr_legacy(&[pubkey_bitgo, pubkey_user]).unwrap();
-        assert_eq!(
-            result, expected_internal_pubkey_p2tr,
-            "p2tr legacy aggregation (reverse) mismatch"
+        let result = key_agg_bitgo_p2tr_legacy(&[keys.bitgo, keys.user]).unwrap();
+        assert_aggregation(
+            result,
+            fixtures.p2tr_legacy,
+            "p2tr legacy aggregation (reverse) mismatch",
         );
 
         // Test 3: p2tr_musig2 aggregation using standard BIP327
-        let result = key_agg_p2tr_musig2(&[pubkey_user, pubkey_bitgo]).unwrap();
-        assert_eq!(
-            result, expected_internal_pubkey_p2tr_musig2,
-            "p2trMusig2 aggregation mismatch"
+        let result = key_agg_p2tr_musig2(&[keys.user, keys.bitgo]).unwrap();
+        assert_aggregation(
+            result,
+            fixtures.p2tr_musig2_forward,
+            "p2trMusig2 aggregation mismatch",
         );
 
         // Test 4: p2tr_musig2 aggregation in reverse order gives different result (because sort=false)
-        let result = key_agg_p2tr_musig2(&[pubkey_bitgo, pubkey_user]).unwrap();
-        assert_eq!(
-            result.to_vec(),
-            expected_internal_pubkey_p2tr_musig2_reverse,
-            "p2trMusig2 aggregation (reverse) mismatch"
+        let result = key_agg_p2tr_musig2(&[keys.bitgo, keys.user]).unwrap();
+        assert_aggregation(
+            result,
+            fixtures.p2tr_musig2_reverse,
+            "p2trMusig2 aggregation (reverse) mismatch",
         );
     }
 
     #[test]
     fn test_identical_keys_error() {
         // Test that aggregating identical keys returns an error
-        let pubkey_user =
-            pubkey_from_hex("02d20a62701c54f6eb3abb9f964b0e29ff90ffa3b4e3fcb73e7c67d4950fa6e3c7");
+        let keys = get_test_keys();
 
         // All keys are identical - should error
-        let result = key_agg_bitgo_p2tr_legacy(&[pubkey_user, pubkey_user]);
+        let result = key_agg_bitgo_p2tr_legacy(&[keys.user, keys.user]);
         assert!(
             result.is_err(),
             "Expected error when all keys are identical"
@@ -268,7 +350,7 @@ mod tests {
         );
 
         // Same for p2tr_musig2
-        let result = key_agg_p2tr_musig2(&[pubkey_user, pubkey_user]);
+        let result = key_agg_p2tr_musig2(&[keys.user, keys.user]);
         assert!(
             result.is_err(),
             "Expected error when all keys are identical"
@@ -276,6 +358,79 @@ mod tests {
         assert!(
             matches!(result, Err(BitGoMusigError::InvalidPubkeyCount(_))),
             "Expected InvalidPubkeyCount error"
+        );
+    }
+
+    #[test]
+    fn test_external_crate_matches_internal_implementation() {
+        // Test that the external musig2 crate produces the same results as our internal implementation
+        let keys = get_test_keys();
+        let fixtures = get_aggregation_fixtures();
+
+        // Test 1: Same order should produce same results
+        let result_internal = key_agg_p2tr_musig2(&[keys.user, keys.bitgo]).unwrap();
+        let result_external = key_agg_p2tr_musig2_external_crate(&[keys.user, keys.bitgo]).unwrap();
+        assert_aggregation(
+            result_internal,
+            fixtures.p2tr_musig2_forward,
+            "Internal implementation mismatch",
+        );
+        assert_aggregation(
+            result_external,
+            fixtures.p2tr_musig2_forward,
+            "External crate mismatch",
+        );
+
+        // Test 2: Reverse order should produce same results (but different from test 1)
+        let result_internal_reverse = key_agg_p2tr_musig2(&[keys.bitgo, keys.user]).unwrap();
+        let result_external_reverse =
+            key_agg_p2tr_musig2_external_crate(&[keys.bitgo, keys.user]).unwrap();
+        assert_aggregation(
+            result_internal_reverse,
+            fixtures.p2tr_musig2_reverse,
+            "Internal implementation (reverse) mismatch",
+        );
+        assert_aggregation(
+            result_external_reverse,
+            fixtures.p2tr_musig2_reverse,
+            "External crate (reverse) mismatch",
+        );
+
+        // Test 3: Verify order matters for both implementations
+        assert_ne!(
+            result_internal, result_internal_reverse,
+            "Different key order should produce different results"
+        );
+        assert_ne!(
+            result_external, result_external_reverse,
+            "Different key order should produce different results for external crate"
+        );
+    }
+
+    #[test]
+    fn test_external_crate_identical_keys_error() {
+        // Test that the external crate also rejects identical keys
+        let keys = get_test_keys();
+
+        let result = key_agg_p2tr_musig2_external_crate(&[keys.user, keys.user]);
+        assert!(
+            result.is_err(),
+            "External crate should error when all keys are identical"
+        );
+    }
+
+    #[test]
+    fn test_external_crate_with_three_keys() {
+        // Test with three keys to ensure it works with more than 2 keys
+        let keys = get_test_keys();
+
+        let result_internal = key_agg_p2tr_musig2(&[keys.user, keys.bitgo, keys.backup]).unwrap();
+        let result_external =
+            key_agg_p2tr_musig2_external_crate(&[keys.user, keys.bitgo, keys.backup]).unwrap();
+
+        assert_eq!(
+            result_internal, result_external,
+            "External crate should match internal implementation with 3 keys"
         );
     }
 }
