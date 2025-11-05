@@ -689,12 +689,12 @@ mod tests {
             .expect("Failed to load fixture");
 
         let (input_index, input_fixture) = fixture
-            .find_input_with_script_type(ScriptType::TaprootKeypath)
+            .find_input_with_script_type(ScriptType::P2trMusig2TaprootKeypath)
             .expect("Failed to find taprootKeyPathSpend input");
 
         let finalized_input_fixture = if signature_state == SignatureState::Fullsigned {
             let (finalized_input_index, finalized_input_fixture) = fixture
-                .find_finalized_input_with_script_type(ScriptType::TaprootKeypath)
+                .find_finalized_input_with_script_type(ScriptType::P2trMusig2TaprootKeypath)
                 .expect("Failed to find taprootKeyPathSpend finalized input");
             assert_eq!(input_index, finalized_input_index);
             Some(finalized_input_fixture)

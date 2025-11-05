@@ -579,27 +579,24 @@ mod tests {
         ignore: [BitcoinGold]
     );
 
-    crate::test_psbt_fixtures!(test_p2tr_script_generation_from_fixture, network, format, {
-        test_wallet_script_type(fixtures::ScriptType::P2tr, network, format).unwrap();
+    crate::test_psbt_fixtures!(test_p2tr_legacy_script_path_suite, network, format, {
+        test_wallet_script_type(fixtures::ScriptType::P2trLegacyScriptPath, network, format)
+            .unwrap();
     });
 
-    crate::test_psbt_fixtures!(
-        test_p2tr_musig2_script_path_generation_from_fixture,
-        network,
-        format,
-        {
-            test_wallet_script_type(fixtures::ScriptType::P2trMusig2, network, format).unwrap();
-        }
-    );
+    crate::test_psbt_fixtures!(test_p2tr_musig2_script_path_suite, network, format, {
+        test_wallet_script_type(fixtures::ScriptType::P2trMusig2ScriptPath, network, format)
+            .unwrap();
+    });
 
-    crate::test_psbt_fixtures!(
-        test_p2tr_musig2_key_path_spend_script_generation_from_fixture,
-        network,
-        format,
-        {
-            test_wallet_script_type(fixtures::ScriptType::TaprootKeypath, network, format).unwrap();
-        }
-    );
+    crate::test_psbt_fixtures!(test_p2tr_musig2_key_path_suite, network, format, {
+        test_wallet_script_type(
+            fixtures::ScriptType::P2trMusig2TaprootKeypath,
+            network,
+            format,
+        )
+        .unwrap();
+    });
 
     crate::test_psbt_fixtures!(test_extract_transaction, network, format, {
         let fixture = fixtures::load_psbt_fixture_with_format(

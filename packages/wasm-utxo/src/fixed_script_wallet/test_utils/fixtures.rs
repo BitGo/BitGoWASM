@@ -1001,9 +1001,12 @@ pub enum ScriptType {
     P2sh,
     P2shP2wsh,
     P2wsh,
-    P2tr,
-    P2trMusig2,
-    TaprootKeypath,
+    // Chain 30 and 31 - we only support script path spending for these
+    P2trLegacyScriptPath,
+    // Chain 40 and 41 - script path spend
+    P2trMusig2ScriptPath,
+    // Chain 40 and 41 - keypath spend
+    P2trMusig2TaprootKeypath,
 }
 
 impl ScriptType {
@@ -1013,9 +1016,9 @@ impl ScriptType {
             ScriptType::P2sh => "p2sh",
             ScriptType::P2shP2wsh => "p2shP2wsh",
             ScriptType::P2wsh => "p2wsh",
-            ScriptType::P2tr => "p2tr",
-            ScriptType::P2trMusig2 => "p2trMusig2",
-            ScriptType::TaprootKeypath => "taprootKeypath",
+            ScriptType::P2trLegacyScriptPath => "p2tr",
+            ScriptType::P2trMusig2ScriptPath => "p2trMusig2",
+            ScriptType::P2trMusig2TaprootKeypath => "taprootKeypath",
         }
     }
 
@@ -1026,13 +1029,16 @@ impl ScriptType {
             (ScriptType::P2sh, PsbtInputFixture::P2sh(_))
                 | (ScriptType::P2shP2wsh, PsbtInputFixture::P2shP2wsh(_))
                 | (ScriptType::P2wsh, PsbtInputFixture::P2wsh(_))
-                | (ScriptType::P2tr, PsbtInputFixture::P2trLegacy(_))
                 | (
-                    ScriptType::P2trMusig2,
+                    ScriptType::P2trLegacyScriptPath,
+                    PsbtInputFixture::P2trLegacy(_)
+                )
+                | (
+                    ScriptType::P2trMusig2ScriptPath,
                     PsbtInputFixture::P2trMusig2ScriptPath(_)
                 )
                 | (
-                    ScriptType::TaprootKeypath,
+                    ScriptType::P2trMusig2TaprootKeypath,
                     PsbtInputFixture::P2trMusig2KeyPath(_)
                 )
         )
@@ -1045,13 +1051,16 @@ impl ScriptType {
             (ScriptType::P2sh, PsbtFinalInputFixture::P2sh(_))
                 | (ScriptType::P2shP2wsh, PsbtFinalInputFixture::P2shP2wsh(_))
                 | (ScriptType::P2wsh, PsbtFinalInputFixture::P2wsh(_))
-                | (ScriptType::P2tr, PsbtFinalInputFixture::P2trLegacy(_))
                 | (
-                    ScriptType::P2trMusig2,
+                    ScriptType::P2trLegacyScriptPath,
+                    PsbtFinalInputFixture::P2trLegacy(_)
+                )
+                | (
+                    ScriptType::P2trMusig2ScriptPath,
                     PsbtFinalInputFixture::P2trMusig2ScriptPath(_)
                 )
                 | (
-                    ScriptType::TaprootKeypath,
+                    ScriptType::P2trMusig2TaprootKeypath,
                     PsbtFinalInputFixture::P2trMusig2KeyPath(_)
                 )
         )
@@ -1064,7 +1073,9 @@ impl ScriptType {
     pub fn is_taproot(&self) -> bool {
         matches!(
             self,
-            ScriptType::P2tr | ScriptType::P2trMusig2 | ScriptType::TaprootKeypath
+            ScriptType::P2trLegacyScriptPath
+                | ScriptType::P2trMusig2ScriptPath
+                | ScriptType::P2trMusig2TaprootKeypath
         )
     }
 
@@ -1382,7 +1393,7 @@ mod tests {
 
         // Test finding taproot key path finalized input
         let (index, input) = fixture
-            .find_finalized_input_with_script_type(ScriptType::TaprootKeypath)
+            .find_finalized_input_with_script_type(ScriptType::P2trMusig2TaprootKeypath)
             .expect("Failed to find taproot key path finalized input");
         assert_eq!(index, 5);
         assert!(matches!(input, PsbtFinalInputFixture::P2trMusig2KeyPath(_)));
