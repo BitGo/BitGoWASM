@@ -1,6 +1,6 @@
 {
   "name": "@bitgo/wasm-utxo-ui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Web frontend for wasm-utxo",
   "repository": {
     "type": "git",
@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@bitgo/utxo-lib": "^10.1.0",
-    "@bitgo/wasm-utxo": "*",
+    "@bitgo/wasm-utxo": "^0.1.0",
     "assert": "^2.1.0",
     "buffer": "^6.0.3",
     "crypto-browserify": "^3.12.0",
