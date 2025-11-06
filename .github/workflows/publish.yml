@@ -33,7 +33,7 @@ jobs:
         with:
           toolchain: nightly
           install-cargo-deny: 'false'
-          cache: 'false'
+          cache: 'true'
 
       - name: Configure Git
         run: |
