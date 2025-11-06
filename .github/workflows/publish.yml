@@ -23,32 +23,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Setup Node and Display Info
+        uses: ./.github/actions/setup-node-with-info
         with:
           node-version: 20
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - name: Setup Rust and Wasm
+        uses: ./.github/actions/setup-rust-wasm
         with:
           toolchain: nightly
-
-      - name: Install wasm tools
-        run: |
-          rustup component add rustfmt
-          cargo install wasm-pack --version 0.13.1
-          cargo install wasm-opt --version 0.116.1
-
-      - name: Build Info
-        run: |
-          echo "node $(node --version)"
-          echo "npm $(npm --version)"
-          echo "rustc $(rustc --version)"
-          echo "wasm-pack $(wasm-pack --version)"
-          echo "wasm-opt $(wasm-opt --version)"
-          git --version
-          echo "base ref $GITHUB_BASE_REF"
-          echo "head ref $GITHUB_HEAD_REF"
+          install-cargo-deny: 'false'
+          cache: 'false'
 
       - name: Configure Git
         run: |
@@ -60,11 +45,8 @@ jobs:
           echo "workspaces-update = false" >> .npmrc
           echo "@bitgo:registry=https://registry.npmjs.org" >> .npmrc
 
-      - name: Install Packages
-        run: npm ci --workspaces --include-workspace-root
-
-      - name: build packages
-        run: npm --workspaces run build
+      - name: Install and Build Packages
+        uses: ./.github/actions/npm-build
 
       - name: Unit Test
         run: npm --workspaces test

@@ -25,47 +25,24 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - name: Setup Rust and Wasm
+        uses: ./.github/actions/setup-rust-wasm
         with:
           toolchain: nightly-2025-10-23
+          install-cargo-deny: 'true'
+          cache: 'true'
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      - name: Setup Node and Display Info
+        uses: ./.github/actions/setup-node-with-info
         with:
-          workspaces: "packages/wasm-utxo"
-          cache-on-failure: true
-
-      - name: Setup node ${{ matrix.node-version }}
-        uses: actions/setup-node@v3
-        with:
-          node-version: ${{ matrix.node-version }}
-
-      - name: Install wasm tools
-        run: |
-          rustup component add rustfmt
-          cargo install wasm-pack --version 0.13.1
-          cargo install wasm-opt --version 0.116.1
-          cargo install cargo-deny --locked
-
-      - name: Build Info
-        run: |
-          echo "node $(node --version)"
-          echo "npm $(npm --version)"
-          echo "rustc $(rustc --version)"
-          echo "wasm-pack $(wasm-pack --version)"
-          echo "wasm-opt $(wasm-opt --version)"
-          echo "cargo-deny $(cargo deny --version)"
-          git --version
-          echo "base ref $GITHUB_BASE_REF"
-          echo "head ref $GITHUB_HEAD_REF"
+          node-version: 20
 
       - name: Fetch Base Ref
         run: |
           git fetch origin $GITHUB_BASE_REF
 
-      - name: Install Packages
-        run: npm ci --workspaces --include-workspace-root
+      - name: Install and Build Packages
+        uses: ./.github/actions/npm-build
 
       - name: Check dependencies with cargo-deny
         run: cargo deny check
@@ -73,9 +50,6 @@ jobs:
 
       - name: test
         run: npx --version
-
-      - name: build packages
-        run: npm --workspaces run build
 
       - name: Check Source Code Formatting
         run: npm run check-fmt

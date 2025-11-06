@@ -1,0 +1,54 @@
+name: 'Setup Rust and Wasm Tools'
+description: 'Install Rust toolchain, wasm-pack, wasm-opt, and optional cargo-deny'
+
+inputs:
+  toolchain:
+    description: 'Rust toolchain version'
+    required: false
+    default: 'nightly'
+  install-cargo-deny:
+    description: 'Whether to install cargo-deny'
+    required: false
+    default: 'false'
+  cache:
+    description: 'Enable Rust cache'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      with:
+        toolchain: ${{ inputs.toolchain }}
+
+    - name: Cache Rust dependencies
+      if: inputs.cache == 'true'
+      uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      with:
+        workspaces: "packages/wasm-utxo"
+        cache-on-failure: true
+
+    - name: Install wasm tools
+      shell: bash
+      run: |
+        rustup component add rustfmt
+        cargo install wasm-pack --version 0.13.1
+        cargo install wasm-opt --version 0.116.1
+
+    - name: Install cargo-deny
+      if: inputs.install-cargo-deny == 'true'
+      shell: bash
+      run: cargo install cargo-deny --locked
+
+    - name: Build Info
+      shell: bash
+      run: |
+        echo "rustc $(rustc --version)"
+        echo "wasm-pack $(wasm-pack --version)"
+        echo "wasm-opt $(wasm-opt --version)"
+        if command -v cargo-deny &> /dev/null; then
+          echo "cargo-deny $(cargo deny --version)"
+        fi
+

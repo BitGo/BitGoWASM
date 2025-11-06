@@ -1,0 +1,14 @@
+name: 'Install and Build NPM Packages'
+description: 'Install npm packages and build all workspaces'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Packages
+      shell: bash
+      run: npm ci --workspaces --include-workspace-root
+
+    - name: Build Packages
+      shell: bash
+      run: npm --workspaces run build
+
