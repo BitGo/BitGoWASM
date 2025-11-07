@@ -654,15 +654,16 @@ where
 }
 
 impl PsbtFixture {
+    pub fn to_psbt_bytes(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        use base64::engine::{general_purpose::STANDARD as BASE64_STANDARD, Engine};
+        Ok(BASE64_STANDARD.decode(&self.psbt_base64)?)
+    }
+
     pub fn to_bitgo_psbt(
         &self,
         network: Network,
     ) -> Result<crate::bitgo_psbt::BitGoPsbt, Box<dyn std::error::Error>> {
-        use base64::engine::{general_purpose::STANDARD as BASE64_STANDARD, Engine};
-        let psbt = crate::bitgo_psbt::BitGoPsbt::deserialize(
-            &BASE64_STANDARD.decode(&self.psbt_base64)?,
-            network,
-        )?;
+        let psbt = crate::bitgo_psbt::BitGoPsbt::deserialize(&self.to_psbt_bytes()?, network)?;
         Ok(psbt)
     }
 
