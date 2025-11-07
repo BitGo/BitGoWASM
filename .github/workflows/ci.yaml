@@ -1,4 +1,4 @@
-name: "test / Test"
+name: "Build and Test"
 
 on:
   push:
@@ -12,83 +12,5 @@ on:
   workflow_dispatch:
 
 jobs:
-  unit-test:
-    name: "test / Test"
-
-    runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: nightly-2025-10-23
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
-        with:
-          workspaces: "packages/wasm-utxo"
-          cache-on-failure: true
-
-      - name: Setup node ${{ matrix.node-version }}
-        uses: actions/setup-node@v3
-        with:
-          node-version: ${{ matrix.node-version }}
-
-      - name: Install wasm tools
-        run: |
-          rustup component add rustfmt
-          cargo install wasm-pack --version 0.13.1
-          cargo install wasm-opt --version 0.116.1
-          cargo install cargo-deny --locked
-
-      - name: Build Info
-        run: |
-          echo "node $(node --version)"
-          echo "npm $(npm --version)"
-          echo "npx $(npx --version)"
-          echo "rustc $(rustc --version)"
-          echo "wasm-pack $(wasm-pack --version)"
-          echo "wasm-opt $(wasm-opt --version)"
-          echo "cargo-deny $(cargo deny --version)"
-          git --version
-          echo "base ref $GITHUB_BASE_REF"
-          echo "head ref $GITHUB_HEAD_REF"
-
-      - name: Fetch Base Ref
-        run: |
-          git fetch origin $GITHUB_BASE_REF
-
-      - name: Install Packages
-        run: npm ci --workspaces --include-workspace-root
-
-      - name: Check dependencies with cargo-deny
-        run: cargo deny check
-        working-directory: packages/wasm-utxo
-
-      - name: build packages
-        run: npm --workspaces run build
-
-      - name: Check Source Code Formatting
-        run: npm run check-fmt
-
-      - name: wasm-utxo / cargo test
-        run: cargo test --workspace
-        working-directory: packages/wasm-utxo
-
-      - name: wasm-utxo / Wasm-Pack Test (Node)
-        run: npm run test:wasm-pack-node
-        working-directory: packages/wasm-utxo
-
-      - name: wasm-utxo / Wasm-Pack Test (Chrome)
-        run: npm run test:wasm-pack-chrome
-        working-directory: packages/wasm-utxo
-
-      - name: Unit Test
-        run: npm --workspaces test
+  test:
+    uses: ./.github/workflows/build-and-test.yaml
