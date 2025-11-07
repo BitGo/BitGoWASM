@@ -2,6 +2,29 @@ import type { AddressFormat } from "./address";
 import { Triple } from "./triple";
 import { UtxolibCompatNamespace } from "./wasm/wasm_utxo";
 
+export type UtxolibName =
+  | "bitcoin"
+  | "testnet"
+  | "bitcoinTestnet4"
+  | "bitcoinPublicSignet"
+  | "bitcoinBitGoSignet"
+  | "bitcoincash"
+  | "bitcoincashTestnet"
+  | "ecash"
+  | "ecashTest"
+  | "bitcoingold"
+  | "bitcoingoldTestnet"
+  | "bitcoinsv"
+  | "bitcoinsvTestnet"
+  | "dash"
+  | "dashTest"
+  | "dogecoin"
+  | "dogecoinTest"
+  | "litecoin"
+  | "litecoinTest"
+  | "zcash"
+  | "zcashTest";
+
 export type BIP32Interface = {
   network: {
     bip32: {

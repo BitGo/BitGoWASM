@@ -128,6 +128,24 @@ impl TryIntoJsValue for usize {
     }
 }
 
+impl TryIntoJsValue for u32 {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        Ok(JsValue::from_f64(*self as f64))
+    }
+}
+
+impl TryIntoJsValue for u64 {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        Ok(js_sys::BigInt::from(*self).into())
+    }
+}
+
+impl TryIntoJsValue for Vec<u8> {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        Ok(js_sys::Uint8Array::from(self.as_slice()).into())
+    }
+}
+
 impl<T: TryIntoJsValue, const MAX: usize> TryIntoJsValue for Threshold<T, MAX> {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
         let arr = Array::new();
@@ -287,5 +305,47 @@ impl TryIntoJsValue for SigningKeysMap {
                 .map_err(|_| WasmUtxoError::new("Failed to set object property"))?;
         }
         Ok(obj.into())
+    }
+}
+
+impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ScriptId {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "chain" => self.chain,
+            "index" => self.index
+        )
+    }
+}
+
+impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedInput {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "address" => self.address.clone(),
+            "value" => self.value,
+            "scriptId" => self.script_id
+        )
+    }
+}
+
+impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedOutput {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "address" => self.address.clone(),
+            "script" => self.script.clone(),
+            "value" => self.value,
+            "scriptId" => self.script_id
+        )
+    }
+}
+
+impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedTransaction {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "inputs" => self.inputs.clone(),
+            "outputs" => self.outputs.clone(),
+            "spendAmount" => self.spend_amount,
+            "minerFee" => self.miner_fee,
+            "virtualSize" => self.virtual_size
+        )
     }
 }
