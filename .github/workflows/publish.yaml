@@ -9,8 +9,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
+  test:
+    name: Test
+    uses: ./.github/workflows/build-and-test.yaml
+    with:
+      upload-artifacts: true
+
   publish:
     name: Publish Release
+    needs: test
     runs-on: ubuntu-latest
     environment: publish
     permissions:
@@ -23,57 +30,26 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-utxo-build
+          path: packages/wasm-utxo/
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
-      - name: Ensure npm 11.5.1 or later for trusted publishing
+      - name: Ensure npm 11.5.1
         run: |
           npm install -g npm@11.5.1
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: nightly-2025-10-23
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
-        with:
-          workspaces: "packages/wasm-utxo"
-          cache-on-failure: true
-
-      - name: Install wasm tools
-        run: |
-          rustup component add rustfmt
-          cargo install wasm-pack --version 0.13.1
-          cargo install wasm-opt --version 0.116.1
-
-      - name: Build Info
-        run: |
-          echo "node $(node --version)"
-          echo "npm $(npm --version)"
-          echo "rustc $(rustc --version)"
-          echo "wasm-pack $(wasm-pack --version)"
-          echo "wasm-opt $(wasm-opt --version)"
-          git --version
-          echo "base ref $GITHUB_BASE_REF"
-          echo "head ref $GITHUB_HEAD_REF"
 
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Install Packages
-        run: npm ci --workspaces --include-workspace-root
-
-      - name: build packages
-        run: npm --workspaces run build
-
-      - name: Unit Test
-        run: npm --workspaces test
 
       - name: Release (npm publish via OIDC)
         working-directory: packages/wasm-utxo

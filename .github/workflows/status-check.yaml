@@ -1,0 +1,25 @@
+# This is a thin wrapper workflow that reflects the status of the "Build and Test" workflow.
+# It exists solely to provide a clean "test / Test" status check name in GitHub PR status checks,
+# avoiding the multi-level name composition that occurs with reusable workflows.
+# Configure branch protection rules to require "test / Test" as the status check.
+
+name: "test / Test"
+
+on:
+  workflow_run:
+    workflows: ["Build and Test"]
+    types:
+      - completed
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Build and Test Status
+        run: |
+          if [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
+            echo "Build and Test workflow failed"
+            exit 1
+          fi
+          echo "Build and Test workflow succeeded"
+
