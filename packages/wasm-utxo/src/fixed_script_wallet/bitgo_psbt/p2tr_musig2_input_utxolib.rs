@@ -7,9 +7,12 @@
 //! For production use, prefer the State-Machine API in the parent module which
 //! provides better protection against nonce reuse.
 
-use super::p2tr_musig2_input::{
-    collect_prevouts, derive_xpriv_for_input_tap, derive_xpub_for_input_tap, Musig2Context,
-    Musig2Error, Musig2Input, Musig2PubNonce,
+use super::{
+    p2tr_musig2_input::{
+        collect_prevouts, derive_xpriv_for_input_tap, derive_xpub_for_input_tap, Musig2Context,
+        Musig2Error, Musig2Input, Musig2PubNonce,
+    },
+    BitGoPsbt,
 };
 use crate::bitcoin::{
     bip32::Xpriv,
@@ -19,7 +22,6 @@ use crate::bitcoin::{
     sighash::TapSighash,
     taproot::TapNodeHash,
 };
-use crate::bitgo_psbt::BitGoPsbt;
 use crate::fixed_script_wallet::RootWalletKeys;
 use musig2::{secp::Point, PubNonce};
 

@@ -27,6 +27,20 @@ impl ReplayProtection {
 type Bip32DerivationMap = std::collections::BTreeMap<PublicKey, KeySource>;
 
 /// Make sure that deriving from the wallet xpubs matches keys in the derivation map
+/// Check if BIP32 derivation info belongs to the wallet keys (non-failing)
+/// Returns true if all fingerprints match, false if any don't match (external wallet)
+pub fn is_bip32_derivation_for_wallet(
+    wallet_keys: &RootWalletKeys,
+    derivation_map: &Bip32DerivationMap,
+) -> bool {
+    derivation_map.iter().all(|(_, (fingerprint, _))| {
+        wallet_keys
+            .xpubs
+            .iter()
+            .any(|xpub| xpub.fingerprint() == *fingerprint)
+    })
+}
+
 fn assert_bip32_derivation_map(
     wallet_keys: &RootWalletKeys,
     derivation_map: &Bip32DerivationMap,
@@ -51,6 +65,20 @@ fn assert_bip32_derivation_map(
 }
 
 type TapKeyOrigins = std::collections::BTreeMap<XOnlyPublicKey, (Vec<TapLeafHash>, KeySource)>;
+
+/// Check if tap key origins belong to the wallet keys (non-failing)
+/// Returns true if all fingerprints match, false if any don't match (external wallet)
+pub fn is_tap_key_origins_for_wallet(
+    wallet_keys: &RootWalletKeys,
+    tap_key_origins: &TapKeyOrigins,
+) -> bool {
+    tap_key_origins.iter().all(|(_, (_, (fingerprint, _)))| {
+        wallet_keys
+            .xpubs
+            .iter()
+            .any(|xpub| xpub.fingerprint() == *fingerprint)
+    })
+}
 
 fn assert_tap_key_origins(
     wallet_keys: &RootWalletKeys,
@@ -111,7 +139,43 @@ fn parse_derivation_path(path: &DerivationPath) -> Result<WalletDerivationPath, 
     })
 }
 
-fn parse_shared_derivation_path(key_origins: &[&DerivationPath]) -> Result<(u32, u32), String> {
+/// Extract derivation paths from either BIP32 derivation or tap key origins
+pub fn get_derivation_paths(input: &Input) -> Vec<&DerivationPath> {
+    if !input.bip32_derivation.is_empty() {
+        input
+            .bip32_derivation
+            .values()
+            .map(|(_, path)| path)
+            .collect()
+    } else {
+        input
+            .tap_key_origins
+            .values()
+            .map(|(_, (_, path))| path)
+            .collect()
+    }
+}
+
+/// Extract derivation paths from PSBT output metadata
+pub fn get_output_derivation_paths(
+    output: &miniscript::bitcoin::psbt::Output,
+) -> Vec<&DerivationPath> {
+    if !output.bip32_derivation.is_empty() {
+        output
+            .bip32_derivation
+            .values()
+            .map(|(_, path)| path)
+            .collect()
+    } else {
+        output
+            .tap_key_origins
+            .values()
+            .map(|(_, (_, path))| path)
+            .collect()
+    }
+}
+
+pub fn parse_shared_derivation_path(key_origins: &[&DerivationPath]) -> Result<(u32, u32), String> {
     let paths = key_origins
         .iter()
         .map(|path| parse_derivation_path(path))
@@ -130,31 +194,15 @@ fn parse_shared_derivation_path(key_origins: &[&DerivationPath]) -> Result<(u32,
     Ok((chain, index))
 }
 
-fn parse_shared_chain_and_index(input: &Input) -> Result<(u32, u32), String> {
+pub fn parse_shared_chain_and_index(input: &Input) -> Result<(u32, u32), String> {
     if input.bip32_derivation.is_empty() && input.tap_key_origins.is_empty() {
         return Err(
             "Invalid input: both bip32_derivation and tap_key_origins are empty".to_string(),
         );
     }
-    if input.bip32_derivation.is_empty() {
-        return parse_shared_derivation_path(
-            &input
-                .tap_key_origins
-                .values()
-                .map(|(_, (_, path))| path)
-                .collect::<Vec<_>>(),
-        );
-    }
-    if input.tap_key_origins.is_empty() {
-        return parse_shared_derivation_path(
-            &input
-                .bip32_derivation
-                .values()
-                .map(|(_, path)| path)
-                .collect::<Vec<_>>(),
-        );
-    }
-    Err("Invalid input: both bip32_derivation and tap_key_origins are empty".to_string())
+
+    let derivation_paths = get_derivation_paths(input);
+    parse_shared_derivation_path(&derivation_paths)
 }
 
 fn assert_wallet_output_script(
@@ -198,7 +246,7 @@ pub fn assert_wallet_input(
 }
 
 #[derive(Debug)]
-enum OutputScriptError {
+pub enum OutputScriptError {
     OutputIndexOutOfBounds { vout: u32 },
     BothUtxoFieldsSet,
     NoUtxoFields,
@@ -220,20 +268,146 @@ impl std::fmt::Display for OutputScriptError {
     }
 }
 
+impl std::error::Error for OutputScriptError {}
+
+/// Identifies a script by its chain and index in the wallet
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptId {
+    pub chain: u32,
+    pub index: u32,
+}
+
+/// Parsed input from a PSBT transaction
+#[derive(Debug, Clone)]
+pub struct ParsedInput {
+    pub address: Option<String>,
+    pub script: Vec<u8>,
+    pub value: u64,
+    pub script_id: Option<ScriptId>,
+}
+
+impl ParsedInput {
+    /// Parse a PSBT input with wallet keys to identify if it belongs to the wallet
+    ///
+    /// # Arguments
+    /// - `psbt_input`: The PSBT input metadata
+    /// - `tx_input`: The transaction input
+    /// - `wallet_keys`: The wallet's root keys for deriving scripts
+    /// - `replay_protection`: Scripts that are allowed as inputs without wallet validation
+    /// - `network`: The network for address generation
+    ///
+    /// # Returns
+    /// - `Ok(ParsedInput)` with address, value, and optional script_id
+    /// - `Err(ParseInputError)` if validation fails
+    pub fn parse(
+        psbt_input: &Input,
+        tx_input: &miniscript::bitcoin::TxIn,
+        wallet_keys: &RootWalletKeys,
+        replay_protection: &ReplayProtection,
+        network: Network,
+    ) -> Result<Self, ParseInputError> {
+        // Get output script and value from the UTXO
+        let (output_script, value) =
+            get_output_script_and_value(psbt_input, tx_input.previous_output)
+                .map_err(ParseInputError::Utxo)?;
+
+        // Check if this is a replay protection input
+        let is_replay_protection = replay_protection.is_replay_protection_input(output_script);
+
+        let script_id = if is_replay_protection {
+            None
+        } else {
+            // Parse derivation info and validate
+            let (chain, index) =
+                parse_shared_chain_and_index(psbt_input).map_err(ParseInputError::Derivation)?;
+
+            // Validate that the input belongs to the wallet
+            assert_wallet_input(wallet_keys, psbt_input, output_script)
+                .map_err(ParseInputError::WalletValidation)?;
+
+            Some(ScriptId { chain, index })
+        };
+
+        // Convert script to address
+        let address = crate::address::networks::from_output_script_with_network(
+            output_script.as_script(),
+            network,
+        )
+        .ok();
+
+        Ok(Self {
+            address,
+            script: output_script.to_bytes(),
+            value: value.to_sat(),
+            script_id,
+        })
+    }
+}
+
+/// Error type for parsing a single PSBT input
+#[derive(Debug)]
+pub enum ParseInputError {
+    /// Failed to extract output script or value from input
+    Utxo(OutputScriptError),
+    /// Input value overflow when adding to total
+    ValueOverflow,
+    /// Input missing or has invalid derivation info (and is not replay protection)
+    Derivation(String),
+    /// Input failed wallet validation
+    WalletValidation(String),
+    /// Failed to generate address for input
+    Address(crate::address::AddressError),
+}
+
+impl std::fmt::Display for ParseInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseInputError::Utxo(error) => write!(f, "{}", error),
+            ParseInputError::ValueOverflow => write!(f, "value overflow"),
+            ParseInputError::Derivation(error) => {
+                write!(
+                    f,
+                    "missing or invalid derivation info (not replay protection): {}",
+                    error
+                )
+            }
+            ParseInputError::WalletValidation(error) => {
+                write!(f, "wallet validation failed: {}", error)
+            }
+            ParseInputError::Address(error) => {
+                write!(f, "failed to generate address: {}", error)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ParseInputError {}
+
+/// Get both output script and value from a PSBT input
+pub fn get_output_script_and_value(
+    input: &Input,
+    prevout: OutPoint,
+) -> Result<(&ScriptBuf, miniscript::bitcoin::Amount), OutputScriptError> {
+    match (&input.witness_utxo, &input.non_witness_utxo) {
+        (Some(witness_utxo), None) => Ok((&witness_utxo.script_pubkey, witness_utxo.value)),
+        (None, Some(non_witness_utxo)) => {
+            let output = non_witness_utxo
+                .output
+                .get(prevout.vout as usize)
+                .ok_or(OutputScriptError::OutputIndexOutOfBounds { vout: prevout.vout })?;
+            Ok((&output.script_pubkey, output.value))
+        }
+        (Some(_), Some(_)) => Err(OutputScriptError::BothUtxoFieldsSet),
+        (None, None) => Err(OutputScriptError::NoUtxoFields),
+    }
+}
+
 fn get_output_script_from_input(
     input: &Input,
     prevout: OutPoint,
 ) -> Result<&ScriptBuf, OutputScriptError> {
-    match (&input.witness_utxo, &input.non_witness_utxo) {
-        (Some(witness_utxo), None) => Ok(&witness_utxo.script_pubkey),
-        (None, Some(non_witness_utxo)) => non_witness_utxo
-            .output
-            .get(prevout.vout as usize)
-            .map(|output| &output.script_pubkey)
-            .ok_or(OutputScriptError::OutputIndexOutOfBounds { vout: prevout.vout }),
-        (Some(_), Some(_)) => Err(OutputScriptError::BothUtxoFieldsSet),
-        (None, None) => Err(OutputScriptError::NoUtxoFields),
-    }
+    // Delegate to get_output_script_and_value and return just the script
+    get_output_script_and_value(input, prevout).map(|(script, _value)| script)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -376,6 +550,8 @@ pub fn validate_psbt_wallet_inputs(
 #[cfg(test)]
 pub mod test_helpers {
     use super::*;
+    use crate::fixed_script_wallet::{RootWalletKeys, XpubTriple};
+    use crate::test_utils::fixtures;
 
     /// Checks if a specific input in a PSBT is protected by replay protection
     pub fn is_replay_protected_input(
@@ -545,13 +721,6 @@ pub mod test_helpers {
             }
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fixed_script_wallet::{RootWalletKeys, XpubTriple};
-    use crate::test_utils::fixtures;
 
     fn get_reversed_wallet_keys(wallet_keys: &RootWalletKeys) -> RootWalletKeys {
         let triple: XpubTriple = wallet_keys
@@ -565,8 +734,6 @@ mod tests {
     }
 
     crate::test_psbt_fixtures!(test_validate_psbt_wallet_inputs, network, format, {
-        use crate::fixed_script_wallet::psbt_wallet_input::test_helpers::*;
-        
         let replay_protection = ReplayProtection::new(vec![
             ScriptBuf::from_hex("a91420b37094d82a513451ff0ccd9db23aba05bc5ef387")
                 .expect("Failed to parse replay protection output script"),

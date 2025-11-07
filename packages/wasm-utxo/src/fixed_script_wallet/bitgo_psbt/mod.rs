@@ -7,14 +7,16 @@ pub mod p2tr_musig2_input;
 #[cfg(test)]
 mod p2tr_musig2_input_utxolib;
 mod propkv;
+pub mod psbt_wallet_input;
+pub mod psbt_wallet_output;
 mod sighash;
 mod zcash_psbt;
 
-use crate::{bitgo_psbt::zcash_psbt::ZcashPsbt, networks::Network};
-
+use crate::Network;
 use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey};
 pub use propkv::{BitGoKeyValue, ProprietaryKeySubtype, BITGO};
 pub use sighash::validate_sighash_type;
+use zcash_psbt::ZcashPsbt;
 
 #[derive(Debug)]
 pub enum DeserializeError {
@@ -93,6 +95,70 @@ pub enum BitGoPsbt {
     BitcoinLike(Psbt, Network),
     Zcash(ZcashPsbt, Network),
 }
+
+// Re-export types from submodules for convenience
+pub use psbt_wallet_input::{ParsedInput, ScriptId};
+pub use psbt_wallet_output::ParsedOutput;
+
+/// Parsed transaction with wallet information
+#[derive(Debug, Clone)]
+pub struct ParsedTransaction {
+    pub inputs: Vec<ParsedInput>,
+    pub outputs: Vec<ParsedOutput>,
+    pub spend_amount: u64,
+    pub miner_fee: u64,
+    pub virtual_size: u32,
+}
+
+/// Error type for transaction parsing
+#[derive(Debug)]
+pub enum ParseTransactionError {
+    /// Failed to parse input
+    Input {
+        index: usize,
+        error: psbt_wallet_input::ParseInputError,
+    },
+    /// Input value overflow when adding to total
+    InputValueOverflow { index: usize },
+    /// Failed to parse output
+    Output {
+        index: usize,
+        error: psbt_wallet_output::ParseOutputError,
+    },
+    /// Output value overflow when adding to total
+    OutputValueOverflow { index: usize },
+    /// Spend amount overflow
+    SpendAmountOverflow { index: usize },
+    /// Fee calculation error (outputs exceed inputs)
+    FeeCalculation,
+}
+
+impl std::fmt::Display for ParseTransactionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseTransactionError::Input { index, error } => {
+                write!(f, "Input {}: {}", index, error)
+            }
+            ParseTransactionError::InputValueOverflow { index } => {
+                write!(f, "Input {}: value overflow", index)
+            }
+            ParseTransactionError::Output { index, error } => {
+                write!(f, "Output {}: {}", index, error)
+            }
+            ParseTransactionError::OutputValueOverflow { index } => {
+                write!(f, "Output {}: value overflow", index)
+            }
+            ParseTransactionError::SpendAmountOverflow { index } => {
+                write!(f, "Output {}: spend amount overflow", index)
+            }
+            ParseTransactionError::FeeCalculation => {
+                write!(f, "Fee calculation error: outputs exceed inputs")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ParseTransactionError {}
 
 impl BitGoPsbt {
     /// Deserialize a PSBT from bytes, using network-specific logic
@@ -395,6 +461,107 @@ impl BitGoPsbt {
                 ))
             }
         }
+    }
+
+    /// Parse transaction with wallet keys to identify wallet inputs/outputs and calculate metrics
+    ///
+    /// # Arguments
+    /// - `wallet_keys`: The wallet's root keys for deriving scripts
+    /// - `replay_protection`: Scripts that are allowed as inputs without wallet validation
+    ///
+    /// # Returns
+    /// - `Ok(ParsedTransaction)` with parsed inputs, outputs, spend amount, fee, and size
+    /// - `Err(ParseTransactionError)` if input validation fails or required data is missing
+    pub fn parse_transaction_with_wallet_keys(
+        &self,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        replay_protection: &psbt_wallet_input::ReplayProtection,
+    ) -> Result<ParsedTransaction, ParseTransactionError> {
+        let psbt = self.psbt();
+        let network = self.network();
+
+        // Parse inputs
+        let mut parsed_inputs = Vec::new();
+        let mut total_input_value = 0u64;
+
+        for (input_index, (tx_input, psbt_input)) in psbt
+            .unsigned_tx
+            .input
+            .iter()
+            .zip(psbt.inputs.iter())
+            .enumerate()
+        {
+            // Parse the input
+            let parsed_input = ParsedInput::parse(
+                psbt_input,
+                tx_input,
+                wallet_keys,
+                replay_protection,
+                network,
+            )
+            .map_err(|error| ParseTransactionError::Input {
+                index: input_index,
+                error,
+            })?;
+
+            // Add value to total, checking for overflow
+            total_input_value = total_input_value
+                .checked_add(parsed_input.value)
+                .ok_or(ParseTransactionError::InputValueOverflow { index: input_index })?;
+
+            parsed_inputs.push(parsed_input);
+        }
+
+        // Parse outputs
+        let mut parsed_outputs = Vec::new();
+        let mut total_output_value = 0u64;
+        let mut spend_amount = 0u64;
+
+        for (output_index, tx_output) in psbt.unsigned_tx.output.iter().enumerate() {
+            let psbt_output = &psbt.outputs[output_index];
+
+            total_output_value = total_output_value
+                .checked_add(tx_output.value.to_sat())
+                .ok_or(ParseTransactionError::OutputValueOverflow {
+                    index: output_index,
+                })?;
+
+            // Parse the output
+            let parsed_output = ParsedOutput::parse(psbt_output, tx_output, wallet_keys, network)
+                .map_err(|error| ParseTransactionError::Output {
+                index: output_index,
+                error,
+            })?;
+
+            // If this is an external output, add to spend amount
+            if parsed_output.is_external() {
+                spend_amount = spend_amount.checked_add(tx_output.value.to_sat()).ok_or(
+                    ParseTransactionError::SpendAmountOverflow {
+                        index: output_index,
+                    },
+                )?;
+            }
+
+            parsed_outputs.push(parsed_output);
+        }
+
+        // Calculate miner fee
+        let miner_fee = total_input_value
+            .checked_sub(total_output_value)
+            .ok_or(ParseTransactionError::FeeCalculation)?;
+
+        // Calculate virtual size from unsigned transaction weight
+        // TODO: Consider using finalized transaction size estimate for more accurate fee calculation
+        let weight = psbt.unsigned_tx.weight();
+        let virtual_size = weight.to_vbytes_ceil();
+
+        Ok(ParsedTransaction {
+            inputs: parsed_inputs,
+            outputs: parsed_outputs,
+            spend_amount,
+            miner_fee,
+            virtual_size: virtual_size as u32,
+        })
     }
 }
 
@@ -880,6 +1047,124 @@ mod tests {
         assert_eq!(
             extracted_transaction_hex, fixture_extracted_transaction,
             "Extracted transaction should match"
+        );
+    }, ignore: [BitcoinGold, BitcoinCash, Ecash, Zcash]);
+
+    crate::test_psbt_fixtures!(test_parse_transaction_with_wallet_keys, network, format, {
+        // Load fixture and get PSBT
+        let fixture = fixtures::load_psbt_fixture_with_format(
+            network.to_utxolib_name(),
+            fixtures::SignatureState::Unsigned,
+            format,
+        )
+        .expect("Failed to load fixture");
+        
+        let bitgo_psbt = fixture
+            .to_bitgo_psbt(network)
+            .expect("Failed to convert to BitGo PSBT");
+        
+        // Get wallet keys from fixture
+        let wallet_xprv = fixture
+            .get_wallet_xprvs()
+            .expect("Failed to get wallet keys");
+        let wallet_keys = wallet_xprv.to_root_wallet_keys();
+        
+        // Create replay protection with the replay protection script from fixture
+        let replay_protection = psbt_wallet_input::ReplayProtection::new(vec![
+            miniscript::bitcoin::ScriptBuf::from_hex("a91420b37094d82a513451ff0ccd9db23aba05bc5ef387")
+                .expect("Failed to parse replay protection output script"),
+        ]);
+        
+        // Parse the transaction
+        let parsed = bitgo_psbt
+            .parse_transaction_with_wallet_keys(&wallet_keys, &replay_protection)
+            .expect("Failed to parse transaction");
+        
+        // Basic validations
+        assert!(!parsed.inputs.is_empty(), "Should have at least one input");
+        assert!(!parsed.outputs.is_empty(), "Should have at least one output");
+        
+        // Verify at least one replay protection input exists
+        let replay_protection_inputs = parsed
+            .inputs
+            .iter()
+            .filter(|i| i.script_id.is_none())
+            .count();
+        assert!(
+            replay_protection_inputs > 0,
+            "Should have at least one replay protection input"
+        );
+        
+        // Verify at least one wallet input exists
+        let wallet_inputs = parsed
+            .inputs
+            .iter()
+            .filter(|i| i.script_id.is_some())
+            .count();
+        assert!(
+            wallet_inputs > 0,
+            "Should have at least one wallet input"
+        );
+        
+        // Count internal (wallet) and external outputs
+        let internal_outputs = parsed
+            .outputs
+            .iter()
+            .filter(|o| o.script_id.is_some())
+            .count();
+        let external_outputs = parsed
+            .outputs
+            .iter()
+            .filter(|o| o.script_id.is_none())
+            .count();
+        
+        assert_eq!(
+            internal_outputs + external_outputs,
+            parsed.outputs.len(),
+            "All outputs should be either internal or external"
+        );
+        
+        // Verify spend amount only includes external outputs
+        let calculated_spend_amount: u64 = parsed
+            .outputs
+            .iter()
+            .filter(|o| o.script_id.is_none())
+            .map(|o| o.value)
+            .sum();
+        assert_eq!(
+            parsed.spend_amount, calculated_spend_amount,
+            "Spend amount should equal sum of external output values"
+        );
+        
+        // Verify total values
+        let total_input_value: u64 = parsed.inputs.iter().map(|i| i.value).sum();
+        let total_output_value: u64 = parsed.outputs.iter().map(|o| o.value).sum();
+        
+        assert_eq!(
+            parsed.miner_fee,
+            total_input_value - total_output_value,
+            "Miner fee should equal inputs minus outputs"
+        );
+        
+        // Verify virtual size is reasonable
+        assert!(
+            parsed.virtual_size > 0,
+            "Virtual size should be greater than 0"
+        );
+        
+        // Verify all outputs are internal (fixtures have no external outputs)
+        assert_eq!(
+            external_outputs, 0,
+            "Test fixtures should have no external outputs"
+        );
+        assert_eq!(
+            internal_outputs,
+            parsed.outputs.len(),
+            "All outputs should be internal"
+        );
+        assert_eq!(
+            parsed.spend_amount, 0,
+            "Spend amount should be 0 when all outputs are internal"
         );
     }, ignore: [BitcoinGold, BitcoinCash, Ecash, Zcash]);
 

@@ -4,11 +4,9 @@
 //! key-values in PSBTs, following the format specified in:
 //! https://gist.github.com/sanket1729/4b525c6049f4d9e034d27368c49f28a6
 
-use crate::bitgo_psbt::propkv::{find_kv, is_musig2_key, BitGoKeyValue};
-use crate::fixed_script_wallet::bitgo_musig::key_agg_p2tr_musig2;
-
-use super::propkv::ProprietaryKeySubtype;
+use super::propkv::{find_kv, is_musig2_key, BitGoKeyValue, ProprietaryKeySubtype};
 use crate::bitcoin::{key::UntweakedPublicKey, CompressedPublicKey};
+use crate::fixed_script_wallet::wallet_scripts::bitgo_musig::key_agg_p2tr_musig2;
 use miniscript::bitcoin::hashes::{hex, Hash};
 use miniscript::bitcoin::{
     bip32::{KeySource, Xpriv, Xpub},
@@ -16,6 +14,11 @@ use miniscript::bitcoin::{
     secp256k1, Psbt, TapLeafHash, XOnlyPublicKey,
 };
 use musig2::PubNonce;
+
+#[cfg(test)]
+use super::BitGoPsbt;
+#[cfg(test)]
+use crate::fixed_script_wallet::test_utils::fixtures::XprvTriple;
 
 pub type TapKeyOrigins = std::collections::BTreeMap<XOnlyPublicKey, (Vec<TapLeafHash>, KeySource)>;
 
@@ -1030,9 +1033,9 @@ impl Musig2Input {
 /// * `input_index` - Index of the MuSig2 input
 #[cfg(test)]
 pub fn assert_set_nonce_and_sign_musig2_keypath(
-    xpriv_triple: &crate::fixed_script_wallet::test_utils::fixtures::XprvTriple,
-    unsigned_bitgo_psbt: &mut crate::bitgo_psbt::BitGoPsbt,
-    halfsigned_bitgo_psbt: &crate::bitgo_psbt::BitGoPsbt,
+    xpriv_triple: &XprvTriple,
+    unsigned_bitgo_psbt: &mut BitGoPsbt,
+    halfsigned_bitgo_psbt: &BitGoPsbt,
     input_index: usize,
 ) -> Result<(), String> {
     // Test 1: Functional API (utxolib-compatible, fixture-validated)
@@ -1074,8 +1077,8 @@ pub fn assert_set_nonce_and_sign_musig2_keypath(
 /// * `input_index` - Index of the MuSig2 input
 #[cfg(test)]
 pub fn assert_set_nonce_and_sign_musig2_keypath_state_machine(
-    xpriv_triple: &crate::fixed_script_wallet::test_utils::fixtures::XprvTriple,
-    unsigned_bitgo_psbt: &mut crate::bitgo_psbt::BitGoPsbt,
+    xpriv_triple: &XprvTriple,
+    unsigned_bitgo_psbt: &mut BitGoPsbt,
     input_index: usize,
 ) -> Result<(), String> {
     // Verify this is actually a MuSig2 input

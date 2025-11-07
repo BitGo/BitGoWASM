@@ -1,5 +1,4 @@
 mod address;
-pub mod bitgo_psbt;
 mod error;
 pub mod fixed_script_wallet;
 mod networks;

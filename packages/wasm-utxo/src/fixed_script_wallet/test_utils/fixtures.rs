@@ -41,12 +41,15 @@
 use std::str::FromStr;
 
 use crate::{
-    bitcoin::bip32::Xpriv, bitgo_psbt::p2tr_musig2_input, fixed_script_wallet::RootWalletKeys,
+    bitcoin::bip32::Xpriv,
+    fixed_script_wallet::{
+        bitgo_psbt::{p2tr_musig2_input, validate_sighash_type, BitGoPsbt},
+        RootWalletKeys,
+    },
+    Network,
 };
 use miniscript::bitcoin::bip32::Xpub;
 use serde::{Deserialize, Serialize};
-
-use crate::Network;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XprvTriple([Xpriv; 3]);
@@ -205,7 +208,7 @@ impl Musig2Participants {
         }
 
         for (i, parsed_key) in parsed.participant_pub_keys.iter().enumerate() {
-            let parsed_key_hex = hex::encode(parsed_key.to_bytes());
+            let parsed_key_hex = hex::encode(parsed_key.to_bytes().as_slice());
             assert_hex_eq(
                 &parsed_key_hex,
                 &self.participant_pub_keys[i],
@@ -659,11 +662,8 @@ impl PsbtFixture {
         Ok(BASE64_STANDARD.decode(&self.psbt_base64)?)
     }
 
-    pub fn to_bitgo_psbt(
-        &self,
-        network: Network,
-    ) -> Result<crate::bitgo_psbt::BitGoPsbt, Box<dyn std::error::Error>> {
-        let psbt = crate::bitgo_psbt::BitGoPsbt::deserialize(&self.to_psbt_bytes()?, network)?;
+    pub fn to_bitgo_psbt(&self, network: Network) -> Result<BitGoPsbt, Box<dyn std::error::Error>> {
+        let psbt = BitGoPsbt::deserialize(&self.to_psbt_bytes()?, network)?;
         Ok(psbt)
     }
 
@@ -880,8 +880,8 @@ pub fn assert_hex_eq(generated: &str, expected: &str, field_name: &str) -> Resul
 }
 
 /// Validates sighash type for the given network
-fn validate_sighash_type(sighash_type: u32, network: Network) -> Result<(), String> {
-    crate::bitgo_psbt::validate_sighash_type(sighash_type, network)
+fn validate_sighash_type_fixture(sighash_type: u32, network: Network) -> Result<(), String> {
+    validate_sighash_type(sighash_type, network)
 }
 
 /// Validates output script from witness UTXO against generated script
@@ -926,7 +926,7 @@ impl P2shInput {
         let redeem_script_hex = scripts.redeem_script.to_hex_string();
         assert_hex_eq(&redeem_script_hex, &self.redeem_script, "Redeem script")?;
 
-        validate_sighash_type(self.sighash_type, network)
+        validate_sighash_type_fixture(self.sighash_type, network)
     }
 }
 
@@ -950,7 +950,7 @@ impl P2shP2wshInput {
         let witness_script_hex = scripts.witness_script.to_hex_string();
         assert_hex_eq(&witness_script_hex, &self.witness_script, "Witness script")?;
 
-        validate_sighash_type(self.sighash_type, network)
+        validate_sighash_type_fixture(self.sighash_type, network)
     }
 }
 
@@ -970,7 +970,7 @@ impl P2wshInput {
         let witness_script_hex = scripts.witness_script.to_hex_string();
         assert_hex_eq(&witness_script_hex, &self.witness_script, "Witness script")?;
 
-        validate_sighash_type(self.sighash_type, network)
+        validate_sighash_type_fixture(self.sighash_type, network)
     }
 }
 
@@ -1017,7 +1017,7 @@ impl P2trScriptPathInput {
             }
         }
 
-        validate_sighash_type(self.sighash_type, network)
+        validate_sighash_type_fixture(self.sighash_type, network)
     }
 
     /// Validates that the generated WalletScripts matches this fixture
@@ -1052,7 +1052,7 @@ impl P2trMusig2KeyPathInput {
         let merkle_root_hex = hex::encode(merkle_root_bytes);
         assert_hex_eq(&merkle_root_hex, &self.tap_merkle_root, "Merkle root")?;
 
-        validate_sighash_type(self.sighash_type, network)
+        validate_sighash_type_fixture(self.sighash_type, network)
     }
 
     /// Validates that the generated WalletScripts matches this fixture
