@@ -1,7 +1,7 @@
 {
   "name": "@bitgo/wasm-utxo",
   "description": "WebAssembly wrapper for rust-bitcoin (beta)",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/BitGo/BitGoWASM"
