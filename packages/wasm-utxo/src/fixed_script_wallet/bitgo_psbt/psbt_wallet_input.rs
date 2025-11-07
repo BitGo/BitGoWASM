@@ -376,6 +376,8 @@ pub fn validate_psbt_wallet_inputs(
 #[cfg(test)]
 pub mod test_helpers {
     use super::*;
+    use crate::fixed_script_wallet::{RootWalletKeys, XpubTriple};
+    use crate::test_utils::fixtures;
 
     /// Checks if a specific input in a PSBT is protected by replay protection
     pub fn is_replay_protected_input(
@@ -545,13 +547,6 @@ pub mod test_helpers {
             }
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fixed_script_wallet::{RootWalletKeys, XpubTriple};
-    use crate::test_utils::fixtures;
 
     fn get_reversed_wallet_keys(wallet_keys: &RootWalletKeys) -> RootWalletKeys {
         let triple: XpubTriple = wallet_keys
@@ -565,8 +560,6 @@ mod tests {
     }
 
     crate::test_psbt_fixtures!(test_validate_psbt_wallet_inputs, network, format, {
-        use crate::fixed_script_wallet::psbt_wallet_input::test_helpers::*;
-        
         let replay_protection = ReplayProtection::new(vec![
             ScriptBuf::from_hex("a91420b37094d82a513451ff0ccd9db23aba05bc5ef387")
                 .expect("Failed to parse replay protection output script"),

@@ -7,14 +7,15 @@ pub mod p2tr_musig2_input;
 #[cfg(test)]
 mod p2tr_musig2_input_utxolib;
 mod propkv;
+mod psbt_wallet_input;
 mod sighash;
 mod zcash_psbt;
 
-use crate::{bitgo_psbt::zcash_psbt::ZcashPsbt, networks::Network};
-
+use crate::Network;
 use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey};
 pub use propkv::{BitGoKeyValue, ProprietaryKeySubtype, BITGO};
 pub use sighash::validate_sighash_type;
+use zcash_psbt::ZcashPsbt;
 
 #[derive(Debug)]
 pub enum DeserializeError {

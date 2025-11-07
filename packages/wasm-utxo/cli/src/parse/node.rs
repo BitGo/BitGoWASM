@@ -3,7 +3,7 @@ use bitcoin::consensus::Decodable;
 use bitcoin::hashes::Hash;
 use bitcoin::psbt::Psbt;
 use bitcoin::{Network, ScriptBuf, Transaction};
-use wasm_utxo::bitgo_psbt::{
+use wasm_utxo::fixed_script_wallet::bitgo_psbt::{
     p2tr_musig2_input::{Musig2PartialSig, Musig2Participants, Musig2PubNonce},
     BitGoKeyValue, ProprietaryKeySubtype, BITGO,
 };
@@ -56,7 +56,7 @@ fn musig2_participants_to_node(participants: &Musig2Participants) -> Node {
 
     let mut participants_node = Node::new("participant_pub_keys", Primitive::U64(2));
     for (i, pub_key) in participants.participant_pub_keys.iter().enumerate() {
-        let pub_key_vec: Vec<u8> = pub_key.to_bytes().to_vec();
+        let pub_key_vec: Vec<u8> = pub_key.to_bytes().as_slice().to_vec();
         participants_node.add_child(Node::new(
             format!("participant_{}", i),
             Primitive::Buffer(pub_key_vec),
