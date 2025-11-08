@@ -8,8 +8,8 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # Install wasm-pack
 RUN cargo install wasm-pack
 
-# Install clang
-RUN apt-get update && apt-get install -y clang
+# Install clang and binaryen (provides wasm-opt)
+RUN apt-get update && apt-get install -y clang binaryen
 
 # Create app directory
 WORKDIR /usr/src/app
