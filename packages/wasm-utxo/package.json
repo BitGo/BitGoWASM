@@ -14,7 +14,12 @@
     "dist/*/js/wasm/wasm_utxo_bg.wasm",
     "dist/*/js/wasm/wasm_utxo_bg.wasm.d.ts",
     "dist/*/js/ast/*",
-    "dist/*/js/index.*"
+    "dist/*/js/index.*",
+    "dist/*/js/address.*",
+    "dist/*/js/utxolibCompat.*",
+    "dist/*/js/fixedScriptWallet.*",
+    "dist/*/js/coinName.*",
+    "dist/*/js/triple.*"
   ],
   "main": "dist/node/js/index.js",
   "types": "dist/node/js/index.d.ts",
