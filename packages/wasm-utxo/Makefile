@@ -12,7 +12,7 @@ endef
 
 # run wasm-opt separately so we can pass `--enable-bulk-memory`
 define WASM_OPT_COMMAND
-    $(WASM_OPT) --enable-bulk-memory --enable-nontrapping-float-to-int -Oz $(1)/*.wasm -o $(1)/*.wasm
+    $(WASM_OPT) --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext -Oz $(1)/*.wasm -o $(1)/*.wasm
 endef
 
 define REMOVE_GITIGNORE
