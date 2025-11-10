@@ -39,7 +39,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24.11.0
           registry-url: https://registry.npmjs.org
 
       - name: Ensure npm 11.5.1
