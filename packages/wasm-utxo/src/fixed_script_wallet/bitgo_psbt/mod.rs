@@ -284,15 +284,13 @@ impl BitGoPsbt {
     ) -> Result<(), Vec<String>> {
         let num_inputs = self.psbt().inputs.len();
 
-        let mut errors = vec![];
-        for index in 0..num_inputs {
-            match self.finalize_input(secp, index) {
-                Ok(()) => {}
-                Err(e) => {
-                    errors.push(format!("Input {}: {}", index, e));
-                }
-            }
-        }
+        let errors: Vec<String> = (0..num_inputs)
+            .filter_map(|index| {
+                self.finalize_input(secp, index)
+                    .err()
+                    .map(|e| format!("Input {}: {}", index, e))
+            })
+            .collect();
 
         if errors.is_empty() {
             Ok(())
@@ -463,6 +461,44 @@ impl BitGoPsbt {
         }
     }
 
+    /// Parse inputs with wallet keys and replay protection
+    ///
+    /// # Arguments
+    /// - `wallet_keys`: The wallet's root keys for deriving scripts
+    /// - `replay_protection`: Scripts that are allowed as inputs without wallet validation
+    ///
+    /// # Returns
+    /// - `Ok(Vec<ParsedInput>)` with parsed inputs
+    /// - `Err(ParseTransactionError)` if input parsing fails
+    fn parse_inputs(
+        &self,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        replay_protection: &psbt_wallet_input::ReplayProtection,
+    ) -> Result<Vec<ParsedInput>, ParseTransactionError> {
+        let psbt = self.psbt();
+        let network = self.network();
+
+        psbt.unsigned_tx
+            .input
+            .iter()
+            .zip(psbt.inputs.iter())
+            .enumerate()
+            .map(|(input_index, (tx_input, psbt_input))| {
+                ParsedInput::parse(
+                    psbt_input,
+                    tx_input,
+                    wallet_keys,
+                    replay_protection,
+                    network,
+                )
+                .map_err(|error| ParseTransactionError::Input {
+                    index: input_index,
+                    error,
+                })
+            })
+            .collect()
+    }
+
     /// Parse outputs with wallet keys to identify which outputs belong to the wallet
     ///
     /// # Arguments
@@ -482,22 +518,69 @@ impl BitGoPsbt {
         let psbt = self.psbt();
         let network = self.network();
 
-        let mut parsed_outputs = Vec::new();
+        psbt.unsigned_tx
+            .output
+            .iter()
+            .zip(psbt.outputs.iter())
+            .enumerate()
+            .map(|(output_index, (tx_output, psbt_output))| {
+                ParsedOutput::parse(psbt_output, tx_output, wallet_keys, network).map_err(|error| {
+                    ParseTransactionError::Output {
+                        index: output_index,
+                        error,
+                    }
+                })
+            })
+            .collect()
+    }
 
-        for (output_index, tx_output) in psbt.unsigned_tx.output.iter().enumerate() {
-            let psbt_output = &psbt.outputs[output_index];
+    /// Calculate total input value from parsed inputs
+    ///
+    /// # Returns
+    /// - `Ok(u64)` with total input value
+    /// - `Err(ParseTransactionError)` if overflow occurs
+    fn sum_input_values(parsed_inputs: &[ParsedInput]) -> Result<u64, ParseTransactionError> {
+        parsed_inputs
+            .iter()
+            .enumerate()
+            .try_fold(0u64, |total, (index, input)| {
+                total
+                    .checked_add(input.value)
+                    .ok_or(ParseTransactionError::InputValueOverflow { index })
+            })
+    }
 
-            // Parse the output
-            let parsed_output = ParsedOutput::parse(psbt_output, tx_output, wallet_keys, network)
-                .map_err(|error| ParseTransactionError::Output {
-                index: output_index,
-                error,
-            })?;
+    /// Calculate total output value and spend amount from transaction outputs and parsed outputs
+    ///
+    /// # Returns
+    /// - `Ok((total_value, spend_amount))` with total output value and external spend amount
+    /// - `Err(ParseTransactionError)` if overflow occurs
+    fn sum_output_values(
+        tx_outputs: &[miniscript::bitcoin::TxOut],
+        parsed_outputs: &[ParsedOutput],
+    ) -> Result<(u64, u64), ParseTransactionError> {
+        tx_outputs
+            .iter()
+            .zip(parsed_outputs.iter())
+            .enumerate()
+            .try_fold(
+                (0u64, 0u64),
+                |(total_value, spend), (index, (tx_output, parsed_output))| {
+                    let new_total = total_value
+                        .checked_add(tx_output.value.to_sat())
+                        .ok_or(ParseTransactionError::OutputValueOverflow { index })?;
 
-            parsed_outputs.push(parsed_output);
-        }
+                    let new_spend = if parsed_output.is_external() {
+                        spend
+                            .checked_add(tx_output.value.to_sat())
+                            .ok_or(ParseTransactionError::SpendAmountOverflow { index })?
+                    } else {
+                        spend
+                    };
 
-        Ok(parsed_outputs)
+                    Ok((new_total, new_spend))
+                },
+            )
     }
 
     /// Parse outputs with wallet keys to identify which outputs belong to a particular wallet.
@@ -539,69 +622,15 @@ impl BitGoPsbt {
         replay_protection: &psbt_wallet_input::ReplayProtection,
     ) -> Result<ParsedTransaction, ParseTransactionError> {
         let psbt = self.psbt();
-        let network = self.network();
 
-        // Parse inputs
-        let mut parsed_inputs = Vec::new();
-        let mut total_input_value = 0u64;
-
-        for (input_index, (tx_input, psbt_input)) in psbt
-            .unsigned_tx
-            .input
-            .iter()
-            .zip(psbt.inputs.iter())
-            .enumerate()
-        {
-            // Parse the input
-            let parsed_input = ParsedInput::parse(
-                psbt_input,
-                tx_input,
-                wallet_keys,
-                replay_protection,
-                network,
-            )
-            .map_err(|error| ParseTransactionError::Input {
-                index: input_index,
-                error,
-            })?;
-
-            // Add value to total, checking for overflow
-            total_input_value = total_input_value
-                .checked_add(parsed_input.value)
-                .ok_or(ParseTransactionError::InputValueOverflow { index: input_index })?;
-
-            parsed_inputs.push(parsed_input);
-        }
-
-        // Parse outputs using the reusable method
+        // Parse inputs and outputs
+        let parsed_inputs = self.parse_inputs(wallet_keys, replay_protection)?;
         let parsed_outputs = self.parse_outputs(wallet_keys)?;
 
-        // Calculate totals and spend amount
-        let mut total_output_value = 0u64;
-        let mut spend_amount = 0u64;
-
-        for (output_index, (tx_output, parsed_output)) in psbt
-            .unsigned_tx
-            .output
-            .iter()
-            .zip(parsed_outputs.iter())
-            .enumerate()
-        {
-            total_output_value = total_output_value
-                .checked_add(tx_output.value.to_sat())
-                .ok_or(ParseTransactionError::OutputValueOverflow {
-                    index: output_index,
-                })?;
-
-            // If this is an external output, add to spend amount
-            if parsed_output.is_external() {
-                spend_amount = spend_amount.checked_add(tx_output.value.to_sat()).ok_or(
-                    ParseTransactionError::SpendAmountOverflow {
-                        index: output_index,
-                    },
-                )?;
-            }
-        }
+        // Calculate totals
+        let total_input_value = Self::sum_input_values(&parsed_inputs)?;
+        let (total_output_value, spend_amount) =
+            Self::sum_output_values(&psbt.unsigned_tx.output, &parsed_outputs)?;
 
         // Calculate miner fee
         let miner_fee = total_input_value
