@@ -55,4 +55,4 @@ jobs:
         run: npm ci --workspaces --include-workspace-root
 
       - name: Release (multi-semantic-release)
-        run: npx multi-semantic-release
+        run: npx multi-semantic-release --ignore-private-packages
