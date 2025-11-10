@@ -97,7 +97,19 @@ describe("parseTransactionWithWalletKeys", function () {
         const internalOutputs = parsed.outputs.filter((o) => o.scriptId);
 
         // Count external outputs (scriptId is null or undefined)
-        const externalOutputs = parsed.outputs.filter((o) => !o.scriptId);
+        const externalOutputs = parsed.outputs.filter((o) => o.scriptId === null);
+
+        assert.ok(externalOutputs.every((o) => o.address || o.script));
+        const nonAddressOutputs = externalOutputs.filter((o) => o.address === null);
+        assert.strictEqual(nonAddressOutputs.length, 1);
+        const [opReturnOutput] = nonAddressOutputs;
+        const expectedOpReturn = utxolib.payments.embed({
+          data: [Buffer.from("setec astronomy")],
+        }).output;
+        assert.strictEqual(
+          Buffer.from(opReturnOutput.script).toString("hex"),
+          expectedOpReturn.toString("hex"),
+        );
 
         // Fixtures now have 3 external outputs
         assert.ok(internalOutputs.length > 0, "Should have internal outputs (have scriptId)");

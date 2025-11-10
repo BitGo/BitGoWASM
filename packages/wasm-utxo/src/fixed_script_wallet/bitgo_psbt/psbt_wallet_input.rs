@@ -280,7 +280,7 @@ pub struct ScriptId {
 /// Parsed input from a PSBT transaction
 #[derive(Debug, Clone)]
 pub struct ParsedInput {
-    pub address: Option<String>,
+    pub address: String,
     pub script: Vec<u8>,
     pub value: u64,
     pub script_id: Option<ScriptId>,
@@ -333,7 +333,7 @@ impl ParsedInput {
             output_script.as_script(),
             network,
         )
-        .ok();
+        .map_err(ParseInputError::Address)?;
 
         Ok(Self {
             address,

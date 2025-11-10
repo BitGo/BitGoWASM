@@ -57,17 +57,17 @@ type ReplayProtection =
 export type ScriptId = { chain: number; index: number };
 
 export type ParsedInput = {
-  address?: string;
+  address: string;
   script: Uint8Array;
   value: bigint;
-  scriptId: ScriptId | undefined;
+  scriptId: ScriptId | null;
 };
 
 export type ParsedOutput = {
-  address?: string;
+  address: string | null;
   script: Uint8Array;
   value: bigint;
-  scriptId?: ScriptId;
+  scriptId: ScriptId | null;
 };
 
 export type ParsedTransaction = {
