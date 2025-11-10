@@ -106,4 +106,19 @@ export class BitGoPsbt {
   ): ParsedTransaction {
     return this.wasm.parseTransactionWithWalletKeys(walletKeys, replayProtection);
   }
+
+  /**
+   * Parse outputs with wallet keys to identify which outputs belong to a wallet
+   * with the given wallet keys.
+   *
+   * This is useful in cases where we want to identify outputs that belong to a different
+   * wallet than the inputs.
+   *
+   * @param walletKeys - The wallet keys to use for identification
+   * @returns Array of parsed outputs
+   * @note This method does NOT validate wallet inputs. It only parses outputs.
+   */
+  parseOutputsWithWalletKeys(walletKeys: WalletKeys): ParsedOutput[] {
+    return this.wasm.parseOutputsWithWalletKeys(walletKeys);
+  }
 }

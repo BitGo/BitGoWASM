@@ -463,6 +463,67 @@ impl BitGoPsbt {
         }
     }
 
+    /// Parse outputs with wallet keys to identify which outputs belong to the wallet
+    ///
+    /// # Arguments
+    /// - `wallet_keys`: The wallet's root keys for deriving scripts
+    ///
+    /// # Returns
+    /// - `Ok(Vec<ParsedOutput>)` with parsed outputs
+    /// - `Err(ParseTransactionError)` if output parsing fails
+    ///
+    /// # Note
+    /// This method does NOT validate wallet inputs. It only parses outputs to identify
+    /// which ones belong to the provided wallet keys.
+    fn parse_outputs(
+        &self,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+    ) -> Result<Vec<ParsedOutput>, ParseTransactionError> {
+        let psbt = self.psbt();
+        let network = self.network();
+
+        let mut parsed_outputs = Vec::new();
+
+        for (output_index, tx_output) in psbt.unsigned_tx.output.iter().enumerate() {
+            let psbt_output = &psbt.outputs[output_index];
+
+            // Parse the output
+            let parsed_output = ParsedOutput::parse(psbt_output, tx_output, wallet_keys, network)
+                .map_err(|error| ParseTransactionError::Output {
+                index: output_index,
+                error,
+            })?;
+
+            parsed_outputs.push(parsed_output);
+        }
+
+        Ok(parsed_outputs)
+    }
+
+    /// Parse outputs with wallet keys to identify which outputs belong to a particular wallet.
+    ///
+    /// This is useful in cases where we want to identify outputs that belong to a different
+    /// wallet than the inputs.
+    ///
+    /// If you only want to identify change outputs, use `parse_transaction_with_wallet_keys` instead.
+    ///
+    /// # Arguments
+    /// - `wallet_keys`: A wallet's root keys for deriving scripts (can be different wallet than the inputs)
+    ///
+    /// # Returns
+    /// - `Ok(Vec<ParsedOutput>)` with parsed outputs
+    /// - `Err(ParseTransactionError)` if output parsing fails
+    ///
+    /// # Note
+    /// This method does NOT validate wallet inputs. It only parses outputs to identify
+    /// which ones belong to the provided wallet keys.
+    pub fn parse_outputs_with_wallet_keys(
+        &self,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+    ) -> Result<Vec<ParsedOutput>, ParseTransactionError> {
+        self.parse_outputs(wallet_keys)
+    }
+
     /// Parse transaction with wallet keys to identify wallet inputs/outputs and calculate metrics
     ///
     /// # Arguments
@@ -512,26 +573,25 @@ impl BitGoPsbt {
             parsed_inputs.push(parsed_input);
         }
 
-        // Parse outputs
-        let mut parsed_outputs = Vec::new();
+        // Parse outputs using the reusable method
+        let parsed_outputs = self.parse_outputs(wallet_keys)?;
+
+        // Calculate totals and spend amount
         let mut total_output_value = 0u64;
         let mut spend_amount = 0u64;
 
-        for (output_index, tx_output) in psbt.unsigned_tx.output.iter().enumerate() {
-            let psbt_output = &psbt.outputs[output_index];
-
+        for (output_index, (tx_output, parsed_output)) in psbt
+            .unsigned_tx
+            .output
+            .iter()
+            .zip(parsed_outputs.iter())
+            .enumerate()
+        {
             total_output_value = total_output_value
                 .checked_add(tx_output.value.to_sat())
                 .ok_or(ParseTransactionError::OutputValueOverflow {
                     index: output_index,
                 })?;
-
-            // Parse the output
-            let parsed_output = ParsedOutput::parse(psbt_output, tx_output, wallet_keys, network)
-                .map_err(|error| ParseTransactionError::Output {
-                index: output_index,
-                error,
-            })?;
 
             // If this is an external output, add to spend amount
             if parsed_output.is_external() {
@@ -541,8 +601,6 @@ impl BitGoPsbt {
                     },
                 )?;
             }
-
-            parsed_outputs.push(parsed_output);
         }
 
         // Calculate miner fee
