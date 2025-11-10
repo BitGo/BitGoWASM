@@ -137,7 +137,6 @@ pub struct BitGoPsbt {
 #[wasm_bindgen]
 impl BitGoPsbt {
     /// Deserialize a PSBT from bytes with network-specific logic
-    #[wasm_bindgen(js_name = fromBytes)]
     pub fn from_bytes(bytes: &[u8], network: &str) -> Result<BitGoPsbt, WasmUtxoError> {
         let network = parse_network(network)?;
 
@@ -149,7 +148,6 @@ impl BitGoPsbt {
     }
 
     /// Parse transaction with wallet keys to identify wallet inputs/outputs
-    #[wasm_bindgen(js_name = parseTransactionWithWalletKeys)]
     pub fn parse_transaction_with_wallet_keys(
         &self,
         wallet_keys: JsValue,
@@ -175,7 +173,6 @@ impl BitGoPsbt {
     /// Parse outputs with wallet keys to identify which outputs belong to a wallet
     ///
     /// Note: This method does NOT validate wallet inputs. It only parses outputs.
-    #[wasm_bindgen(js_name = parseOutputsWithWalletKeys)]
     pub fn parse_outputs_with_wallet_keys(
         &self,
         wallet_keys: JsValue,

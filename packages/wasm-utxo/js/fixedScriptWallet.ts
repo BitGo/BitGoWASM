@@ -90,7 +90,7 @@ export class BitGoPsbt {
    * @returns A BitGoPsbt instance
    */
   static fromBytes(bytes: Uint8Array, network: NetworkName): BitGoPsbt {
-    const wasm = WasmBitGoPsbt.fromBytes(bytes, network);
+    const wasm = WasmBitGoPsbt.from_bytes(bytes, network);
     return new BitGoPsbt(wasm);
   }
 
@@ -104,7 +104,7 @@ export class BitGoPsbt {
     walletKeys: WalletKeys,
     replayProtection: ReplayProtection,
   ): ParsedTransaction {
-    return this.wasm.parseTransactionWithWalletKeys(walletKeys, replayProtection);
+    return this.wasm.parse_transaction_with_wallet_keys(walletKeys, replayProtection);
   }
 
   /**
@@ -119,6 +119,6 @@ export class BitGoPsbt {
    * @note This method does NOT validate wallet inputs. It only parses outputs.
    */
   parseOutputsWithWalletKeys(walletKeys: WalletKeys): ParsedOutput[] {
-    return this.wasm.parseOutputsWithWalletKeys(walletKeys);
+    return this.wasm.parse_outputs_with_wallet_keys(walletKeys);
   }
 }
