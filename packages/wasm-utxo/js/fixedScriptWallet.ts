@@ -57,17 +57,17 @@ type ReplayProtection =
 export type ScriptId = { chain: number; index: number };
 
 export type ParsedInput = {
-  address?: string;
+  address: string;
   script: Uint8Array;
   value: bigint;
-  scriptId: ScriptId | undefined;
+  scriptId: ScriptId | null;
 };
 
 export type ParsedOutput = {
-  address?: string;
+  address: string | null;
   script: Uint8Array;
   value: bigint;
-  scriptId?: ScriptId;
+  scriptId: ScriptId | null;
 };
 
 export type ParsedTransaction = {
@@ -90,7 +90,7 @@ export class BitGoPsbt {
    * @returns A BitGoPsbt instance
    */
   static fromBytes(bytes: Uint8Array, network: NetworkName): BitGoPsbt {
-    const wasm = WasmBitGoPsbt.fromBytes(bytes, network);
+    const wasm = WasmBitGoPsbt.from_bytes(bytes, network);
     return new BitGoPsbt(wasm);
   }
 
@@ -104,6 +104,21 @@ export class BitGoPsbt {
     walletKeys: WalletKeys,
     replayProtection: ReplayProtection,
   ): ParsedTransaction {
-    return this.wasm.parseTransactionWithWalletKeys(walletKeys, replayProtection);
+    return this.wasm.parse_transaction_with_wallet_keys(walletKeys, replayProtection);
+  }
+
+  /**
+   * Parse outputs with wallet keys to identify which outputs belong to a wallet
+   * with the given wallet keys.
+   *
+   * This is useful in cases where we want to identify outputs that belong to a different
+   * wallet than the inputs.
+   *
+   * @param walletKeys - The wallet keys to use for identification
+   * @returns Array of parsed outputs
+   * @note This method does NOT validate wallet inputs. It only parses outputs.
+   */
+  parseOutputsWithWalletKeys(walletKeys: WalletKeys): ParsedOutput[] {
+    return this.wasm.parse_outputs_with_wallet_keys(walletKeys);
   }
 }

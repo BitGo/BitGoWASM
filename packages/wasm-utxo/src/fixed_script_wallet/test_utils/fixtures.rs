@@ -1428,13 +1428,13 @@ mod tests {
         assert!(!fixture.psbt_base64.is_empty());
         assert_eq!(fixture.inputs.len(), 7);
         assert_eq!(fixture.psbt_inputs.len(), 7);
-        assert_eq!(fixture.outputs.len(), 5);
-        assert_eq!(fixture.psbt_outputs.len(), 5);
+        assert_eq!(fixture.outputs.len(), 8);
+        assert_eq!(fixture.psbt_outputs.len(), 8);
 
         // Decode PSBT
         let psbt = decode_psbt_from_fixture(&fixture).expect("Failed to decode PSBT");
         assert_eq!(psbt.inputs.len(), 7);
-        assert_eq!(psbt.outputs.len(), 5);
+        assert_eq!(psbt.outputs.len(), 8);
     }
 
     #[test]

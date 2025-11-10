@@ -486,7 +486,7 @@ mod tests {
 
         // Verify transaction was parsed
         assert_eq!(zcash_psbt.psbt.unsigned_tx.input.len(), 2);
-        assert_eq!(zcash_psbt.psbt.unsigned_tx.output.len(), 1);
+        assert_eq!(zcash_psbt.psbt.unsigned_tx.output.len(), 4);
 
         // Serialize back
         let serialized = zcash_psbt.serialize().unwrap();

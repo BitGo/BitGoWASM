@@ -137,7 +137,6 @@ pub struct BitGoPsbt {
 #[wasm_bindgen]
 impl BitGoPsbt {
     /// Deserialize a PSBT from bytes with network-specific logic
-    #[wasm_bindgen(js_name = fromBytes)]
     pub fn from_bytes(bytes: &[u8], network: &str) -> Result<BitGoPsbt, WasmUtxoError> {
         let network = parse_network(network)?;
 
@@ -149,7 +148,6 @@ impl BitGoPsbt {
     }
 
     /// Parse transaction with wallet keys to identify wallet inputs/outputs
-    #[wasm_bindgen(js_name = parseTransactionWithWalletKeys)]
     pub fn parse_transaction_with_wallet_keys(
         &self,
         wallet_keys: JsValue,
@@ -170,5 +168,25 @@ impl BitGoPsbt {
 
         // Convert to JsValue directly using TryIntoJsValue
         parsed_tx.try_to_js_value()
+    }
+
+    /// Parse outputs with wallet keys to identify which outputs belong to a wallet
+    ///
+    /// Note: This method does NOT validate wallet inputs. It only parses outputs.
+    pub fn parse_outputs_with_wallet_keys(
+        &self,
+        wallet_keys: JsValue,
+    ) -> Result<JsValue, WasmUtxoError> {
+        // Convert wallet keys from JsValue
+        let wallet_keys = root_wallet_keys_from_jsvalue(&wallet_keys)?;
+
+        // Call the Rust implementation
+        let parsed_outputs = self
+            .psbt
+            .parse_outputs_with_wallet_keys(&wallet_keys)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to parse outputs: {}", e)))?;
+
+        // Convert Vec<ParsedOutput> to JsValue
+        parsed_outputs.try_to_js_value()
     }
 }
