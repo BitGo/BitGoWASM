@@ -1,0 +1,6 @@
+{
+  "ignorePackages": [
+    "packages/wasm-utxo-ui/**"
+  ]
+}
+
