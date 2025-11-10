@@ -12,3 +12,18 @@ index 020b3d7..37c3843 100644
  const { WritableStreamBuffer } = require("stream-buffers");
  const { Signale } = require("signale");
  
+diff --git a/node_modules/multi-semantic-release/lib/multiSemanticRelease.js b/node_modules/multi-semantic-release/lib/multiSemanticRelease.js
+index 912a363..ca5b19c 100644
+--- a/node_modules/multi-semantic-release/lib/multiSemanticRelease.js
++++ b/node_modules/multi-semantic-release/lib/multiSemanticRelease.js
+@@ -1,5 +1,9 @@
+ const { dirname } = require("path");
+-const semanticRelease = require("semantic-release");
++let semanticRelease = require("semantic-release");
++// SR v25 ESM default export compatibility
++if (semanticRelease && typeof semanticRelease !== "function" && typeof semanticRelease.default === "function") {
++	semanticRelease = semanticRelease.default;
++}
+ const { uniq } = require("lodash");
+ const { check } = require("./blork");
+ const getLogger = require("./getLogger");
