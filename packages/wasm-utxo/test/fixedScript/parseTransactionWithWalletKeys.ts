@@ -93,18 +93,18 @@ describe("parseTransactionWithWalletKeys", function () {
         // Validate outputs
         assert.ok(parsed.outputs.length > 0, "Should have at least one output");
 
-        // Count internal outputs (scriptId is defined)
-        const internalOutputs = parsed.outputs.filter((o) => o.scriptId !== undefined);
+        // Count internal outputs (scriptId is defined and not null)
+        const internalOutputs = parsed.outputs.filter((o) => o.scriptId);
 
-        // Count external outputs (scriptId is undefined)
-        const externalOutputs = parsed.outputs.filter((o) => o.scriptId === undefined);
+        // Count external outputs (scriptId is null or undefined)
+        const externalOutputs = parsed.outputs.filter((o) => !o.scriptId);
 
-        // All outputs in the fixture are internal
-        assert.ok(internalOutputs.length > 0, "All outputs should be internal (have scriptId)");
+        // Fixtures now have 3 external outputs
+        assert.ok(internalOutputs.length > 0, "Should have internal outputs (have scriptId)");
         assert.strictEqual(
           externalOutputs.length,
-          0,
-          "Should have no external outputs in test fixture",
+          3,
+          "Should have 3 external outputs in test fixture",
         );
 
         // Verify all outputs have proper structure
@@ -115,12 +115,8 @@ describe("parseTransactionWithWalletKeys", function () {
           // Address is optional for non-standard scripts
         });
 
-        // Verify spend amount (should be 0 since all outputs are internal)
-        assert.strictEqual(
-          parsed.spendAmount,
-          0n,
-          "Spend amount should be 0 when all outputs are internal",
-        );
+        // Verify spend amount (should be > 0 since there are external outputs)
+        assert.strictEqual(parsed.spendAmount, 900n * 3n);
 
         // Verify miner fee calculation
         const totalInputValue = parsed.inputs.reduce((sum, i) => sum + i.value, 0n);

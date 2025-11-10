@@ -1152,19 +1152,19 @@ mod tests {
             "Virtual size should be greater than 0"
         );
         
-        // Verify all outputs are internal (fixtures have no external outputs)
+        // Verify outputs (fixtures now have 3 external outputs)
         assert_eq!(
-            external_outputs, 0,
-            "Test fixtures should have no external outputs"
+            external_outputs, 3,
+            "Test fixtures should have 3 external outputs"
         );
         assert_eq!(
-            internal_outputs,
+            internal_outputs + external_outputs,
             parsed.outputs.len(),
-            "All outputs should be internal"
+            "Internal + external should equal total outputs"
         );
-        assert_eq!(
-            parsed.spend_amount, 0,
-            "Spend amount should be 0 when all outputs are internal"
+        assert!(
+            parsed.spend_amount > 0,
+            "Spend amount should be greater than 0 when there are external outputs"
         );
     }, ignore: [BitcoinGold, BitcoinCash, Ecash, Zcash]);
 
