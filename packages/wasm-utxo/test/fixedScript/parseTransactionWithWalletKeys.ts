@@ -88,6 +88,15 @@ describe("parseTransactionWithWalletKeys", function () {
         rootWalletKeys = loadWalletKeysFromFixture(networkName);
       });
 
+      it("should have matching unsigned transaction ID", function () {
+        const unsignedTxid = bitgoPsbt.unsignedTxid();
+        const expectedUnsignedTxid = utxolib.bitgo
+          .createPsbtFromBuffer(psbtBytes, network)
+          .getUnsignedTx()
+          .getId();
+        assert.strictEqual(unsignedTxid, expectedUnsignedTxid);
+      });
+
       it("should parse transaction and identify internal/external outputs", function () {
         const parsed = bitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
           outputScripts: [replayProtectionScript],

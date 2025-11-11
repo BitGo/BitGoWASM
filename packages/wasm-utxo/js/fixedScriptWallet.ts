@@ -95,6 +95,14 @@ export class BitGoPsbt {
   }
 
   /**
+   * Get the unsigned transaction ID
+   * @returns The unsigned transaction ID
+   */
+  unsignedTxid(): string {
+    return this.wasm.unsigned_txid();
+  }
+
+  /**
    * Parse transaction with wallet keys to identify wallet inputs/outputs
    * @param walletKeys - The wallet keys to use for identification
    * @param replayProtection - Scripts that are allowed as inputs without wallet validation

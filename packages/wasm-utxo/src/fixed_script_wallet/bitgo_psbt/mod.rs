@@ -13,7 +13,7 @@ mod sighash;
 mod zcash_psbt;
 
 use crate::Network;
-use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey};
+use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey, Txid};
 pub use propkv::{BitGoKeyValue, ProprietaryKeySubtype, BITGO};
 pub use sighash::validate_sighash_type;
 use zcash_psbt::ZcashPsbt;
@@ -317,6 +317,11 @@ impl BitGoPsbt {
                 errors.join("; ")
             )),
         }
+    }
+
+    /// Get the unsigned transaction ID
+    pub fn unsigned_txid(&self) -> Txid {
+        self.psbt().unsigned_tx.compute_txid()
     }
 
     /// Helper function to create a MuSig2 context for an input

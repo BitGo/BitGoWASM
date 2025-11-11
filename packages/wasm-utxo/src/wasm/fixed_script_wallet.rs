@@ -147,6 +147,11 @@ impl BitGoPsbt {
         Ok(BitGoPsbt { psbt })
     }
 
+    /// Get the unsigned transaction ID
+    pub fn unsigned_txid(&self) -> String {
+        self.psbt.unsigned_txid().to_string()
+    }
+
     /// Parse transaction with wallet keys to identify wallet inputs/outputs
     pub fn parse_transaction_with_wallet_keys(
         &self,
