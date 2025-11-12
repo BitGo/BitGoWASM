@@ -13,7 +13,7 @@ mod sighash;
 mod zcash_psbt;
 
 use crate::Network;
-use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey};
+use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey, Txid};
 pub use propkv::{BitGoKeyValue, ProprietaryKeySubtype, BITGO};
 pub use sighash::validate_sighash_type;
 use zcash_psbt::ZcashPsbt;
@@ -319,6 +319,11 @@ impl BitGoPsbt {
         }
     }
 
+    /// Get the unsigned transaction ID
+    pub fn unsigned_txid(&self) -> Txid {
+        self.psbt().unsigned_tx.compute_txid()
+    }
+
     /// Helper function to create a MuSig2 context for an input
     ///
     /// This validates that:
@@ -583,6 +588,227 @@ impl BitGoPsbt {
             )
     }
 
+    /// Helper function to extract public key from a P2PK redeem script
+    ///
+    /// # Arguments
+    /// - `redeem_script`: The redeem script to parse (expected format: <pubkey> OP_CHECKSIG)
+    ///
+    /// # Returns
+    /// - `Ok(PublicKey)` if parsing succeeds
+    /// - `Err(String)` if the script format is invalid
+    fn extract_pubkey_from_p2pk_redeem_script(
+        redeem_script: &miniscript::bitcoin::ScriptBuf,
+    ) -> Result<miniscript::bitcoin::PublicKey, String> {
+        use miniscript::bitcoin::{opcodes::all::OP_CHECKSIG, script::Instruction, PublicKey};
+
+        // Extract public key from redeem script
+        // For P2SH(P2PK), redeem_script is: <pubkey> OP_CHECKSIG
+        let mut redeem_instructions = redeem_script.instructions();
+        let public_key_bytes = match redeem_instructions.next() {
+            Some(Ok(Instruction::PushBytes(bytes))) => bytes.as_bytes(),
+            _ => return Err("Invalid redeem script format: missing public key".to_string()),
+        };
+
+        // Verify the script ends with OP_CHECKSIG
+        match redeem_instructions.next() {
+            Some(Ok(Instruction::Op(op))) if op == OP_CHECKSIG => {}
+            _ => return Err("Redeem script does not end with OP_CHECKSIG".to_string()),
+        }
+
+        PublicKey::from_slice(public_key_bytes).map_err(|e| format!("Invalid public key: {}", e))
+    }
+
+    /// Helper function to parse an ECDSA signature from final_script_sig
+    ///
+    /// # Returns
+    /// - `Ok(bitcoin::ecdsa::Signature)` if parsing succeeds
+    /// - `Err(String)` if parsing fails
+    fn parse_signature_from_script_sig(
+        final_script_sig: &miniscript::bitcoin::ScriptBuf,
+    ) -> Result<miniscript::bitcoin::ecdsa::Signature, String> {
+        use miniscript::bitcoin::{ecdsa::Signature, script::Instruction};
+
+        // Extract signature from final_script_sig
+        // For P2SH(P2PK), the scriptSig is: <signature> <redeemScript>
+        let mut instructions = final_script_sig.instructions();
+        let signature_bytes = match instructions.next() {
+            Some(Ok(Instruction::PushBytes(bytes))) => bytes.as_bytes(),
+            _ => return Err("Invalid final_script_sig format".to_string()),
+        };
+
+        if signature_bytes.is_empty() {
+            return Err("Empty signature in final_script_sig".to_string());
+        }
+
+        Signature::from_slice(signature_bytes)
+            .map_err(|e| format!("Invalid signature in final_script_sig: {}", e))
+    }
+
+    /// Verify if a replay protection input has a valid signature
+    ///
+    /// This method checks if a given input is a replay protection input and verifies the signature.
+    /// Replay protection inputs (like P2shP2pk) don't use standard derivation paths,
+    /// so this method verifies signatures without deriving from xpub.
+    ///
+    /// For P2PK replay protection inputs:
+    /// - Extracts public key from `redeem_script`
+    /// - Checks for signature in `partial_sigs` (non-finalized) or `final_script_sig` (finalized)
+    /// - Computes the legacy P2SH sighash using the redeem script
+    /// - Verifies the ECDSA signature
+    ///
+    /// # Arguments
+    /// - `secp`: Secp256k1 context for signature verification
+    /// - `input_index`: The index of the input to check
+    /// - `replay_protection`: Replay protection configuration
+    ///
+    /// # Returns
+    /// - `Ok(true)` if the input is a replay protection input and has a valid signature
+    /// - `Ok(false)` if the input is a replay protection input but has no valid signature
+    /// - `Err(String)` if the input is not a replay protection input, index is out of bounds, or verification fails
+    pub fn verify_replay_protection_signature<C: secp256k1::Verification>(
+        &self,
+        secp: &secp256k1::Secp256k1<C>,
+        input_index: usize,
+        replay_protection: &psbt_wallet_input::ReplayProtection,
+    ) -> Result<bool, String> {
+        use miniscript::bitcoin::{hashes::Hash, sighash::SighashCache};
+
+        let psbt = self.psbt();
+
+        // Check input index bounds
+        if input_index >= psbt.inputs.len() {
+            return Err(format!("Input index {} out of bounds", input_index));
+        }
+
+        let input = &psbt.inputs[input_index];
+        let prevout = psbt.unsigned_tx.input[input_index].previous_output;
+
+        // Get output script from input
+        let (output_script, _value) =
+            psbt_wallet_input::get_output_script_and_value(input, prevout)
+                .map_err(|e| format!("Failed to get output script: {}", e))?;
+
+        // Verify this is a replay protection input
+        if !replay_protection.is_replay_protection_input(output_script) {
+            return Err(format!(
+                "Input {} is not a replay protection input",
+                input_index
+            ));
+        }
+
+        // Get redeem script and extract public key
+        let redeem_script = input
+            .redeem_script
+            .as_ref()
+            .ok_or_else(|| "Missing redeem_script for replay protection input".to_string())?;
+        let public_key = Self::extract_pubkey_from_p2pk_redeem_script(redeem_script)?;
+
+        // Get signature from partial_sigs (non-finalized) or final_script_sig (finalized)
+        // The bitcoin crate's ecdsa::Signature type contains both .signature and .sighash_type
+        let ecdsa_sig = if let Some(&partial_sig) = input.partial_sigs.get(&public_key) {
+            partial_sig
+        } else if let Some(final_script_sig) = &input.final_script_sig {
+            Self::parse_signature_from_script_sig(final_script_sig)?
+        } else {
+            // No signature present (neither partial nor final)
+            return Ok(false);
+        };
+
+        // Compute legacy P2SH sighash
+        let cache = SighashCache::new(&psbt.unsigned_tx);
+        let sighash = cache
+            .legacy_signature_hash(input_index, redeem_script, ecdsa_sig.sighash_type.to_u32())
+            .map_err(|e| format!("Failed to compute sighash: {}", e))?;
+
+        // Verify the signature using the bitcoin crate's built-in verification
+        let message = secp256k1::Message::from_digest(sighash.to_byte_array());
+        match secp.verify_ecdsa(&message, &ecdsa_sig.signature, &public_key.inner) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Verify if a valid signature exists for a given extended public key at the specified input index
+    ///
+    /// This method derives the public key from the xpub using the derivation path found in the
+    /// PSBT input, then verifies the signature. It supports:
+    /// - ECDSA signatures (for legacy/SegWit inputs)
+    /// - Schnorr signatures (for Taproot script path inputs)
+    /// - MuSig2 partial signatures (for Taproot keypath MuSig2 inputs)
+    ///
+    /// # Arguments
+    /// - `secp`: Secp256k1 context for signature verification and key derivation
+    /// - `input_index`: The index of the input to check
+    /// - `xpub`: The extended public key to derive from and verify the signature for
+    ///
+    /// # Returns
+    /// - `Ok(true)` if a valid signature exists for the derived public key
+    /// - `Ok(false)` if no signature exists for the derived public key
+    /// - `Err(String)` if the input index is out of bounds, derivation fails, or verification fails
+    pub fn verify_signature<C: secp256k1::Verification>(
+        &self,
+        secp: &secp256k1::Secp256k1<C>,
+        input_index: usize,
+        xpub: &miniscript::bitcoin::bip32::Xpub,
+    ) -> Result<bool, String> {
+        let psbt = self.psbt();
+
+        // Check input index bounds
+        if input_index >= psbt.inputs.len() {
+            return Err(format!("Input index {} out of bounds", input_index));
+        }
+
+        let input = &psbt.inputs[input_index];
+
+        // Handle MuSig2 inputs early - they use proprietary fields for partial signatures
+        if p2tr_musig2_input::Musig2Input::is_musig2_input(input) {
+            // Parse MuSig2 data from input
+            let musig2_input = p2tr_musig2_input::Musig2Input::from_input(input)
+                .map_err(|e| format!("Failed to parse MuSig2 input: {}", e))?;
+
+            // Derive the public key for this input using tap_key_origins
+            // If this xpub doesn't match any tap_key_origins, return false (e.g., backup key)
+            let derived_xpub =
+                match p2tr_musig2_input::derive_xpub_for_input_tap(xpub, &input.tap_key_origins) {
+                    Ok(xpub) => xpub,
+                    Err(_) => return Ok(false), // This xpub doesn't match
+                };
+            let derived_pubkey = derived_xpub.to_pub();
+
+            // Check if this public key has a partial signature in the MuSig2 proprietary fields
+            let has_partial_sig = musig2_input
+                .partial_sigs
+                .iter()
+                .any(|sig| sig.participant_pub_key == derived_pubkey);
+
+            return Ok(has_partial_sig);
+        }
+
+        // For non-MuSig2 inputs, use standard derivation
+        // Derive the public key from xpub using derivation path in PSBT
+        let derived_pubkey = match psbt_wallet_input::derive_pubkey_from_input(secp, xpub, input)? {
+            Some(pubkey) => pubkey,
+            None => return Ok(false), // No matching derivation path for this xpub
+        };
+
+        // Convert to CompressedPublicKey for verification
+        let public_key = CompressedPublicKey::from_slice(&derived_pubkey.serialize())
+            .map_err(|e| format!("Failed to convert derived key: {}", e))?;
+
+        // Check for Taproot script path signatures first
+        if !input.tap_script_sigs.is_empty() {
+            return psbt_wallet_input::verify_taproot_script_signature(
+                secp,
+                psbt,
+                input_index,
+                public_key,
+            );
+        }
+
+        // Fall back to ECDSA signature verification for legacy/SegWit inputs
+        psbt_wallet_input::verify_ecdsa_signature(secp, psbt, input_index, public_key)
+    }
+
     /// Parse outputs with wallet keys to identify which outputs belong to a particular wallet.
     ///
     /// This is useful in cases where we want to identify outputs that belong to a different
@@ -656,6 +882,7 @@ impl BitGoPsbt {
 mod tests {
     use super::*;
     use crate::fixed_script_wallet::Chain;
+    use crate::fixed_script_wallet::RootWalletKeys;
     use crate::fixed_script_wallet::WalletScripts;
     use crate::test_utils::fixtures;
     use crate::test_utils::fixtures::assert_hex_eq;
@@ -872,6 +1099,10 @@ mod tests {
         };
 
         match script_type {
+            fixtures::ScriptType::P2shP2pk => {
+                // In production, these will be signed by BitGo
+                assert_eq!(signed_input.partial_sigs.len(), 0);
+            }
             fixtures::ScriptType::P2trLegacyScriptPath
             | fixtures::ScriptType::P2trMusig2ScriptPath => {
                 assert_eq!(signed_input.tap_script_sigs.len(), 1);
@@ -1004,6 +1235,76 @@ mod tests {
         Ok(())
     }
 
+    fn assert_replay_protection_signature(
+        bitgo_psbt: &BitGoPsbt,
+        _wallet_keys: &fixtures::XprvTriple,
+        input_index: usize,
+    ) -> Result<(), String> {
+        let secp = secp256k1::Secp256k1::new();
+        let psbt = bitgo_psbt.psbt();
+
+        if input_index >= psbt.inputs.len() {
+            return Err(format!("Input index {} out of bounds", input_index));
+        }
+
+        let input = &psbt.inputs[input_index];
+        let prevout = psbt.unsigned_tx.input[input_index].previous_output;
+
+        // Get the output script from the input
+        let (output_script, _value) =
+            psbt_wallet_input::get_output_script_and_value(input, prevout)
+                .map_err(|e| format!("Failed to get output script: {}", e))?;
+
+        // Create replay protection with this output script
+        let replay_protection =
+            psbt_wallet_input::ReplayProtection::new(vec![output_script.clone()]);
+
+        // Verify the signature exists and is valid
+        let has_valid_signature = bitgo_psbt.verify_replay_protection_signature(
+            &secp,
+            input_index,
+            &replay_protection,
+        )?;
+
+        if !has_valid_signature {
+            return Err(format!(
+                "Replay protection input {} does not have a valid signature",
+                input_index
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn assert_signature_count(
+        bitgo_psbt: &BitGoPsbt,
+        wallet_keys: &RootWalletKeys,
+        input_index: usize,
+        expected_count: usize,
+        stage_name: &str,
+    ) -> Result<(), String> {
+        // Use verify_signature to count valid signatures for all input types
+        // This now handles MuSig2, ECDSA, and Schnorr signatures uniformly
+        let secp = secp256k1::Secp256k1::new();
+        let mut signature_count = 0;
+        for xpub in &wallet_keys.xpubs {
+            match bitgo_psbt.verify_signature(&secp, input_index, xpub) {
+                Ok(true) => signature_count += 1,
+                Ok(false) => {}          // No signature for this key
+                Err(e) => return Err(e), // Propagate other errors
+            }
+        }
+
+        if signature_count != expected_count {
+            return Err(format!(
+                "{} input {} should have {} signature(s), found {}",
+                stage_name, input_index, expected_count, signature_count
+            ));
+        }
+
+        Ok(())
+    }
+
     fn test_wallet_script_type(
         script_type: fixtures::ScriptType,
         network: Network,
@@ -1026,31 +1327,82 @@ mod tests {
 
         let psbt_input_stages = psbt_input_stages.unwrap();
 
+        let halfsigned_bitgo_psbt = psbt_stages
+            .halfsigned
+            .to_bitgo_psbt(network)
+            .expect("Failed to convert to BitGo PSBT");
+
+        let fullsigned_bitgo_psbt = psbt_stages
+            .fullsigned
+            .to_bitgo_psbt(network)
+            .expect("Failed to convert to BitGo PSBT");
+
         assert_half_sign(
             script_type,
             &psbt_stages
                 .unsigned
                 .to_bitgo_psbt(network)
                 .expect("Failed to convert to BitGo PSBT"),
-            &psbt_stages
-                .halfsigned
-                .to_bitgo_psbt(network)
-                .expect("Failed to convert to BitGo PSBT"),
+            &halfsigned_bitgo_psbt,
             &psbt_input_stages.wallet_keys,
             psbt_input_stages.input_index,
         )?;
 
-        assert_full_signed_matches_wallet_scripts(
-            network,
-            tx_format,
-            &psbt_stages.fullsigned,
-            &psbt_input_stages.wallet_keys,
+        let wallet_keys = psbt_input_stages.wallet_keys.to_root_wallet_keys();
+
+        // Verify halfsigned PSBT has exactly 1 signature
+        assert_signature_count(
+            &halfsigned_bitgo_psbt,
+            &wallet_keys,
             psbt_input_stages.input_index,
-            &psbt_input_stages.input_fixture_fullsigned,
+            if matches!(script_type, fixtures::ScriptType::P2shP2pk) {
+                // p2shP2pk inputs are signed at the halfsigned stage with replay protection
+                0
+            } else {
+                1
+            },
+            "Halfsigned",
+        )?;
+
+        if matches!(script_type, fixtures::ScriptType::P2shP2pk) {
+            // Replay protection inputs are signed at the halfsigned stage
+            assert_replay_protection_signature(
+                &halfsigned_bitgo_psbt,
+                &psbt_input_stages.wallet_keys,
+                psbt_input_stages.input_index,
+            )?;
+            // They remain signed at the fullsigned stage
+            assert_replay_protection_signature(
+                &fullsigned_bitgo_psbt,
+                &psbt_input_stages.wallet_keys,
+                psbt_input_stages.input_index,
+            )?;
+        } else {
+            assert_full_signed_matches_wallet_scripts(
+                network,
+                tx_format,
+                &psbt_stages.fullsigned,
+                &psbt_input_stages.wallet_keys,
+                psbt_input_stages.input_index,
+                &psbt_input_stages.input_fixture_fullsigned,
+            )?;
+        }
+
+        // Verify fullsigned PSBT has exactly 2 signatures
+        assert_signature_count(
+            &fullsigned_bitgo_psbt,
+            &wallet_keys,
+            psbt_input_stages.input_index,
+            if matches!(script_type, fixtures::ScriptType::P2shP2pk) {
+                0
+            } else {
+                2
+            },
+            "Fullsigned",
         )?;
 
         assert_finalize_input(
-            psbt_stages.fullsigned.to_bitgo_psbt(network).unwrap(),
+            fullsigned_bitgo_psbt,
             psbt_input_stages.input_index,
             network,
             tx_format,
@@ -1058,6 +1410,15 @@ mod tests {
 
         Ok(())
     }
+
+    crate::test_psbt_fixtures!(test_p2sh_p2pk_suite, network, format, {
+        test_wallet_script_type(fixtures::ScriptType::P2shP2pk, network, format).unwrap();
+    }, ignore: [
+        // TODO: sighash support
+        BitcoinCash, Ecash, BitcoinGold,
+        // TODO: zec support
+        Zcash,
+        ]);
 
     crate::test_psbt_fixtures!(test_p2sh_suite, network, format, {
         test_wallet_script_type(fixtures::ScriptType::P2sh, network, format).unwrap();
@@ -1090,24 +1451,42 @@ mod tests {
         ignore: [BitcoinGold]
     );
 
-    crate::test_psbt_fixtures!(test_p2tr_legacy_script_path_suite, network, format, {
-        test_wallet_script_type(fixtures::ScriptType::P2trLegacyScriptPath, network, format)
-            .unwrap();
-    });
+    crate::test_psbt_fixtures!(
+        test_p2tr_legacy_script_path_suite,
+        network,
+        format,
+        {
+            test_wallet_script_type(fixtures::ScriptType::P2trLegacyScriptPath, network, format)
+                .unwrap();
+        },
+        ignore: [BitcoinCash, Ecash, BitcoinGold, Dash, Dogecoin, Litecoin, Zcash]
+    );
 
-    crate::test_psbt_fixtures!(test_p2tr_musig2_script_path_suite, network, format, {
-        test_wallet_script_type(fixtures::ScriptType::P2trMusig2ScriptPath, network, format)
-            .unwrap();
-    });
+    crate::test_psbt_fixtures!(
+        test_p2tr_musig2_script_path_suite,
+        network,
+        format,
+        {
+            test_wallet_script_type(fixtures::ScriptType::P2trMusig2ScriptPath, network, format)
+                .unwrap();
+        },
+        ignore: [BitcoinCash, Ecash, BitcoinGold, Dash, Dogecoin, Litecoin, Zcash]
+    );
 
-    crate::test_psbt_fixtures!(test_p2tr_musig2_key_path_suite, network, format, {
-        test_wallet_script_type(
-            fixtures::ScriptType::P2trMusig2TaprootKeypath,
-            network,
-            format,
-        )
-        .unwrap();
-    });
+    crate::test_psbt_fixtures!(
+        test_p2tr_musig2_key_path_suite,
+        network,
+        format,
+        {
+            test_wallet_script_type(
+                fixtures::ScriptType::P2trMusig2TaprootKeypath,
+                network,
+                format,
+            )
+            .unwrap();
+        },
+        ignore: [BitcoinCash, Ecash, BitcoinGold, Dash, Dogecoin, Litecoin, Zcash]
+    );
 
     crate::test_psbt_fixtures!(test_extract_transaction, network, format, {
         let fixture = fixtures::load_psbt_fixture_with_format(

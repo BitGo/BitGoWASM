@@ -1144,6 +1144,7 @@ impl P2trMusig2KeyPathInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptType {
     P2sh,
+    P2shP2pk, // aka "replay protection"
     P2shP2wsh,
     P2wsh,
     P2trLegacyScriptPath,
@@ -1156,6 +1157,7 @@ impl ScriptType {
     pub fn as_str(&self) -> &'static str {
         match self {
             ScriptType::P2sh => "p2sh",
+            ScriptType::P2shP2pk => "p2shP2pk",
             ScriptType::P2shP2wsh => "p2shP2wsh",
             ScriptType::P2wsh => "p2wsh",
             ScriptType::P2trLegacyScriptPath => "p2tr",
@@ -1169,6 +1171,7 @@ impl ScriptType {
         matches!(
             (self, fixture),
             (ScriptType::P2sh, PsbtInputFixture::P2sh(_))
+                | (ScriptType::P2shP2pk, PsbtInputFixture::P2shP2pk(_))
                 | (ScriptType::P2shP2wsh, PsbtInputFixture::P2shP2wsh(_))
                 | (ScriptType::P2wsh, PsbtInputFixture::P2wsh(_))
                 | (
@@ -1191,6 +1194,7 @@ impl ScriptType {
         matches!(
             (self, fixture),
             (ScriptType::P2sh, PsbtFinalInputFixture::P2sh(_))
+                | (ScriptType::P2shP2pk, PsbtFinalInputFixture::P2shP2pk(_))
                 | (ScriptType::P2shP2wsh, PsbtFinalInputFixture::P2shP2wsh(_))
                 | (ScriptType::P2wsh, PsbtFinalInputFixture::P2wsh(_))
                 | (
@@ -1224,7 +1228,7 @@ impl ScriptType {
     /// Checks if this script type is supported by the given network's output script support
     pub fn is_supported_by(&self, support: &crate::address::networks::OutputScriptSupport) -> bool {
         // P2sh is always supported (legacy)
-        if matches!(self, ScriptType::P2sh) {
+        if matches!(self, ScriptType::P2sh | ScriptType::P2shP2pk) {
             return true;
         }
 

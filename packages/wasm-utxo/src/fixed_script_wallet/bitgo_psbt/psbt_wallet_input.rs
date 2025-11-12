@@ -24,7 +24,29 @@ impl ReplayProtection {
     }
 }
 
-type Bip32DerivationMap = std::collections::BTreeMap<PublicKey, KeySource>;
+pub type Bip32DerivationMap = std::collections::BTreeMap<PublicKey, KeySource>;
+
+/// Check if a fingerprint matches any xpub in the wallet
+fn has_fingerprint(
+    wallet_keys: &RootWalletKeys,
+    fingerprint: miniscript::bitcoin::bip32::Fingerprint,
+) -> bool {
+    wallet_keys
+        .xpubs
+        .iter()
+        .any(|xpub| xpub.fingerprint() == fingerprint)
+}
+
+/// Find an xpub in the wallet by fingerprint
+fn find_xpub_by_fingerprint(
+    wallet_keys: &RootWalletKeys,
+    fingerprint: miniscript::bitcoin::bip32::Fingerprint,
+) -> Option<&miniscript::bitcoin::bip32::Xpub> {
+    wallet_keys
+        .xpubs
+        .iter()
+        .find(|xpub| xpub.fingerprint() == fingerprint)
+}
 
 /// Make sure that deriving from the wallet xpubs matches keys in the derivation map
 /// Check if BIP32 derivation info belongs to the wallet keys (non-failing)
@@ -33,12 +55,216 @@ pub fn is_bip32_derivation_for_wallet(
     wallet_keys: &RootWalletKeys,
     derivation_map: &Bip32DerivationMap,
 ) -> bool {
-    derivation_map.iter().all(|(_, (fingerprint, _))| {
-        wallet_keys
-            .xpubs
-            .iter()
-            .any(|xpub| xpub.fingerprint() == *fingerprint)
-    })
+    derivation_map
+        .iter()
+        .all(|(_, (fingerprint, _))| has_fingerprint(wallet_keys, *fingerprint))
+}
+
+/// Helper function to derive a public key from an xpub and derivation path
+fn derive_pubkey<C: secp256k1::Verification>(
+    secp: &secp256k1::Secp256k1<C>,
+    xpub: &miniscript::bitcoin::bip32::Xpub,
+    derivation_path: &miniscript::bitcoin::bip32::DerivationPath,
+) -> Result<PublicKey, String> {
+    xpub.derive_pub(secp, derivation_path)
+        .map(|derived_xpub| derived_xpub.public_key)
+        .map_err(|e| format!("Failed to derive public key: {}", e))
+}
+
+/// Find a derivation path in bip32_derivation map by fingerprint
+fn find_bip32_derivation_path(
+    bip32_derivation: &Bip32DerivationMap,
+    fingerprint: miniscript::bitcoin::bip32::Fingerprint,
+) -> Option<&DerivationPath> {
+    bip32_derivation
+        .values()
+        .find(|(fp, _)| *fp == fingerprint)
+        .map(|(_, path)| path)
+}
+
+/// Find a derivation path in tap_key_origins map by fingerprint
+fn find_tap_key_origins_path(
+    tap_key_origins: &TapKeyOrigins,
+    fingerprint: miniscript::bitcoin::bip32::Fingerprint,
+) -> Option<&DerivationPath> {
+    tap_key_origins
+        .values()
+        .find(|(_, (fp, _))| *fp == fingerprint)
+        .map(|(_, (_, path))| path)
+}
+
+/// Derives a public key from an xpub using the derivation path found in a PSBT input
+///
+/// This function works with both legacy/SegWit inputs (using bip32_derivation) and
+/// Taproot inputs (using tap_key_origins). It searches for a derivation path matching
+/// the xpub's fingerprint and derives the public key.
+///
+/// # Arguments
+/// - `secp`: Secp256k1 context for key derivation
+/// - `xpub`: The extended public key to derive from
+/// - `input`: The PSBT input containing derivation information
+///
+/// # Returns
+/// - `Ok(Some(PublicKey))` if a matching derivation path is found and derivation succeeds
+/// - `Ok(None)` if no matching derivation path is found or no derivation info exists in the input
+/// - `Err(String)` if derivation fails
+pub fn derive_pubkey_from_input<C: secp256k1::Verification>(
+    secp: &secp256k1::Secp256k1<C>,
+    xpub: &miniscript::bitcoin::bip32::Xpub,
+    input: &Input,
+) -> Result<Option<PublicKey>, String> {
+    let xpub_fingerprint = xpub.fingerprint();
+
+    // Try bip32_derivation first (for legacy/SegWit inputs)
+    if !input.bip32_derivation.is_empty() {
+        let derivation_path = find_bip32_derivation_path(&input.bip32_derivation, xpub_fingerprint);
+
+        return match derivation_path {
+            Some(path) => derive_pubkey(secp, xpub, path).map(Some),
+            None => Ok(None), // No matching fingerprint found - not an error
+        };
+    }
+
+    // Try tap_key_origins (for Taproot inputs)
+    if !input.tap_key_origins.is_empty() {
+        let derivation_path = find_tap_key_origins_path(&input.tap_key_origins, xpub_fingerprint);
+
+        return match derivation_path {
+            Some(path) => derive_pubkey(secp, xpub, path).map(Some),
+            None => Ok(None), // No matching fingerprint found - not an error
+        };
+    }
+
+    // No derivation info in input - return None (not an error)
+    Ok(None)
+}
+
+/// Verifies a Taproot script path signature for a given public key in a PSBT input
+///
+/// # Arguments
+/// - `secp`: Secp256k1 context for signature verification
+/// - `psbt`: The PSBT containing the transaction and inputs
+/// - `input_index`: The index of the input to verify
+/// - `public_key`: The compressed public key to verify the signature for
+///
+/// # Returns
+/// - `Ok(true)` if a valid Schnorr signature exists for the public key
+/// - `Ok(false)` if no signature exists or verification fails
+/// - `Err(String)` if required data is missing or computation fails
+pub fn verify_taproot_script_signature<C: secp256k1::Verification>(
+    secp: &secp256k1::Secp256k1<C>,
+    psbt: &miniscript::bitcoin::psbt::Psbt,
+    input_index: usize,
+    public_key: miniscript::bitcoin::CompressedPublicKey,
+) -> Result<bool, String> {
+    use miniscript::bitcoin::{
+        hashes::Hash, sighash::Prevouts, sighash::SighashCache, TapLeafHash, XOnlyPublicKey,
+    };
+
+    let input = &psbt.inputs[input_index];
+
+    if input.tap_script_sigs.is_empty() {
+        return Ok(false);
+    }
+
+    // Convert CompressedPublicKey to XOnlyPublicKey for Taproot
+    let x_only_key = XOnlyPublicKey::from_slice(&public_key.to_bytes()[1..])
+        .map_err(|e| format!("Failed to convert to x-only public key: {}", e))?;
+
+    // Check all tap_script_sigs for this public key
+    for ((sig_pubkey, leaf_hash), signature) in &input.tap_script_sigs {
+        if sig_pubkey == &x_only_key {
+            // Found a signature for this public key, now verify it
+            let mut cache = SighashCache::new(&psbt.unsigned_tx);
+
+            // Compute taproot script spend sighash
+            let prevouts = super::p2tr_musig2_input::collect_prevouts(psbt)
+                .map_err(|e| format!("Failed to collect prevouts: {}", e))?;
+
+            // Find the script for this leaf hash
+            // tap_scripts is keyed by ControlBlock, so we need to find the matching entry
+            let mut found_script = false;
+            for (script, leaf_version) in input.tap_scripts.values() {
+                // Compute the leaf hash from the script and leaf version
+                let computed_leaf_hash = TapLeafHash::from_script(script, *leaf_version);
+
+                if &computed_leaf_hash == leaf_hash {
+                    found_script = true;
+                    break;
+                }
+            }
+
+            if !found_script {
+                return Err("Tap script not found for leaf hash".to_string());
+            }
+
+            let sighash_type = signature.sighash_type;
+            let sighash = cache
+                .taproot_script_spend_signature_hash(
+                    input_index,
+                    &Prevouts::All(&prevouts),
+                    *leaf_hash,
+                    sighash_type,
+                )
+                .map_err(|e| format!("Failed to compute taproot sighash: {}", e))?;
+
+            // Verify Schnorr signature
+            let message = secp256k1::Message::from_digest(sighash.to_byte_array());
+            match secp.verify_schnorr(&signature.signature, &message, sig_pubkey) {
+                Ok(()) => return Ok(true),
+                Err(_) => continue, // Try next signature
+            }
+        }
+    }
+
+    // No valid signature found for this public key in tap_script_sigs
+    Ok(false)
+}
+
+/// Verifies an ECDSA signature for a given public key in a PSBT input (legacy/SegWit)
+///
+/// # Arguments
+/// - `secp`: Secp256k1 context for signature verification
+/// - `psbt`: The PSBT containing the transaction and inputs
+/// - `input_index`: The index of the input to verify
+/// - `public_key`: The compressed public key to verify the signature for
+///
+/// # Returns
+/// - `Ok(true)` if a valid ECDSA signature exists for the public key
+/// - `Ok(false)` if no signature exists or verification fails
+/// - `Err(String)` if sighash computation fails
+pub fn verify_ecdsa_signature<C: secp256k1::Verification>(
+    secp: &secp256k1::Secp256k1<C>,
+    psbt: &miniscript::bitcoin::psbt::Psbt,
+    input_index: usize,
+    public_key: miniscript::bitcoin::CompressedPublicKey,
+) -> Result<bool, String> {
+    use miniscript::bitcoin::{sighash::SighashCache, PublicKey};
+
+    let input = &psbt.inputs[input_index];
+
+    // Convert to PublicKey for ECDSA
+    let public_key_inner = PublicKey::from_slice(&public_key.to_bytes())
+        .map_err(|e| format!("Failed to convert public key: {}", e))?;
+
+    // Check if there's a partial signature for this public key
+    if let Some(signature) = input.partial_sigs.get(&public_key_inner) {
+        // Create sighash cache and compute sighash for this input
+        let mut cache = SighashCache::new(&psbt.unsigned_tx);
+        let (sighash_msg, _sighash_type) = match psbt.sighash_ecdsa(input_index, &mut cache) {
+            Ok(result) => result,
+            Err(e) => return Err(format!("Failed to compute sighash: {}", e)),
+        };
+
+        // Verify the signature
+        match secp.verify_ecdsa(&sighash_msg, &signature.signature, &public_key_inner.inner) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    } else {
+        // No signature found for this public key
+        Ok(false)
+    }
 }
 
 fn assert_bip32_derivation_map(
@@ -46,12 +272,9 @@ fn assert_bip32_derivation_map(
     derivation_map: &Bip32DerivationMap,
 ) -> Result<(), String> {
     for (key, (fingerprint, path)) in derivation_map {
-        let derived_key = wallet_keys
-            .xpubs
-            .iter()
-            .find(|xpub| xpub.fingerprint() == *fingerprint)
+        let xpub = find_xpub_by_fingerprint(wallet_keys, *fingerprint)
             .ok_or_else(|| format!("No xpub found with fingerprint {}", fingerprint))?;
-        let derived_key = derived_key
+        let derived_key = xpub
             .derive_pub(&secp256k1::Secp256k1::new(), path)
             .map_err(|e| format!("Failed to derive pubkey: {}", e))?;
         if derived_key.public_key != *key {
@@ -64,7 +287,7 @@ fn assert_bip32_derivation_map(
     Ok(())
 }
 
-type TapKeyOrigins = std::collections::BTreeMap<XOnlyPublicKey, (Vec<TapLeafHash>, KeySource)>;
+pub type TapKeyOrigins = std::collections::BTreeMap<XOnlyPublicKey, (Vec<TapLeafHash>, KeySource)>;
 
 /// Check if tap key origins belong to the wallet keys (non-failing)
 /// Returns true if all fingerprints match, false if any don't match (external wallet)
@@ -72,12 +295,33 @@ pub fn is_tap_key_origins_for_wallet(
     wallet_keys: &RootWalletKeys,
     tap_key_origins: &TapKeyOrigins,
 ) -> bool {
-    tap_key_origins.iter().all(|(_, (_, (fingerprint, _)))| {
-        wallet_keys
-            .xpubs
-            .iter()
-            .any(|xpub| xpub.fingerprint() == *fingerprint)
-    })
+    tap_key_origins
+        .iter()
+        .all(|(_, (_, (fingerprint, _)))| has_fingerprint(wallet_keys, *fingerprint))
+}
+
+/// Derives a public key from an xpub using the derivation path found in the input's tap_key_origins
+///
+/// This searches for a derivation path matching the xpub's fingerprint and derives the public key.
+///
+/// # Returns
+/// - `Ok(PublicKey)` if a matching derivation path is found and derivation succeeds
+/// - `Err(String)` if no matching derivation path is found or derivation fails
+pub fn derive_pubkey_from_tap_key_origins<C: secp256k1::Verification>(
+    secp: &secp256k1::Secp256k1<C>,
+    xpub: &miniscript::bitcoin::bip32::Xpub,
+    tap_key_origins: &TapKeyOrigins,
+) -> Result<PublicKey, String> {
+    let xpub_fingerprint = xpub.fingerprint();
+    let derivation_path =
+        find_tap_key_origins_path(tap_key_origins, xpub_fingerprint).ok_or_else(|| {
+            format!(
+                "No tap key origin found for xpub fingerprint {}",
+                xpub_fingerprint
+            )
+        })?;
+
+    derive_pubkey(secp, xpub, derivation_path)
 }
 
 fn assert_tap_key_origins(
@@ -85,12 +329,9 @@ fn assert_tap_key_origins(
     tap_key_origins: &TapKeyOrigins,
 ) -> Result<(), String> {
     for (key, (_, (fingerprint, path))) in tap_key_origins {
-        let derived_key = wallet_keys
-            .xpubs
-            .iter()
-            .find(|xpub| xpub.fingerprint() == *fingerprint)
+        let xpub = find_xpub_by_fingerprint(wallet_keys, *fingerprint)
             .ok_or_else(|| format!("No xpub found with fingerprint {}", fingerprint))?;
-        let derived_key = derived_key
+        let derived_key = xpub
             .derive_pub(&secp256k1::Secp256k1::new(), path)
             .map_err(|e| format!("Failed to derive pubkey: {}", e))?
             .to_x_only_pub();
