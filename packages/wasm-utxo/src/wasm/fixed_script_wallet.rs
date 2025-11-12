@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsValue;
 
@@ -193,5 +194,75 @@ impl BitGoPsbt {
 
         // Convert Vec<ParsedOutput> to JsValue
         parsed_outputs.try_to_js_value()
+    }
+
+    /// Verify if a valid signature exists for a given xpub at the specified input index
+    ///
+    /// This method derives the public key from the xpub using the derivation path found in the
+    /// PSBT input, then verifies the signature. It supports both ECDSA signatures (for legacy/SegWit
+    /// inputs) and Schnorr signatures (for Taproot script path inputs).
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to check
+    /// - `xpub_str`: The extended public key as a base58-encoded string
+    ///
+    /// # Returns
+    /// - `Ok(true)` if a valid signature exists for the derived public key
+    /// - `Ok(false)` if no signature exists for the derived public key
+    /// - `Err(WasmUtxoError)` if the input index is out of bounds, xpub is invalid, derivation fails, or verification fails
+    pub fn verify_signature(
+        &self,
+        input_index: usize,
+        xpub_str: &str,
+    ) -> Result<bool, WasmUtxoError> {
+        // Parse xpub from string
+        let xpub = miniscript::bitcoin::bip32::Xpub::from_str(xpub_str)
+            .map_err(|e| WasmUtxoError::new(&format!("Invalid xpub: {}", e)))?;
+
+        // Create secp context
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::verification_only();
+
+        // Call the Rust implementation
+        self.psbt
+            .verify_signature(&secp, input_index, &xpub)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to verify signature: {}", e)))
+    }
+
+    /// Verify if a replay protection input has a valid signature
+    ///
+    /// This method checks if a given input is a replay protection input and cryptographically verifies
+    /// the signature. Replay protection inputs (like P2shP2pk) don't use standard derivation paths,
+    /// so this method verifies signatures without deriving from xpub.
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to check
+    /// - `replay_protection`: Replay protection configuration (same format as parseTransactionWithWalletKeys)
+    ///   Can be either `{ outputScripts: Buffer[] }` or `{ addresses: string[] }`
+    ///
+    /// # Returns
+    /// - `Ok(true)` if the input is a replay protection input and has a valid signature
+    /// - `Ok(false)` if the input is a replay protection input but has no valid signature
+    /// - `Err(WasmUtxoError)` if the input is not a replay protection input, index is out of bounds, or configuration is invalid
+    pub fn verify_replay_protection_signature(
+        &self,
+        input_index: usize,
+        replay_protection: JsValue,
+    ) -> Result<bool, WasmUtxoError> {
+        // Convert replay protection from JsValue, using the PSBT's network
+        let network = self.psbt.network();
+        let replay_protection = replay_protection_from_js_value(&replay_protection, network)?;
+
+        // Create secp context
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::verification_only();
+
+        // Call the Rust implementation
+        self.psbt
+            .verify_replay_protection_signature(&secp, input_index, &replay_protection)
+            .map_err(|e| {
+                WasmUtxoError::new(&format!(
+                    "Failed to verify replay protection signature: {}",
+                    e
+                ))
+            })
     }
 }

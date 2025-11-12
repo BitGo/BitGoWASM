@@ -129,4 +129,44 @@ export class BitGoPsbt {
   parseOutputsWithWalletKeys(walletKeys: WalletKeys): ParsedOutput[] {
     return this.wasm.parse_outputs_with_wallet_keys(walletKeys);
   }
+
+  /**
+   * Verify if a valid signature exists for a given extended public key at the specified input index.
+   *
+   * This method derives the public key from the xpub using the derivation path found in the
+   * PSBT input, then verifies the signature. It supports:
+   * - ECDSA signatures (for legacy/SegWit inputs)
+   * - Schnorr signatures (for Taproot script path inputs)
+   * - MuSig2 partial signatures (for Taproot keypath MuSig2 inputs)
+   *
+   * @param inputIndex - The index of the input to check (0-based)
+   * @param xpub - The extended public key as a base58-encoded string
+   * @returns true if a valid signature exists, false if no signature exists
+   * @throws Error if input index is out of bounds, xpub is invalid, or verification fails
+   */
+  verifySignature(inputIndex: number, xpub: string): boolean {
+    return this.wasm.verify_signature(inputIndex, xpub);
+  }
+
+  /**
+   * Verify if a replay protection input has a valid signature.
+   *
+   * This method checks if a given input is a replay protection input (like P2shP2pk) and verifies
+   * the signature. Replay protection inputs don't use standard derivation paths, so this method
+   * verifies signatures without deriving from xpub.
+   *
+   * For P2PK replay protection inputs, this:
+   * - Extracts the signature from final_script_sig
+   * - Extracts the public key from redeem_script
+   * - Computes the legacy P2SH sighash
+   * - Verifies the ECDSA signature cryptographically
+   *
+   * @param inputIndex - The index of the input to check (0-based)
+   * @param replayProtection - Scripts that identify replay protection inputs (same format as parseTransactionWithWalletKeys)
+   * @returns true if the input is a replay protection input and has a valid signature, false if no valid signature
+   * @throws Error if the input is not a replay protection input, index is out of bounds, or scripts are invalid
+   */
+  verifyReplayProtectionSignature(inputIndex: number, replayProtection: ReplayProtection): boolean {
+    return this.wasm.verify_replay_protection_signature(inputIndex, replayProtection);
+  }
 }

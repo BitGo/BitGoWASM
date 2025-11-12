@@ -1,54 +1,12 @@
 import assert from "node:assert";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import * as utxolib from "@bitgo/utxo-lib";
 import { fixedScriptWallet } from "../../js";
 import { BitGoPsbt } from "../../js/fixedScriptWallet";
-
-type Triple<T> = [T, T, T];
+import { loadPsbtFixture, loadWalletKeysFromFixture, getPsbtBuffer } from "./fixtureUtil";
 
 function getOtherWalletKeys(): utxolib.bitgo.RootWalletKeys {
   const otherWalletKeys = utxolib.testutil.getKeyTriple("too many secrets");
   return new utxolib.bitgo.RootWalletKeys(otherWalletKeys);
-}
-
-/**
- * Load a PSBT fixture from JSON file and return the PSBT bytes
- */
-function loadPsbtFixture(network: string): Buffer {
-  const fixturePath = path.join(
-    __dirname,
-    "..",
-    "fixtures",
-    "fixed-script",
-    `psbt-lite.${network}.fullsigned.json`,
-  );
-  const fixtureContent = fs.readFileSync(fixturePath, "utf-8");
-  const fixture = JSON.parse(fixtureContent) as { psbtBase64: string; walletKeys: string[] };
-  return Buffer.from(fixture.psbtBase64, "base64");
-}
-
-/**
- * Load wallet keys from fixture
- */
-function loadWalletKeysFromFixture(network: string): utxolib.bitgo.RootWalletKeys {
-  const fixturePath = path.join(
-    __dirname,
-    "..",
-    "fixtures",
-    "fixed-script",
-    `psbt-lite.${network}.fullsigned.json`,
-  );
-  const fixtureContent = fs.readFileSync(fixturePath, "utf-8");
-  const fixture = JSON.parse(fixtureContent) as { walletKeys: string[] };
-
-  // Parse xprvs and convert to xpubs
-  const xpubs = fixture.walletKeys.map((xprv) => {
-    const key = utxolib.bip32.fromBase58(xprv);
-    return key.neutered();
-  });
-
-  return new utxolib.bitgo.RootWalletKeys(xpubs as Triple<utxolib.BIP32Interface>);
 }
 
 describe("parseTransactionWithWalletKeys", function () {
@@ -78,20 +36,20 @@ describe("parseTransactionWithWalletKeys", function () {
     const networkName = utxolib.getNetworkName(network);
 
     describe(`network: ${networkName}`, function () {
-      let psbtBytes: Buffer;
+      let fullsignedPsbtBytes: Buffer;
       let bitgoPsbt: BitGoPsbt;
       let rootWalletKeys: utxolib.bitgo.RootWalletKeys;
 
       before(function () {
-        psbtBytes = loadPsbtFixture(networkName);
-        bitgoPsbt = fixedScriptWallet.BitGoPsbt.fromBytes(psbtBytes, networkName);
+        fullsignedPsbtBytes = getPsbtBuffer(loadPsbtFixture(networkName, "fullsigned"));
+        bitgoPsbt = fixedScriptWallet.BitGoPsbt.fromBytes(fullsignedPsbtBytes, networkName);
         rootWalletKeys = loadWalletKeysFromFixture(networkName);
       });
 
       it("should have matching unsigned transaction ID", function () {
         const unsignedTxid = bitgoPsbt.unsignedTxid();
         const expectedUnsignedTxid = utxolib.bitgo
-          .createPsbtFromBuffer(psbtBytes, network)
+          .createPsbtFromBuffer(fullsignedPsbtBytes, network)
           .getUnsignedTx()
           .getId();
         assert.strictEqual(unsignedTxid, expectedUnsignedTxid);
