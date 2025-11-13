@@ -23,37 +23,6 @@
   ],
   "main": "dist/node/js/index.js",
   "types": "dist/node/js/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/node/js/index.d.ts",
-      "browser": "./dist/browser/js/index.js",
-      "default": "./dist/node/js/index.js"
-    },
-    "./address": {
-      "types": "./dist/node/js/address.d.ts",
-      "browser": "./dist/browser/js/address.js",
-      "default": "./dist/node/js/address.js"
-    },
-    "./ast": {
-      "types": "./dist/node/js/ast/index.d.ts",
-      "browser": "./dist/browser/js/ast/index.js",
-      "default": "./dist/node/js/ast/index.js"
-    },
-    "./fixedScriptWallet": {
-      "types": "./dist/node/js/fixedScriptWallet.d.ts",
-      "browser": "./dist/browser/js/fixedScriptWallet.js",
-      "default": "./dist/node/js/fixedScriptWallet.js"
-    },
-    "./utxolibCompat": {
-      "types": "./dist/node/js/utxolibCompat.d.ts",
-      "browser": "./dist/browser/js/utxolibCompat.js",
-      "default": "./dist/node/js/utxolibCompat.js"
-    },
-    "./dist/browser/js/wasm/wasm_utxo_bg.js": "./dist/browser/js/wasm/wasm_utxo_bg.js",
-    "./dist/browser/js/wasm/wasm_utxo_bg.wasm": "./dist/browser/js/wasm/wasm_utxo_bg.wasm",
-    "./dist/node/js/wasm/wasm_utxo_bg.js": "./dist/node/js/wasm/wasm_utxo_bg.js",
-    "./dist/node/js/wasm/wasm_utxo_bg.wasm": "./dist/node/js/wasm/wasm_utxo_bg.wasm"
-  },
   "sideEffects": [
     "./dist/node/js/wasm/wasm_utxo.js",
     "./dist/browser/js/wasm/wasm_utxo.js"
