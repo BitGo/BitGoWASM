@@ -1,8 +1,8 @@
 import * as assert from "assert";
 import * as utxolib from "@bitgo/utxo-lib";
-import { Descriptor } from "../js";
-import { finalizePsbt, updateInputWithDescriptor } from "./psbt.util";
-import { getFixture } from "./fixtures";
+import { Descriptor } from "../js/index.js";
+import { finalizePsbt, updateInputWithDescriptor } from "./psbt.util.js";
+import { getFixture } from "./fixtures.js";
 
 const rootWalletKeys = new utxolib.bitgo.RootWalletKeys(utxolib.testutil.getKeyTriple("wasm"));
 

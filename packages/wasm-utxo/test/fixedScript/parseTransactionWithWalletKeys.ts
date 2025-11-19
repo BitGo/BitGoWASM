@@ -1,8 +1,8 @@
 import assert from "node:assert";
 import * as utxolib from "@bitgo/utxo-lib";
-import { fixedScriptWallet } from "../../js";
-import { BitGoPsbt } from "../../js/fixedScriptWallet";
-import { loadPsbtFixture, loadWalletKeysFromFixture, getPsbtBuffer } from "./fixtureUtil";
+import { fixedScriptWallet } from "../../js/index.js";
+import { BitGoPsbt } from "../../js/fixedScriptWallet.js";
+import { loadPsbtFixture, loadWalletKeysFromFixture, getPsbtBuffer } from "./fixtureUtil.js";
 
 function getOtherWalletKeys(): utxolib.bitgo.RootWalletKeys {
   const otherWalletKeys = utxolib.testutil.getKeyTriple("too many secrets");

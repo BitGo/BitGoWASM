@@ -1,13 +1,13 @@
 import assert from "node:assert";
 import * as utxolib from "@bitgo/utxo-lib";
-import { fixedScriptWallet } from "../../js";
-import { BitGoPsbt } from "../../js/fixedScriptWallet";
+import { fixedScriptWallet } from "../../js/index.js";
+import { BitGoPsbt } from "../../js/fixedScriptWallet.js";
 import {
   loadPsbtFixture,
   loadWalletKeysFromFixture,
   getPsbtBuffer,
   type Fixture,
-} from "./fixtureUtil";
+} from "./fixtureUtil.js";
 
 type SignatureStage = "unsigned" | "halfsigned" | "fullsigned";
 

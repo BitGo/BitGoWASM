@@ -1,7 +1,7 @@
 import * as assert from "assert";
 import * as utxolib from "@bitgo/utxo-lib";
-import { Descriptor } from "../js";
-import { getDescriptorForScriptType } from "./descriptorUtil";
+import { Descriptor } from "../js/index.js";
+import { getDescriptorForScriptType } from "./descriptorUtil.js";
 
 const rootWalletKeys = new utxolib.bitgo.RootWalletKeys(utxolib.testutil.getKeyTriple("wasm"));
 const scriptTypes = ["p2sh", "p2shP2wsh", "p2wsh"] as const;

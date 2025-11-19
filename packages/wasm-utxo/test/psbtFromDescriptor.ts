@@ -2,10 +2,10 @@ import assert from "node:assert";
 import { BIP32Interface, ECPair, ECPairInterface } from "@bitgo/utxo-lib";
 import { getKey } from "@bitgo/utxo-lib/dist/src/testutil";
 
-import { DescriptorNode, formatNode } from "../js/ast";
-import { mockPsbtDefault } from "./psbtFromDescriptor.util";
-import { Descriptor } from "../js";
-import { toWrappedPsbt } from "./psbt.util";
+import { DescriptorNode, formatNode } from "../js/ast/index.js";
+import { mockPsbtDefault } from "./psbtFromDescriptor.util.js";
+import { Descriptor } from "../js/index.js";
+import { toWrappedPsbt } from "./psbt.util.js";
 
 function toKeyWithPath(k: BIP32Interface, path = "*"): string {
   return k.neutered().toBase58() + "/" + path;

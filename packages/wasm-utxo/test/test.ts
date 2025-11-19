@@ -1,9 +1,14 @@
 import * as assert from "assert";
-import { Descriptor } from "../js";
-import { fixtures } from "./descriptorFixtures";
-import { assertEqualFixture } from "./descriptorUtil";
-import { fromDescriptor } from "../js/ast";
-import { formatNode } from "../js/ast";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
+import { Descriptor } from "../js/index.js";
+import { fixtures } from "./descriptorFixtures.js";
+import { assertEqualFixture } from "./descriptorUtil.js";
+import { fromDescriptor } from "../js/ast/index.js";
+import { formatNode } from "../js/ast/index.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 function removeChecksum(descriptor: string): string {
   const parts = descriptor.split("#");

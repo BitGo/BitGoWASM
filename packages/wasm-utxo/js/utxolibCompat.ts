@@ -1,6 +1,6 @@
-import type { AddressFormat } from "./address";
-import { Triple } from "./triple";
-import { UtxolibCompatNamespace } from "./wasm/wasm_utxo";
+import type { AddressFormat } from "./address.js";
+import { Triple } from "./triple.js";
+import { UtxolibCompatNamespace } from "./wasm/wasm_utxo.js";
 
 export type UtxolibName =
   | "bitcoin"

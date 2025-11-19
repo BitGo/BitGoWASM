@@ -12,6 +12,7 @@
   "private": true,
   "scripts": {
     "build": "webpack --mode production --progress --config ./webpack.config.js",
+    "typecheck": "tsc --noEmit",
     "test": "echo \"Error: no test specified\"",
     "dev": "webpack serve --mode development --progress --hot --config ./webpack.config.js",
     "fmt": "prettier --write .",
@@ -21,7 +22,6 @@
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
-    "@bitgo/utxo-lib": "^10.1.0",
     "@bitgo/wasm-utxo": "*",
     "assert": "^2.1.0",
     "buffer": "^6.0.3",

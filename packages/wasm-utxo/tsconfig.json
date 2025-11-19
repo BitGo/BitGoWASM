@@ -1,14 +1,16 @@
 {
   "compilerOptions": {
-    "module": "CommonJS",
-    "target": "ESNext",
-    "moduleResolution": "node",
+    "module": "ES2022",
+    "target": "ES2022",
+    "moduleResolution": "bundler",
     "esModuleInterop": true,
     "allowJs": true,
     "skipLibCheck": true,
     "declaration": true,
-    "noEmit": true
+    "composite": true,
+    "rootDir": "./js",
+    "outDir": "./dist/esm"
   },
-  "include": ["./js/**/*.ts", "test/**/*.ts"],
-  "exclude": ["node_modules", "./js/wasm/**/*"]
+  "include": ["./js/**/*.ts"],
+  "exclude": ["node_modules", "./js/wasm/**/*", "test"]
 }

@@ -23,6 +23,7 @@ define SHOW_WASM_SIZE
 	@find $(1) -name "*.wasm" -exec gzip -k {} \;
 	@find $(1) -name "*.wasm" -exec du -h {} \;
 	@find $(1) -name "*.wasm.gz" -exec du -h {} \;
+	@find $(1) -name "*.wasm.gz" -delete
 endef
 
 define BUILD
@@ -35,15 +36,15 @@ endef
 
 .PHONY: js/wasm/
 js/wasm/:
-	$(call BUILD,$@,nodejs)
+	$(call BUILD,$@,bundler)
 
-.PHONY: dist/node/js/wasm/
-dist/node/js/wasm/:
-	$(call BUILD,$@,nodejs)
+.PHONY: dist/esm/wasm/
+dist/esm/wasm/:
+	$(call BUILD,$@,bundler)
 
-.PHONY: dist/browser/js/wasm/
-dist/browser/js/wasm/:
-	$(call BUILD,$@,browser)
+.PHONY: dist/cjs/wasm/
+dist/cjs/wasm/:
+	$(call BUILD,$@,nodejs)
 
 .PHONY: lint
 lint:

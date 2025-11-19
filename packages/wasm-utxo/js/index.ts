@@ -1,17 +1,17 @@
-import * as wasm from "./wasm/wasm_utxo";
+import * as wasm from "./wasm/wasm_utxo.js";
 
 // we need to access the wasm module here, otherwise webpack gets all weird
 // and forgets to include it in the bundle
 void wasm;
 
-export * as address from "./address";
-export * as ast from "./ast";
-export * as utxolibCompat from "./utxolibCompat";
-export * as fixedScriptWallet from "./fixedScriptWallet";
+export * as address from "./address.js";
+export * as ast from "./ast/index.js";
+export * as utxolibCompat from "./utxolibCompat.js";
+export * as fixedScriptWallet from "./fixedScriptWallet.js";
 
-export type { CoinName } from "./coinName";
-export type { Triple } from "./triple";
-export type { AddressFormat } from "./address";
+export type { CoinName } from "./coinName.js";
+export type { Triple } from "./triple.js";
+export type { AddressFormat } from "./address.js";
 
 export type DescriptorPkType = "derivable" | "definite" | "string";
 
@@ -21,7 +21,7 @@ export type SignPsbtResult = {
   [inputIndex: number]: [pubkey: string][];
 };
 
-declare module "./wasm/wasm_utxo" {
+declare module "./wasm/wasm_utxo.js" {
   interface WrapDescriptor {
     /** These are not the same types of nodes as in the ast module */
     node(): unknown;
@@ -48,6 +48,6 @@ declare module "./wasm/wasm_utxo" {
   }
 }
 
-export { WrapDescriptor as Descriptor } from "./wasm/wasm_utxo";
-export { WrapMiniscript as Miniscript } from "./wasm/wasm_utxo";
-export { WrapPsbt as Psbt } from "./wasm/wasm_utxo";
+export { WrapDescriptor as Descriptor } from "./wasm/wasm_utxo.js";
+export { WrapMiniscript as Miniscript } from "./wasm/wasm_utxo.js";
+export { WrapPsbt as Psbt } from "./wasm/wasm_utxo.js";
