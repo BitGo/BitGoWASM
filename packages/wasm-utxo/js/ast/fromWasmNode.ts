@@ -1,5 +1,5 @@
-import { DescriptorNode, MiniscriptNode, TapTreeNode } from "./formatNode";
-import { Descriptor, Miniscript } from "../index";
+import { DescriptorNode, MiniscriptNode, TapTreeNode } from "./formatNode.js";
+import { Descriptor, Miniscript } from "../index.js";
 
 function getSingleEntry(v: unknown): [string, unknown] {
   if (typeof v === "object" && v) {

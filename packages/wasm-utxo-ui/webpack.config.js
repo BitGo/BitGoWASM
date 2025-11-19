@@ -1,5 +1,4 @@
 const path = require("path");
-const webpack = require("webpack");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 
 module.exports = {
@@ -23,13 +22,6 @@ module.exports = {
   },
   resolve: {
     extensions: [".ts", ".js"],
-    fallback: {
-      buffer: require.resolve("buffer/"),
-      assert: require.resolve("assert/"),
-      stream: require.resolve("stream-browserify"),
-      crypto: require.resolve("crypto-browserify"),
-      vm: require.resolve("vm-browserify"),
-    },
   },
   output: {
     filename: "bundle.js",
@@ -38,10 +30,6 @@ module.exports = {
   plugins: [
     new HtmlWebpackPlugin({
       template: "./src/index.html",
-    }),
-    new webpack.ProvidePlugin({
-      Buffer: ["buffer", "Buffer"],
-      process: "process/browser",
     }),
   ],
   mode: "development",

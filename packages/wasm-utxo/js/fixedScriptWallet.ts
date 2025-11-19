@@ -1,8 +1,8 @@
-import { FixedScriptWalletNamespace } from "./wasm/wasm_utxo";
-import type { UtxolibName, UtxolibNetwork, UtxolibRootWalletKeys } from "./utxolibCompat";
-import type { CoinName } from "./coinName";
-import { Triple } from "./triple";
-import { AddressFormat } from "./address";
+import { FixedScriptWalletNamespace } from "./wasm/wasm_utxo.js";
+import type { UtxolibName, UtxolibNetwork, UtxolibRootWalletKeys } from "./utxolibCompat.js";
+import type { CoinName } from "./coinName.js";
+import { Triple } from "./triple.js";
+import { AddressFormat } from "./address.js";
 
 export type NetworkName = UtxolibName | CoinName;
 
@@ -78,7 +78,7 @@ export type ParsedTransaction = {
   virtualSize: number;
 };
 
-import { BitGoPsbt as WasmBitGoPsbt } from "./wasm/wasm_utxo";
+import { BitGoPsbt as WasmBitGoPsbt } from "./wasm/wasm_utxo.js";
 
 export class BitGoPsbt {
   private constructor(private wasm: WasmBitGoPsbt) {}

@@ -1,9 +1,19 @@
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 
 import * as utxolib from "@bitgo/utxo-lib";
 import assert from "node:assert";
-import { utxolibCompat, address as addressNs, type CoinName, AddressFormat } from "../../js";
+import {
+  utxolibCompat,
+  address as addressNs,
+  type CoinName,
+  AddressFormat,
+} from "../../js/index.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 type Triple<T> = [T, T, T];
 

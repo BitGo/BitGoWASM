@@ -12,6 +12,7 @@
   "private": true,
   "scripts": {
     "build": "webpack --mode production --progress --config ./webpack.config.js",
+    "typecheck": "tsc --noEmit",
     "test": "echo \"Error: no test specified\"",
     "dev": "webpack serve --mode development --progress --hot --config ./webpack.config.js",
     "fmt": "prettier --write .",
@@ -21,19 +22,12 @@
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
-    "@bitgo/utxo-lib": "^10.1.0",
     "@bitgo/wasm-utxo": "*",
-    "assert": "^2.1.0",
-    "buffer": "^6.0.3",
-    "crypto-browserify": "^3.12.0",
     "fp-ts": "^2.16.8",
     "io-ts": "^2.2.21",
     "io-ts-types": "^0.5.19",
     "monocle-ts": "^2.3.13",
-    "newtype-ts": "^0.3.5",
-    "process": "^0.11.10",
-    "stream-browserify": "^3.0.0",
-    "vm-browserify": "^1.1.2"
+    "newtype-ts": "^0.3.5"
   },
   "devDependencies": {
     "css-loader": "^7.1.2",

@@ -1,6 +1,6 @@
 import * as assert from "assert";
 
-import { formatNode } from "../../js/ast";
+import { formatNode } from "../../js/ast/index.js";
 
 describe("formatNode", function () {
   it("formats simple nodes", function () {

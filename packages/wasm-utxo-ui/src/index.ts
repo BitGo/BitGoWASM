@@ -1,5 +1,4 @@
-import * as utxolib from "@bitgo/utxo-lib";
-import { Descriptor, Miniscript, ScriptContext } from "@bitgo/wasm-utxo";
+import { address, CoinName, Descriptor, Miniscript, ScriptContext } from "@bitgo/wasm-utxo";
 
 import "./style.css";
 
@@ -33,8 +32,8 @@ const elDescriptorAst = getElement("output-descriptor-ast", HTMLDivElement);
 const elMiniscriptAst = getElement("output-miniscript-ast", HTMLDivElement);
 const elStatus = getElement("status", HTMLElement);
 
-function toAddress(scriptPubkeyBytes: Uint8Array, network: utxolib.Network) {
-  return utxolib.address.fromOutputScript(Buffer.from(scriptPubkeyBytes), network);
+function toAddress(scriptPubkeyBytes: Uint8Array, coin: CoinName) {
+  return address.fromOutputScriptWithCoin(scriptPubkeyBytes, coin);
 }
 
 function setHtmlContent(el: HTMLElement, content: HTMLElement | undefined) {
@@ -137,7 +136,7 @@ function applyUpdateWith(
   if (scriptPubkeyBytes) {
     elScriptPubkeyBytes.value = toHex(scriptPubkeyBytes);
     try {
-      elAddress.value = toAddress(scriptPubkeyBytes, utxolib.networks.bitcoin);
+      elAddress.value = toAddress(scriptPubkeyBytes, "btc");
     } catch (e: any) {
       elAddress.value = `error: ${e.message}`;
     }

@@ -1,10 +1,15 @@
 import * as utxolib from "@bitgo/utxo-lib";
 import * as assert from "node:assert";
-import { getPsbtFixtures, PsbtStage } from "./psbtFixedScriptCompatFixtures";
-import { Descriptor, Psbt } from "../js";
+import { getPsbtFixtures, PsbtStage } from "./psbtFixedScriptCompatFixtures.js";
+import { Descriptor, Psbt } from "../js/index.js";
 
-import { getDescriptorForScriptType } from "./descriptorUtil";
-import { assertEqualPsbt, toUtxoPsbt, toWrappedPsbt, updateInputWithDescriptor } from "./psbt.util";
+import { getDescriptorForScriptType } from "./descriptorUtil.js";
+import {
+  assertEqualPsbt,
+  toUtxoPsbt,
+  toWrappedPsbt,
+  updateInputWithDescriptor,
+} from "./psbt.util.js";
 import { getKey } from "@bitgo/utxo-lib/dist/src/testutil";
 
 const rootWalletKeys = new utxolib.bitgo.RootWalletKeys(utxolib.testutil.getKeyTriple("wasm"));

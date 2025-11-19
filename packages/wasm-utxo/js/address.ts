@@ -1,5 +1,5 @@
-import { AddressNamespace } from "./wasm/wasm_utxo";
-import type { CoinName } from "./coinName";
+import { AddressNamespace } from "./wasm/wasm_utxo.js";
+import type { CoinName } from "./coinName.js";
 
 /**
  * Most coins only have one unambiguous address format (base58check and bech32/bech32m)

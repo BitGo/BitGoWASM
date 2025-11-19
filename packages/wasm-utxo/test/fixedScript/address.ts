@@ -2,7 +2,7 @@ import assert from "node:assert";
 
 import * as utxolib from "@bitgo/utxo-lib";
 
-import { AddressFormat, fixedScriptWallet } from "../../js";
+import { AddressFormat, fixedScriptWallet } from "../../js/index.js";
 
 type Triple<T> = [T, T, T];
 

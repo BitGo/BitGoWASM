@@ -1,6 +1,6 @@
 import * as utxolib from "@bitgo/utxo-lib";
-import { toUtxoPsbt, toWrappedPsbt } from "./psbt.util";
-import { Descriptor } from "../js";
+import { toUtxoPsbt, toWrappedPsbt } from "./psbt.util.js";
+import { Descriptor } from "../js/index.js";
 
 export function createScriptPubKeyFromDescriptor(descriptor: Descriptor, index?: number): Buffer {
   if (index === undefined) {
