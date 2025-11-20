@@ -3,7 +3,8 @@
   "compilerOptions": {
     "module": "CommonJS",
     "moduleResolution": "node",
-    "rootDir": "./js",
+    "rootDir": ".",
     "outDir": "./dist/cjs"
-  }
+  },
+  "exclude": ["test/**/*"]
 }

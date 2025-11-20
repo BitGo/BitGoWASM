@@ -8,7 +8,7 @@ console.log("Testing CommonJS require() compatibility...\n");
 // Use standard CommonJS require
 let wasmUtxo;
 try {
-  wasmUtxo = require("../dist/cjs/index.js");
+  wasmUtxo = require("../dist/cjs/js/index.js");
 } catch (error) {
   console.error("✗ require() failed:", error.message);
   process.exit(1);
