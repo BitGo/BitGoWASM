@@ -169,4 +169,32 @@ export class BitGoPsbt {
   verifyReplayProtectionSignature(inputIndex: number, replayProtection: ReplayProtection): boolean {
     return this.wasm.verify_replay_protection_signature(inputIndex, replayProtection);
   }
+
+  /**
+   * Serialize the PSBT to bytes
+   *
+   * @returns The serialized PSBT as a byte array
+   */
+  serialize(): Uint8Array {
+    return this.wasm.serialize();
+  }
+
+  /**
+   * Finalize all inputs in the PSBT
+   *
+   * @throws Error if any input failed to finalize
+   */
+  finalizeAllInputs(): void {
+    this.wasm.finalize_all_inputs();
+  }
+
+  /**
+   * Extract the final transaction from a finalized PSBT
+   *
+   * @returns The serialized transaction bytes
+   * @throws Error if the PSBT is not fully finalized or extraction fails
+   */
+  extractTransaction(): Uint8Array {
+    return this.wasm.extract_transaction();
+  }
 }

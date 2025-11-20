@@ -265,4 +265,52 @@ impl BitGoPsbt {
                 ))
             })
     }
+
+    /// Serialize the PSBT to bytes
+    ///
+    /// # Returns
+    /// The serialized PSBT as a byte array
+    pub fn serialize(&self) -> Result<Vec<u8>, WasmUtxoError> {
+        self.psbt
+            .serialize()
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to serialize PSBT: {}", e)))
+    }
+
+    /// Finalize all inputs in the PSBT
+    ///
+    /// This method attempts to finalize all inputs in the PSBT, computing the final
+    /// scriptSig and witness data for each input.
+    ///
+    /// # Returns
+    /// - `Ok(())` if all inputs were successfully finalized
+    /// - `Err(WasmUtxoError)` if any input failed to finalize
+    pub fn finalize_all_inputs(&mut self) -> Result<(), WasmUtxoError> {
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::verification_only();
+        self.psbt.finalize_mut(&secp).map_err(|errors| {
+            WasmUtxoError::new(&format!(
+                "Failed to finalize {} input(s): {}",
+                errors.len(),
+                errors.join("; ")
+            ))
+        })
+    }
+
+    /// Extract the final transaction from a finalized PSBT
+    ///
+    /// This method should be called after all inputs have been finalized.
+    /// It extracts the fully signed transaction.
+    ///
+    /// # Returns
+    /// - `Ok(Vec<u8>)` containing the serialized transaction bytes
+    /// - `Err(WasmUtxoError)` if the PSBT is not fully finalized or extraction fails
+    pub fn extract_transaction(&self) -> Result<Vec<u8>, WasmUtxoError> {
+        let psbt = self.psbt.psbt().clone();
+        let tx = psbt
+            .extract_tx()
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to extract transaction: {}", e)))?;
+
+        // Serialize the transaction
+        use miniscript::bitcoin::consensus::encode::serialize;
+        Ok(serialize(&tx))
+    }
 }
