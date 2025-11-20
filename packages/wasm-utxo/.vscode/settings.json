@@ -1,0 +1,9 @@
+{
+  "makefile.configureOnOpen": false,
+  "mochaExplorer.files": "test/**/*.ts",
+  "mochaExplorer.logpanel": true,
+  "mochaExplorer.esmLoader": true,
+  "mochaExplorer.nodeArgv": ["--import=tsx/esm", "--experimental-wasm-modules"],
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.extraArgs": ["--", "-W", "clippy::all"]
+}
