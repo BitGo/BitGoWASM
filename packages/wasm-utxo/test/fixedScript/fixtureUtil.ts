@@ -136,3 +136,13 @@ export function loadWalletKeysFromFixture(network: string): utxolib.bitgo.RootWa
 
   return new utxolib.bitgo.RootWalletKeys(xpubs as Triple<utxolib.BIP32Interface>);
 }
+
+/**
+ * Get extracted transaction hex from fixture
+ */
+export function getExtractedTransactionHex(fixture: Fixture): string {
+  if (fixture.extractedTransaction === null) {
+    throw new Error("Fixture does not have an extracted transaction");
+  }
+  return fixture.extractedTransaction;
+}
