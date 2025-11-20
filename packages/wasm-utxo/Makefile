@@ -38,12 +38,12 @@ endef
 js/wasm/:
 	$(call BUILD,$@,bundler)
 
-.PHONY: dist/esm/wasm/
-dist/esm/wasm/:
+.PHONY: dist/esm/js/wasm/
+dist/esm/js/wasm/:
 	$(call BUILD,$@,bundler)
 
-.PHONY: dist/cjs/wasm/
-dist/cjs/wasm/:
+.PHONY: dist/cjs/js/wasm/
+dist/cjs/js/wasm/:
 	$(call BUILD,$@,nodejs)
 
 .PHONY: lint

@@ -15,24 +15,24 @@
   "exports": {
     ".": {
       "import": {
-        "types": "./dist/esm/index.d.ts",
-        "default": "./dist/esm/index.js"
+        "types": "./dist/esm/js/index.d.ts",
+        "default": "./dist/esm/js/index.js"
       },
       "require": {
-        "types": "./dist/cjs/index.d.ts",
-        "default": "./dist/cjs/index.js"
+        "types": "./dist/cjs/js/index.d.ts",
+        "default": "./dist/cjs/js/index.js"
       }
     }
   },
-  "main": "./dist/cjs/index.js",
-  "module": "./dist/esm/index.js",
-  "types": "./dist/esm/index.d.ts",
+  "main": "./dist/cjs/js/index.js",
+  "module": "./dist/esm/js/index.js",
+  "types": "./dist/esm/js/index.d.ts",
   "sideEffects": [
-    "./dist/esm/wasm/wasm_utxo.js",
-    "./dist/cjs/wasm/wasm_utxo.js"
+    "./dist/esm/js/wasm/wasm_utxo.js",
+    "./dist/cjs/js/wasm/wasm_utxo.js"
   ],
   "scripts": {
-    "test": "npm run test:mocha && npm run test:wasm-pack",
+    "test": "npm run test:mocha && npm run test:wasm-pack && npm run test:imports",
     "test:mocha": "mocha --recursive test",
     "test:wasm-pack": "npm run test:wasm-pack-node && npm run test:wasm-pack-chrome",
     "test:wasm-pack-node": "wasm-pack test --node",
@@ -40,7 +40,7 @@
     "test:esm-import": "node --experimental-wasm-modules bundler-test/test-esm-import.mjs",
     "test:cjs-import": "node bundler-test/test-cjs-import.cjs",
     "test:imports": "npm run test:esm-import && npm run test:cjs-import",
-    "build:wasm": "make js/wasm/ && make dist/esm/wasm/ && make dist/cjs/wasm/",
+    "build:wasm": "make js/wasm/ && make dist/esm/js/wasm/ && make dist/cjs/js/wasm/",
     "build:ts-esm": "tsc",
     "build:ts-cjs": "tsc --project tsconfig.cjs.json",
     "build:ts": "npm run build:ts-esm && npm run build:ts-cjs",

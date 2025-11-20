@@ -8,9 +8,9 @@
     "skipLibCheck": true,
     "declaration": true,
     "composite": true,
-    "rootDir": "./js",
+    "rootDir": ".",
     "outDir": "./dist/esm"
   },
-  "include": ["./js/**/*.ts"],
-  "exclude": ["node_modules", "./js/wasm/**/*", "test"]
+  "include": ["./js/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "./js/wasm/**/*"]
 }

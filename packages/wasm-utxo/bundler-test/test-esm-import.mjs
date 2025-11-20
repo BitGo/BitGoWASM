@@ -3,7 +3,7 @@
  * Run with: node --experimental-wasm-modules bundler-test/test-esm-import.mjs
  */
 
-import { Descriptor, Psbt, address, fixedScriptWallet } from "../dist/esm/index.js";
+import { Descriptor, Psbt, address, fixedScriptWallet } from "../dist/esm/js/index.js";
 
 console.log("Testing ESM import...\n");
 
