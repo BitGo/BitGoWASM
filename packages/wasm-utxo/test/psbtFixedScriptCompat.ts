@@ -130,26 +130,28 @@ function describeUpdateInputWithDescriptor(
   });
 }
 
-fixtures.forEach(({ psbt, scriptType, stage }) => {
-  describe(`PSBT fixture ${scriptType} ${stage}`, function () {
-    let buf: Buffer;
-    let wrappedPsbt: Psbt;
+describe("PSBT fixture", function () {
+  fixtures.forEach(({ psbt, scriptType, stage }) => {
+    describe(`PSBT fixture ${scriptType} ${stage}`, function () {
+      let buf: Buffer;
+      let wrappedPsbt: Psbt;
 
-    before(function () {
-      buf = psbt.toBuffer();
-      wrappedPsbt = toWrappedPsbt(buf);
+      before(function () {
+        buf = psbt.toBuffer();
+        wrappedPsbt = toWrappedPsbt(buf);
+      });
+
+      it("should map to same hex", function () {
+        assertEqualBuffer(buf, wrappedPsbt.serialize());
+      });
+
+      it("should round-trip utxolib -> ms -> utxolib", function () {
+        assertEqualBuffer(buf, toUtxoPsbt(wrappedPsbt).toBuffer());
+      });
+
+      if (stage === "bare") {
+        describeUpdateInputWithDescriptor(psbt, scriptType);
+      }
     });
-
-    it("should map to same hex", function () {
-      assertEqualBuffer(buf, wrappedPsbt.serialize());
-    });
-
-    it("should round-trip utxolib -> ms -> utxolib", function () {
-      assertEqualBuffer(buf, toUtxoPsbt(wrappedPsbt).toBuffer());
-    });
-
-    if (stage === "bare") {
-      describeUpdateInputWithDescriptor(psbt, scriptType);
-    }
   });
 });

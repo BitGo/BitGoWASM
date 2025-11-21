@@ -116,10 +116,12 @@ function runTest(
   });
 }
 
-scriptTypes.forEach((scriptType) => {
-  index.forEach((index) => {
-    scope.forEach((scope) => {
-      runTest(scriptType, index, scope);
+describe("fixedScript to descriptor", function () {
+  scriptTypes.forEach((scriptType) => {
+    index.forEach((index) => {
+      scope.forEach((scope) => {
+        runTest(scriptType, index, scope);
+      });
     });
   });
 });

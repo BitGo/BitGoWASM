@@ -117,10 +117,12 @@ function runTest(network: utxolib.Network, addressFormat?: AddressFormat) {
   });
 }
 
-utxolib.getNetworkList().forEach((network) => {
-  runTest(network);
-  const mainnet = utxolib.getMainnet(network);
-  if (mainnet === utxolib.networks.bitcoincash || mainnet === utxolib.networks.ecash) {
-    runTest(network, "cashaddr");
-  }
+describe("utxolib compatible address encoding/decoding", function () {
+  utxolib.getNetworkList().forEach((network) => {
+    runTest(network);
+    const mainnet = utxolib.getMainnet(network);
+    if (mainnet === utxolib.networks.bitcoincash || mainnet === utxolib.networks.ecash) {
+      runTest(network, "cashaddr");
+    }
+  });
 });

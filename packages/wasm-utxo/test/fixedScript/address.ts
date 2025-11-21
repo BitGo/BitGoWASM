@@ -105,13 +105,15 @@ function runTest(
   });
 }
 
-utxolib.getNetworkList().forEach((network) => {
-  runTest(network);
-  runTest(network, { derivationPrefixes: ["m/1/2", "m/0/0", "m/0/0"] });
-  if (
-    utxolib.getMainnet(network) === utxolib.networks.bitcoincash ||
-    utxolib.getMainnet(network) === utxolib.networks.ecash
-  ) {
-    runTest(network, { addressFormat: "cashaddr" });
-  }
+describe("address for networks", function () {
+  utxolib.getNetworkList().forEach((network) => {
+    runTest(network);
+    runTest(network, { derivationPrefixes: ["m/1/2", "m/0/0", "m/0/0"] });
+    if (
+      utxolib.getMainnet(network) === utxolib.networks.bitcoincash ||
+      utxolib.getMainnet(network) === utxolib.networks.ecash
+    ) {
+      runTest(network, { addressFormat: "cashaddr" });
+    }
+  });
 });
