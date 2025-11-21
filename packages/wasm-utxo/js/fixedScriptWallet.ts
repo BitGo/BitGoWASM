@@ -56,11 +56,21 @@ type ReplayProtection =
 
 export type ScriptId = { chain: number; index: number };
 
+export type InputScriptType =
+  | "p2shP2pk"
+  | "p2sh"
+  | "p2shP2wsh"
+  | "p2wsh"
+  | "p2trLegacy"
+  | "p2trMusig2ScriptPath"
+  | "p2trMusig2KeyPath";
+
 export type ParsedInput = {
   address: string;
   script: Uint8Array;
   value: bigint;
   scriptId: ScriptId | null;
+  scriptType: InputScriptType;
 };
 
 export type ParsedOutput = {

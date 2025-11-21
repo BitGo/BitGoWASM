@@ -1,8 +1,28 @@
 import assert from "node:assert";
 import * as utxolib from "@bitgo/utxo-lib";
 import { fixedScriptWallet } from "../../js/index.js";
-import { BitGoPsbt } from "../../js/fixedScriptWallet.js";
+import { BitGoPsbt, InputScriptType } from "../../js/fixedScriptWallet.js";
 import { loadPsbtFixture, loadWalletKeysFromFixture, getPsbtBuffer } from "./fixtureUtil.js";
+
+function getExpectedInputScriptType(fixtureScriptType: string): InputScriptType {
+  // Map fixture types to InputScriptType values
+  // Based on the Rust mapping in src/fixed_script_wallet/test_utils/fixtures.rs
+  switch (fixtureScriptType) {
+    case "p2shP2pk":
+    case "p2sh":
+    case "p2shP2wsh":
+    case "p2wsh":
+      return fixtureScriptType;
+    case "p2tr":
+      return "p2trLegacy";
+    case "p2trMusig2":
+      return "p2trMusig2ScriptPath";
+    case "taprootKeyPathSpend":
+      return "p2trMusig2KeyPath";
+    default:
+      throw new Error(`Unknown fixture script type: ${fixtureScriptType}`);
+  }
+}
 
 function getOtherWalletKeys(): utxolib.bitgo.RootWalletKeys {
   const otherWalletKeys = utxolib.testutil.getKeyTriple("too many secrets");
@@ -34,9 +54,11 @@ describe("parseTransactionWithWalletKeys", function () {
       let fullsignedPsbtBytes: Buffer;
       let bitgoPsbt: BitGoPsbt;
       let rootWalletKeys: utxolib.bitgo.RootWalletKeys;
+      let fixture: ReturnType<typeof loadPsbtFixture>;
 
       before(function () {
-        fullsignedPsbtBytes = getPsbtBuffer(loadPsbtFixture(networkName, "fullsigned"));
+        fixture = loadPsbtFixture(networkName, "fullsigned");
+        fullsignedPsbtBytes = getPsbtBuffer(fixture);
         bitgoPsbt = fixedScriptWallet.BitGoPsbt.fromBytes(fullsignedPsbtBytes, networkName);
         rootWalletKeys = loadWalletKeysFromFixture(networkName);
       });
@@ -115,6 +137,23 @@ describe("parseTransactionWithWalletKeys", function () {
         // Verify virtual size
         assert.ok(typeof parsed.virtualSize === "number", "Virtual size should be a number");
         assert.ok(parsed.virtualSize > 0, "Virtual size should be > 0");
+      });
+
+      it("should parse inputs with correct scriptType", function () {
+        const parsed = bitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
+          outputScripts: [replayProtectionScript],
+        });
+
+        // Verify all inputs have scriptType matching fixture
+        parsed.inputs.forEach((input, i) => {
+          const fixtureInput = fixture.psbtInputs[i];
+          const expectedScriptType = getExpectedInputScriptType(fixtureInput.type);
+          assert.strictEqual(
+            input.scriptType,
+            expectedScriptType,
+            `Input ${i} scriptType should be ${expectedScriptType}, got ${input.scriptType}`,
+          );
+        });
       });
 
       it("should fail to parse with other wallet keys", function () {

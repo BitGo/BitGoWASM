@@ -518,6 +518,67 @@ pub struct ScriptId {
     pub index: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputScriptType {
+    P2shP2pk,
+    P2sh,
+    P2shP2wsh,
+    P2wsh,
+    P2trLegacy,
+    P2trMusig2ScriptPath,
+    P2trMusig2KeyPath,
+}
+
+impl InputScriptType {
+    pub fn from_script_id(script_id: ScriptId, psbt_input: &Input) -> Result<Self, String> {
+        let chain = Chain::try_from(script_id.chain).map_err(|e| e.to_string())?;
+        match chain {
+            Chain::P2shExternal | Chain::P2shInternal => Ok(InputScriptType::P2sh),
+            Chain::P2shP2wshExternal | Chain::P2shP2wshInternal => Ok(InputScriptType::P2shP2wsh),
+            Chain::P2wshExternal | Chain::P2wshInternal => Ok(InputScriptType::P2wsh),
+            Chain::P2trInternal | Chain::P2trExternal => Ok(InputScriptType::P2trLegacy),
+            Chain::P2trMusig2Internal | Chain::P2trMusig2External => {
+                // check if tap_script_sigs or tap_scripts are set
+                if !psbt_input.tap_script_sigs.is_empty() || !psbt_input.tap_scripts.is_empty() {
+                    Ok(InputScriptType::P2trMusig2ScriptPath)
+                } else {
+                    Ok(InputScriptType::P2trMusig2KeyPath)
+                }
+            }
+        }
+    }
+
+    /// Detects the script type from a script_id chain and PSBT input metadata
+    ///
+    /// # Arguments
+    /// - `script_id`: Optional script ID containing chain information (None for replay protection inputs)
+    /// - `psbt_input`: The PSBT input containing signature metadata
+    /// - `output_script`: The output script being spent
+    /// - `replay_protection`: Replay protection configuration
+    ///
+    /// # Returns
+    /// - `Ok(InputScriptType)` with the detected script type
+    /// - `Err(String)` if the script type cannot be determined
+    pub fn detect(
+        script_id: Option<ScriptId>,
+        psbt_input: &Input,
+        output_script: &ScriptBuf,
+        replay_protection: &ReplayProtection,
+    ) -> Result<Self, String> {
+        // For replay protection inputs (no script_id), detect from output script
+        match script_id {
+            Some(id) => Self::from_script_id(id, psbt_input),
+            None => {
+                if replay_protection.is_replay_protection_input(output_script) {
+                    Ok(InputScriptType::P2shP2pk)
+                } else {
+                    Err("Input without script_id is not a replay protection input".to_string())
+                }
+            }
+        }
+    }
+}
+
 /// Parsed input from a PSBT transaction
 #[derive(Debug, Clone)]
 pub struct ParsedInput {
@@ -525,6 +586,7 @@ pub struct ParsedInput {
     pub script: Vec<u8>,
     pub value: u64,
     pub script_id: Option<ScriptId>,
+    pub script_type: InputScriptType,
 }
 
 impl ParsedInput {
@@ -576,11 +638,17 @@ impl ParsedInput {
         )
         .map_err(ParseInputError::Address)?;
 
+        // Detect the script type using script_id chain information
+        let script_type =
+            InputScriptType::detect(script_id, psbt_input, output_script, replay_protection)
+                .map_err(ParseInputError::ScriptTypeDetection)?;
+
         Ok(Self {
             address,
             script: output_script.to_bytes(),
             value: value.to_sat(),
             script_id,
+            script_type,
         })
     }
 }
@@ -598,6 +666,8 @@ pub enum ParseInputError {
     WalletValidation(String),
     /// Failed to generate address for input
     Address(crate::address::AddressError),
+    /// Failed to detect script type for input
+    ScriptTypeDetection(String),
 }
 
 impl std::fmt::Display for ParseInputError {
@@ -617,6 +687,9 @@ impl std::fmt::Display for ParseInputError {
             }
             ParseInputError::Address(error) => {
                 write!(f, "failed to generate address: {}", error)
+            }
+            ParseInputError::ScriptTypeDetection(error) => {
+                write!(f, "failed to detect script type: {}", error)
             }
         }
     }
