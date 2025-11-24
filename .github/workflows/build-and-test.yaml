@@ -75,6 +75,10 @@ jobs:
       - name: Check Source Code Formatting
         run: npm run check-fmt
 
+      - name: wasm-utxo / Lint
+        run: npm run lint
+        working-directory: packages/wasm-utxo
+
       - name: wasm-utxo / cargo test
         run: cargo test --workspace
         working-directory: packages/wasm-utxo
