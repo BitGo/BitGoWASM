@@ -9,7 +9,9 @@
     "declaration": true,
     "composite": true,
     "rootDir": ".",
-    "outDir": "./dist/esm"
+    "outDir": "./dist/esm",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
   "include": ["./js/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "./js/wasm/**/*"]

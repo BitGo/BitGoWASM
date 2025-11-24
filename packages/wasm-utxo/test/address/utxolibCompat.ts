@@ -15,8 +15,6 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-type Triple<T> = [T, T, T];
-
 type Fixture = [type: string, script: string, address: string];
 
 function getCoinNameForNetwork(name: string): CoinName {

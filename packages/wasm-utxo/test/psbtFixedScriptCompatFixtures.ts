@@ -18,7 +18,7 @@ export function toPsbtWithPrevOutOnly(psbt: utxolib.bitgo.UtxoPsbt) {
       ...(witnessUtxo ? { witnessUtxo } : { nonWitnessUtxo }),
     });
   });
-  psbt.txOutputs.forEach((output, vout) => {
+  psbt.txOutputs.forEach((output) => {
     psbtCopy.addOutput(output);
   });
   return psbtCopy;

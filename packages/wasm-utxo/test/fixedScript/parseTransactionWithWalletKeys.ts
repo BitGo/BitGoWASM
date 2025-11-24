@@ -27,11 +27,6 @@ describe("parseTransactionWithWalletKeys", function () {
     );
   });
 
-  function hasReplayProtection(network: utxolib.Network): boolean {
-    const mainnet = utxolib.getMainnet(network);
-    return mainnet === utxolib.networks.bitcoincash;
-  }
-
   supportedNetworks.forEach((network) => {
     const networkName = utxolib.getNetworkName(network);
 
