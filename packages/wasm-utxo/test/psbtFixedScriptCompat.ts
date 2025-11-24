@@ -94,7 +94,7 @@ function describeUpdateInputWithDescriptor(
   describe("psbt signWithXprv", function () {
     type KeyName = utxolib.bitgo.KeyName | "unrelated";
     function signWithKey(keys: KeyName[], { checkFinalized = false } = {}) {
-      it(`signs the input with keys ${keys}`, function () {
+      it(`signs the input with keys ${keys.join(", ")}`, function () {
         const psbt = getWrappedPsbtWithDescriptorInfo();
         keys.forEach((keyName) => {
           const key = keyName === "unrelated" ? getKey(keyName) : rootWalletKeys[keyName];

@@ -28,7 +28,7 @@ function getPsbtWithScriptTypeAndStage(
   keys: RootWalletKeys,
   scriptType: utxolib.bitgo.outputScripts.ScriptType2Of3,
   stage: PsbtStage,
-) {
+): utxolib.bitgo.UtxoPsbt {
   if (stage === "bare") {
     const psbt = getPsbtWithScriptTypeAndStage(keys, scriptType, "unsigned");
     return toPsbtWithPrevOutOnly(psbt);

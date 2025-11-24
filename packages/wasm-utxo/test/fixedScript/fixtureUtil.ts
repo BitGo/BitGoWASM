@@ -89,7 +89,7 @@ export type Fixture = {
   psbtInputsFinalized: PsbtInput[] | null;
   outputs: Output[];
   psbtOutputs: PsbtOutput[];
-  extractedTransaction: any | null;
+  extractedTransaction: string | null;
 };
 
 /**

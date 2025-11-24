@@ -5,10 +5,10 @@ import { DescriptorNode, MiniscriptNode, formatNode } from "../js/ast/index.js";
 
 async function assertEqualJSON(path: string, value: unknown): Promise<void> {
   try {
-    const data = JSON.parse(await fs.readFile(path, "utf8"));
+    const data: unknown = JSON.parse(await fs.readFile(path, "utf8"));
     assert.deepStrictEqual(data, value);
-  } catch (e: any) {
-    if (e.code === "ENOENT") {
+  } catch (e: unknown) {
+    if (typeof e === "object" && e !== null && "code" in e && e.code === "ENOENT") {
       await fs.writeFile(path, JSON.stringify(value, null, 2));
       throw new Error("Expected file not found, wrote it instead");
     }

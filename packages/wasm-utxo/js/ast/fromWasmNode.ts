@@ -86,15 +86,16 @@ function fromUnknown(v: unknown): Node | Node[] {
         return node("and_v", value);
       case "AndB":
         return node("and_b", value);
-      case "AndOr":
+      case "AndOr": {
         if (!Array.isArray(value)) {
           throw new Error(`Invalid AndOr node: ${JSON.stringify(value)}`);
         }
-        const [cond, success, failure] = value;
+        const [cond, success, failure] = value as [unknown, unknown, unknown];
         if (failure === false) {
           return node("and_n", [cond, success]);
         }
         return node("andor", [cond, success, failure]);
+      }
 
       // Disjunctions
       case "OrB":

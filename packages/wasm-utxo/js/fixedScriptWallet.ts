@@ -112,7 +112,10 @@ export class BitGoPsbt {
     walletKeys: WalletKeys,
     replayProtection: ReplayProtection,
   ): ParsedTransaction {
-    return this.wasm.parse_transaction_with_wallet_keys(walletKeys, replayProtection);
+    return this.wasm.parse_transaction_with_wallet_keys(
+      walletKeys,
+      replayProtection,
+    ) as ParsedTransaction;
   }
 
   /**
@@ -127,7 +130,7 @@ export class BitGoPsbt {
    * @note This method does NOT validate wallet inputs. It only parses outputs.
    */
   parseOutputsWithWalletKeys(walletKeys: WalletKeys): ParsedOutput[] {
-    return this.wasm.parse_outputs_with_wallet_keys(walletKeys);
+    return this.wasm.parse_outputs_with_wallet_keys(walletKeys) as ParsedOutput[];
   }
 
   /**
