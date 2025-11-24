@@ -88,16 +88,16 @@ function formatN(n: Node | Node[]): string {
   if (n && typeof n === "object") {
     const entries = Object.entries(n);
     if (entries.length !== 1) {
-      throw new Error(`Invalid node: ${n}`);
+      throw new Error(`Invalid node: ${JSON.stringify(n)}`);
     }
-    const [name, value] = entries[0];
+    const [name, value] = entries[0] as [string, Node | Node[]];
     if (name === "tr" && Array.isArray(value)) {
-      const [key, tree] = value;
+      const [key, tree] = value as [Node, TapTree];
       return formatN({ tr: formatN([key, formatTr(tree)]) });
     }
     return `${name}(${formatN(value)})`;
   }
-  throw new Error(`Invalid node: ${n}`);
+  throw new Error(`Invalid node: ${JSON.stringify(n)}`);
 }
 
 export type TapTreeNode = TapTree;

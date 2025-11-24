@@ -18,7 +18,7 @@ export function toPsbtWithPrevOutOnly(psbt: utxolib.bitgo.UtxoPsbt) {
       ...(witnessUtxo ? { witnessUtxo } : { nonWitnessUtxo }),
     });
   });
-  psbt.txOutputs.forEach((output, vout) => {
+  psbt.txOutputs.forEach((output) => {
     psbtCopy.addOutput(output);
   });
   return psbtCopy;
@@ -28,7 +28,7 @@ function getPsbtWithScriptTypeAndStage(
   keys: RootWalletKeys,
   scriptType: utxolib.bitgo.outputScripts.ScriptType2Of3,
   stage: PsbtStage,
-) {
+): utxolib.bitgo.UtxoPsbt {
   if (stage === "bare") {
     const psbt = getPsbtWithScriptTypeAndStage(keys, scriptType, "unsigned");
     return toPsbtWithPrevOutOnly(psbt);

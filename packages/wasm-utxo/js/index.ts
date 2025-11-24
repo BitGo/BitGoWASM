@@ -27,6 +27,7 @@ declare module "./wasm/wasm_utxo.js" {
     node(): unknown;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace WrapDescriptor {
     function fromString(descriptor: string, pkType: DescriptorPkType): WrapDescriptor;
     function fromStringDetectType(descriptor: string): WrapDescriptor;
@@ -37,6 +38,7 @@ declare module "./wasm/wasm_utxo.js" {
     node(): unknown;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace WrapMiniscript {
     function fromString(miniscript: string, ctx: ScriptContext): WrapMiniscript;
     function fromBitcoinScript(script: Uint8Array, ctx: ScriptContext): WrapMiniscript;

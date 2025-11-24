@@ -15,8 +15,6 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-type Triple<T> = [T, T, T];
-
 type Fixture = [type: string, script: string, address: string];
 
 function getCoinNameForNetwork(name: string): CoinName {
@@ -75,7 +73,7 @@ async function getFixtures(name: string, addressFormat?: AddressFormat): Promise
   const filename = addressFormat ? `${name}-${addressFormat}` : name;
   const fixturePath = path.join(__dirname, "..", "fixtures", "address", `${filename}.json`);
   const fixtures = await fs.readFile(fixturePath, "utf8");
-  return JSON.parse(fixtures);
+  return JSON.parse(fixtures) as Fixture[];
 }
 
 function runTest(network: utxolib.Network, addressFormat?: AddressFormat) {
@@ -87,9 +85,9 @@ function runTest(network: utxolib.Network, addressFormat?: AddressFormat) {
       fixtures = await getFixtures(name, addressFormat);
     });
 
-    it("should convert to utxolib compatible network", async function () {
+    it("should convert to utxolib compatible network", function () {
       for (const fixture of fixtures) {
-        const [_type, script, addressRef] = fixture;
+        const [, script, addressRef] = fixture;
         const scriptBuf = Buffer.from(script, "hex");
         const address = utxolibCompat.fromOutputScript(scriptBuf, network, addressFormat);
         assert.strictEqual(address, addressRef);
@@ -98,11 +96,11 @@ function runTest(network: utxolib.Network, addressFormat?: AddressFormat) {
       }
     });
 
-    it("should convert using coin name", async function () {
+    it("should convert using coin name", function () {
       const coinName = getCoinNameForNetwork(name);
 
       for (const fixture of fixtures) {
-        const [_type, script, addressRef] = fixture;
+        const [, script, addressRef] = fixture;
         const scriptBuf = Buffer.from(script, "hex");
 
         // Test encoding (script -> address)
@@ -117,10 +115,12 @@ function runTest(network: utxolib.Network, addressFormat?: AddressFormat) {
   });
 }
 
-utxolib.getNetworkList().forEach((network) => {
-  runTest(network);
-  const mainnet = utxolib.getMainnet(network);
-  if (mainnet === utxolib.networks.bitcoincash || mainnet === utxolib.networks.ecash) {
-    runTest(network, "cashaddr");
-  }
+describe("utxolib compatible address encoding/decoding", function () {
+  utxolib.getNetworkList().forEach((network) => {
+    runTest(network);
+    const mainnet = utxolib.getMainnet(network);
+    if (mainnet === utxolib.networks.bitcoincash || mainnet === utxolib.networks.ecash) {
+      runTest(network, "cashaddr");
+    }
+  });
 });

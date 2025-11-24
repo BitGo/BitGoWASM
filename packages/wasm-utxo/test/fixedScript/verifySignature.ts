@@ -47,7 +47,7 @@ function getExpectedSignatures(
       // Regular multisig uses user + bitgo
       return { user: true, backup: false, bitgo: true };
     default:
-      throw new Error(`Unknown signature stage: ${signatureStage}`);
+      throw new Error(`Unknown signature stage: ${String(signatureStage)}`);
   }
 }
 

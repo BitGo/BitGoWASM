@@ -101,7 +101,7 @@ describe("Descriptor fixtures", function () {
         assert.strictEqual(descriptorString, fixture.descriptor);
       });
 
-      it("should parse (pkType derivable)", async function () {
+      it("should parse (pkType derivable)", function () {
         const descriptor = Descriptor.fromString(fixture.descriptor, "derivable");
 
         if (isDerivable(i)) {
@@ -117,11 +117,12 @@ describe("Descriptor fixtures", function () {
             descriptor.atDerivationIndex(fixture.index ?? 0).scriptPubkey(),
           );
           assert.strictEqual(scriptPubKey.toString("hex"), fixture.script);
-          if (descriptor.descType() !== "Bare") {
+          const descType = descriptor.descType() as string;
+          if (descType !== "Bare") {
             assert.strictEqual(
               scriptPubKey.length,
-              getScriptPubKeyLength(descriptor.descType()),
-              `Unexpected scriptPubKey length for descriptor ${descriptor.descType()}: ${scriptPubKey.length}`,
+              getScriptPubKeyLength(descType),
+              `Unexpected scriptPubKey length for descriptor ${descType}: ${scriptPubKey.length}`,
             );
           }
         } else {
@@ -133,7 +134,7 @@ describe("Descriptor fixtures", function () {
         assertKnownDescriptorType(descriptor);
       });
 
-      it("can round-trip with formatNode(toWasmNode(.))", async function () {
+      it("can round-trip with formatNode(toWasmNode(.))", function () {
         const ast = fromDescriptor(descriptor);
         assert.strictEqual(formatNode(ast), removeChecksum(descriptor.toString()));
       });

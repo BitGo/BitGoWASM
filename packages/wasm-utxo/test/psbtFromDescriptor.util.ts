@@ -39,7 +39,7 @@ export function toDerivedDescriptorWalletOutput(
   const script = createScriptPubKeyFromDescriptor(derivedDescriptor);
   if (!script.equals(output.witnessUtxo.script)) {
     throw new Error(
-      `Script mismatch: descriptor ${output.descriptorName} ${descriptor.toString()} script=${script}`,
+      `Script mismatch: descriptor ${output.descriptorName} ${descriptor.toString()} script=${script.toString("hex")}`,
     );
   }
   return {
@@ -67,7 +67,7 @@ function updateInputsWithDescriptors(psbt: utxolib.bitgo.UtxoPsbt, descriptors: 
     wrappedPsbt.updateInputWithDescriptor(inputIndex, descriptor);
   }
   const unwrappedPsbt = toUtxoPsbt(wrappedPsbt);
-  for (const inputIndex in psbt.txInputs) {
+  for (let inputIndex = 0; inputIndex < psbt.txInputs.length; inputIndex++) {
     psbt.data.inputs[inputIndex] = unwrappedPsbt.data.inputs[inputIndex];
   }
 }
@@ -83,7 +83,7 @@ function updateOutputsWithDescriptors(
     }
   }
   const unwrappedPsbt = toUtxoPsbt(wrappedPsbt);
-  for (const outputIndex in psbt.txOutputs) {
+  for (let outputIndex = 0; outputIndex < psbt.txOutputs.length; outputIndex++) {
     psbt.data.outputs[outputIndex] = unwrappedPsbt.data.outputs[outputIndex];
   }
 }

@@ -94,7 +94,7 @@ function describeUpdateInputWithDescriptor(
   describe("psbt signWithXprv", function () {
     type KeyName = utxolib.bitgo.KeyName | "unrelated";
     function signWithKey(keys: KeyName[], { checkFinalized = false } = {}) {
-      it(`signs the input with keys ${keys}`, function () {
+      it(`signs the input with keys ${keys.join(", ")}`, function () {
         const psbt = getWrappedPsbtWithDescriptorInfo();
         keys.forEach((keyName) => {
           const key = keyName === "unrelated" ? getKey(keyName) : rootWalletKeys[keyName];
@@ -130,26 +130,28 @@ function describeUpdateInputWithDescriptor(
   });
 }
 
-fixtures.forEach(({ psbt, scriptType, stage }) => {
-  describe(`PSBT fixture ${scriptType} ${stage}`, function () {
-    let buf: Buffer;
-    let wrappedPsbt: Psbt;
+describe("PSBT fixture", function () {
+  fixtures.forEach(({ psbt, scriptType, stage }) => {
+    describe(`PSBT fixture ${scriptType} ${stage}`, function () {
+      let buf: Buffer;
+      let wrappedPsbt: Psbt;
 
-    before(function () {
-      buf = psbt.toBuffer();
-      wrappedPsbt = toWrappedPsbt(buf);
+      before(function () {
+        buf = psbt.toBuffer();
+        wrappedPsbt = toWrappedPsbt(buf);
+      });
+
+      it("should map to same hex", function () {
+        assertEqualBuffer(buf, wrappedPsbt.serialize());
+      });
+
+      it("should round-trip utxolib -> ms -> utxolib", function () {
+        assertEqualBuffer(buf, toUtxoPsbt(wrappedPsbt).toBuffer());
+      });
+
+      if (stage === "bare") {
+        describeUpdateInputWithDescriptor(psbt, scriptType);
+      }
     });
-
-    it("should map to same hex", function () {
-      assertEqualBuffer(buf, wrappedPsbt.serialize());
-    });
-
-    it("should round-trip utxolib -> ms -> utxolib", function () {
-      assertEqualBuffer(buf, toUtxoPsbt(wrappedPsbt).toBuffer());
-    });
-
-    if (stage === "bare") {
-      describeUpdateInputWithDescriptor(psbt, scriptType);
-    }
   });
 });

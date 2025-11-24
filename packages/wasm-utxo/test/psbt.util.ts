@@ -2,10 +2,6 @@ import * as assert from "node:assert";
 import * as utxolib from "@bitgo/utxo-lib";
 import { Descriptor, Psbt } from "../js/index.js";
 
-function toAddress(descriptor: Descriptor, network: utxolib.Network) {
-  utxolib.address.fromOutputScript(Buffer.from(descriptor.scriptPubkey()), network);
-}
-
 export function toWrappedPsbt(psbt: utxolib.bitgo.UtxoPsbt | utxolib.Psbt | Buffer | Uint8Array) {
   if (psbt instanceof utxolib.bitgo.UtxoPsbt || psbt instanceof utxolib.Psbt) {
     psbt = psbt.toBuffer();
@@ -83,16 +79,14 @@ function matchPath(path: (string | number)[], pattern: (string | number | symbol
   return true;
 }
 
-function normalizeBip32Derivation(v: unknown) {
+function normalizeBip32Derivation(v: unknown): {
+  masterFingerprint: Buffer;
+  path: string;
+}[] {
   if (!Array.isArray(v)) {
     throw new Error("Expected bip32Derivation to be an array");
   }
-  return (
-    [...v] as {
-      masterFingerprint: Buffer;
-      path: string;
-    }[]
-  )
+  return (v as { masterFingerprint: Buffer; path: string }[])
     .map((e) => {
       let { path } = e;
       if (path.startsWith("m/")) {
@@ -106,7 +100,7 @@ function normalizeBip32Derivation(v: unknown) {
     .sort((a, b) => a.masterFingerprint.toString().localeCompare(b.masterFingerprint.toString()));
 }
 
-function toPlainObject(v: unknown, path: (string | number)[]) {
+function toPlainObject(v: unknown, path: (string | number)[]): unknown {
   // psbts have fun getters and other types of irregular properties that we mash into shape here
   if (v === null || v === undefined) {
     return v;

@@ -11,10 +11,6 @@ function toKeyWithPath(k: BIP32Interface, path = "*"): string {
   return k.neutered().toBase58() + "/" + path;
 }
 
-function toKeyPlain(k: Buffer): string {
-  return k.toString("hex");
-}
-
 function toECPair(k: BIP32Interface): ECPairInterface {
   assert(k.privateKey);
   return ECPair.fromPrivateKey(k.privateKey);
@@ -35,8 +31,6 @@ function getKeyName(k: BIP32Interface | ECPairInterface) {
     (key) => keys[key] === k || toECPair(keys[key]).publicKey.equals(k.publicKey),
   );
 }
-
-type SigningKey = BIP32Interface | ECPairInterface;
 
 function describeSignDescriptor(
   name: string,
@@ -67,8 +61,8 @@ function describeSignDescriptor(
       };
     }
 
-    signBip32.forEach((signSeq, i) => {
-      it(`should sign ${signSeq.map((k) => getKeyName(k))} xprv`, function () {
+    signBip32.forEach((signSeq) => {
+      it(`should sign ${signSeq.map((k) => getKeyName(k)).join(", ")} xprv`, function () {
         const wrappedPsbt = toWrappedPsbt(psbt);
         signSeq.forEach((key) => {
           assert.deepStrictEqual(wrappedPsbt.signWithXprv(key.toBase58()), {
@@ -79,7 +73,7 @@ function describeSignDescriptor(
         wrappedPsbt.finalize();
       });
 
-      it(`should sign ${signSeq.map((k) => getKeyName(k))} prv buffer`, function () {
+      it(`should sign ${signSeq.map((k) => getKeyName(k)).join(", ")} prv buffer`, function () {
         const wrappedPsbt = toWrappedPsbt(psbt);
         signSeq.forEach((key) => {
           assert.deepStrictEqual(wrappedPsbt.signWithPrv(key.derive(0).privateKey), {
@@ -92,8 +86,8 @@ function describeSignDescriptor(
       });
     });
 
-    signECPair.forEach((signSeq, i) => {
-      it(`should sign ${signSeq.map((k) => getKeyName(k))} ec pair`, function () {
+    signECPair.forEach((signSeq) => {
+      it(`should sign ${signSeq.map((k) => getKeyName(k)).join(", ")} ec pair`, function () {
         const wrappedPsbt = toWrappedPsbt(psbt);
         signSeq.forEach((key) => {
           assert(key.privateKey);
