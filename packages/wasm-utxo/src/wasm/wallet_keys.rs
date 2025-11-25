@@ -1,12 +1,10 @@
 use std::str::FromStr;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsValue;
 
 use crate::bitcoin::bip32::DerivationPath;
 use crate::error::WasmUtxoError;
 use crate::fixed_script_wallet::RootWalletKeys;
 use crate::wasm::bip32::WasmBIP32;
-use crate::wasm::wallet_keys_helpers::root_wallet_keys_from_jsvalue;
 
 /// WASM wrapper for RootWalletKeys
 /// Represents a set of three extended public keys with their derivation prefixes
@@ -25,74 +23,65 @@ impl WasmRootWalletKeys {
 
 #[wasm_bindgen]
 impl WasmRootWalletKeys {
-    /// Create a RootWalletKeys from any compatible format
+    /// Create a RootWalletKeys from three BIP32 keys
     /// Uses default derivation prefix of m/0/0 for all three keys
-    #[wasm_bindgen(constructor)]
-    pub fn new(xpubs: JsValue) -> Result<WasmRootWalletKeys, WasmUtxoError> {
-        let inner = root_wallet_keys_from_jsvalue(&xpubs)?;
-        Ok(WasmRootWalletKeys { inner })
-    }
-
-    /// Create a RootWalletKeys from three xpub strings
-    /// Uses default derivation prefix of m/0/0 for all three keys
-    #[wasm_bindgen]
-    pub fn new_from_xpubs(xpubs: JsValue) -> Result<WasmRootWalletKeys, WasmUtxoError> {
-        let inner = root_wallet_keys_from_jsvalue(&xpubs)?;
-        Ok(WasmRootWalletKeys { inner })
-    }
-
-    /// Create a RootWalletKeys from three xpub strings with custom derivation prefixes
     ///
     /// # Arguments
-    /// - `xpubs`: Array of 3 xpub strings or WalletKeys object
-    /// - `derivation_prefixes`: Array of 3 derivation path strings (e.g., ["m/0/0", "m/0/0", "m/0/0"])
+    /// - `user`: User key (first xpub)
+    /// - `backup`: Backup key (second xpub)
+    /// - `bitgo`: BitGo key (third xpub)
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        user: &WasmBIP32,
+        backup: &WasmBIP32,
+        bitgo: &WasmBIP32,
+    ) -> Result<WasmRootWalletKeys, WasmUtxoError> {
+        let xpubs = [user.to_xpub()?, backup.to_xpub()?, bitgo.to_xpub()?];
+        let inner = RootWalletKeys::new_with_derivation_prefixes(
+            xpubs,
+            [
+                DerivationPath::from_str("m/0/0").unwrap(),
+                DerivationPath::from_str("m/0/0").unwrap(),
+                DerivationPath::from_str("m/0/0").unwrap(),
+            ],
+        );
+        Ok(WasmRootWalletKeys { inner })
+    }
+
+    /// Create a RootWalletKeys from three BIP32 keys with custom derivation prefixes
+    ///
+    /// # Arguments
+    /// - `user`: User key (first xpub)
+    /// - `backup`: Backup key (second xpub)
+    /// - `bitgo`: BitGo key (third xpub)
+    /// - `user_derivation`: Derivation path for user key (e.g., "m/0/0")
+    /// - `backup_derivation`: Derivation path for backup key (e.g., "m/0/0")
+    /// - `bitgo_derivation`: Derivation path for bitgo key (e.g., "m/0/0")
     #[wasm_bindgen]
     pub fn with_derivation_prefixes(
-        xpubs: JsValue,
-        derivation_prefixes: JsValue,
+        user: &WasmBIP32,
+        backup: &WasmBIP32,
+        bitgo: &WasmBIP32,
+        user_derivation: &str,
+        backup_derivation: &str,
+        bitgo_derivation: &str,
     ) -> Result<WasmRootWalletKeys, WasmUtxoError> {
-        // First get the xpubs
-        let inner = root_wallet_keys_from_jsvalue(&xpubs)?;
+        let xpubs = [user.to_xpub()?, backup.to_xpub()?, bitgo.to_xpub()?];
 
-        // Parse derivation prefixes if provided
-        if !derivation_prefixes.is_undefined() && !derivation_prefixes.is_null() {
-            let prefixes_array = js_sys::Array::from(&derivation_prefixes);
-            if prefixes_array.length() != 3 {
-                return Err(WasmUtxoError::new("Expected exactly 3 derivation prefixes"));
-            }
-
-            let prefix_strings: Result<[String; 3], _> = (0..3)
-                .map(|i| {
-                    prefixes_array
-                        .get(i)
-                        .as_string()
-                        .ok_or_else(|| WasmUtxoError::new("Prefix is not a string"))
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .and_then(|v| {
-                    v.try_into()
-                        .map_err(|_| WasmUtxoError::new("Failed to convert to array"))
-                });
-
-            let derivation_paths: [DerivationPath; 3] = prefix_strings?
-                .iter()
-                .map(|p| {
-                    // Remove leading 'm/' if present and add it back
-                    let p = p.strip_prefix("m/").unwrap_or(p);
-                    DerivationPath::from_str(&format!("m/{}", p)).map_err(|e| {
-                        WasmUtxoError::new(&format!("Invalid derivation prefix: {}", e))
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .try_into()
-                .map_err(|_| WasmUtxoError::new("Failed to convert derivation paths"))?;
-
-            Ok(WasmRootWalletKeys {
-                inner: RootWalletKeys::new_with_derivation_prefixes(inner.xpubs, derivation_paths),
+        let derivation_paths = [user_derivation, backup_derivation, bitgo_derivation]
+            .iter()
+            .map(|p| {
+                // Remove leading 'm/' if present and add it back
+                let p = p.strip_prefix("m/").unwrap_or(p);
+                DerivationPath::from_str(&format!("m/{}", p))
+                    .map_err(|e| WasmUtxoError::new(&format!("Invalid derivation prefix: {}", e)))
             })
-        } else {
-            Ok(WasmRootWalletKeys { inner })
-        }
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_| WasmUtxoError::new("Failed to convert derivation paths"))?;
+
+        let inner = RootWalletKeys::new_with_derivation_prefixes(xpubs, derivation_paths);
+        Ok(WasmRootWalletKeys { inner })
     }
 
     /// Get the user key (first xpub)

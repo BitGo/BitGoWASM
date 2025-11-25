@@ -16,4 +16,6 @@ pub use address::{
 
 pub use networks::Network;
 pub mod wasm;
-pub use wasm::{WrapDescriptor, WrapMiniscript, WrapPsbt};
+pub use wasm::{
+    WasmBIP32, WasmECPair, WasmRootWalletKeys, WrapDescriptor, WrapMiniscript, WrapPsbt,
+};

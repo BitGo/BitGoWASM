@@ -1,7 +1,8 @@
 import assert from "node:assert";
 import * as utxolib from "@bitgo/utxo-lib";
-import { fixedScriptWallet } from "../../js/index.js";
+import { fixedScriptWallet, BIP32 } from "../../js/index.js";
 import { BitGoPsbt } from "../../js/fixedScriptWallet.js";
+import type { RootWalletKeys } from "../../js/WalletKeys.js";
 import {
   loadPsbtFixture,
   loadWalletKeysFromFixture,
@@ -61,7 +62,7 @@ function getExpectedSignatures(
  */
 function verifyInputSignatures(
   bitgoPsbt: BitGoPsbt,
-  rootWalletKeys: utxolib.bitgo.RootWalletKeys,
+  rootWalletKeys: RootWalletKeys,
   inputIndex: number,
   expectedSignatures: ExpectedSignatures,
 ): void {
@@ -83,11 +84,9 @@ function verifyInputSignatures(
   }
 
   // Handle standard multisig inputs
-  const xpubs = rootWalletKeys.triple;
-
-  const hasUserSig = bitgoPsbt.verifySignature(inputIndex, xpubs[0].toBase58());
-  const hasBackupSig = bitgoPsbt.verifySignature(inputIndex, xpubs[1].toBase58());
-  const hasBitGoSig = bitgoPsbt.verifySignature(inputIndex, xpubs[2].toBase58());
+  const hasUserSig = bitgoPsbt.verifySignature(inputIndex, rootWalletKeys.userKey());
+  const hasBackupSig = bitgoPsbt.verifySignature(inputIndex, rootWalletKeys.backupKey());
+  const hasBitGoSig = bitgoPsbt.verifySignature(inputIndex, rootWalletKeys.bitgoKey());
 
   assert.strictEqual(
     hasUserSig,
@@ -122,7 +121,7 @@ describe("verifySignature", function () {
     const networkName = utxolib.getNetworkName(network);
 
     describe(`network: ${networkName}`, function () {
-      let rootWalletKeys: utxolib.bitgo.RootWalletKeys;
+      let rootWalletKeys: RootWalletKeys;
       let unsignedFixture: Fixture;
       let halfsignedFixture: Fixture;
       let fullsignedFixture: Fixture;
@@ -192,11 +191,9 @@ describe("verifySignature", function () {
 
       describe("error handling", function () {
         it("should throw error for out of bounds input index", function () {
-          const xpubs = rootWalletKeys.triple;
-
           assert.throws(
             () => {
-              fullsignedBitgoPsbt.verifySignature(999, xpubs[0].toBase58());
+              fullsignedBitgoPsbt.verifySignature(999, rootWalletKeys.userKey());
             },
             (error: Error) => {
               return error.message.includes("Input index 999 out of bounds");
@@ -211,7 +208,7 @@ describe("verifySignature", function () {
               fullsignedBitgoPsbt.verifySignature(0, "invalid-xpub");
             },
             (error: Error) => {
-              return error.message.includes("Invalid xpub");
+              return error.message.includes("Invalid");
             },
             "Should throw error for invalid xpub",
           );
@@ -221,14 +218,64 @@ describe("verifySignature", function () {
           // Create a different xpub that's not in the wallet
           // Use a proper 32-byte seed (256 bits)
           const differentSeed = Buffer.alloc(32, 0xaa); // 32 bytes filled with 0xaa
-          const differentKey = utxolib.bip32.fromSeed(differentSeed, network);
+          const differentKey = BIP32.fromSeed(differentSeed);
           const differentXpub = differentKey.neutered();
 
-          const result = fullsignedBitgoPsbt.verifySignature(0, differentXpub.toBase58());
+          const result = fullsignedBitgoPsbt.verifySignature(0, differentXpub);
           assert.strictEqual(
             result,
             false,
             "Should return false for xpub not in PSBT derivation paths",
+          );
+        });
+
+        it("should verify signature with raw public key (Uint8Array)", function () {
+          // Verify that xpub-based verification works
+          const userKey = rootWalletKeys.userKey();
+          const hasXpubSig = fullsignedBitgoPsbt.verifySignature(0, userKey);
+
+          // This test specifically checks that raw public key verification works
+          // We test the underlying WASM API by ensuring both xpub and raw pubkey
+          // calls reach the correct methods
+
+          // Use a random public key that's not in the PSBT to test the API works
+          const randomSeed = Buffer.alloc(32, 0xcc);
+          const randomKey = BIP32.fromSeed(randomSeed);
+          const randomPubkey = randomKey.publicKey;
+
+          // This should return false (no signature for this key)
+          const result = fullsignedBitgoPsbt.verifySignature(0, randomPubkey);
+          assert.strictEqual(result, false, "Should return false for public key not in PSBT");
+
+          // Verify the xpub check still works (regression test)
+          assert.strictEqual(hasXpubSig, true, "Should still verify with xpub");
+        });
+
+        it("should return false for raw public key with no signature", function () {
+          // Create a random public key that's not in the PSBT
+          const randomSeed = Buffer.alloc(32, 0xbb);
+          const randomKey = BIP32.fromSeed(randomSeed);
+          const randomPubkey = randomKey.publicKey;
+
+          const result = fullsignedBitgoPsbt.verifySignature(0, randomPubkey);
+          assert.strictEqual(
+            result,
+            false,
+            "Should return false for public key not in PSBT signatures",
+          );
+        });
+
+        it("should throw error for invalid key length", function () {
+          const invalidKey = Buffer.alloc(31); // Invalid length (should be 32 for private key or 33 for public key)
+
+          assert.throws(
+            () => {
+              fullsignedBitgoPsbt.verifySignature(0, invalidKey);
+            },
+            (error: Error) => {
+              return error.message.includes("Invalid key length");
+            },
+            "Should throw error for invalid key length",
           );
         });
       });

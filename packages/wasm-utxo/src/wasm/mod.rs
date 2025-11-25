@@ -8,6 +8,7 @@ mod psbt;
 mod try_from_js_value;
 mod try_into_js_value;
 mod utxolib_compat;
+mod wallet_keys;
 pub(crate) mod wallet_keys_helpers;
 
 pub use address::AddressNamespace;
@@ -18,3 +19,4 @@ pub use fixed_script_wallet::FixedScriptWalletNamespace;
 pub use miniscript::WrapMiniscript;
 pub use psbt::WrapPsbt;
 pub use utxolib_compat::UtxolibCompatNamespace;
+pub use wallet_keys::WasmRootWalletKeys;

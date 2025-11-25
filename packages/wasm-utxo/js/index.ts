@@ -8,6 +8,8 @@ export * as address from "./address.js";
 export * as ast from "./ast/index.js";
 export * as utxolibCompat from "./utxolibCompat.js";
 export * as fixedScriptWallet from "./fixedScriptWallet.js";
+export * as bip32 from "./bip32.js";
+export * as ecpair from "./ecpair.js";
 
 export { ECPair } from "./ecpair.js";
 export { BIP32 } from "./bip32.js";

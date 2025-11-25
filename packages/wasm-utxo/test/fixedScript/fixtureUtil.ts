@@ -2,7 +2,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
-import * as utxolib from "@bitgo/utxo-lib";
+import type { IWalletKeys } from "../../js/WalletKeys.js";
+import { BIP32, type BIP32Interface } from "../../js/bip32.js";
+import { RootWalletKeys } from "../../js/WalletKeys.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -117,7 +119,7 @@ export function loadPsbtFixture(network: string, signatureState: string): Fixtur
 /**
  * Load wallet keys from fixture
  */
-export function loadWalletKeysFromFixture(network: string): utxolib.bitgo.RootWalletKeys {
+export function loadWalletKeysFromFixture(network: string): RootWalletKeys {
   const fixturePath = path.join(
     __dirname,
     "..",
@@ -130,11 +132,16 @@ export function loadWalletKeysFromFixture(network: string): utxolib.bitgo.RootWa
 
   // Parse xprvs and convert to xpubs
   const xpubs = fixture.walletKeys.map((xprv) => {
-    const key = utxolib.bip32.fromBase58(xprv);
+    const key = BIP32.fromBase58(xprv);
     return key.neutered();
-  });
+  }) as unknown as Triple<BIP32Interface>;
 
-  return new utxolib.bitgo.RootWalletKeys(xpubs as Triple<utxolib.BIP32Interface>);
+  const walletKeysLike: IWalletKeys = {
+    triple: xpubs,
+    derivationPrefixes: ["0/0", "0/0", "0/0"],
+  };
+
+  return RootWalletKeys.from(walletKeysLike);
 }
 
 /**

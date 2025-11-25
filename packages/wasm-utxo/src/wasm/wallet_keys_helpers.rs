@@ -7,6 +7,7 @@ use crate::fixed_script_wallet::{xpub_triple_from_strings, RootWalletKeys, XpubT
 use crate::wasm::bip32::WasmBIP32;
 use wasm_bindgen::JsValue;
 
+#[allow(dead_code)] // Used in tests
 pub fn xpub_triple_from_jsvalue(keys: &JsValue) -> Result<XpubTriple, WasmUtxoError> {
     let keys_array = js_sys::Array::from(keys);
     if keys_array.length() != 3 {
@@ -29,6 +30,7 @@ pub fn xpub_triple_from_jsvalue(keys: &JsValue) -> Result<XpubTriple, WasmUtxoEr
     xpub_triple_from_strings(&key_strings?)
 }
 
+#[allow(dead_code)] // Used in tests
 pub fn root_wallet_keys_from_jsvalue(keys: &JsValue) -> Result<RootWalletKeys, WasmUtxoError> {
     // Check if keys is an array (xpub strings) or an object (WalletKeys/RootWalletKeys)
     if js_sys::Array::is_array(keys) {

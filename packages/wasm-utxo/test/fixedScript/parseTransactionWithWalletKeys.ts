@@ -2,7 +2,13 @@ import assert from "node:assert";
 import * as utxolib from "@bitgo/utxo-lib";
 import { fixedScriptWallet } from "../../js/index.js";
 import { BitGoPsbt, InputScriptType } from "../../js/fixedScriptWallet.js";
-import { loadPsbtFixture, loadWalletKeysFromFixture, getPsbtBuffer } from "./fixtureUtil.js";
+import type { RootWalletKeys } from "../../js/WalletKeys.js";
+import {
+  loadPsbtFixture,
+  loadWalletKeysFromFixture,
+  getPsbtBuffer,
+  type Fixture,
+} from "./fixtureUtil.js";
 
 function getExpectedInputScriptType(fixtureScriptType: string): InputScriptType {
   // Map fixture types to InputScriptType values
@@ -53,8 +59,8 @@ describe("parseTransactionWithWalletKeys", function () {
     describe(`network: ${networkName}`, function () {
       let fullsignedPsbtBytes: Buffer;
       let bitgoPsbt: BitGoPsbt;
-      let rootWalletKeys: utxolib.bitgo.RootWalletKeys;
-      let fixture: ReturnType<typeof loadPsbtFixture>;
+      let rootWalletKeys: RootWalletKeys;
+      let fixture: Fixture;
 
       before(function () {
         fixture = loadPsbtFixture(networkName, "fullsigned");
