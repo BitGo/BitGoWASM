@@ -1,5 +1,5 @@
 mod address;
-mod bip32interface;
+mod bip32;
 mod descriptor;
 mod ecpair;
 mod fixed_script_wallet;
@@ -11,6 +11,7 @@ mod utxolib_compat;
 pub(crate) mod wallet_keys_helpers;
 
 pub use address::AddressNamespace;
+pub use bip32::WasmBIP32;
 pub use descriptor::WrapDescriptor;
 pub use ecpair::WasmECPair;
 pub use fixed_script_wallet::FixedScriptWalletNamespace;

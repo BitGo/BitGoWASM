@@ -10,6 +10,7 @@ export * as utxolibCompat from "./utxolibCompat.js";
 export * as fixedScriptWallet from "./fixedScriptWallet.js";
 
 export { ECPair } from "./ecpair.js";
+export { BIP32 } from "./bip32.js";
 
 export type { CoinName } from "./coinName.js";
 export type { Triple } from "./triple.js";

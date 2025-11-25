@@ -4,7 +4,7 @@ use std::str::FromStr;
 use crate::bitcoin::bip32::DerivationPath;
 use crate::error::WasmUtxoError;
 use crate::fixed_script_wallet::{xpub_triple_from_strings, RootWalletKeys, XpubTriple};
-use crate::wasm::bip32interface::xpub_from_bip32interface;
+use crate::wasm::bip32::WasmBIP32;
 use wasm_bindgen::JsValue;
 
 pub fn xpub_triple_from_jsvalue(keys: &JsValue) -> Result<XpubTriple, WasmUtxoError> {
@@ -63,7 +63,8 @@ pub fn root_wallet_keys_from_jsvalue(keys: &JsValue) -> Result<RootWalletKeys, W
         let xpubs: XpubTriple = (0..3)
             .map(|i| {
                 let bip32_key = triple_array.get(i);
-                xpub_from_bip32interface(&bip32_key)
+                WasmBIP32::from_bip32_interface(&bip32_key)
+                    .and_then(|wasm_bip32| wasm_bip32.to_xpub())
             })
             .collect::<Result<Vec<_>, _>>()?
             .try_into()
