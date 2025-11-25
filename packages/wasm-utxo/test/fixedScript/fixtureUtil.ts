@@ -1,3 +1,4 @@
+import assert from "node:assert";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -5,6 +6,7 @@ import { dirname } from "node:path";
 import type { IWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
 import { BIP32, type BIP32Interface } from "../../js/bip32.js";
 import { RootWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
+import { ECPair } from "../../js/ecpair.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -119,17 +121,7 @@ export function loadPsbtFixture(network: string, signatureState: string): Fixtur
 /**
  * Load wallet keys from fixture
  */
-export function loadWalletKeysFromFixture(network: string): RootWalletKeys {
-  const fixturePath = path.join(
-    __dirname,
-    "..",
-    "fixtures",
-    "fixed-script",
-    `psbt-lite.${network}.fullsigned.json`,
-  );
-  const fixtureContent = fs.readFileSync(fixturePath, "utf-8");
-  const fixture = JSON.parse(fixtureContent) as Fixture;
-
+export function loadWalletKeysFromFixture(fixture: Fixture): RootWalletKeys {
   // Parse xprvs and convert to xpubs
   const xpubs = fixture.walletKeys.map((xprv) => {
     const key = BIP32.fromBase58(xprv);
@@ -142,6 +134,14 @@ export function loadWalletKeysFromFixture(network: string): RootWalletKeys {
   };
 
   return RootWalletKeys.from(walletKeysLike);
+}
+
+export function loadReplayProtectionKeyFromFixture(fixture: Fixture): ECPair {
+  // underived user key
+  const userBip32 = BIP32.fromBase58(fixture.walletKeys[0]);
+  assert(userBip32.privateKey);
+  const userECPair = ECPair.fromPrivateKey(Buffer.from(userBip32.privateKey));
+  return userECPair;
 }
 
 /**

@@ -152,6 +152,8 @@ export class BitGoPsbt {
   }
 
   /**
+   * @deprecated - use verifySignature with the replay protection key instead
+   *
    * Verify if a replay protection input has a valid signature.
    *
    * This method checks if a given input is a replay protection input (like P2shP2pk) and verifies

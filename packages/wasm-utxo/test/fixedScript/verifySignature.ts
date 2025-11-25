@@ -1,12 +1,13 @@
 import assert from "node:assert";
 import * as utxolib from "@bitgo/utxo-lib";
-import { fixedScriptWallet, BIP32 } from "../../js/index.js";
-import { BitGoPsbt, RootWalletKeys } from "../../js/fixedScriptWallet/index.js";
+import { fixedScriptWallet, BIP32, ECPair } from "../../js/index.js";
+import { BitGoPsbt, RootWalletKeys, ParsedTransaction } from "../../js/fixedScriptWallet/index.js";
 import {
   loadPsbtFixture,
   loadWalletKeysFromFixture,
   getPsbtBuffer,
   type Fixture,
+  loadReplayProtectionKeyFromFixture,
 } from "./fixtureUtil.js";
 
 type SignatureStage = "unsigned" | "halfsigned" | "fullsigned";
@@ -61,7 +62,9 @@ function getExpectedSignatures(
  */
 function verifyInputSignatures(
   bitgoPsbt: BitGoPsbt,
+  parsed: ParsedTransaction,
   rootWalletKeys: RootWalletKeys,
+  replayProtectionKey: ECPair,
   inputIndex: number,
   expectedSignatures: ExpectedSignatures,
 ): void {
@@ -74,6 +77,20 @@ function verifyInputSignatures(
     const hasReplaySig = bitgoPsbt.verifyReplayProtectionSignature(inputIndex, {
       outputScripts: [replayProtectionScript],
     });
+    assert.strictEqual(
+      hasReplaySig,
+      expectedSignatures.hasReplayProtectionSignature,
+      `Input ${inputIndex} replay protection signature mismatch`,
+    );
+    return;
+  }
+
+  if (parsed.inputs[inputIndex].scriptType === "p2shP2pk") {
+    const hasReplaySig = bitgoPsbt.verifySignature(inputIndex, replayProtectionKey);
+    assert.ok(
+      "hasReplayProtectionSignature" in expectedSignatures,
+      "Expected hasReplayProtectionSignature to be present",
+    );
     assert.strictEqual(
       hasReplaySig,
       expectedSignatures.hasReplayProtectionSignature,
@@ -121,18 +138,25 @@ describe("verifySignature", function () {
 
     describe(`network: ${networkName}`, function () {
       let rootWalletKeys: RootWalletKeys;
+      let replayProtectionKey: ECPair;
       let unsignedFixture: Fixture;
       let halfsignedFixture: Fixture;
       let fullsignedFixture: Fixture;
       let unsignedBitgoPsbt: BitGoPsbt;
       let halfsignedBitgoPsbt: BitGoPsbt;
       let fullsignedBitgoPsbt: BitGoPsbt;
+      let replayProtectionScript: Uint8Array;
 
       before(function () {
-        rootWalletKeys = loadWalletKeysFromFixture(networkName);
         unsignedFixture = loadPsbtFixture(networkName, "unsigned");
         halfsignedFixture = loadPsbtFixture(networkName, "halfsigned");
         fullsignedFixture = loadPsbtFixture(networkName, "fullsigned");
+        rootWalletKeys = loadWalletKeysFromFixture(fullsignedFixture);
+        replayProtectionKey = loadReplayProtectionKeyFromFixture(fullsignedFixture);
+        replayProtectionScript = Buffer.from(
+          "a91420b37094d82a513451ff0ccd9db23aba05bc5ef387",
+          "hex",
+        );
         unsignedBitgoPsbt = fixedScriptWallet.BitGoPsbt.fromBytes(
           getPsbtBuffer(unsignedFixture),
           networkName,
@@ -149,11 +173,16 @@ describe("verifySignature", function () {
 
       describe("unsigned PSBT", function () {
         it("should return false for unsigned inputs", function () {
+          const parsed = unsignedBitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
+            outputScripts: [replayProtectionScript],
+          });
           // Verify all xpubs return false for all inputs
           unsignedFixture.psbtInputs.forEach((input, index) => {
             verifyInputSignatures(
               unsignedBitgoPsbt,
+              parsed,
               rootWalletKeys,
+              replayProtectionKey,
               index,
               getExpectedSignatures(input.type, "unsigned"),
             );
@@ -163,10 +192,15 @@ describe("verifySignature", function () {
 
       describe("half-signed PSBT", function () {
         it("should return true for signed xpubs and false for unsigned", function () {
+          const parsed = halfsignedBitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
+            outputScripts: [replayProtectionScript],
+          });
           halfsignedFixture.psbtInputs.forEach((input, index) => {
             verifyInputSignatures(
               halfsignedBitgoPsbt,
+              parsed,
               rootWalletKeys,
+              replayProtectionKey,
               index,
               getExpectedSignatures(input.type, "halfsigned"),
             );
@@ -177,10 +211,15 @@ describe("verifySignature", function () {
       describe("fully signed PSBT", function () {
         it("should have 2 signatures (2-of-3 multisig)", function () {
           // In fullsigned fixtures, verify 2 signatures exist per multisig input
+          const parsed = fullsignedBitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
+            outputScripts: [replayProtectionScript],
+          });
           fullsignedFixture.psbtInputs.forEach((input, index) => {
             verifyInputSignatures(
               fullsignedBitgoPsbt,
+              parsed,
               rootWalletKeys,
+              replayProtectionKey,
               index,
               getExpectedSignatures(input.type, "fullsigned"),
             );

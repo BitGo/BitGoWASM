@@ -66,7 +66,7 @@ describe("parseTransactionWithWalletKeys", function () {
         fixture = loadPsbtFixture(networkName, "fullsigned");
         fullsignedPsbtBytes = getPsbtBuffer(fixture);
         bitgoPsbt = fixedScriptWallet.BitGoPsbt.fromBytes(fullsignedPsbtBytes, networkName);
-        rootWalletKeys = loadWalletKeysFromFixture(networkName);
+        rootWalletKeys = loadWalletKeysFromFixture(fixture);
       });
 
       it("should have matching unsigned transaction ID", function () {
