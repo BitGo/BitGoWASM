@@ -9,6 +9,8 @@ export * as ast from "./ast/index.js";
 export * as utxolibCompat from "./utxolibCompat.js";
 export * as fixedScriptWallet from "./fixedScriptWallet.js";
 
+export { ECPair } from "./ecpair.js";
+
 export type { CoinName } from "./coinName.js";
 export type { Triple } from "./triple.js";
 export type { AddressFormat } from "./address.js";
