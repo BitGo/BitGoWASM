@@ -121,6 +121,39 @@ function verifyInputSignatures(
   );
 }
 
+/**
+ * Helper to verify signatures for all inputs in a PSBT
+ * @param bitgoPsbt - The PSBT to verify
+ * @param fixture - The test fixture containing input metadata
+ * @param rootWalletKeys - Wallet keys for verification
+ * @param replayProtectionKey - Key for replay protection inputs
+ * @param replayProtectionScript - Script for replay protection inputs
+ * @param signatureStage - The signing stage (unsigned, halfsigned, fullsigned)
+ */
+function verifyAllInputSignatures(
+  bitgoPsbt: BitGoPsbt,
+  fixture: Fixture,
+  rootWalletKeys: RootWalletKeys,
+  replayProtectionKey: ECPair,
+  replayProtectionScript: Uint8Array,
+  signatureStage: SignatureStage,
+): void {
+  const parsed = bitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
+    outputScripts: [replayProtectionScript],
+  });
+
+  fixture.psbtInputs.forEach((input, index) => {
+    verifyInputSignatures(
+      bitgoPsbt,
+      parsed,
+      rootWalletKeys,
+      replayProtectionKey,
+      index,
+      getExpectedSignatures(input.type, signatureStage),
+    );
+  });
+}
+
 describe("verifySignature", function () {
   const supportedNetworks = utxolib.getNetworkList().filter((network) => {
     return (
@@ -173,57 +206,40 @@ describe("verifySignature", function () {
 
       describe("unsigned PSBT", function () {
         it("should return false for unsigned inputs", function () {
-          const parsed = unsignedBitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-            outputScripts: [replayProtectionScript],
-          });
-          // Verify all xpubs return false for all inputs
-          unsignedFixture.psbtInputs.forEach((input, index) => {
-            verifyInputSignatures(
-              unsignedBitgoPsbt,
-              parsed,
-              rootWalletKeys,
-              replayProtectionKey,
-              index,
-              getExpectedSignatures(input.type, "unsigned"),
-            );
-          });
+          verifyAllInputSignatures(
+            unsignedBitgoPsbt,
+            unsignedFixture,
+            rootWalletKeys,
+            replayProtectionKey,
+            replayProtectionScript,
+            "unsigned",
+          );
         });
       });
 
       describe("half-signed PSBT", function () {
         it("should return true for signed xpubs and false for unsigned", function () {
-          const parsed = halfsignedBitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-            outputScripts: [replayProtectionScript],
-          });
-          halfsignedFixture.psbtInputs.forEach((input, index) => {
-            verifyInputSignatures(
-              halfsignedBitgoPsbt,
-              parsed,
-              rootWalletKeys,
-              replayProtectionKey,
-              index,
-              getExpectedSignatures(input.type, "halfsigned"),
-            );
-          });
+          verifyAllInputSignatures(
+            halfsignedBitgoPsbt,
+            halfsignedFixture,
+            rootWalletKeys,
+            replayProtectionKey,
+            replayProtectionScript,
+            "halfsigned",
+          );
         });
       });
 
       describe("fully signed PSBT", function () {
         it("should have 2 signatures (2-of-3 multisig)", function () {
-          // In fullsigned fixtures, verify 2 signatures exist per multisig input
-          const parsed = fullsignedBitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-            outputScripts: [replayProtectionScript],
-          });
-          fullsignedFixture.psbtInputs.forEach((input, index) => {
-            verifyInputSignatures(
-              fullsignedBitgoPsbt,
-              parsed,
-              rootWalletKeys,
-              replayProtectionKey,
-              index,
-              getExpectedSignatures(input.type, "fullsigned"),
-            );
-          });
+          verifyAllInputSignatures(
+            fullsignedBitgoPsbt,
+            fullsignedFixture,
+            rootWalletKeys,
+            replayProtectionKey,
+            replayProtectionScript,
+            "fullsigned",
+          );
         });
       });
 
