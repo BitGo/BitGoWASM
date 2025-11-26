@@ -3,10 +3,12 @@ import * as utxolib from "@bitgo/utxo-lib";
 import { fixedScriptWallet } from "../../js/index.js";
 import { BitGoPsbt, InputScriptType } from "../../js/fixedScriptWallet/index.js";
 import type { RootWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
+import type { ECPair } from "../../js/index.js";
 import {
   loadPsbtFixture,
   loadWalletKeysFromFixture,
   getPsbtBuffer,
+  loadReplayProtectionKeyFromFixture,
   type Fixture,
 } from "./fixtureUtil.js";
 
@@ -36,12 +38,6 @@ function getOtherWalletKeys(): utxolib.bitgo.RootWalletKeys {
 }
 
 describe("parseTransactionWithWalletKeys", function () {
-  // Replay protection script that matches Rust tests
-  const replayProtectionScript = Buffer.from(
-    "a91420b37094d82a513451ff0ccd9db23aba05bc5ef387",
-    "hex",
-  );
-
   const supportedNetworks = utxolib.getNetworkList().filter((network) => {
     return (
       utxolib.isMainnet(network) &&
@@ -60,6 +56,7 @@ describe("parseTransactionWithWalletKeys", function () {
       let fullsignedPsbtBytes: Buffer;
       let bitgoPsbt: BitGoPsbt;
       let rootWalletKeys: RootWalletKeys;
+      let replayProtectionKey: ECPair;
       let fixture: Fixture;
 
       before(function () {
@@ -67,6 +64,7 @@ describe("parseTransactionWithWalletKeys", function () {
         fullsignedPsbtBytes = getPsbtBuffer(fixture);
         bitgoPsbt = fixedScriptWallet.BitGoPsbt.fromBytes(fullsignedPsbtBytes, networkName);
         rootWalletKeys = loadWalletKeysFromFixture(fixture);
+        replayProtectionKey = loadReplayProtectionKeyFromFixture(fixture);
       });
 
       it("should have matching unsigned transaction ID", function () {
@@ -80,7 +78,7 @@ describe("parseTransactionWithWalletKeys", function () {
 
       it("should parse transaction and identify internal/external outputs", function () {
         const parsed = bitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-          outputScripts: [replayProtectionScript],
+          publicKeys: [replayProtectionKey],
         });
 
         // Verify all inputs have addresses and values
@@ -147,7 +145,7 @@ describe("parseTransactionWithWalletKeys", function () {
 
       it("should parse inputs with correct scriptType", function () {
         const parsed = bitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-          outputScripts: [replayProtectionScript],
+          publicKeys: [replayProtectionKey],
         });
 
         // Verify all inputs have scriptType matching fixture
@@ -166,7 +164,7 @@ describe("parseTransactionWithWalletKeys", function () {
         assert.throws(
           () => {
             bitgoPsbt.parseTransactionWithWalletKeys(getOtherWalletKeys(), {
-              outputScripts: [replayProtectionScript],
+              publicKeys: [replayProtectionKey],
             });
           },
           (error: Error) => {

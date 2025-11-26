@@ -70,12 +70,8 @@ function verifyInputSignatures(
 ): void {
   // Handle replay protection inputs (P2shP2pk)
   if ("hasReplayProtectionSignature" in expectedSignatures) {
-    const replayProtectionScript = Buffer.from(
-      "a91420b37094d82a513451ff0ccd9db23aba05bc5ef387",
-      "hex",
-    );
     const hasReplaySig = bitgoPsbt.verifyReplayProtectionSignature(inputIndex, {
-      outputScripts: [replayProtectionScript],
+      publicKeys: [replayProtectionKey],
     });
     assert.strictEqual(
       hasReplaySig,
@@ -127,7 +123,6 @@ function verifyInputSignatures(
  * @param fixture - The test fixture containing input metadata
  * @param rootWalletKeys - Wallet keys for verification
  * @param replayProtectionKey - Key for replay protection inputs
- * @param replayProtectionScript - Script for replay protection inputs
  * @param signatureStage - The signing stage (unsigned, halfsigned, fullsigned)
  */
 function verifyAllInputSignatures(
@@ -135,11 +130,10 @@ function verifyAllInputSignatures(
   fixture: Fixture,
   rootWalletKeys: RootWalletKeys,
   replayProtectionKey: ECPair,
-  replayProtectionScript: Uint8Array,
   signatureStage: SignatureStage,
 ): void {
   const parsed = bitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-    outputScripts: [replayProtectionScript],
+    publicKeys: [replayProtectionKey],
   });
 
   fixture.psbtInputs.forEach((input, index) => {
@@ -178,7 +172,6 @@ describe("verifySignature", function () {
       let unsignedBitgoPsbt: BitGoPsbt;
       let halfsignedBitgoPsbt: BitGoPsbt;
       let fullsignedBitgoPsbt: BitGoPsbt;
-      let replayProtectionScript: Uint8Array;
 
       before(function () {
         unsignedFixture = loadPsbtFixture(networkName, "unsigned");
@@ -186,10 +179,6 @@ describe("verifySignature", function () {
         fullsignedFixture = loadPsbtFixture(networkName, "fullsigned");
         rootWalletKeys = loadWalletKeysFromFixture(fullsignedFixture);
         replayProtectionKey = loadReplayProtectionKeyFromFixture(fullsignedFixture);
-        replayProtectionScript = Buffer.from(
-          "a91420b37094d82a513451ff0ccd9db23aba05bc5ef387",
-          "hex",
-        );
         unsignedBitgoPsbt = fixedScriptWallet.BitGoPsbt.fromBytes(
           getPsbtBuffer(unsignedFixture),
           networkName,
@@ -211,7 +200,6 @@ describe("verifySignature", function () {
             unsignedFixture,
             rootWalletKeys,
             replayProtectionKey,
-            replayProtectionScript,
             "unsigned",
           );
         });
@@ -224,7 +212,6 @@ describe("verifySignature", function () {
             halfsignedFixture,
             rootWalletKeys,
             replayProtectionKey,
-            replayProtectionScript,
             "halfsigned",
           );
         });
@@ -237,7 +224,6 @@ describe("verifySignature", function () {
             fullsignedFixture,
             rootWalletKeys,
             replayProtectionKey,
-            replayProtectionScript,
             "fullsigned",
           );
         });
