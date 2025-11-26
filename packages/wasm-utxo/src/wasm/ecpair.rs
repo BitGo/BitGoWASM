@@ -41,6 +41,13 @@ impl WasmECPair {
     pub(crate) fn get_public_key(&self) -> PublicKey {
         self.key.public_key()
     }
+
+    /// Get the private key as a secp256k1::SecretKey (for internal Rust use)
+    pub(crate) fn get_private_key(&self) -> Result<SecretKey, WasmUtxoError> {
+        self.key
+            .secret_key()
+            .ok_or_else(|| WasmUtxoError::new("Cannot get private key from public-only ECPair"))
+    }
 }
 
 #[wasm_bindgen]

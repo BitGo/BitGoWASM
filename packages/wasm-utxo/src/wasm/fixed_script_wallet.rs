@@ -371,6 +371,139 @@ impl BitGoPsbt {
         Ok(())
     }
 
+    /// Sign a single input with an extended private key (xpriv)
+    ///
+    /// This method signs a specific input using the provided xpriv. It accepts:
+    /// - An xpriv (WasmBIP32) for wallet inputs - derives the key and signs
+    ///
+    /// This method automatically detects and handles different input types:
+    /// - For regular inputs: uses standard PSBT signing
+    /// - For MuSig2 inputs: uses the FirstRound state stored by generate_musig2_nonces()
+    /// - For replay protection inputs: returns error (use sign_with_privkey instead)
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to sign (0-based)
+    /// - `xpriv`: The extended private key as a WasmBIP32 instance
+    ///
+    /// # Returns
+    /// - `Ok(())` if signing was successful
+    /// - `Err(WasmUtxoError)` if signing fails
+    pub fn sign_with_xpriv(
+        &mut self,
+        input_index: usize,
+        xpriv: &WasmBIP32,
+    ) -> Result<(), WasmUtxoError> {
+        // Extract Xpriv from WasmBIP32
+        let xpriv = xpriv.to_xpriv()?;
+
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+
+        // Check if this is a MuSig2 input
+        let psbt = self.psbt.psbt();
+        if input_index >= psbt.inputs.len() {
+            return Err(WasmUtxoError::new(&format!(
+                "Input index {} out of bounds (total inputs: {})",
+                input_index,
+                psbt.inputs.len()
+            )));
+        }
+
+        if crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::Musig2Input::is_musig2_input(
+            &psbt.inputs[input_index],
+        ) {
+            // This is a MuSig2 input - use FirstRound signing
+            let xpub = miniscript::bitcoin::bip32::Xpub::from_priv(&secp, &xpriv);
+            let xpub_str = xpub.to_string();
+
+            // Remove the stored FirstRound for this (input, xpub) pair (it can only be used once)
+            let first_round = self.first_rounds.remove(&(input_index, xpub_str.clone()))
+                .ok_or_else(|| WasmUtxoError::new(&format!(
+                    "No FirstRound found for input {} and xpub {}. You must call generate_musig2_nonces() first.",
+                    input_index, xpub_str
+                )))?;
+
+            // Sign with the FirstRound
+            self.psbt
+                .sign_with_first_round(input_index, first_round, &xpriv)
+                .map_err(|e| {
+                    WasmUtxoError::new(&format!(
+                        "Failed to sign MuSig2 input {}: {}",
+                        input_index, e
+                    ))
+                })?;
+
+            Ok(())
+        } else {
+            // This is a regular input - use standard signing
+            // Sign the PSBT - this will attempt to sign all inputs but we only care about the result
+            // The miniscript sign method returns (SigningKeysMap, SigningErrors) on error
+            let result = self.psbt.sign(&xpriv, &secp);
+
+            // Check if this specific input was signed successfully
+            match result {
+                Ok(signing_keys) => {
+                    // Check if our input_index was in the successfully signed keys
+                    if signing_keys.contains_key(&input_index) {
+                        Ok(())
+                    } else {
+                        Err(WasmUtxoError::new(&format!(
+                            "Input {} was not signed (no key found or already signed)",
+                            input_index
+                        )))
+                    }
+                }
+                Err((partial_success, errors)) => {
+                    // Check if there's an error for our specific input
+                    if let Some(error) = errors.get(&input_index) {
+                        Err(WasmUtxoError::new(&format!(
+                            "Failed to sign input {}: {:?}",
+                            input_index, error
+                        )))
+                    } else if partial_success.contains_key(&input_index) {
+                        // Input was signed successfully despite other errors
+                        Ok(())
+                    } else {
+                        Err(WasmUtxoError::new(&format!(
+                            "Input {} was not signed",
+                            input_index
+                        )))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Sign a single input with a raw private key
+    ///
+    /// This method signs a specific input using the provided ECPair. It accepts:
+    /// - A raw privkey (WasmECPair) for replay protection inputs - signs directly
+    ///
+    /// This method automatically detects and handles different input types:
+    /// - For replay protection inputs: signs with legacy P2SH sighash
+    /// - For regular inputs: uses standard PSBT signing
+    /// - For MuSig2 inputs: returns error (requires FirstRound, use sign_with_xpriv instead)
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to sign (0-based)
+    /// - `ecpair`: The ECPair containing the private key
+    ///
+    /// # Returns
+    /// - `Ok(())` if signing was successful
+    /// - `Err(WasmUtxoError)` if signing fails
+    pub fn sign_with_privkey(
+        &mut self,
+        input_index: usize,
+        ecpair: &WasmECPair,
+    ) -> Result<(), WasmUtxoError> {
+        // Extract private key from WasmECPair
+        let privkey = ecpair.get_private_key()?;
+
+        // Call the Rust implementation
+        self.psbt
+            .sign_with_privkey(input_index, &privkey)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to sign input: {}", e)))
+    }
+
     /// Finalize all inputs in the PSBT
     ///
     /// This method attempts to finalize all inputs in the PSBT, computing the final

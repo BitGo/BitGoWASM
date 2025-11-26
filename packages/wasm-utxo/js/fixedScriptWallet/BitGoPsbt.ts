@@ -143,6 +143,66 @@ export class BitGoPsbt {
   }
 
   /**
+   * Sign a single input with a private key
+   *
+   * This method signs a specific input using the provided key. It accepts either:
+   * - An xpriv (BIP32Arg: base58 string, BIP32 instance, or WasmBIP32) for wallet inputs - derives the key and signs
+   * - A raw privkey (ECPairArg: Buffer, ECPair instance, or WasmECPair) for replay protection inputs - signs directly
+   *
+   * This method automatically detects and handles different input types:
+   * - For regular inputs: uses standard PSBT signing
+   * - For MuSig2 inputs: uses the FirstRound state stored by generateMusig2Nonces()
+   * - For replay protection inputs: signs with legacy P2SH sighash
+   *
+   * @param inputIndex - The index of the input to sign (0-based)
+   * @param key - Either an xpriv (BIP32Arg) or a raw privkey (ECPairArg)
+   * @throws Error if signing fails, or if generateMusig2Nonces() was not called first for MuSig2 inputs
+   *
+   * @example
+   * ```typescript
+   * // Parse transaction to identify input types
+   * const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, replayProtection);
+   *
+   * // Sign regular wallet inputs with xpriv
+   * for (let i = 0; i < parsed.inputs.length; i++) {
+   *   const input = parsed.inputs[i];
+   *   if (input.scriptId !== null && input.scriptType !== "p2shP2pk") {
+   *     psbt.sign(i, userXpriv);
+   *   }
+   * }
+   *
+   * // Sign replay protection inputs with raw privkey
+   * const userPrivkey = bip32.fromBase58(userXpriv).privateKey!;
+   * for (let i = 0; i < parsed.inputs.length; i++) {
+   *   const input = parsed.inputs[i];
+   *   if (input.scriptType === "p2shP2pk") {
+   *     psbt.sign(i, userPrivkey);
+   *   }
+   * }
+   * ```
+   */
+  sign(inputIndex: number, key: BIP32Arg | ECPairArg): void {
+    // Detect key type
+    // If string or has 'derive' method → BIP32Arg
+    // Otherwise → ECPairArg
+    if (
+      typeof key === "string" ||
+      (typeof key === "object" &&
+        key !== null &&
+        "derive" in key &&
+        typeof key.derive === "function")
+    ) {
+      // It's a BIP32Arg
+      const wasmKey = BIP32.from(key as BIP32Arg);
+      this.wasm.sign_with_xpriv(inputIndex, wasmKey.wasm);
+    } else {
+      // It's an ECPairArg
+      const wasmKey = ECPair.from(key as ECPairArg);
+      this.wasm.sign_with_privkey(inputIndex, wasmKey.wasm);
+    }
+  }
+
+  /**
    * @deprecated - use verifySignature with the replay protection key instead
    *
    * Verify if a replay protection input has a valid signature.
