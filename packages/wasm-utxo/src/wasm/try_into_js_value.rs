@@ -317,12 +317,29 @@ impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ScriptId {
     }
 }
 
+impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::InputScriptType {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::InputScriptType;
+        let script_type = match self {
+            InputScriptType::P2shP2pk => "p2shP2pk",
+            InputScriptType::P2sh => "p2sh",
+            InputScriptType::P2shP2wsh => "p2shP2wsh",
+            InputScriptType::P2wsh => "p2wsh",
+            InputScriptType::P2trLegacy => "p2trLegacy",
+            InputScriptType::P2trMusig2ScriptPath => "p2trMusig2ScriptPath",
+            InputScriptType::P2trMusig2KeyPath => "p2trMusig2KeyPath",
+        };
+        Ok(JsValue::from_str(script_type))
+    }
+}
+
 impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedInput {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
         js_obj!(
             "address" => self.address.clone(),
             "value" => self.value,
-            "scriptId" => self.script_id
+            "scriptId" => self.script_id,
+            "scriptType" => self.script_type
         )
     }
 }

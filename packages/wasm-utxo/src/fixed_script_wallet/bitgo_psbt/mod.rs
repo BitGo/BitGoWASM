@@ -97,7 +97,7 @@ pub enum BitGoPsbt {
 }
 
 // Re-export types from submodules for convenience
-pub use psbt_wallet_input::{ParsedInput, ScriptId};
+pub use psbt_wallet_input::{InputScriptType, ParsedInput, ScriptId};
 pub use psbt_wallet_output::ParsedOutput;
 
 /// Parsed transaction with wallet information
