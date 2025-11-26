@@ -4,14 +4,24 @@ import * as wasm from "./wasm/wasm_utxo.js";
 // and forgets to include it in the bundle
 void wasm;
 
+// Most exports are namespaced to avoid polluting the top-level namespace
+// and to make imports more explicit (e.g., `import { address } from '@bitgo/wasm-utxo'`)
 export * as address from "./address.js";
 export * as ast from "./ast/index.js";
 export * as utxolibCompat from "./utxolibCompat.js";
-export * as fixedScriptWallet from "./fixedScriptWallet.js";
+export * as fixedScriptWallet from "./fixedScriptWallet/index.js";
+export * as bip32 from "./bip32.js";
+export * as ecpair from "./ecpair.js";
+
+// Only the most commonly used classes and types are exported at the top level for convenience
+export { ECPair } from "./ecpair.js";
+export { BIP32 } from "./bip32.js";
 
 export type { CoinName } from "./coinName.js";
 export type { Triple } from "./triple.js";
 export type { AddressFormat } from "./address.js";
+
+// TODO: the exports below should be namespaced under `descriptor` in the future
 
 export type DescriptorPkType = "derivable" | "definite" | "string";
 

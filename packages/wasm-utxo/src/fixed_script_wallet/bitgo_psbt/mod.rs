@@ -478,7 +478,7 @@ impl BitGoPsbt {
     fn parse_inputs(
         &self,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        replay_protection: &psbt_wallet_input::ReplayProtection,
+        replay_protection: &crate::fixed_script_wallet::ReplayProtection,
     ) -> Result<Vec<ParsedInput>, ParseTransactionError> {
         let psbt = self.psbt();
         let network = self.network();
@@ -669,7 +669,7 @@ impl BitGoPsbt {
         &self,
         secp: &secp256k1::Secp256k1<C>,
         input_index: usize,
-        replay_protection: &psbt_wallet_input::ReplayProtection,
+        replay_protection: &crate::fixed_script_wallet::ReplayProtection,
     ) -> Result<bool, String> {
         use miniscript::bitcoin::{hashes::Hash, sighash::SighashCache};
 
@@ -728,6 +728,44 @@ impl BitGoPsbt {
         }
     }
 
+    /// Helper method to verify signature with a compressed public key
+    ///
+    /// This method checks if a signature exists for the given public key.
+    /// It handles both ECDSA and Taproot script path signatures.
+    ///
+    /// # Arguments
+    /// - `secp`: Secp256k1 context for signature verification
+    /// - `input_index`: The index of the input to check
+    /// - `public_key`: The compressed public key to verify the signature for
+    ///
+    /// # Returns
+    /// - `Ok(true)` if a valid signature exists for the public key
+    /// - `Ok(false)` if no signature exists for the public key
+    /// - `Err(String)` if verification fails
+    fn verify_signature_with_pubkey<C: secp256k1::Verification>(
+        &self,
+        secp: &secp256k1::Secp256k1<C>,
+        input_index: usize,
+        public_key: CompressedPublicKey,
+    ) -> Result<bool, String> {
+        let psbt = self.psbt();
+
+        let input = &psbt.inputs[input_index];
+
+        // Check for Taproot script path signatures first
+        if !input.tap_script_sigs.is_empty() {
+            return psbt_wallet_input::verify_taproot_script_signature(
+                secp,
+                psbt,
+                input_index,
+                public_key,
+            );
+        }
+
+        // Fall back to ECDSA signature verification for legacy/SegWit inputs
+        psbt_wallet_input::verify_ecdsa_signature(secp, psbt, input_index, public_key)
+    }
+
     /// Verify if a valid signature exists for a given extended public key at the specified input index
     ///
     /// This method derives the public key from the xpub using the derivation path found in the
@@ -745,7 +783,7 @@ impl BitGoPsbt {
     /// - `Ok(true)` if a valid signature exists for the derived public key
     /// - `Ok(false)` if no signature exists for the derived public key
     /// - `Err(String)` if the input index is out of bounds, derivation fails, or verification fails
-    pub fn verify_signature<C: secp256k1::Verification>(
+    pub fn verify_signature_with_xpub<C: secp256k1::Verification>(
         &self,
         secp: &secp256k1::Secp256k1<C>,
         input_index: usize,
@@ -795,18 +833,47 @@ impl BitGoPsbt {
         let public_key = CompressedPublicKey::from_slice(&derived_pubkey.serialize())
             .map_err(|e| format!("Failed to convert derived key: {}", e))?;
 
-        // Check for Taproot script path signatures first
-        if !input.tap_script_sigs.is_empty() {
-            return psbt_wallet_input::verify_taproot_script_signature(
-                secp,
-                psbt,
-                input_index,
-                public_key,
-            );
+        // Verify signature with the derived public key
+        self.verify_signature_with_pubkey(secp, input_index, public_key)
+    }
+
+    /// Verify if a valid signature exists for a given public key at the specified input index
+    ///
+    /// This method verifies the signature directly with the provided public key. It supports:
+    /// - ECDSA signatures (for legacy/SegWit inputs)
+    /// - Schnorr signatures (for Taproot script path inputs)
+    ///
+    /// Note: This method does NOT support MuSig2 inputs, as MuSig2 requires derivation from xpubs.
+    /// Use `verify_signature_with_xpub` for MuSig2 inputs.
+    ///
+    /// # Arguments
+    /// - `secp`: Secp256k1 context for signature verification
+    /// - `input_index`: The index of the input to check
+    /// - `pubkey`: The secp256k1 public key
+    ///
+    /// # Returns
+    /// - `Ok(true)` if a valid signature exists for the public key
+    /// - `Ok(false)` if no signature exists for the public key
+    /// - `Err(String)` if the input index is out of bounds or verification fails
+    pub fn verify_signature_with_pub<C: secp256k1::Verification>(
+        &self,
+        secp: &secp256k1::Secp256k1<C>,
+        input_index: usize,
+        pubkey: &secp256k1::PublicKey,
+    ) -> Result<bool, String> {
+        let psbt = self.psbt();
+
+        // Check input index bounds
+        if input_index >= psbt.inputs.len() {
+            return Err(format!("Input index {} out of bounds", input_index));
         }
 
-        // Fall back to ECDSA signature verification for legacy/SegWit inputs
-        psbt_wallet_input::verify_ecdsa_signature(secp, psbt, input_index, public_key)
+        // Convert secp256k1::PublicKey to CompressedPublicKey
+        let public_key = CompressedPublicKey::from_slice(&pubkey.serialize())
+            .map_err(|e| format!("Failed to convert public key: {}", e))?;
+
+        // Verify signature with the public key
+        self.verify_signature_with_pubkey(secp, input_index, public_key)
     }
 
     /// Parse outputs with wallet keys to identify which outputs belong to a particular wallet.
@@ -845,7 +912,7 @@ impl BitGoPsbt {
     pub fn parse_transaction_with_wallet_keys(
         &self,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        replay_protection: &psbt_wallet_input::ReplayProtection,
+        replay_protection: &crate::fixed_script_wallet::ReplayProtection,
     ) -> Result<ParsedTransaction, ParseTransactionError> {
         let psbt = self.psbt();
 
@@ -1257,7 +1324,7 @@ mod tests {
 
         // Create replay protection with this output script
         let replay_protection =
-            psbt_wallet_input::ReplayProtection::new(vec![output_script.clone()]);
+            crate::fixed_script_wallet::ReplayProtection::new(vec![output_script.clone()]);
 
         // Verify the signature exists and is valid
         let has_valid_signature = bitgo_psbt.verify_replay_protection_signature(
@@ -1283,12 +1350,12 @@ mod tests {
         expected_count: usize,
         stage_name: &str,
     ) -> Result<(), String> {
-        // Use verify_signature to count valid signatures for all input types
+        // Use verify_signature_with_xpub to count valid signatures for all input types
         // This now handles MuSig2, ECDSA, and Schnorr signatures uniformly
         let secp = secp256k1::Secp256k1::new();
         let mut signature_count = 0;
         for xpub in &wallet_keys.xpubs {
-            match bitgo_psbt.verify_signature(&secp, input_index, xpub) {
+            match bitgo_psbt.verify_signature_with_xpub(&secp, input_index, xpub) {
                 Ok(true) => signature_count += 1,
                 Ok(false) => {}          // No signature for this key
                 Err(e) => return Err(e), // Propagate other errors
@@ -1536,7 +1603,7 @@ mod tests {
         let wallet_keys = wallet_xprv.to_root_wallet_keys();
         
         // Create replay protection with the replay protection script from fixture
-        let replay_protection = psbt_wallet_input::ReplayProtection::new(vec![
+        let replay_protection = crate::fixed_script_wallet::ReplayProtection::new(vec![
             miniscript::bitcoin::ScriptBuf::from_hex("a91420b37094d82a513451ff0ccd9db23aba05bc5ef387")
                 .expect("Failed to parse replay protection output script"),
         ]);

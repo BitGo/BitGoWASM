@@ -1,5 +1,4 @@
 import type { AddressFormat } from "./address.js";
-import { Triple } from "./triple.js";
 import { UtxolibCompatNamespace } from "./wasm/wasm_utxo.js";
 
 export type UtxolibName =
@@ -24,26 +23,6 @@ export type UtxolibName =
   | "litecoinTest"
   | "zcash"
   | "zcashTest";
-
-export type BIP32Interface = {
-  network: {
-    bip32: {
-      public: number;
-    };
-  };
-  depth: number;
-  parentFingerprint: number;
-  index: number;
-  chainCode: Uint8Array;
-  publicKey: Uint8Array;
-
-  toBase58?(): string;
-};
-
-export type UtxolibRootWalletKeys = {
-  triple: Triple<BIP32Interface>;
-  derivationPrefixes: Triple<string>;
-};
 
 export type UtxolibNetwork = {
   pubKeyHash: number;

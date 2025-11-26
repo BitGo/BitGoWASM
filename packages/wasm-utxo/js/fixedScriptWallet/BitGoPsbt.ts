@@ -1,58 +1,12 @@
-import { FixedScriptWalletNamespace } from "./wasm/wasm_utxo.js";
-import type { UtxolibName, UtxolibNetwork, UtxolibRootWalletKeys } from "./utxolibCompat.js";
-import type { CoinName } from "./coinName.js";
-import { Triple } from "./triple.js";
-import { AddressFormat } from "./address.js";
+import { BitGoPsbt as WasmBitGoPsbt } from "../wasm/wasm_utxo.js";
+import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
+import { type ReplayProtectionArg, ReplayProtection } from "./ReplayProtection.js";
+import { type BIP32Arg, BIP32 } from "../bip32.js";
+import { type ECPairArg, ECPair } from "../ecpair.js";
+import type { UtxolibName } from "../utxolibCompat.js";
+import type { CoinName } from "../coinName.js";
 
 export type NetworkName = UtxolibName | CoinName;
-
-export type WalletKeys =
-  /** Just an xpub triple, will assume default derivation prefixes  */
-  | Triple<string>
-  /** Compatible with utxolib RootWalletKeys */
-  | UtxolibRootWalletKeys;
-
-/**
- * Create the output script for a given wallet keys and chain and index
- */
-export function outputScript(
-  keys: WalletKeys,
-  chain: number,
-  index: number,
-  network: UtxolibNetwork,
-): Uint8Array {
-  return FixedScriptWalletNamespace.output_script(keys, chain, index, network);
-}
-
-/**
- * Create the address for a given wallet keys and chain and index and network.
- * Wrapper for outputScript that also encodes the script to an address.
- * @param keys - The wallet keys to use.
- * @param chain - The chain to use.
- * @param index - The index to use.
- * @param network - The network to use.
- * @param addressFormat - The address format to use.
- *   Only relevant for Bitcoin Cash and eCash networks, where:
- *   - "default" means base58check,
- *   - "cashaddr" means cashaddr.
- */
-export function address(
-  keys: WalletKeys,
-  chain: number,
-  index: number,
-  network: UtxolibNetwork,
-  addressFormat?: AddressFormat,
-): string {
-  return FixedScriptWalletNamespace.address(keys, chain, index, network, addressFormat);
-}
-
-type ReplayProtection =
-  | {
-      outputScripts: Uint8Array[];
-    }
-  | {
-      addresses: string[];
-    };
 
 export type ScriptId = { chain: number; index: number };
 
@@ -88,8 +42,6 @@ export type ParsedTransaction = {
   virtualSize: number;
 };
 
-import { BitGoPsbt as WasmBitGoPsbt } from "./wasm/wasm_utxo.js";
-
 export class BitGoPsbt {
   private constructor(private wasm: WasmBitGoPsbt) {}
 
@@ -119,13 +71,12 @@ export class BitGoPsbt {
    * @returns Parsed transaction information
    */
   parseTransactionWithWalletKeys(
-    walletKeys: WalletKeys,
-    replayProtection: ReplayProtection,
+    walletKeys: WalletKeysArg,
+    replayProtection: ReplayProtectionArg,
   ): ParsedTransaction {
-    return this.wasm.parse_transaction_with_wallet_keys(
-      walletKeys,
-      replayProtection,
-    ) as ParsedTransaction;
+    const keys = RootWalletKeys.from(walletKeys);
+    const rp = ReplayProtection.from(replayProtection, this.wasm.network());
+    return this.wasm.parse_transaction_with_wallet_keys(keys.wasm, rp.wasm) as ParsedTransaction;
   }
 
   /**
@@ -139,29 +90,61 @@ export class BitGoPsbt {
    * @returns Array of parsed outputs
    * @note This method does NOT validate wallet inputs. It only parses outputs.
    */
-  parseOutputsWithWalletKeys(walletKeys: WalletKeys): ParsedOutput[] {
-    return this.wasm.parse_outputs_with_wallet_keys(walletKeys) as ParsedOutput[];
+  parseOutputsWithWalletKeys(walletKeys: WalletKeysArg): ParsedOutput[] {
+    const keys = RootWalletKeys.from(walletKeys);
+    return this.wasm.parse_outputs_with_wallet_keys(keys.wasm) as ParsedOutput[];
   }
 
   /**
-   * Verify if a valid signature exists for a given extended public key at the specified input index.
+   * Verify if a valid signature exists for a given key at the specified input index.
    *
-   * This method derives the public key from the xpub using the derivation path found in the
-   * PSBT input, then verifies the signature. It supports:
+   * This method can verify signatures using either:
+   * - Extended public key (xpub): Derives the public key using the derivation path from PSBT
+   * - ECPair (private key): Extracts the public key and verifies directly
+   *
+   * When using xpub, it supports:
    * - ECDSA signatures (for legacy/SegWit inputs)
    * - Schnorr signatures (for Taproot script path inputs)
    * - MuSig2 partial signatures (for Taproot keypath MuSig2 inputs)
    *
+   * When using ECPair, it supports:
+   * - ECDSA signatures (for legacy/SegWit inputs)
+   * - Schnorr signatures (for Taproot script path inputs)
+   * Note: MuSig2 inputs require xpubs for derivation
+   *
    * @param inputIndex - The index of the input to check (0-based)
-   * @param xpub - The extended public key as a base58-encoded string
+   * @param key - Either an extended public key (base58 string, BIP32 instance, or WasmBIP32) or an ECPair (private key Buffer, ECPair instance, or WasmECPair)
    * @returns true if a valid signature exists, false if no signature exists
-   * @throws Error if input index is out of bounds, xpub is invalid, or verification fails
+   * @throws Error if input index is out of bounds, key is invalid, or verification fails
+   *
+   * @example
+   * ```typescript
+   * // Verify wallet input signature with xpub
+   * const hasUserSig = psbt.verifySignature(0, userXpub);
+   *
+   * // Verify signature with ECPair (private key)
+   * const ecpair = ECPair.fromPrivateKey(privateKeyBuffer);
+   * const hasReplaySig = psbt.verifySignature(1, ecpair);
+   *
+   * // Or pass private key directly
+   * const hasReplaySig2 = psbt.verifySignature(1, privateKeyBuffer);
+   * ```
    */
-  verifySignature(inputIndex: number, xpub: string): boolean {
-    return this.wasm.verify_signature(inputIndex, xpub);
+  verifySignature(inputIndex: number, key: BIP32Arg | ECPairArg): boolean {
+    // Try to parse as BIP32Arg first (string or BIP32 instance)
+    if (typeof key === "string" || ("derive" in key && typeof key.derive === "function")) {
+      const wasmKey = BIP32.from(key as BIP32Arg).wasm;
+      return this.wasm.verify_signature_with_xpub(inputIndex, wasmKey);
+    }
+
+    // Otherwise it's an ECPairArg (Uint8Array, ECPair, or WasmECPair)
+    const wasmECPair = ECPair.from(key as ECPairArg).wasm;
+    return this.wasm.verify_signature_with_pub(inputIndex, wasmECPair);
   }
 
   /**
+   * @deprecated - use verifySignature with the replay protection key instead
+   *
    * Verify if a replay protection input has a valid signature.
    *
    * This method checks if a given input is a replay protection input (like P2shP2pk) and verifies
@@ -179,8 +162,12 @@ export class BitGoPsbt {
    * @returns true if the input is a replay protection input and has a valid signature, false if no valid signature
    * @throws Error if the input is not a replay protection input, index is out of bounds, or scripts are invalid
    */
-  verifyReplayProtectionSignature(inputIndex: number, replayProtection: ReplayProtection): boolean {
-    return this.wasm.verify_replay_protection_signature(inputIndex, replayProtection);
+  verifyReplayProtectionSignature(
+    inputIndex: number,
+    replayProtection: ReplayProtectionArg,
+  ): boolean {
+    const rp = ReplayProtection.from(replayProtection, this.wasm.network());
+    return this.wasm.verify_replay_protection_signature(inputIndex, rp.wasm);
   }
 
   /**

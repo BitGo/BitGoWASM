@@ -1,4 +1,3 @@
-use std::str::FromStr;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsValue;
 
@@ -6,10 +5,12 @@ use crate::address::networks::AddressFormat;
 use crate::error::WasmUtxoError;
 use crate::fixed_script_wallet::{Chain, WalletScripts};
 use crate::utxolib_compat::UtxolibNetwork;
+use crate::wasm::bip32::WasmBIP32;
+use crate::wasm::ecpair::WasmECPair;
+use crate::wasm::replay_protection::WasmReplayProtection;
 use crate::wasm::try_from_js_value::TryFromJsValue;
-use crate::wasm::try_from_js_value::{get_buffer_array_field, get_string_array_field};
 use crate::wasm::try_into_js_value::TryIntoJsValue;
-use crate::wasm::wallet_keys_helpers::root_wallet_keys_from_jsvalue;
+use crate::wasm::wallet_keys::WasmRootWalletKeys;
 
 /// Parse a network from a string that can be either a utxolib name or a coin name
 fn parse_network(network_str: &str) -> Result<crate::networks::Network, WasmUtxoError> {
@@ -23,57 +24,6 @@ fn parse_network(network_str: &str) -> Result<crate::networks::Network, WasmUtxo
         })
 }
 
-/// Helper function to create ReplayProtection from JsValue
-/// Supports two formats:
-/// 1. { outputScripts: Buffer[] } - direct scripts
-/// 2. { addresses: string[] } - addresses to decode (uses provided network)
-fn replay_protection_from_js_value(
-    replay_protection: &JsValue,
-    network: crate::networks::Network,
-) -> Result<
-    crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ReplayProtection,
-    WasmUtxoError,
-> {
-    // Try to get outputScripts first
-    if let Ok(script_bytes) = get_buffer_array_field(replay_protection, "outputScripts") {
-        let permitted_scripts = script_bytes
-            .into_iter()
-            .map(miniscript::bitcoin::ScriptBuf::from_bytes)
-            .collect();
-
-        return Ok(
-            crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ReplayProtection::new(
-                permitted_scripts,
-            ),
-        );
-    }
-
-    // Try to get addresses array
-    let addresses = get_string_array_field(replay_protection, "addresses").map_err(|_| {
-        WasmUtxoError::new("replay_protection must have either outputScripts or addresses property")
-    })?;
-
-    // Convert addresses to scripts using provided network
-    let mut permitted_scripts = Vec::new();
-    for address_str in addresses {
-        let script = crate::address::networks::to_output_script_with_network(&address_str, network)
-            .map_err(|e| {
-                WasmUtxoError::new(&format!(
-                    "Failed to decode address '{}': {}",
-                    address_str, e
-                ))
-            })?;
-
-        permitted_scripts.push(script);
-    }
-
-    Ok(
-        crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ReplayProtection::new(
-            permitted_scripts,
-        ),
-    )
-}
-
 #[wasm_bindgen]
 pub struct FixedScriptWalletNamespace;
 
@@ -81,7 +31,7 @@ pub struct FixedScriptWalletNamespace;
 impl FixedScriptWalletNamespace {
     #[wasm_bindgen]
     pub fn output_script(
-        keys: JsValue,
+        keys: &WasmRootWalletKeys,
         chain: u32,
         index: u32,
         network: JsValue,
@@ -90,9 +40,9 @@ impl FixedScriptWalletNamespace {
         let chain = Chain::try_from(chain)
             .map_err(|e| WasmUtxoError::new(&format!("Invalid chain: {}", e)))?;
 
-        let wallet_keys = root_wallet_keys_from_jsvalue(&keys)?;
+        let wallet_keys = keys.inner();
         let scripts = WalletScripts::from_wallet_keys(
-            &wallet_keys,
+            wallet_keys,
             chain,
             index,
             &network.output_script_support(),
@@ -102,18 +52,18 @@ impl FixedScriptWalletNamespace {
 
     #[wasm_bindgen]
     pub fn address(
-        keys: JsValue,
+        keys: &WasmRootWalletKeys,
         chain: u32,
         index: u32,
         network: JsValue,
         address_format: Option<String>,
     ) -> Result<String, WasmUtxoError> {
         let network = UtxolibNetwork::try_from_js_value(&network)?;
-        let wallet_keys = root_wallet_keys_from_jsvalue(&keys)?;
+        let wallet_keys = keys.inner();
         let chain = Chain::try_from(chain)
             .map_err(|e| WasmUtxoError::new(&format!("Invalid chain: {}", e)))?;
         let scripts = WalletScripts::from_wallet_keys(
-            &wallet_keys,
+            wallet_keys,
             chain,
             index,
             &network.output_script_support(),
@@ -153,23 +103,25 @@ impl BitGoPsbt {
         self.psbt.unsigned_txid().to_string()
     }
 
+    /// Get the network of the PSBT
+    pub fn network(&self) -> String {
+        self.psbt.network().to_string()
+    }
+
     /// Parse transaction with wallet keys to identify wallet inputs/outputs
     pub fn parse_transaction_with_wallet_keys(
         &self,
-        wallet_keys: JsValue,
-        replay_protection: JsValue,
+        wallet_keys: &WasmRootWalletKeys,
+        replay_protection: &WasmReplayProtection,
     ) -> Result<JsValue, WasmUtxoError> {
-        // Convert wallet keys from JsValue
-        let wallet_keys = root_wallet_keys_from_jsvalue(&wallet_keys)?;
-
-        // Convert replay protection from JsValue, using the PSBT's network
-        let network = self.psbt.network();
-        let replay_protection = replay_protection_from_js_value(&replay_protection, network)?;
+        // Get the inner RootWalletKeys and ReplayProtection
+        let wallet_keys = wallet_keys.inner();
+        let replay_protection = replay_protection.inner();
 
         // Call the Rust implementation
         let parsed_tx = self
             .psbt
-            .parse_transaction_with_wallet_keys(&wallet_keys, &replay_protection)
+            .parse_transaction_with_wallet_keys(wallet_keys, replay_protection)
             .map_err(|e| WasmUtxoError::new(&format!("Failed to parse transaction: {}", e)))?;
 
         // Convert to JsValue directly using TryIntoJsValue
@@ -181,15 +133,15 @@ impl BitGoPsbt {
     /// Note: This method does NOT validate wallet inputs. It only parses outputs.
     pub fn parse_outputs_with_wallet_keys(
         &self,
-        wallet_keys: JsValue,
+        wallet_keys: &WasmRootWalletKeys,
     ) -> Result<JsValue, WasmUtxoError> {
-        // Convert wallet keys from JsValue
-        let wallet_keys = root_wallet_keys_from_jsvalue(&wallet_keys)?;
+        // Get the inner RootWalletKeys
+        let wallet_keys = wallet_keys.inner();
 
         // Call the Rust implementation
         let parsed_outputs = self
             .psbt
-            .parse_outputs_with_wallet_keys(&wallet_keys)
+            .parse_outputs_with_wallet_keys(wallet_keys)
             .map_err(|e| WasmUtxoError::new(&format!("Failed to parse outputs: {}", e)))?;
 
         // Convert Vec<ParsedOutput> to JsValue
@@ -199,32 +151,67 @@ impl BitGoPsbt {
     /// Verify if a valid signature exists for a given xpub at the specified input index
     ///
     /// This method derives the public key from the xpub using the derivation path found in the
-    /// PSBT input, then verifies the signature. It supports both ECDSA signatures (for legacy/SegWit
-    /// inputs) and Schnorr signatures (for Taproot script path inputs).
+    /// PSBT input, then verifies the signature. It supports:
+    /// - ECDSA signatures (for legacy/SegWit inputs)
+    /// - Schnorr signatures (for Taproot script path inputs)
+    /// - MuSig2 partial signatures (for Taproot keypath MuSig2 inputs)
     ///
     /// # Arguments
     /// - `input_index`: The index of the input to check
-    /// - `xpub_str`: The extended public key as a base58-encoded string
+    /// - `xpub`: The extended public key as a WasmBIP32 instance
     ///
     /// # Returns
     /// - `Ok(true)` if a valid signature exists for the derived public key
     /// - `Ok(false)` if no signature exists for the derived public key
-    /// - `Err(WasmUtxoError)` if the input index is out of bounds, xpub is invalid, derivation fails, or verification fails
-    pub fn verify_signature(
+    /// - `Err(WasmUtxoError)` if the input index is out of bounds, derivation fails, or verification fails
+    pub fn verify_signature_with_xpub(
         &self,
         input_index: usize,
-        xpub_str: &str,
+        xpub: &WasmBIP32,
     ) -> Result<bool, WasmUtxoError> {
-        // Parse xpub from string
-        let xpub = miniscript::bitcoin::bip32::Xpub::from_str(xpub_str)
-            .map_err(|e| WasmUtxoError::new(&format!("Invalid xpub: {}", e)))?;
+        // Extract Xpub from WasmBIP32
+        let xpub_inner = xpub.to_xpub()?;
 
         // Create secp context
         let secp = miniscript::bitcoin::secp256k1::Secp256k1::verification_only();
 
         // Call the Rust implementation
         self.psbt
-            .verify_signature(&secp, input_index, &xpub)
+            .verify_signature_with_xpub(&secp, input_index, &xpub_inner)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to verify signature: {}", e)))
+    }
+
+    /// Verify if a valid signature exists for a given ECPair key at the specified input index
+    ///
+    /// This method verifies the signature directly with the provided ECPair's public key. It supports:
+    /// - ECDSA signatures (for legacy/SegWit inputs)
+    /// - Schnorr signatures (for Taproot script path inputs)
+    ///
+    /// Note: This method does NOT support MuSig2 inputs, as MuSig2 requires derivation from xpubs.
+    /// Use `verify_signature_with_xpub` for MuSig2 inputs.
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to check
+    /// - `ecpair`: The ECPair key (uses the public key for verification)
+    ///
+    /// # Returns
+    /// - `Ok(true)` if a valid signature exists for the public key
+    /// - `Ok(false)` if no signature exists for the public key
+    /// - `Err(WasmUtxoError)` if the input index is out of bounds or verification fails
+    pub fn verify_signature_with_pub(
+        &self,
+        input_index: usize,
+        ecpair: &WasmECPair,
+    ) -> Result<bool, WasmUtxoError> {
+        // Extract the public key from the ECPair
+        let public_key = ecpair.get_public_key();
+
+        // Create secp context
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::verification_only();
+
+        // Call the Rust implementation
+        self.psbt
+            .verify_signature_with_pub(&secp, input_index, &public_key)
             .map_err(|e| WasmUtxoError::new(&format!("Failed to verify signature: {}", e)))
     }
 
@@ -246,18 +233,17 @@ impl BitGoPsbt {
     pub fn verify_replay_protection_signature(
         &self,
         input_index: usize,
-        replay_protection: JsValue,
+        replay_protection: &WasmReplayProtection,
     ) -> Result<bool, WasmUtxoError> {
-        // Convert replay protection from JsValue, using the PSBT's network
-        let network = self.psbt.network();
-        let replay_protection = replay_protection_from_js_value(&replay_protection, network)?;
+        // Get the inner ReplayProtection
+        let replay_protection = replay_protection.inner();
 
         // Create secp context
         let secp = miniscript::bitcoin::secp256k1::Secp256k1::verification_only();
 
         // Call the Rust implementation
         self.psbt
-            .verify_replay_protection_signature(&secp, input_index, &replay_protection)
+            .verify_replay_protection_signature(&secp, input_index, replay_protection)
             .map_err(|e| {
                 WasmUtxoError::new(&format!(
                     "Failed to verify replay protection signature: {}",
