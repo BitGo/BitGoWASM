@@ -266,7 +266,8 @@ export class BitGoPsbt {
    * // Send PSBT to counterparty
    *
    * // Phase 2: After receiving counterparty PSBT with their nonces
-   * psbt.combine(counterpartyPsbtBytes);
+   * const counterpartyPsbt = BitGoPsbt.fromBytes(counterpartyPsbtBytes, network);
+   * psbt.combineMusig2Nonces(counterpartyPsbt);
    * // Sign MuSig2 key path inputs
    * const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, replayProtection);
    * for (let i = 0; i < parsed.inputs.length; i++) {
@@ -279,6 +280,29 @@ export class BitGoPsbt {
   generateMusig2Nonces(key: BIP32Arg, sessionId?: Uint8Array): void {
     const wasmKey = BIP32.from(key);
     this.wasm.generate_musig2_nonces(wasmKey.wasm, sessionId);
+  }
+
+  /**
+   * Combine/merge data from another PSBT into this one
+   *
+   * This method copies MuSig2 nonces and signatures (proprietary key-value pairs) from the
+   * source PSBT to this PSBT. This is useful for merging PSBTs during the nonce exchange
+   * and signature collection phases.
+   *
+   * @param sourcePsbt - The source PSBT containing data to merge
+   * @throws Error if networks don't match
+   *
+   * @example
+   * ```typescript
+   * // After receiving counterparty's PSBT with their nonces
+   * const counterpartyPsbt = BitGoPsbt.fromBytes(counterpartyPsbtBytes, network);
+   * psbt.combineMusig2Nonces(counterpartyPsbt);
+   * // Now can sign with all nonces present
+   * psbt.sign(0, userXpriv);
+   * ```
+   */
+  combineMusig2Nonces(sourcePsbt: BitGoPsbt): void {
+    this.wasm.combine_musig2_nonces(sourcePsbt.wasm);
   }
 
   /**

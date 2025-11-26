@@ -204,6 +204,71 @@ impl BitGoPsbt {
         }
     }
 
+    /// Combine/merge data from another PSBT into this one
+    ///
+    /// This method copies MuSig2 nonces and signatures (proprietary key-value pairs) from the
+    /// source PSBT to this PSBT. This is useful for merging PSBTs during the nonce exchange
+    /// and signature collection phases.
+    ///
+    /// # Arguments
+    /// * `source_psbt` - The source PSBT containing data to merge
+    ///
+    /// # Returns
+    /// Ok(()) if data was successfully merged
+    ///
+    /// # Errors
+    /// Returns error if networks don't match
+    pub fn combine_musig2_nonces(&mut self, source_psbt: &BitGoPsbt) -> Result<(), String> {
+        // Check network match
+        if self.network() != source_psbt.network() {
+            return Err(format!(
+                "Network mismatch: destination is {}, source is {}",
+                self.network(),
+                source_psbt.network()
+            ));
+        }
+
+        let source = source_psbt.psbt();
+        let dest = self.psbt_mut();
+
+        // Check that both PSBTs have the same number of inputs
+        if source.inputs.len() != dest.inputs.len() {
+            return Err(format!(
+                "PSBT input count mismatch: source has {} inputs, destination has {}",
+                source.inputs.len(),
+                dest.inputs.len()
+            ));
+        }
+
+        // Copy MuSig2 nonces and partial signatures (proprietary key-values with BITGO identifier)
+        for (source_input, dest_input) in source.inputs.iter().zip(dest.inputs.iter_mut()) {
+            // Only process if the input is a MuSig2 input
+            if !p2tr_musig2_input::Musig2Input::is_musig2_input(source_input) {
+                continue;
+            }
+
+            // Parse nonces from source input using native Musig2 functions
+            let nonces = p2tr_musig2_input::parse_musig2_nonces(source_input)
+                .map_err(|e| format!("Failed to parse MuSig2 nonces from source: {}", e))?;
+
+            // Copy each nonce to the destination input
+            for nonce in nonces {
+                let (key, value) = nonce.to_key_value().to_key_value();
+                dest_input.proprietary.insert(key, value);
+            }
+
+            // Also copy partial signatures if present
+            // Partial sigs are stored as tap_script_sigs in the PSBT input
+            for (control_block, leaf_script) in &source_input.tap_script_sigs {
+                dest_input
+                    .tap_script_sigs
+                    .insert(*control_block, *leaf_script);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Serialize the PSBT to bytes, using network-specific logic
     pub fn serialize(&self) -> Result<Vec<u8>, SerializeError> {
         match self {

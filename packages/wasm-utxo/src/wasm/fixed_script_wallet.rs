@@ -504,6 +504,26 @@ impl BitGoPsbt {
             .map_err(|e| WasmUtxoError::new(&format!("Failed to sign input: {}", e)))
     }
 
+    /// Combine/merge data from another PSBT into this one
+    ///
+    /// This method copies MuSig2 nonces and signatures (proprietary key-value pairs) from the
+    /// source PSBT to this PSBT. This is useful for merging PSBTs during the nonce exchange
+    /// and signature collection phases.
+    ///
+    /// # Arguments
+    /// * `source_psbt` - The source PSBT containing data to merge
+    ///
+    /// # Returns
+    /// Ok(()) if data was successfully merged
+    ///
+    /// # Errors
+    /// Returns error if networks don't match
+    pub fn combine_musig2_nonces(&mut self, source_psbt: &BitGoPsbt) -> Result<(), WasmUtxoError> {
+        self.psbt
+            .combine_musig2_nonces(&source_psbt.psbt)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to combine PSBTs: {}", e)))
+    }
+
     /// Finalize all inputs in the PSBT
     ///
     /// This method attempts to finalize all inputs in the PSBT, computing the final
