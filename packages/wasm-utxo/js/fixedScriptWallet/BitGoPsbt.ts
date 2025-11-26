@@ -1,48 +1,11 @@
-import { FixedScriptWalletNamespace } from "./wasm/wasm_utxo.js";
-import { type WalletKeysArg, RootWalletKeys } from "./WalletKeys.js";
-import { type BIP32Arg, BIP32 } from "./bip32.js";
-import { type ECPairArg, ECPair } from "./ecpair.js";
-import type { UtxolibName, UtxolibNetwork } from "./utxolibCompat.js";
-import type { CoinName } from "./coinName.js";
-import { AddressFormat } from "./address.js";
+import { BitGoPsbt as WasmBitGoPsbt } from "../wasm/wasm_utxo.js";
+import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
+import { type BIP32Arg, BIP32 } from "../bip32.js";
+import { type ECPairArg, ECPair } from "../ecpair.js";
+import type { UtxolibName } from "../utxolibCompat.js";
+import type { CoinName } from "../coinName.js";
 
 export type NetworkName = UtxolibName | CoinName;
-
-/**
- * Create the output script for a given wallet keys and chain and index
- */
-export function outputScript(
-  keys: WalletKeysArg,
-  chain: number,
-  index: number,
-  network: UtxolibNetwork,
-): Uint8Array {
-  const walletKeys = RootWalletKeys.from(keys);
-  return FixedScriptWalletNamespace.output_script(walletKeys.wasm, chain, index, network);
-}
-
-/**
- * Create the address for a given wallet keys and chain and index and network.
- * Wrapper for outputScript that also encodes the script to an address.
- * @param keys - The wallet keys to use.
- * @param chain - The chain to use.
- * @param index - The index to use.
- * @param network - The network to use.
- * @param addressFormat - The address format to use.
- *   Only relevant for Bitcoin Cash and eCash networks, where:
- *   - "default" means base58check,
- *   - "cashaddr" means cashaddr.
- */
-export function address(
-  keys: WalletKeysArg,
-  chain: number,
-  index: number,
-  network: UtxolibNetwork,
-  addressFormat?: AddressFormat,
-): string {
-  const walletKeys = RootWalletKeys.from(keys);
-  return FixedScriptWalletNamespace.address(walletKeys.wasm, chain, index, network, addressFormat);
-}
 
 type ReplayProtection =
   | {
@@ -85,8 +48,6 @@ export type ParsedTransaction = {
   minerFee: bigint;
   virtualSize: number;
 };
-
-import { BitGoPsbt as WasmBitGoPsbt } from "./wasm/wasm_utxo.js";
 
 export class BitGoPsbt {
   private constructor(private wasm: WasmBitGoPsbt) {}

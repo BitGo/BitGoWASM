@@ -1,7 +1,7 @@
-import type { BIP32Interface } from "./bip32.js";
-import { BIP32 } from "./bip32.js";
-import { Triple } from "./triple.js";
-import { WasmRootWalletKeys, WasmBIP32 } from "./wasm/wasm_utxo.js";
+import type { BIP32Interface } from "../bip32.js";
+import { BIP32 } from "../bip32.js";
+import { Triple } from "../triple.js";
+import { WasmRootWalletKeys, WasmBIP32 } from "../wasm/wasm_utxo.js";
 
 /**
  * IWalletKeys represents the various forms that wallet keys can take
@@ -21,21 +21,21 @@ export type WalletKeysArg =
   | RootWalletKeys;
 
 /**
- * Convert WalletKeysArg to a triple of WasmBIP32 instances
+ * Convert WalletKeysArg to a triple of BIP32 instances
  */
-function toBIP32Triple(keys: WalletKeysArg): Triple<WasmBIP32> {
+function toBIP32Triple(keys: WalletKeysArg): Triple<BIP32> {
   if (keys instanceof RootWalletKeys) {
-    return [keys.userKey().wasm, keys.backupKey().wasm, keys.bitgoKey().wasm];
+    return [keys.userKey(), keys.backupKey(), keys.bitgoKey()];
   }
 
   // Check if it's an IWalletKeys object
   if (typeof keys === "object" && "triple" in keys) {
     // Extract BIP32 keys from the triple
-    return keys.triple.map((key) => BIP32.from(key).wasm) as Triple<WasmBIP32>;
+    return keys.triple.map((key) => BIP32.from(key)) as Triple<BIP32>;
   }
 
   // Otherwise it's a triple of strings (xpubs)
-  return keys.map((xpub) => WasmBIP32.from_xpub(xpub)) as Triple<WasmBIP32>;
+  return keys.map((xpub) => BIP32.fromWasm(WasmBIP32.from_xpub(xpub))) as Triple<BIP32>;
 }
 
 /**
@@ -69,14 +69,14 @@ export class RootWalletKeys {
 
     const wasm = derivationPrefixes
       ? WasmRootWalletKeys.with_derivation_prefixes(
-          user,
-          backup,
-          bitgo,
+          user.wasm,
+          backup.wasm,
+          bitgo.wasm,
           derivationPrefixes[0],
           derivationPrefixes[1],
           derivationPrefixes[2],
         )
-      : new WasmRootWalletKeys(user, backup, bitgo);
+      : new WasmRootWalletKeys(user.wasm, backup.wasm, bitgo.wasm);
 
     return new RootWalletKeys(wasm);
   }

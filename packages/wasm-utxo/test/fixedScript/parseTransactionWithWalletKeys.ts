@@ -1,8 +1,8 @@
 import assert from "node:assert";
 import * as utxolib from "@bitgo/utxo-lib";
 import { fixedScriptWallet } from "../../js/index.js";
-import { BitGoPsbt, InputScriptType } from "../../js/fixedScriptWallet.js";
-import type { RootWalletKeys } from "../../js/WalletKeys.js";
+import { BitGoPsbt, InputScriptType } from "../../js/fixedScriptWallet/index.js";
+import type { RootWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
 import {
   loadPsbtFixture,
   loadWalletKeysFromFixture,

@@ -2,9 +2,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
-import type { IWalletKeys } from "../../js/WalletKeys.js";
+import type { IWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
 import { BIP32, type BIP32Interface } from "../../js/bip32.js";
-import { RootWalletKeys } from "../../js/WalletKeys.js";
+import { RootWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
