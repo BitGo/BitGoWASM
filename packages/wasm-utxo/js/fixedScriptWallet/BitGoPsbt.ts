@@ -180,6 +180,48 @@ export class BitGoPsbt {
   }
 
   /**
+   * Generate and store MuSig2 nonces for all MuSig2 inputs
+   *
+   * This method generates nonces using the State-Machine API and stores them in the PSBT.
+   * The nonces are stored as proprietary fields in the PSBT and will be included when serialized.
+   * After ALL participants have generated their nonces, you can sign MuSig2 inputs using
+   * sign().
+   *
+   * @param key - The extended private key (xpriv) for signing. Can be a base58 string, BIP32 instance, or WasmBIP32
+   * @param sessionId - Optional 32-byte session ID for nonce generation. **Only allowed on testnets**.
+   *                    On mainnets, a secure random session ID is always generated automatically.
+   *                    Must be unique per signing session.
+   * @throws Error if nonce generation fails, sessionId length is invalid, or custom sessionId is
+   *         provided on a mainnet (security restriction)
+   *
+   * @security The sessionId MUST be cryptographically random and unique for each signing session.
+   * Never reuse a sessionId with the same key! On mainnets, sessionId is always randomly
+   * generated for security. Custom sessionId is only allowed on testnets for testing purposes.
+   *
+   * @example
+   * ```typescript
+   * // Phase 1: Both parties generate nonces (with auto-generated session ID)
+   * psbt.generateMusig2Nonces(userXpriv);
+   * // Nonces are stored in the PSBT
+   * // Send PSBT to counterparty
+   *
+   * // Phase 2: After receiving counterparty PSBT with their nonces
+   * psbt.combine(counterpartyPsbtBytes);
+   * // Sign MuSig2 key path inputs
+   * const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, replayProtection);
+   * for (let i = 0; i < parsed.inputs.length; i++) {
+   *   if (parsed.inputs[i].scriptType === "p2trMusig2KeyPath") {
+   *     psbt.sign(i, userXpriv);
+   *   }
+   * }
+   * ```
+   */
+  generateMusig2Nonces(key: BIP32Arg, sessionId?: Uint8Array): void {
+    const wasmKey = BIP32.from(key);
+    this.wasm.generate_musig2_nonces(wasmKey.wasm, sessionId);
+  }
+
+  /**
    * Finalize all inputs in the PSBT
    *
    * @throws Error if any input failed to finalize

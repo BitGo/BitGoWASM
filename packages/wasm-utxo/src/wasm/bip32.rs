@@ -334,4 +334,12 @@ impl WasmBIP32 {
     pub(crate) fn to_xpub(&self) -> Result<crate::bitcoin::bip32::Xpub, WasmUtxoError> {
         Ok(self.0.to_xpub())
     }
+
+    /// Convert to Xpriv (for internal Rust use, not exposed to JS)
+    pub(crate) fn to_xpriv(&self) -> Result<crate::bitcoin::bip32::Xpriv, WasmUtxoError> {
+        match &self.0 {
+            BIP32Key::Private(xpriv) => Ok(*xpriv),
+            BIP32Key::Public(_) => Err(WasmUtxoError::new("Cannot get xpriv from public key")),
+        }
+    }
 }
