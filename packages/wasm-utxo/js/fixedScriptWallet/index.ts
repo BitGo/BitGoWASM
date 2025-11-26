@@ -1,4 +1,5 @@
 export { RootWalletKeys, type WalletKeysArg, type IWalletKeys } from "./RootWalletKeys.js";
+export { ReplayProtection, type ReplayProtectionArg } from "./ReplayProtection.js";
 export { outputScript, address } from "./address.js";
 export {
   BitGoPsbt,

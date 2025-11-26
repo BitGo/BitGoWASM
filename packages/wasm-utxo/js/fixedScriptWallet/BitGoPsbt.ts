@@ -1,19 +1,12 @@
 import { BitGoPsbt as WasmBitGoPsbt } from "../wasm/wasm_utxo.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
+import { type ReplayProtectionArg, ReplayProtection } from "./ReplayProtection.js";
 import { type BIP32Arg, BIP32 } from "../bip32.js";
 import { type ECPairArg, ECPair } from "../ecpair.js";
 import type { UtxolibName } from "../utxolibCompat.js";
 import type { CoinName } from "../coinName.js";
 
 export type NetworkName = UtxolibName | CoinName;
-
-type ReplayProtection =
-  | {
-      outputScripts: Uint8Array[];
-    }
-  | {
-      addresses: string[];
-    };
 
 export type ScriptId = { chain: number; index: number };
 
@@ -79,13 +72,11 @@ export class BitGoPsbt {
    */
   parseTransactionWithWalletKeys(
     walletKeys: WalletKeysArg,
-    replayProtection: ReplayProtection,
+    replayProtection: ReplayProtectionArg,
   ): ParsedTransaction {
     const keys = RootWalletKeys.from(walletKeys);
-    return this.wasm.parse_transaction_with_wallet_keys(
-      keys.wasm,
-      replayProtection,
-    ) as ParsedTransaction;
+    const rp = ReplayProtection.from(replayProtection, this.wasm.network());
+    return this.wasm.parse_transaction_with_wallet_keys(keys.wasm, rp.wasm) as ParsedTransaction;
   }
 
   /**
@@ -171,8 +162,12 @@ export class BitGoPsbt {
    * @returns true if the input is a replay protection input and has a valid signature, false if no valid signature
    * @throws Error if the input is not a replay protection input, index is out of bounds, or scripts are invalid
    */
-  verifyReplayProtectionSignature(inputIndex: number, replayProtection: ReplayProtection): boolean {
-    return this.wasm.verify_replay_protection_signature(inputIndex, replayProtection);
+  verifyReplayProtectionSignature(
+    inputIndex: number,
+    replayProtection: ReplayProtectionArg,
+  ): boolean {
+    const rp = ReplayProtection.from(replayProtection, this.wasm.network());
+    return this.wasm.verify_replay_protection_signature(inputIndex, rp.wasm);
   }
 
   /**

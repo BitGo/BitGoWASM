@@ -7,8 +7,8 @@ use crate::fixed_script_wallet::{Chain, WalletScripts};
 use crate::utxolib_compat::UtxolibNetwork;
 use crate::wasm::bip32::WasmBIP32;
 use crate::wasm::ecpair::WasmECPair;
+use crate::wasm::replay_protection::WasmReplayProtection;
 use crate::wasm::try_from_js_value::TryFromJsValue;
-use crate::wasm::try_from_js_value::{get_buffer_array_field, get_string_array_field};
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use crate::wasm::wallet_keys::WasmRootWalletKeys;
 
@@ -22,57 +22,6 @@ fn parse_network(network_str: &str) -> Result<crate::networks::Network, WasmUtxo
                 network_str
             ))
         })
-}
-
-/// Helper function to create ReplayProtection from JsValue
-/// Supports two formats:
-/// 1. { outputScripts: Buffer[] } - direct scripts
-/// 2. { addresses: string[] } - addresses to decode (uses provided network)
-fn replay_protection_from_js_value(
-    replay_protection: &JsValue,
-    network: crate::networks::Network,
-) -> Result<
-    crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ReplayProtection,
-    WasmUtxoError,
-> {
-    // Try to get outputScripts first
-    if let Ok(script_bytes) = get_buffer_array_field(replay_protection, "outputScripts") {
-        let permitted_scripts = script_bytes
-            .into_iter()
-            .map(miniscript::bitcoin::ScriptBuf::from_bytes)
-            .collect();
-
-        return Ok(
-            crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ReplayProtection::new(
-                permitted_scripts,
-            ),
-        );
-    }
-
-    // Try to get addresses array
-    let addresses = get_string_array_field(replay_protection, "addresses").map_err(|_| {
-        WasmUtxoError::new("replay_protection must have either outputScripts or addresses property")
-    })?;
-
-    // Convert addresses to scripts using provided network
-    let mut permitted_scripts = Vec::new();
-    for address_str in addresses {
-        let script = crate::address::networks::to_output_script_with_network(&address_str, network)
-            .map_err(|e| {
-                WasmUtxoError::new(&format!(
-                    "Failed to decode address '{}': {}",
-                    address_str, e
-                ))
-            })?;
-
-        permitted_scripts.push(script);
-    }
-
-    Ok(
-        crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ReplayProtection::new(
-            permitted_scripts,
-        ),
-    )
 }
 
 #[wasm_bindgen]
@@ -154,23 +103,25 @@ impl BitGoPsbt {
         self.psbt.unsigned_txid().to_string()
     }
 
+    /// Get the network of the PSBT
+    pub fn network(&self) -> String {
+        self.psbt.network().to_string()
+    }
+
     /// Parse transaction with wallet keys to identify wallet inputs/outputs
     pub fn parse_transaction_with_wallet_keys(
         &self,
         wallet_keys: &WasmRootWalletKeys,
-        replay_protection: JsValue,
+        replay_protection: &WasmReplayProtection,
     ) -> Result<JsValue, WasmUtxoError> {
-        // Get the inner RootWalletKeys
+        // Get the inner RootWalletKeys and ReplayProtection
         let wallet_keys = wallet_keys.inner();
-
-        // Convert replay protection from JsValue, using the PSBT's network
-        let network = self.psbt.network();
-        let replay_protection = replay_protection_from_js_value(&replay_protection, network)?;
+        let replay_protection = replay_protection.inner();
 
         // Call the Rust implementation
         let parsed_tx = self
             .psbt
-            .parse_transaction_with_wallet_keys(wallet_keys, &replay_protection)
+            .parse_transaction_with_wallet_keys(wallet_keys, replay_protection)
             .map_err(|e| WasmUtxoError::new(&format!("Failed to parse transaction: {}", e)))?;
 
         // Convert to JsValue directly using TryIntoJsValue
@@ -282,18 +233,17 @@ impl BitGoPsbt {
     pub fn verify_replay_protection_signature(
         &self,
         input_index: usize,
-        replay_protection: JsValue,
+        replay_protection: &WasmReplayProtection,
     ) -> Result<bool, WasmUtxoError> {
-        // Convert replay protection from JsValue, using the PSBT's network
-        let network = self.psbt.network();
-        let replay_protection = replay_protection_from_js_value(&replay_protection, network)?;
+        // Get the inner ReplayProtection
+        let replay_protection = replay_protection.inner();
 
         // Create secp context
         let secp = miniscript::bitcoin::secp256k1::Secp256k1::verification_only();
 
         // Call the Rust implementation
         self.psbt
-            .verify_replay_protection_signature(&secp, input_index, &replay_protection)
+            .verify_replay_protection_signature(&secp, input_index, replay_protection)
             .map_err(|e| {
                 WasmUtxoError::new(&format!(
                     "Failed to verify replay protection signature: {}",

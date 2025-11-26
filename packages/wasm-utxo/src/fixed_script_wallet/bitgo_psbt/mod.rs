@@ -478,7 +478,7 @@ impl BitGoPsbt {
     fn parse_inputs(
         &self,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        replay_protection: &psbt_wallet_input::ReplayProtection,
+        replay_protection: &crate::fixed_script_wallet::ReplayProtection,
     ) -> Result<Vec<ParsedInput>, ParseTransactionError> {
         let psbt = self.psbt();
         let network = self.network();
@@ -669,7 +669,7 @@ impl BitGoPsbt {
         &self,
         secp: &secp256k1::Secp256k1<C>,
         input_index: usize,
-        replay_protection: &psbt_wallet_input::ReplayProtection,
+        replay_protection: &crate::fixed_script_wallet::ReplayProtection,
     ) -> Result<bool, String> {
         use miniscript::bitcoin::{hashes::Hash, sighash::SighashCache};
 
@@ -912,7 +912,7 @@ impl BitGoPsbt {
     pub fn parse_transaction_with_wallet_keys(
         &self,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        replay_protection: &psbt_wallet_input::ReplayProtection,
+        replay_protection: &crate::fixed_script_wallet::ReplayProtection,
     ) -> Result<ParsedTransaction, ParseTransactionError> {
         let psbt = self.psbt();
 
@@ -1324,7 +1324,7 @@ mod tests {
 
         // Create replay protection with this output script
         let replay_protection =
-            psbt_wallet_input::ReplayProtection::new(vec![output_script.clone()]);
+            crate::fixed_script_wallet::ReplayProtection::new(vec![output_script.clone()]);
 
         // Verify the signature exists and is valid
         let has_valid_signature = bitgo_psbt.verify_replay_protection_signature(
@@ -1603,7 +1603,7 @@ mod tests {
         let wallet_keys = wallet_xprv.to_root_wallet_keys();
         
         // Create replay protection with the replay protection script from fixture
-        let replay_protection = psbt_wallet_input::ReplayProtection::new(vec![
+        let replay_protection = crate::fixed_script_wallet::ReplayProtection::new(vec![
             miniscript::bitcoin::ScriptBuf::from_hex("a91420b37094d82a513451ff0ccd9db23aba05bc5ef387")
                 .expect("Failed to parse replay protection output script"),
         ]);

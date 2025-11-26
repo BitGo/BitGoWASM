@@ -4,25 +4,8 @@ use miniscript::bitcoin::secp256k1::{self, PublicKey};
 use miniscript::bitcoin::{OutPoint, ScriptBuf, TapLeafHash, XOnlyPublicKey};
 
 use crate::bitcoin::bip32::KeySource;
-use crate::fixed_script_wallet::{Chain, RootWalletKeys, WalletScripts};
+use crate::fixed_script_wallet::{Chain, ReplayProtection, RootWalletKeys, WalletScripts};
 use crate::Network;
-
-#[derive(Debug, Clone)]
-pub struct ReplayProtection {
-    pub permitted_output_scripts: Vec<ScriptBuf>,
-}
-
-impl ReplayProtection {
-    pub fn new(permitted_output_scripts: Vec<ScriptBuf>) -> Self {
-        Self {
-            permitted_output_scripts,
-        }
-    }
-
-    pub fn is_replay_protection_input(&self, output_script: &ScriptBuf) -> bool {
-        self.permitted_output_scripts.contains(output_script)
-    }
-}
 
 pub type Bip32DerivationMap = std::collections::BTreeMap<PublicKey, KeySource>;
 
