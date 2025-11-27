@@ -9,20 +9,6 @@ pub type XpubTriple = [Xpub; 3];
 
 pub type PubTriple = [CompressedPublicKey; 3];
 
-pub fn xpub_triple_from_strings(xpub_strings: &[String; 3]) -> Result<XpubTriple, WasmUtxoError> {
-    let xpubs: Result<Vec<Xpub>, _> = xpub_strings
-        .iter()
-        .map(|s| {
-            Xpub::from_str(s)
-                .map_err(|e| WasmUtxoError::new(&format!("Failed to parse xpub: {}", e)))
-        })
-        .collect();
-
-    xpubs?
-        .try_into()
-        .map_err(|_| WasmUtxoError::new("Expected exactly 3 xpubs"))
-}
-
 pub fn to_pub_triple(xpubs: &XpubTriple) -> PubTriple {
     xpubs
         .iter()
