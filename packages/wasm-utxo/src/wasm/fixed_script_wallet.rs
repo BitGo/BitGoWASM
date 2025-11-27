@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsValue;
 
@@ -83,6 +84,9 @@ impl FixedScriptWalletNamespace {
 #[wasm_bindgen]
 pub struct BitGoPsbt {
     psbt: crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt,
+    // Store FirstRound states per (input_index, xpub_string)
+    #[wasm_bindgen(skip)]
+    first_rounds: HashMap<(usize, String), musig2::FirstRound>,
 }
 
 #[wasm_bindgen]
@@ -95,7 +99,10 @@ impl BitGoPsbt {
             crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::deserialize(bytes, network)
                 .map_err(|e| WasmUtxoError::new(&format!("Failed to deserialize PSBT: {}", e)))?;
 
-        Ok(BitGoPsbt { psbt })
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
     }
 
     /// Get the unsigned transaction ID
@@ -260,6 +267,261 @@ impl BitGoPsbt {
         self.psbt
             .serialize()
             .map_err(|e| WasmUtxoError::new(&format!("Failed to serialize PSBT: {}", e)))
+    }
+
+    /// Generate and store MuSig2 nonces for all MuSig2 inputs
+    ///
+    /// This method generates nonces using the State-Machine API and stores them in the PSBT.
+    /// The nonces are stored as proprietary fields in the PSBT and will be included when serialized.
+    /// After ALL participants have generated their nonces, they can sign MuSig2 inputs using
+    /// sign_with_xpriv().
+    ///
+    /// # Arguments
+    /// * `xpriv` - The extended private key (xpriv) for signing
+    /// * `session_id_bytes` - Optional 32-byte session ID for nonce generation. **Only allowed on testnets**.
+    ///                        On mainnets, a secure random session ID is always generated automatically.
+    ///                        Must be unique per signing session.
+    ///
+    /// # Returns
+    /// Ok(()) if nonces were successfully generated and stored
+    ///
+    /// # Errors
+    /// Returns error if:
+    /// - Nonce generation fails
+    /// - session_id length is invalid
+    /// - Custom session_id is provided on a mainnet (security restriction)
+    ///
+    /// # Security
+    /// The session_id MUST be cryptographically random and unique for each signing session.
+    /// Never reuse a session_id with the same key! On mainnets, session_id is always randomly
+    /// generated for security. Custom session_id is only allowed on testnets for testing purposes.
+    pub fn generate_musig2_nonces(
+        &mut self,
+        xpriv: &WasmBIP32,
+        session_id_bytes: Option<Vec<u8>>,
+    ) -> Result<(), WasmUtxoError> {
+        // Extract Xpriv from WasmBIP32
+        let xpriv = xpriv.to_xpriv()?;
+
+        // Get the network from the PSBT to check if custom session_id is allowed
+        let network = self.psbt.network();
+
+        // Get or generate session ID
+        let session_id = match session_id_bytes {
+            Some(bytes) => {
+                // Only allow custom session_id on testnets for security
+                if !network.is_testnet() {
+                    return Err(WasmUtxoError::new(
+                        "Custom session_id is only allowed on testnets. On mainnets, session_id is always randomly generated for security."
+                    ));
+                }
+                if bytes.len() != 32 {
+                    return Err(WasmUtxoError::new(&format!(
+                        "Session ID must be 32 bytes, got {}",
+                        bytes.len()
+                    )));
+                }
+                let mut session_id = [0u8; 32];
+                session_id.copy_from_slice(&bytes);
+                session_id
+            }
+            None => {
+                // Generate secure random session ID
+                use getrandom::getrandom;
+                let mut session_id = [0u8; 32];
+                getrandom(&mut session_id).map_err(|e| {
+                    WasmUtxoError::new(&format!("Failed to generate random session ID: {}", e))
+                })?;
+                session_id
+            }
+        };
+
+        // Derive xpub from xpriv to use as key
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+        let xpub = miniscript::bitcoin::bip32::Xpub::from_priv(&secp, &xpriv);
+        let xpub_str = xpub.to_string();
+
+        // Iterate over all inputs and generate nonces for MuSig2 inputs
+        let input_count = self.psbt.psbt().unsigned_tx.input.len();
+        for input_index in 0..input_count {
+            // Check if this input is a MuSig2 input
+            let psbt = self.psbt.psbt();
+            if !crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::Musig2Input::is_musig2_input(&psbt.inputs[input_index]) {
+                continue;
+            }
+
+            // Generate nonce and get the FirstRound
+            // The nonce is automatically stored in the PSBT
+            let (first_round, _pub_nonce) = self
+                .psbt
+                .generate_nonce_first_round(input_index, &xpriv, session_id)
+                .map_err(|e| {
+                    WasmUtxoError::new(&format!(
+                        "Failed to generate nonce for input {}: {}",
+                        input_index, e
+                    ))
+                })?;
+
+            // Store the FirstRound for later use in signing
+            // Use (input_index, xpub) as key so multiple parties can store their FirstRounds
+            self.first_rounds
+                .insert((input_index, xpub_str.clone()), first_round);
+        }
+
+        Ok(())
+    }
+
+    /// Sign a single input with an extended private key (xpriv)
+    ///
+    /// This method signs a specific input using the provided xpriv. It accepts:
+    /// - An xpriv (WasmBIP32) for wallet inputs - derives the key and signs
+    ///
+    /// This method automatically detects and handles different input types:
+    /// - For regular inputs: uses standard PSBT signing
+    /// - For MuSig2 inputs: uses the FirstRound state stored by generate_musig2_nonces()
+    /// - For replay protection inputs: returns error (use sign_with_privkey instead)
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to sign (0-based)
+    /// - `xpriv`: The extended private key as a WasmBIP32 instance
+    ///
+    /// # Returns
+    /// - `Ok(())` if signing was successful
+    /// - `Err(WasmUtxoError)` if signing fails
+    pub fn sign_with_xpriv(
+        &mut self,
+        input_index: usize,
+        xpriv: &WasmBIP32,
+    ) -> Result<(), WasmUtxoError> {
+        // Extract Xpriv from WasmBIP32
+        let xpriv = xpriv.to_xpriv()?;
+
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+
+        // Check if this is a MuSig2 input
+        let psbt = self.psbt.psbt();
+        if input_index >= psbt.inputs.len() {
+            return Err(WasmUtxoError::new(&format!(
+                "Input index {} out of bounds (total inputs: {})",
+                input_index,
+                psbt.inputs.len()
+            )));
+        }
+
+        if crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::Musig2Input::is_musig2_input(
+            &psbt.inputs[input_index],
+        ) {
+            // This is a MuSig2 input - use FirstRound signing
+            let xpub = miniscript::bitcoin::bip32::Xpub::from_priv(&secp, &xpriv);
+            let xpub_str = xpub.to_string();
+
+            // Remove the stored FirstRound for this (input, xpub) pair (it can only be used once)
+            let first_round = self.first_rounds.remove(&(input_index, xpub_str.clone()))
+                .ok_or_else(|| WasmUtxoError::new(&format!(
+                    "No FirstRound found for input {} and xpub {}. You must call generate_musig2_nonces() first.",
+                    input_index, xpub_str
+                )))?;
+
+            // Sign with the FirstRound
+            self.psbt
+                .sign_with_first_round(input_index, first_round, &xpriv)
+                .map_err(|e| {
+                    WasmUtxoError::new(&format!(
+                        "Failed to sign MuSig2 input {}: {}",
+                        input_index, e
+                    ))
+                })?;
+
+            Ok(())
+        } else {
+            // This is a regular input - use standard signing
+            // Sign the PSBT - this will attempt to sign all inputs but we only care about the result
+            // The miniscript sign method returns (SigningKeysMap, SigningErrors) on error
+            let result = self.psbt.sign(&xpriv, &secp);
+
+            // Check if this specific input was signed successfully
+            match result {
+                Ok(signing_keys) => {
+                    // Check if our input_index was in the successfully signed keys
+                    if signing_keys.contains_key(&input_index) {
+                        Ok(())
+                    } else {
+                        Err(WasmUtxoError::new(&format!(
+                            "Input {} was not signed (no key found or already signed)",
+                            input_index
+                        )))
+                    }
+                }
+                Err((partial_success, errors)) => {
+                    // Check if there's an error for our specific input
+                    if let Some(error) = errors.get(&input_index) {
+                        Err(WasmUtxoError::new(&format!(
+                            "Failed to sign input {}: {:?}",
+                            input_index, error
+                        )))
+                    } else if partial_success.contains_key(&input_index) {
+                        // Input was signed successfully despite other errors
+                        Ok(())
+                    } else {
+                        Err(WasmUtxoError::new(&format!(
+                            "Input {} was not signed",
+                            input_index
+                        )))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Sign a single input with a raw private key
+    ///
+    /// This method signs a specific input using the provided ECPair. It accepts:
+    /// - A raw privkey (WasmECPair) for replay protection inputs - signs directly
+    ///
+    /// This method automatically detects and handles different input types:
+    /// - For replay protection inputs: signs with legacy P2SH sighash
+    /// - For regular inputs: uses standard PSBT signing
+    /// - For MuSig2 inputs: returns error (requires FirstRound, use sign_with_xpriv instead)
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to sign (0-based)
+    /// - `ecpair`: The ECPair containing the private key
+    ///
+    /// # Returns
+    /// - `Ok(())` if signing was successful
+    /// - `Err(WasmUtxoError)` if signing fails
+    pub fn sign_with_privkey(
+        &mut self,
+        input_index: usize,
+        ecpair: &WasmECPair,
+    ) -> Result<(), WasmUtxoError> {
+        // Extract private key from WasmECPair
+        let privkey = ecpair.get_private_key()?;
+
+        // Call the Rust implementation
+        self.psbt
+            .sign_with_privkey(input_index, &privkey)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to sign input: {}", e)))
+    }
+
+    /// Combine/merge data from another PSBT into this one
+    ///
+    /// This method copies MuSig2 nonces and signatures (proprietary key-value pairs) from the
+    /// source PSBT to this PSBT. This is useful for merging PSBTs during the nonce exchange
+    /// and signature collection phases.
+    ///
+    /// # Arguments
+    /// * `source_psbt` - The source PSBT containing data to merge
+    ///
+    /// # Returns
+    /// Ok(()) if data was successfully merged
+    ///
+    /// # Errors
+    /// Returns error if networks don't match
+    pub fn combine_musig2_nonces(&mut self, source_psbt: &BitGoPsbt) -> Result<(), WasmUtxoError> {
+        self.psbt
+            .combine_musig2_nonces(&source_psbt.psbt)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to combine PSBTs: {}", e)))
     }
 
     /// Finalize all inputs in the PSBT

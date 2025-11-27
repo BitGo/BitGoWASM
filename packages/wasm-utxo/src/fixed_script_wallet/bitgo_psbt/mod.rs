@@ -204,6 +204,71 @@ impl BitGoPsbt {
         }
     }
 
+    /// Combine/merge data from another PSBT into this one
+    ///
+    /// This method copies MuSig2 nonces and signatures (proprietary key-value pairs) from the
+    /// source PSBT to this PSBT. This is useful for merging PSBTs during the nonce exchange
+    /// and signature collection phases.
+    ///
+    /// # Arguments
+    /// * `source_psbt` - The source PSBT containing data to merge
+    ///
+    /// # Returns
+    /// Ok(()) if data was successfully merged
+    ///
+    /// # Errors
+    /// Returns error if networks don't match
+    pub fn combine_musig2_nonces(&mut self, source_psbt: &BitGoPsbt) -> Result<(), String> {
+        // Check network match
+        if self.network() != source_psbt.network() {
+            return Err(format!(
+                "Network mismatch: destination is {}, source is {}",
+                self.network(),
+                source_psbt.network()
+            ));
+        }
+
+        let source = source_psbt.psbt();
+        let dest = self.psbt_mut();
+
+        // Check that both PSBTs have the same number of inputs
+        if source.inputs.len() != dest.inputs.len() {
+            return Err(format!(
+                "PSBT input count mismatch: source has {} inputs, destination has {}",
+                source.inputs.len(),
+                dest.inputs.len()
+            ));
+        }
+
+        // Copy MuSig2 nonces and partial signatures (proprietary key-values with BITGO identifier)
+        for (source_input, dest_input) in source.inputs.iter().zip(dest.inputs.iter_mut()) {
+            // Only process if the input is a MuSig2 input
+            if !p2tr_musig2_input::Musig2Input::is_musig2_input(source_input) {
+                continue;
+            }
+
+            // Parse nonces from source input using native Musig2 functions
+            let nonces = p2tr_musig2_input::parse_musig2_nonces(source_input)
+                .map_err(|e| format!("Failed to parse MuSig2 nonces from source: {}", e))?;
+
+            // Copy each nonce to the destination input
+            for nonce in nonces {
+                let (key, value) = nonce.to_key_value().to_key_value();
+                dest_input.proprietary.insert(key, value);
+            }
+
+            // Also copy partial signatures if present
+            // Partial sigs are stored as tap_script_sigs in the PSBT input
+            for (control_block, leaf_script) in &source_input.tap_script_sigs {
+                dest_input
+                    .tap_script_sigs
+                    .insert(*control_block, *leaf_script);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Serialize the PSBT to bytes, using network-specific logic
     pub fn serialize(&self) -> Result<Vec<u8>, SerializeError> {
         match self {
@@ -424,6 +489,146 @@ impl BitGoPsbt {
         let mut ctx = self.musig2_context(input_index)?;
         ctx.sign_with_first_round(first_round, xpriv)
             .map_err(|e| e.to_string())
+    }
+
+    /// Sign a single input with a raw private key
+    ///
+    /// This method signs a specific input using the provided private key. It automatically
+    /// detects the input type and uses the appropriate signing method:
+    /// - Replay protection inputs (P2SH-P2PK): Signs with legacy P2SH sighash
+    /// - Regular inputs: Uses standard PSBT signing
+    /// - MuSig2 inputs: Returns error (requires FirstRound state, use sign_with_first_round)
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to sign
+    /// - `privkey`: The private key to sign with
+    ///
+    /// # Returns
+    /// - `Ok(())` if signing was successful
+    /// - `Err(String)` if signing fails or input type is not supported
+    pub fn sign_with_privkey(
+        &mut self,
+        input_index: usize,
+        privkey: &secp256k1::SecretKey,
+    ) -> Result<(), String> {
+        use miniscript::bitcoin::{
+            ecdsa::Signature as EcdsaSignature, hashes::Hash, sighash::SighashCache, PublicKey,
+        };
+
+        // Get network before mutable borrow
+        let network = self.network();
+        let is_testnet = network.is_testnet();
+
+        let psbt = self.psbt_mut();
+
+        // Check bounds
+        if input_index >= psbt.inputs.len() {
+            return Err(format!(
+                "Input index {} out of bounds (total inputs: {})",
+                input_index,
+                psbt.inputs.len()
+            ));
+        }
+
+        // Check if this is a MuSig2 input
+        if p2tr_musig2_input::Musig2Input::is_musig2_input(&psbt.inputs[input_index]) {
+            return Err(
+                "MuSig2 inputs cannot be signed with raw privkey. Use sign_with_first_round instead."
+                    .to_string(),
+            );
+        }
+
+        let secp = secp256k1::Secp256k1::new();
+
+        // Derive public key from private key
+        let public_key = PublicKey::from_slice(
+            &secp256k1::PublicKey::from_secret_key(&secp, privkey).serialize(),
+        )
+        .map_err(|e| format!("Failed to derive public key: {}", e))?;
+
+        // Check if this is a replay protection input (P2SH-P2PK)
+        if let Some(redeem_script) = &psbt.inputs[input_index].redeem_script.clone() {
+            // Try to extract pubkey from redeem script
+            if let Ok(redeem_pubkey) = Self::extract_pubkey_from_p2pk_redeem_script(redeem_script) {
+                // This is a replay protection input - verify the derived pubkey matches
+                if public_key != redeem_pubkey {
+                    return Err(
+                        "Public key mismatch: derived pubkey does not match redeem_script pubkey"
+                            .to_string(),
+                    );
+                }
+
+                // Sign the replay protection input with legacy P2SH sighash
+                let sighash_type = miniscript::bitcoin::sighash::EcdsaSighashType::All;
+                let cache = SighashCache::new(&psbt.unsigned_tx);
+                let sighash = cache
+                    .legacy_signature_hash(input_index, redeem_script, sighash_type.to_u32())
+                    .map_err(|e| format!("Failed to compute sighash: {}", e))?;
+
+                // Create ECDSA signature
+                let message = secp256k1::Message::from_digest(sighash.to_byte_array());
+                let signature = secp.sign_ecdsa(&message, privkey);
+                let ecdsa_sig = EcdsaSignature {
+                    signature,
+                    sighash_type,
+                };
+
+                // Add signature to partial_sigs
+                psbt.inputs[input_index]
+                    .partial_sigs
+                    .insert(public_key, ecdsa_sig);
+
+                return Ok(());
+            }
+        }
+
+        // For regular inputs (non-RP, non-MuSig2), use standard signing via miniscript
+        // This will handle legacy, SegWit, and Taproot script path inputs
+        match self {
+            BitGoPsbt::BitcoinLike(ref mut psbt, _network) => {
+                // Create a key provider that returns our single key
+                // Convert SecretKey to PrivateKey for the GetKey trait
+                // Note: The network parameter is only used for WIF serialization, not for signing
+                let bitcoin_network = if is_testnet {
+                    miniscript::bitcoin::Network::Testnet
+                } else {
+                    miniscript::bitcoin::Network::Bitcoin
+                };
+                let private_key = miniscript::bitcoin::PrivateKey::new(*privkey, bitcoin_network);
+                let key_map = std::collections::BTreeMap::from_iter([(public_key, private_key)]);
+
+                // Sign the PSBT
+                let result = psbt.sign(&key_map, &secp);
+
+                // Check if our specific input was signed
+                match result {
+                    Ok(signing_keys) => {
+                        if signing_keys.contains_key(&input_index) {
+                            Ok(())
+                        } else {
+                            Err(format!(
+                                "Input {} was not signed (no key found or already signed)",
+                                input_index
+                            ))
+                        }
+                    }
+                    Err((partial_success, errors)) => {
+                        // Check if there's an error for our specific input
+                        if let Some(error) = errors.get(&input_index) {
+                            Err(format!("Failed to sign input {}: {:?}", input_index, error))
+                        } else if partial_success.contains_key(&input_index) {
+                            // Input was signed successfully despite other errors
+                            Ok(())
+                        } else {
+                            Err(format!("Input {} was not signed", input_index))
+                        }
+                    }
+                }
+            }
+            BitGoPsbt::Zcash(_zcash_psbt, _network) => {
+                Err("Zcash signing not yet implemented".to_string())
+            }
+        }
     }
 
     /// Sign the PSBT with the provided key.

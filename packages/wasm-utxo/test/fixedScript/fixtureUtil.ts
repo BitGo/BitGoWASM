@@ -7,6 +7,8 @@ import type { IWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
 import { BIP32, type BIP32Interface } from "../../js/bip32.js";
 import { RootWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
 import { ECPair } from "../../js/ecpair.js";
+import { fixedScriptWallet } from "../../js/index.js";
+import type { BitGoPsbt, NetworkName } from "../../js/fixedScriptWallet/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -101,6 +103,16 @@ export type Fixture = {
  */
 export function getPsbtBuffer(fixture: Fixture): Buffer {
   return Buffer.from(fixture.psbtBase64, "base64");
+}
+
+/**
+ * Get BitGoPsbt from a fixture
+ * @param fixture - The test fixture
+ * @param networkName - The network name for deserializing the PSBT
+ * @returns A BitGoPsbt instance
+ */
+export function getBitGoPsbt(fixture: Fixture, networkName: NetworkName): BitGoPsbt {
+  return fixedScriptWallet.BitGoPsbt.fromBytes(getPsbtBuffer(fixture), networkName);
 }
 
 /**

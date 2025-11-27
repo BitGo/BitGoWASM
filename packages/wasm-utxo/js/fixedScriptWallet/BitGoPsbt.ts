@@ -143,6 +143,66 @@ export class BitGoPsbt {
   }
 
   /**
+   * Sign a single input with a private key
+   *
+   * This method signs a specific input using the provided key. It accepts either:
+   * - An xpriv (BIP32Arg: base58 string, BIP32 instance, or WasmBIP32) for wallet inputs - derives the key and signs
+   * - A raw privkey (ECPairArg: Buffer, ECPair instance, or WasmECPair) for replay protection inputs - signs directly
+   *
+   * This method automatically detects and handles different input types:
+   * - For regular inputs: uses standard PSBT signing
+   * - For MuSig2 inputs: uses the FirstRound state stored by generateMusig2Nonces()
+   * - For replay protection inputs: signs with legacy P2SH sighash
+   *
+   * @param inputIndex - The index of the input to sign (0-based)
+   * @param key - Either an xpriv (BIP32Arg) or a raw privkey (ECPairArg)
+   * @throws Error if signing fails, or if generateMusig2Nonces() was not called first for MuSig2 inputs
+   *
+   * @example
+   * ```typescript
+   * // Parse transaction to identify input types
+   * const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, replayProtection);
+   *
+   * // Sign regular wallet inputs with xpriv
+   * for (let i = 0; i < parsed.inputs.length; i++) {
+   *   const input = parsed.inputs[i];
+   *   if (input.scriptId !== null && input.scriptType !== "p2shP2pk") {
+   *     psbt.sign(i, userXpriv);
+   *   }
+   * }
+   *
+   * // Sign replay protection inputs with raw privkey
+   * const userPrivkey = bip32.fromBase58(userXpriv).privateKey!;
+   * for (let i = 0; i < parsed.inputs.length; i++) {
+   *   const input = parsed.inputs[i];
+   *   if (input.scriptType === "p2shP2pk") {
+   *     psbt.sign(i, userPrivkey);
+   *   }
+   * }
+   * ```
+   */
+  sign(inputIndex: number, key: BIP32Arg | ECPairArg): void {
+    // Detect key type
+    // If string or has 'derive' method → BIP32Arg
+    // Otherwise → ECPairArg
+    if (
+      typeof key === "string" ||
+      (typeof key === "object" &&
+        key !== null &&
+        "derive" in key &&
+        typeof key.derive === "function")
+    ) {
+      // It's a BIP32Arg
+      const wasmKey = BIP32.from(key as BIP32Arg);
+      this.wasm.sign_with_xpriv(inputIndex, wasmKey.wasm);
+    } else {
+      // It's an ECPairArg
+      const wasmKey = ECPair.from(key as ECPairArg);
+      this.wasm.sign_with_privkey(inputIndex, wasmKey.wasm);
+    }
+  }
+
+  /**
    * @deprecated - use verifySignature with the replay protection key instead
    *
    * Verify if a replay protection input has a valid signature.
@@ -177,6 +237,72 @@ export class BitGoPsbt {
    */
   serialize(): Uint8Array {
     return this.wasm.serialize();
+  }
+
+  /**
+   * Generate and store MuSig2 nonces for all MuSig2 inputs
+   *
+   * This method generates nonces using the State-Machine API and stores them in the PSBT.
+   * The nonces are stored as proprietary fields in the PSBT and will be included when serialized.
+   * After ALL participants have generated their nonces, you can sign MuSig2 inputs using
+   * sign().
+   *
+   * @param key - The extended private key (xpriv) for signing. Can be a base58 string, BIP32 instance, or WasmBIP32
+   * @param sessionId - Optional 32-byte session ID for nonce generation. **Only allowed on testnets**.
+   *                    On mainnets, a secure random session ID is always generated automatically.
+   *                    Must be unique per signing session.
+   * @throws Error if nonce generation fails, sessionId length is invalid, or custom sessionId is
+   *         provided on a mainnet (security restriction)
+   *
+   * @security The sessionId MUST be cryptographically random and unique for each signing session.
+   * Never reuse a sessionId with the same key! On mainnets, sessionId is always randomly
+   * generated for security. Custom sessionId is only allowed on testnets for testing purposes.
+   *
+   * @example
+   * ```typescript
+   * // Phase 1: Both parties generate nonces (with auto-generated session ID)
+   * psbt.generateMusig2Nonces(userXpriv);
+   * // Nonces are stored in the PSBT
+   * // Send PSBT to counterparty
+   *
+   * // Phase 2: After receiving counterparty PSBT with their nonces
+   * const counterpartyPsbt = BitGoPsbt.fromBytes(counterpartyPsbtBytes, network);
+   * psbt.combineMusig2Nonces(counterpartyPsbt);
+   * // Sign MuSig2 key path inputs
+   * const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, replayProtection);
+   * for (let i = 0; i < parsed.inputs.length; i++) {
+   *   if (parsed.inputs[i].scriptType === "p2trMusig2KeyPath") {
+   *     psbt.sign(i, userXpriv);
+   *   }
+   * }
+   * ```
+   */
+  generateMusig2Nonces(key: BIP32Arg, sessionId?: Uint8Array): void {
+    const wasmKey = BIP32.from(key);
+    this.wasm.generate_musig2_nonces(wasmKey.wasm, sessionId);
+  }
+
+  /**
+   * Combine/merge data from another PSBT into this one
+   *
+   * This method copies MuSig2 nonces and signatures (proprietary key-value pairs) from the
+   * source PSBT to this PSBT. This is useful for merging PSBTs during the nonce exchange
+   * and signature collection phases.
+   *
+   * @param sourcePsbt - The source PSBT containing data to merge
+   * @throws Error if networks don't match
+   *
+   * @example
+   * ```typescript
+   * // After receiving counterparty's PSBT with their nonces
+   * const counterpartyPsbt = BitGoPsbt.fromBytes(counterpartyPsbtBytes, network);
+   * psbt.combineMusig2Nonces(counterpartyPsbt);
+   * // Now can sign with all nonces present
+   * psbt.sign(0, userXpriv);
+   * ```
+   */
+  combineMusig2Nonces(sourcePsbt: BitGoPsbt): void {
+    this.wasm.combine_musig2_nonces(sourcePsbt.wasm);
   }
 
   /**
