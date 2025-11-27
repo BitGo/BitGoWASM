@@ -14,6 +14,8 @@ pub struct WasmReplayProtection {
 impl WasmReplayProtection {
     /// Create from output scripts directly
     #[wasm_bindgen]
+    // Box<[T]> is required by wasm-bindgen for passing JavaScript arrays
+    #[allow(clippy::boxed_local)]
     pub fn from_output_scripts(output_scripts: Box<[js_sys::Uint8Array]>) -> WasmReplayProtection {
         let scripts = output_scripts
             .iter()
@@ -29,6 +31,8 @@ impl WasmReplayProtection {
 
     /// Create from addresses (requires network for decoding)
     #[wasm_bindgen]
+    // Box<[T]> is required by wasm-bindgen for passing JavaScript arrays
+    #[allow(clippy::boxed_local)]
     pub fn from_addresses(
         addresses: Box<[JsValue]>,
         network: &str,
@@ -68,6 +72,8 @@ impl WasmReplayProtection {
 
     /// Create from public keys (derives P2SH-P2PK output scripts)
     #[wasm_bindgen]
+    // Box<[T]> is required by wasm-bindgen for passing JavaScript arrays
+    #[allow(clippy::boxed_local)]
     pub fn from_public_keys(
         public_keys: Box<[js_sys::Uint8Array]>,
     ) -> Result<WasmReplayProtection, WasmUtxoError> {
