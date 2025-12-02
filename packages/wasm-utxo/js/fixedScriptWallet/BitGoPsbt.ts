@@ -19,7 +19,13 @@ export type InputScriptType =
   | "p2trMusig2ScriptPath"
   | "p2trMusig2KeyPath";
 
+export type OutPoint = {
+  txid: string;
+  vout: number;
+};
+
 export type ParsedInput = {
+  previousOutput: OutPoint;
   address: string;
   script: Uint8Array;
   value: bigint;

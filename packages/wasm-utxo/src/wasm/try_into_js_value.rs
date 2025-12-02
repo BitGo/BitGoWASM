@@ -336,6 +336,7 @@ impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::InputScriptType 
 impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedInput {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
         js_obj!(
+            "previousOutput" => js_obj!("txid" => self.previous_output.txid.to_string(), "vout" => self.previous_output.vout)?,
             "address" => self.address.clone(),
             "value" => self.value,
             "scriptId" => self.script_id,

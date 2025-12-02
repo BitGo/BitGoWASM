@@ -83,9 +83,59 @@ describe("parseTransactionWithWalletKeys", function () {
 
         // Verify all inputs have addresses and values
         parsed.inputs.forEach((input, i) => {
+          // Verify previousOutput structure
+          assert.ok(input.previousOutput, `Input ${i} should have previousOutput`);
+          assert.ok(
+            typeof input.previousOutput === "object",
+            `Input ${i} previousOutput should be an object`,
+          );
+          assert.ok(
+            typeof input.previousOutput.txid === "string",
+            `Input ${i} previousOutput.txid should be string`,
+          );
+          assert.strictEqual(
+            input.previousOutput.txid.length,
+            64,
+            `Input ${i} previousOutput.txid should be 64 chars (32 bytes hex)`,
+          );
+          assert.ok(
+            typeof input.previousOutput.vout === "number",
+            `Input ${i} previousOutput.vout should be number`,
+          );
+          assert.ok(
+            input.previousOutput.vout >= 0,
+            `Input ${i} previousOutput.vout should be >= 0`,
+          );
+
+          // Verify address
           assert.ok(input.address, `Input ${i} should have an address`);
+          assert.ok(typeof input.address === "string", `Input ${i} address should be string`);
+
+          // Verify value
           assert.ok(typeof input.value === "bigint", `Input ${i} value should be bigint`);
           assert.ok(input.value > 0n, `Input ${i} value should be > 0`);
+
+          // Verify scriptId structure (can be null for replay protection inputs)
+          if (input.scriptId !== null) {
+            assert.ok(
+              typeof input.scriptId === "object",
+              `Input ${i} scriptId should be an object when present`,
+            );
+            assert.ok(
+              typeof input.scriptId.chain === "number",
+              `Input ${i} scriptId.chain should be number`,
+            );
+            assert.ok(
+              typeof input.scriptId.index === "number",
+              `Input ${i} scriptId.index should be number`,
+            );
+            assert.ok(input.scriptId.chain >= 0, `Input ${i} scriptId.chain should be >= 0`);
+            assert.ok(input.scriptId.index >= 0, `Input ${i} scriptId.index should be >= 0`);
+          }
+
+          // Verify scriptType is present
+          assert.ok(input.scriptType, `Input ${i} should have scriptType`);
+          assert.ok(typeof input.scriptType === "string", `Input ${i} scriptType should be string`);
         });
 
         // Validate outputs
@@ -157,6 +207,42 @@ describe("parseTransactionWithWalletKeys", function () {
             expectedScriptType,
             `Input ${i} scriptType should be ${expectedScriptType}, got ${input.scriptType}`,
           );
+
+          // Verify previousOutput is present and structured correctly
+          assert.ok(input.previousOutput, `Input ${i} should have previousOutput`);
+          assert.ok(
+            typeof input.previousOutput === "object",
+            `Input ${i} previousOutput should be an object`,
+          );
+          assert.ok(
+            typeof input.previousOutput.txid === "string",
+            `Input ${i} previousOutput.txid should be string`,
+          );
+          assert.strictEqual(
+            input.previousOutput.txid.length,
+            64,
+            `Input ${i} previousOutput.txid should be 64 chars`,
+          );
+          assert.ok(
+            typeof input.previousOutput.vout === "number",
+            `Input ${i} previousOutput.vout should be number`,
+          );
+
+          // Verify scriptId structure when present (can be null for replay protection inputs)
+          if (input.scriptId !== null) {
+            assert.ok(
+              typeof input.scriptId === "object",
+              `Input ${i} scriptId should be an object when present`,
+            );
+            assert.ok(
+              typeof input.scriptId.chain === "number",
+              `Input ${i} scriptId.chain should be number`,
+            );
+            assert.ok(
+              typeof input.scriptId.index === "number",
+              `Input ${i} scriptId.index should be number`,
+            );
+          }
         });
       });
 
