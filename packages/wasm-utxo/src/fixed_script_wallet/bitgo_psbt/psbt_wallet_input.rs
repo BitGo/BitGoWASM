@@ -565,6 +565,7 @@ impl InputScriptType {
 /// Parsed input from a PSBT transaction
 #[derive(Debug, Clone)]
 pub struct ParsedInput {
+    pub previous_output: OutPoint,
     pub address: String,
     pub script: Vec<u8>,
     pub value: u64,
@@ -627,6 +628,7 @@ impl ParsedInput {
                 .map_err(ParseInputError::ScriptTypeDetection)?;
 
         Ok(Self {
+            previous_output: tx_input.previous_output,
             address,
             script: output_script.to_bytes(),
             value: value.to_sat(),
