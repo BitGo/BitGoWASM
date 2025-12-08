@@ -38,6 +38,7 @@ export type ParsedOutput = {
   script: Uint8Array;
   value: bigint;
   scriptId: ScriptId | null;
+  paygo: boolean;
 };
 
 export type ParsedTransaction = {
@@ -74,15 +75,22 @@ export class BitGoPsbt {
    * Parse transaction with wallet keys to identify wallet inputs/outputs
    * @param walletKeys - The wallet keys to use for identification
    * @param replayProtection - Scripts that are allowed as inputs without wallet validation
+   * @param payGoPubkeys - Optional public keys for PayGo attestation verification
    * @returns Parsed transaction information
    */
   parseTransactionWithWalletKeys(
     walletKeys: WalletKeysArg,
     replayProtection: ReplayProtectionArg,
+    payGoPubkeys?: ECPairArg[],
   ): ParsedTransaction {
     const keys = RootWalletKeys.from(walletKeys);
     const rp = ReplayProtection.from(replayProtection, this.wasm.network());
-    return this.wasm.parse_transaction_with_wallet_keys(keys.wasm, rp.wasm) as ParsedTransaction;
+    const pubkeys = payGoPubkeys?.map((arg) => ECPair.from(arg).wasm);
+    return this.wasm.parse_transaction_with_wallet_keys(
+      keys.wasm,
+      rp.wasm,
+      pubkeys,
+    ) as ParsedTransaction;
   }
 
   /**
@@ -93,12 +101,32 @@ export class BitGoPsbt {
    * wallet than the inputs.
    *
    * @param walletKeys - The wallet keys to use for identification
+   * @param payGoPubkeys - Optional public keys for PayGo attestation verification
    * @returns Array of parsed outputs
    * @note This method does NOT validate wallet inputs. It only parses outputs.
    */
-  parseOutputsWithWalletKeys(walletKeys: WalletKeysArg): ParsedOutput[] {
+  parseOutputsWithWalletKeys(
+    walletKeys: WalletKeysArg,
+    payGoPubkeys?: ECPairArg[],
+  ): ParsedOutput[] {
     const keys = RootWalletKeys.from(walletKeys);
-    return this.wasm.parse_outputs_with_wallet_keys(keys.wasm) as ParsedOutput[];
+    const pubkeys = payGoPubkeys?.map((arg) => ECPair.from(arg).wasm);
+    return this.wasm.parse_outputs_with_wallet_keys(keys.wasm, pubkeys) as ParsedOutput[];
+  }
+
+  /**
+   * Add a PayGo attestation to a PSBT output
+   *
+   * This adds a cryptographic proof that the output address was authorized by a signing authority.
+   * The attestation is stored in PSBT proprietary key-values and can be verified later.
+   *
+   * @param outputIndex - The index of the output to add the attestation to
+   * @param entropy - 64 bytes of entropy (must be exactly 64 bytes)
+   * @param signature - ECDSA signature bytes (typically 65 bytes in recoverable format)
+   * @throws Error if output index is out of bounds or entropy is not 64 bytes
+   */
+  addPayGoAttestation(outputIndex: number, entropy: Uint8Array, signature: Uint8Array): void {
+    this.wasm.add_paygo_attestation(outputIndex, entropy, signature);
   }
 
   /**

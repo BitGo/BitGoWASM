@@ -120,15 +120,23 @@ impl BitGoPsbt {
         &self,
         wallet_keys: &WasmRootWalletKeys,
         replay_protection: &WasmReplayProtection,
+        paygo_pubkeys: Option<Vec<WasmECPair>>,
     ) -> Result<JsValue, WasmUtxoError> {
         // Get the inner RootWalletKeys and ReplayProtection
         let wallet_keys = wallet_keys.inner();
         let replay_protection = replay_protection.inner();
 
+        // Convert WasmECPair to secp256k1::PublicKey
+        let pubkeys: Vec<_> = paygo_pubkeys
+            .unwrap_or_default()
+            .iter()
+            .map(|ecpair| ecpair.get_public_key())
+            .collect();
+
         // Call the Rust implementation
         let parsed_tx = self
             .psbt
-            .parse_transaction_with_wallet_keys(wallet_keys, replay_protection)
+            .parse_transaction_with_wallet_keys(wallet_keys, replay_protection, &pubkeys)
             .map_err(|e| WasmUtxoError::new(&format!("Failed to parse transaction: {}", e)))?;
 
         // Convert to JsValue directly using TryIntoJsValue
@@ -141,18 +149,47 @@ impl BitGoPsbt {
     pub fn parse_outputs_with_wallet_keys(
         &self,
         wallet_keys: &WasmRootWalletKeys,
+        paygo_pubkeys: Option<Vec<WasmECPair>>,
     ) -> Result<JsValue, WasmUtxoError> {
         // Get the inner RootWalletKeys
         let wallet_keys = wallet_keys.inner();
 
+        // Convert WasmECPair to secp256k1::PublicKey
+        let pubkeys: Vec<_> = paygo_pubkeys
+            .unwrap_or_default()
+            .iter()
+            .map(|ecpair| ecpair.get_public_key())
+            .collect();
+
         // Call the Rust implementation
         let parsed_outputs = self
             .psbt
-            .parse_outputs_with_wallet_keys(wallet_keys)
+            .parse_outputs_with_wallet_keys(wallet_keys, &pubkeys)
             .map_err(|e| WasmUtxoError::new(&format!("Failed to parse outputs: {}", e)))?;
 
         // Convert Vec<ParsedOutput> to JsValue
         parsed_outputs.try_to_js_value()
+    }
+
+    /// Add a PayGo attestation to a PSBT output
+    ///
+    /// # Arguments
+    /// - `output_index`: The index of the output to add the attestation to
+    /// - `entropy`: 64 bytes of entropy
+    /// - `signature`: ECDSA signature bytes
+    ///
+    /// # Returns
+    /// - `Ok(())` if the attestation was successfully added
+    /// - `Err(WasmUtxoError)` if the output index is out of bounds or entropy is invalid
+    pub fn add_paygo_attestation(
+        &mut self,
+        output_index: usize,
+        entropy: &[u8],
+        signature: &[u8],
+    ) -> Result<(), WasmUtxoError> {
+        self.psbt
+            .add_paygo_attestation(output_index, entropy.to_vec(), signature.to_vec())
+            .map_err(|e| WasmUtxoError::new(&e))
     }
 
     /// Verify if a valid signature exists for a given xpub at the specified input index
