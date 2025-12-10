@@ -2,6 +2,7 @@ mod address;
 mod error;
 pub mod fixed_script_wallet;
 mod networks;
+pub mod paygo;
 #[cfg(test)]
 mod test_utils;
 

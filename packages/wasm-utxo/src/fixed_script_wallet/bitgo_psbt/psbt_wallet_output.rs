@@ -14,6 +14,7 @@ pub struct ParsedOutput {
     pub script: Vec<u8>,
     pub value: u64,
     pub script_id: Option<ScriptId>,
+    pub paygo: bool,
 }
 
 impl ParsedOutput {
@@ -24,6 +25,7 @@ impl ParsedOutput {
     /// - `tx_output`: The transaction output
     /// - `wallet_keys`: The wallet's root keys for deriving scripts
     /// - `network`: The network for address generation
+    /// - `paygo_pubkeys`: Optional list of public keys for PayGo attestation verification
     ///
     /// # Returns
     /// - `Ok(ParsedOutput)` with optional address, script bytes, value, and optional script_id
@@ -33,6 +35,7 @@ impl ParsedOutput {
         tx_output: &miniscript::bitcoin::TxOut,
         wallet_keys: &RootWalletKeys,
         network: Network,
+        paygo_pubkeys: &[miniscript::bitcoin::secp256k1::PublicKey],
     ) -> Result<Self, ParseOutputError> {
         let script = &tx_output.script_pubkey;
 
@@ -45,11 +48,20 @@ impl ParsedOutput {
             crate::address::networks::from_output_script_with_network(script.as_script(), network)
                 .ok();
 
+        // Check if this output has a PayGo attestation and validate it
+        let paygo = crate::paygo::has_paygo_attestation_verify(
+            psbt_output,
+            address.as_deref(),
+            paygo_pubkeys,
+        )
+        .map_err(ParseOutputError::PayGoAttestation)?;
+
         Ok(Self {
             address,
             script: script.to_bytes(),
             value: tx_output.value.to_sat(),
             script_id,
+            paygo,
         })
     }
 
@@ -64,12 +76,17 @@ impl ParsedOutput {
 pub enum ParseOutputError {
     /// Failed to match output to wallet (corruption or validation error)
     WalletMatch(String),
+    /// Failed to extract or verify PayGo attestation
+    PayGoAttestation(String),
 }
 
 impl std::fmt::Display for ParseOutputError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ParseOutputError::WalletMatch(error) => write!(f, "{}", error),
+            ParseOutputError::PayGoAttestation(error) => {
+                write!(f, "PayGo attestation error: {}", error)
+            }
         }
     }
 }
