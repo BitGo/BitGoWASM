@@ -243,19 +243,23 @@ impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for Tr<Pk> {
     }
 }
 
-impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for TapTree<Pk> {
+use super::recursive_tap_tree::RecursiveTapTree;
+
+impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for RecursiveTapTree<Pk> {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
-        // TapTree is now a flat representation of leaves with depths
-        // Convert to an array of {depth, miniscript} objects
-        let arr = Array::new();
-        for item in self.leaves() {
-            let leaf_obj = js_obj!(
-                "depth" => item.depth() as u32,
-                "miniscript" => item.miniscript()
-            )?;
-            arr.push(&leaf_obj);
+        match self {
+            RecursiveTapTree::Tree { left, right } => js_obj!("Tree" => js_arr!(left, right)),
+            RecursiveTapTree::Leaf(ms) => ms.try_to_js_value(),
         }
-        Ok(arr.into())
+    }
+}
+
+impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for TapTree<Pk>
+where
+    Pk: Clone,
+{
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        RecursiveTapTree::try_from(self)?.try_to_js_value()
     }
 }
 

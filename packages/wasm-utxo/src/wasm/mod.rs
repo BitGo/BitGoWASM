@@ -5,6 +5,7 @@ mod ecpair;
 mod fixed_script_wallet;
 mod miniscript;
 mod psbt;
+mod recursive_tap_tree;
 mod replay_protection;
 mod try_from_js_value;
 mod try_into_js_value;
