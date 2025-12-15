@@ -75,13 +75,13 @@ impl WrapMiniscript {
         let script = bitcoin::Script::from_bytes(script);
         match context_type {
             "tap" => Ok(WrapMiniscript::from(
-                Miniscript::<XOnlyPublicKey, Tap>::parse(script).map_err(WasmUtxoError::from)?,
+                Miniscript::<XOnlyPublicKey, Tap>::decode(script).map_err(WasmUtxoError::from)?,
             )),
             "segwitv0" => Ok(WrapMiniscript::from(
-                Miniscript::<PublicKey, Segwitv0>::parse(script).map_err(WasmUtxoError::from)?,
+                Miniscript::<PublicKey, Segwitv0>::decode(script).map_err(WasmUtxoError::from)?,
             )),
             "legacy" => Ok(WrapMiniscript::from(
-                Miniscript::<PublicKey, Legacy>::parse(script).map_err(WasmUtxoError::from)?,
+                Miniscript::<PublicKey, Legacy>::decode(script).map_err(WasmUtxoError::from)?,
             )),
             _ => Err(WasmUtxoError::new("Invalid context type")),
         }

@@ -235,16 +235,27 @@ impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for WshInner<Pk> {
 
 impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for Tr<Pk> {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
-        Ok(js_arr!(self.internal_key(), self.tap_tree()))
+        let tap_tree_js: JsValue = match self.tap_tree() {
+            Some(tree) => tree.try_to_js_value()?,
+            None => JsValue::NULL,
+        };
+        Ok(js_arr!(self.internal_key(), tap_tree_js))
     }
 }
 
 impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for TapTree<Pk> {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
-        match self {
-            TapTree::Tree { left, right, .. } => js_obj!("Tree" => js_arr!(left, right)),
-            TapTree::Leaf(ms) => ms.try_to_js_value(),
+        // TapTree is now a flat representation of leaves with depths
+        // Convert to an array of {depth, miniscript} objects
+        let arr = Array::new();
+        for item in self.leaves() {
+            let leaf_obj = js_obj!(
+                "depth" => item.depth() as u32,
+                "miniscript" => item.miniscript()
+            )?;
+            arr.push(&leaf_obj);
         }
+        Ok(arr.into())
     }
 }
 

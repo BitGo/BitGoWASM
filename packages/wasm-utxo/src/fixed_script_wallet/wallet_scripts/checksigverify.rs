@@ -88,7 +88,7 @@ impl ScriptP2tr {
     }
 
     pub fn output_script(&self) -> ScriptBuf {
-        let output_key = self.spend_info.output_key().to_inner();
+        let output_key = self.spend_info.output_key().to_x_only_public_key();
 
         Builder::new()
             .push_int(1)
