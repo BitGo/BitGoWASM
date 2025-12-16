@@ -32,8 +32,8 @@ impl From<miniscript::Error> for WasmUtxoError {
     }
 }
 
-impl From<miniscript::descriptor::ConversionError> for WasmUtxoError {
-    fn from(err: miniscript::descriptor::ConversionError) -> Self {
+impl From<miniscript::descriptor::NonDefiniteKeyError> for WasmUtxoError {
+    fn from(err: miniscript::descriptor::NonDefiniteKeyError) -> Self {
         WasmUtxoError::StringError(err.to_string())
     }
 }

@@ -16,7 +16,7 @@ all = "warn"
 [dependencies]
 wasm-bindgen = "0.2"
 js-sys = "0.3"
-miniscript = { git = "https://github.com/BitGo/rust-miniscript", tag = "miniscript-12.3.4-opdrop" }
+miniscript = { git = "https://github.com/BitGo/rust-miniscript", tag = "miniscript-13.0.0-opdrop" }
 bech32 = "0.11"
 musig2 = { version = "0.3.1", default-features = false, features = ["k256"] }
 getrandom = { version = "0.2", features = ["js"] }

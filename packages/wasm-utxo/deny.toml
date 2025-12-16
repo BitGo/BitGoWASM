@@ -3,6 +3,8 @@
 multiple-versions = "deny"
 # Highlight bech32 specifically (ensures it's caught if duplicated)
 highlight = "all"
+# Skip hex-conservative duplicate (miniscript uses 1.0.1 directly, bitcoin uses 0.2.2 via bitcoin_hashes)
+skip = [{ crate = "hex-conservative@0.2.2" }]
 
 # Allow git sources (needed for miniscript)
 [sources]
@@ -13,9 +15,9 @@ allow-git = ["https://github.com/BitGo/rust-miniscript"]
 allow = [
     "MIT",
     "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
     "CC0-1.0",
     "MITNFA",
-    "Unicode-DFS-2016",
     "Unicode-3.0",
     "BSD-3-Clause",
     "Unlicense",

@@ -235,16 +235,31 @@ impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for WshInner<Pk> {
 
 impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for Tr<Pk> {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
-        Ok(js_arr!(self.internal_key(), self.tap_tree()))
+        let tap_tree_js: JsValue = match self.tap_tree() {
+            Some(tree) => tree.try_to_js_value()?,
+            None => JsValue::NULL,
+        };
+        Ok(js_arr!(self.internal_key(), tap_tree_js))
     }
 }
 
-impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for TapTree<Pk> {
+use super::recursive_tap_tree::RecursiveTapTree;
+
+impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for RecursiveTapTree<Pk> {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
         match self {
-            TapTree::Tree { left, right, .. } => js_obj!("Tree" => js_arr!(left, right)),
-            TapTree::Leaf(ms) => ms.try_to_js_value(),
+            RecursiveTapTree::Tree { left, right } => js_obj!("Tree" => js_arr!(left, right)),
+            RecursiveTapTree::Leaf(ms) => ms.try_to_js_value(),
         }
+    }
+}
+
+impl<Pk: MiniscriptKey + TryIntoJsValue> TryIntoJsValue for TapTree<Pk>
+where
+    Pk: Clone,
+{
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        RecursiveTapTree::try_from(self)?.try_to_js_value()
     }
 }
 
