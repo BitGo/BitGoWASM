@@ -1,1 +1,81 @@
-<!doctype html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta http-equiv="X-UA-Compatible" content="ie=edge"/><title>Wasm-Miniscript Playground</title><script defer="defer" src="bundle.js"></script></head><body><div class="container"><div><h3>Descriptor</h3><div class="toolbar"><label for="input-example">Example</label> <select id="input-example"></select> <label for="input-derivation-index">Derivation Index</label> <input id="input-derivation-index" type="number" value="0" min="0"/></div><textarea id="edit-descriptor" spellcheck="false"></textarea></div><div><h3>Descriptor AST</h3><div class="ast" id="output-descriptor-ast">AST</div></div><div><h3>Miniscript</h3><div class="toolbar"><label for="input-script-context">Script Context</label> <select id="input-script-context"></select></div><textarea id="edit-miniscript" spellcheck="false"></textarea></div><div><h3>Miniscript AST</h3><div class="ast" id="output-miniscript-ast">AST</div></div><div><h3>Bitcoin Address</h3><textarea id="bitcoin-script-pubkey-address" spellcheck="false" readonly="readonly"></textarea> <textarea id="bitcoin-script-pubkey-hex" spellcheck="false" readonly="readonly"></textarea></div><div><h3>Bitcoin Script (hex)</h3><textarea id="edit-bitcoin-script-hex" spellcheck="false"></textarea></div><div><h3>Bitcoin Script (asm)</h3><textarea id="edit-bitcoin-script-asm" spellcheck="false" readonly="readonly"></textarea></div></div><div id="status">Status</div></body></html>
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="X-UA-Compatible" content="ie=edge"><title>BitGoWASM Demos</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"><style>:root {
+      /* Dark theme - GitHub-inspired */
+      --bg: #0d1117;
+      --fg: #c9d1d9;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-hover: #79b8ff;
+      --surface: #161b22;
+      --surface-hover: #1c2128;
+      --border: #30363d;
+      --border-subtle: #21262d;
+      --error: #f85149;
+      --success: #3fb950;
+      --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+    }
+
+    body {
+      font-family: var(--mono);
+      font-size: 14px;
+      line-height: 1.5;
+      background: var(--bg);
+      color: var(--fg);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    #app {
+      padding: 2rem;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    /* Selection styling */
+    ::selection {
+      background: var(--accent);
+      color: var(--bg);
+    }
+
+    /* Scrollbar styling */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--surface);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--muted);
+    }
+
+    /* Focus visible styling for accessibility */
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* Loading state */
+    #app:empty::before {
+      content: 'Loading...';
+      display: block;
+      text-align: center;
+      padding: 4rem;
+      color: var(--muted);
+    }</style><script defer="defer" src="bundle.js"></script></head><body><div id="app"></div></body></html>
