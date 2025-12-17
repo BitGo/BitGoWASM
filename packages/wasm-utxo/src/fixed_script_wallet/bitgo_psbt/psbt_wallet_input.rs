@@ -211,6 +211,7 @@ pub fn verify_taproot_script_signature<C: secp256k1::Verification>(
 /// - `psbt`: The PSBT containing the transaction and inputs
 /// - `input_index`: The index of the input to verify
 /// - `public_key`: The compressed public key to verify the signature for
+/// - `fork_id`: Optional fork ID for BCH/BTG/XEC networks (0 for BCH/XEC, 79 for BTG)
 ///
 /// # Returns
 /// - `Ok(true)` if a valid ECDSA signature exists for the public key
@@ -221,6 +222,7 @@ pub fn verify_ecdsa_signature<C: secp256k1::Verification>(
     psbt: &miniscript::bitcoin::psbt::Psbt,
     input_index: usize,
     public_key: miniscript::bitcoin::CompressedPublicKey,
+    fork_id: Option<u32>,
 ) -> Result<bool, String> {
     use miniscript::bitcoin::{sighash::SighashCache, PublicKey};
 
@@ -234,9 +236,20 @@ pub fn verify_ecdsa_signature<C: secp256k1::Verification>(
     if let Some(signature) = input.partial_sigs.get(&public_key_inner) {
         // Create sighash cache and compute sighash for this input
         let mut cache = SighashCache::new(&psbt.unsigned_tx);
-        let (sighash_msg, _sighash_type) = match psbt.sighash_ecdsa(input_index, &mut cache) {
-            Ok(result) => result,
-            Err(e) => return Err(format!("Failed to compute sighash: {}", e)),
+
+        // Use appropriate sighash computation based on fork_id
+        let sighash_msg = if let Some(fid) = fork_id {
+            // BCH/BTG/XEC: use sighash_forkid
+            let (msg, _) = psbt
+                .sighash_forkid(input_index, &mut cache, fid)
+                .map_err(|e| format!("Failed to compute FORKID sighash: {}", e))?;
+            msg
+        } else {
+            // Standard Bitcoin: use sighash_ecdsa
+            let (msg, _) = psbt
+                .sighash_ecdsa(input_index, &mut cache)
+                .map_err(|e| format!("Failed to compute sighash: {}", e))?;
+            msg
         };
 
         // Verify the signature

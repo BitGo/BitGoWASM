@@ -157,8 +157,7 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 [[package]]
 name = "bitcoin"
 version = "0.32.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e499f9fc0407f50fe98af744ab44fa67d409f76b6772e1689ec8485eb0c0f66"
+source = "git+https://github.com/BitGo/rust-bitcoin?tag=bitcoin-0.32.8-forkid#e1eb843a5f5f28ed7a229bcca59cff44719bbcc1"
 dependencies = [
  "base58ck",
  "bech32",
@@ -779,7 +778,7 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 [[package]]
 name = "miniscript"
 version = "13.0.0"
-source = "git+https://github.com/BitGo/rust-miniscript?tag=miniscript-13.0.0-opdrop#970feb88f5ceae6b1bf4253b77dbeaf0f2e2d7ce"
+source = "git+https://github.com/BitGo/rust-miniscript?tag=miniscript-13.0.0-opdrop-forkid#13eccd8bdb83af1a9b63118ceac962aed49906a5"
 dependencies = [
  "bech32",
  "bitcoin",
