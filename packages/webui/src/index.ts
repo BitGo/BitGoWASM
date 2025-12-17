@@ -1,273 +1,167 @@
-import { address, CoinName, Descriptor, Miniscript, ScriptContext } from "@bitgo/wasm-utxo";
+/**
+ * BitGoWASM WebUI - Entry Point
+ *
+ * Initializes the router and registers all demo components.
+ */
 
-import "./style.css";
+import { BaseComponent, defineComponent, h, css, fragment } from "./lib/html";
+import { initRouter, type Route } from "./lib/router";
 
-import { getElement } from "./html";
-import { buildOptions, getOptions, Options } from "./options";
-import { getHtmlForAst } from "./htmlAST";
-import { fromHex, toHex } from "./hex";
-import { getShare, setShare, Share } from "./sharing";
+// Import demo components (registers them as custom elements)
+import "./wasm-utxo/addresses";
 
-function createMiniscriptFromBitcoinScriptDetectScriptContext(
-  script: Uint8Array,
-): [Miniscript, ScriptContext] {
-  const formats = ["tap", "segwitv0", "legacy"] as const;
-  for (const format of formats) {
-    try {
-      return [Miniscript.fromBitcoinScript(script, format), format];
-    } catch (e) {
-      // ignore
-    }
-  }
-  throw new Error(`could not create miniscript from bitcoin script: ${toHex(script)}`);
-}
-
-const elEditDescriptor = getElement("edit-descriptor", HTMLTextAreaElement);
-const elEditMiniscript = getElement("edit-miniscript", HTMLTextAreaElement);
-const elEditBitcoinScriptHex = getElement("edit-bitcoin-script-hex", HTMLTextAreaElement);
-const elEditBitcoinScriptAsm = getElement("edit-bitcoin-script-asm", HTMLTextAreaElement);
-const elScriptPubkeyBytes = getElement("bitcoin-script-pubkey-hex", HTMLTextAreaElement);
-const elAddress = getElement("bitcoin-script-pubkey-address", HTMLTextAreaElement);
-const elDescriptorAst = getElement("output-descriptor-ast", HTMLDivElement);
-const elMiniscriptAst = getElement("output-miniscript-ast", HTMLDivElement);
-const elStatus = getElement("status", HTMLElement);
-
-function toAddress(scriptPubkeyBytes: Uint8Array, coin: CoinName) {
-  return address.fromOutputScriptWithCoin(scriptPubkeyBytes, coin);
-}
-
-function setHtmlContent(el: HTMLElement, content: HTMLElement | undefined) {
-  el.innerHTML = "";
-  if (content) {
-    el.appendChild(content);
-  }
-}
-
-function applyUpdateWith(
-  changedEl: HTMLElement,
-  {
-    descriptor,
-    miniscript,
-    scriptBytes,
-    scriptPubkeyBytes,
-    scriptAsm,
-  }: {
-    descriptor: Descriptor | null | undefined;
-    miniscript: Miniscript | null | undefined;
-    scriptBytes: Uint8Array | null | undefined;
-    scriptPubkeyBytes?: Uint8Array | null | undefined;
-    scriptAsm: string | null | undefined;
-  },
-  options: Options,
-) {
-  if (descriptor) {
-    if (scriptBytes === undefined) {
-      scriptBytes = descriptor.encode();
-    }
-    if (scriptAsm === undefined) {
-      scriptAsm = descriptor.toAsmString();
-    }
-    setShare({ descriptor });
-  } else if (descriptor === null) {
-    elEditDescriptor.value = "";
-    setHtmlContent(elDescriptorAst, undefined);
+// Common styles used across components
+export const commonStyles = `
+  * {
+    box-sizing: border-box;
   }
 
-  if (miniscript) {
-    if (scriptBytes === undefined) {
-      scriptBytes = miniscript.encode();
-    }
-    if (scriptAsm === undefined) {
-      scriptAsm = miniscript.toAsmString();
-    }
-    elEditMiniscript.value = miniscript.toString();
-    setHtmlContent(elMiniscriptAst, getHtmlForAst(miniscript.node()));
-    if (!descriptor) {
-      setShare({ miniscript, scriptContext: options.scriptContext });
-    }
-  } else if (miniscript === null) {
-    elEditMiniscript.value = "";
-    setHtmlContent(elMiniscriptAst, undefined);
-  } else {
-    if (scriptBytes) {
-      try {
-        const [ms, scriptContext] =
-          createMiniscriptFromBitcoinScriptDetectScriptContext(scriptBytes);
-        getElement("input-script-context", HTMLSelectElement).value = scriptContext;
-        return applyUpdateWith(
-          changedEl,
-          { descriptor, miniscript: ms, scriptBytes, scriptAsm, scriptPubkeyBytes },
-          options,
-        );
-      } catch (e) {
-        applyUpdateWith(
-          changedEl,
-          { descriptor, miniscript: null, scriptBytes, scriptAsm: null, scriptPubkeyBytes },
-          options,
-        );
-        if (!descriptor) {
-          setShare({ scriptBytes });
+  :host {
+    display: block;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    color: var(--fg, #c9d1d9);
+    line-height: 1.5;
+  }
+
+  a {
+    color: var(--accent, #58a6ff);
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  h1, h2, h3 {
+    margin: 0 0 1rem;
+    font-weight: 500;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+    color: var(--fg, #c9d1d9);
+  }
+
+  h2 {
+    font-size: 1.25rem;
+  }
+
+  .breadcrumb {
+    font-size: 0.875rem;
+    margin-bottom: 1.5rem;
+    color: var(--muted, #8b949e);
+  }
+
+  .breadcrumb a {
+    color: var(--accent, #58a6ff);
+  }
+
+  .breadcrumb span {
+    color: var(--fg, #c9d1d9);
+  }
+`;
+
+/**
+ * Home page component - navigation hub for all demos.
+ */
+class HomePage extends BaseComponent {
+  render() {
+    return fragment(
+      css(`
+        ${commonStyles}
+
+        .home {
+          max-width: 800px;
         }
-        throw e;
-      }
-    }
 
-    if (scriptBytes === undefined) {
-      applyUpdateWith(
-        changedEl,
-        { descriptor, miniscript, scriptBytes: null, scriptAsm: null, scriptPubkeyBytes },
-        options,
-      );
-    }
-  }
+        .demo-list {
+          list-style: none;
+          padding: 0;
+          margin: 2rem 0;
+        }
 
-  if (scriptBytes) {
-    elEditBitcoinScriptHex.value = toHex(scriptBytes);
-  } else if (scriptBytes === null) {
-    elEditBitcoinScriptHex.value = "";
-  }
+        .demo-list li {
+          margin-bottom: 1rem;
+        }
 
-  if (scriptAsm) {
-    elEditBitcoinScriptAsm.value = scriptAsm;
-  } else if (scriptAsm === null) {
-    elEditBitcoinScriptAsm.value = "";
-  }
+        .demo-link {
+          display: block;
+          padding: 1rem 1.25rem;
+          background: var(--surface, #161b22);
+          border: 1px solid var(--border, #30363d);
+          border-radius: 6px;
+          transition: border-color 0.15s, background 0.15s;
+        }
 
-  if (scriptPubkeyBytes) {
-    elScriptPubkeyBytes.value = toHex(scriptPubkeyBytes);
-    try {
-      elAddress.value = toAddress(scriptPubkeyBytes, "btc");
-    } catch (e: any) {
-      elAddress.value = `error: ${e.message}`;
-    }
-  } else if (scriptPubkeyBytes === null) {
-    elScriptPubkeyBytes.value = "";
-    elAddress.value = "";
-  }
+        .demo-link:hover {
+          border-color: var(--accent, #58a6ff);
+          background: var(--surface-hover, #1c2128);
+          text-decoration: none;
+        }
 
-  elStatus.innerText = "Status: OK";
-}
+        .demo-title {
+          font-weight: 500;
+          margin-bottom: 0.25rem;
+        }
 
-function applyUpdate(changedEl: HTMLElement, options: Options) {
-  console.log(changedEl, options);
+        .demo-desc {
+          font-size: 0.875rem;
+          color: var(--muted, #8b949e);
+        }
 
-  if (changedEl === getElement("input-example", HTMLSelectElement)) {
-    elEditDescriptor.value = options.example;
-    return applyUpdate(elEditDescriptor, options);
-  }
-
-  if (
-    changedEl === elEditDescriptor ||
-    changedEl === getElement("input-derivation-index", HTMLInputElement)
-  ) {
-    const descriptor = Descriptor.fromString(elEditDescriptor.value, "derivable");
-    setHtmlContent(elDescriptorAst, getHtmlForAst(descriptor.node()));
-    const descriptorAtIndex = descriptor.atDerivationIndex(options.derivationIndex);
-    return applyUpdateWith(
-      changedEl,
-      {
-        descriptor: descriptorAtIndex,
-        miniscript: undefined,
-        scriptBytes: descriptorAtIndex.encode(),
-        scriptAsm: descriptorAtIndex.toAsmString(),
-        scriptPubkeyBytes: descriptorAtIndex.scriptPubkey(),
-      },
-      options,
+        .subtitle {
+          color: var(--muted, #8b949e);
+          margin-bottom: 2rem;
+        }
+      `),
+      h(
+        "div",
+        { class: "home" },
+        h("h1", {}, "BitGoWASM Demos"),
+        h("p", { class: "subtitle" }, "Interactive demos for BitGo WASM libraries"),
+        h(
+          "ul",
+          { class: "demo-list" },
+          h(
+            "li",
+            {},
+            h(
+              "a",
+              { class: "demo-link", href: "#/wasm-utxo/addresses" },
+              h("div", { class: "demo-title" }, "UTXO Address Converter"),
+              h(
+                "div",
+                { class: "demo-desc" },
+                "Convert utxo addresses between different networks and formats",
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
-
-  if (
-    changedEl === elEditMiniscript ||
-    changedEl === getElement("input-script-context", HTMLSelectElement)
-  ) {
-    try {
-      const script = Miniscript.fromString(elEditMiniscript.value, options.scriptContext);
-      return applyUpdateWith(
-        changedEl,
-        { descriptor: null, miniscript: script, scriptBytes: undefined, scriptAsm: undefined },
-        options,
-      );
-    } catch (e) {
-      applyUpdateWith(
-        changedEl,
-        { descriptor: null, miniscript: undefined, scriptBytes: null, scriptAsm: null },
-        options,
-      );
-      throw e;
-    }
-  }
-
-  if (changedEl === elEditBitcoinScriptHex) {
-    return applyUpdateWith(
-      changedEl,
-      {
-        descriptor: undefined,
-        miniscript: undefined,
-        scriptBytes: fromHex(elEditBitcoinScriptHex.value),
-        scriptAsm: undefined,
-      },
-      options,
-    );
-  }
-
-  throw new Error(`unexpected element ${changedEl.id}`);
 }
 
-function update(changedEl: HTMLElement, options: Options) {
-  try {
-    applyUpdate(changedEl, options);
-  } catch (e: any) {
-    console.error(e);
-    elStatus.innerText = `Status: Error: ${e}`;
+defineComponent("home-page", HomePage);
+
+// Route configuration
+const routes: Route[] = [
+  { path: "/", component: "home-page" },
+  { path: "/wasm-utxo/addresses", component: "address-converter" },
+];
+
+// Initialize router when DOM is ready
+function init() {
+  const app = document.getElementById("app");
+  if (!app) {
+    throw new Error("Could not find #app container");
   }
+  initRouter(app, routes);
 }
 
-function bindUpdate(el: HTMLElement, event: string) {
-  el.addEventListener(event, () => {
-    update(el, getOptions());
-  });
-}
-
-buildOptions();
-
-[...document.querySelectorAll("select"), ...document.querySelectorAll("input")].forEach((el) => {
-  bindUpdate(el, "change");
-});
-
-bindUpdate(elEditDescriptor, "input");
-bindUpdate(elEditMiniscript, "input");
-bindUpdate(elEditBitcoinScriptHex, "input");
-
-function updateFromShare(share: Share) {
-  if ("descriptor" in share) {
-    elEditDescriptor.value = share.descriptor.toString();
-    return update(elEditDescriptor, getOptions());
-  }
-  if ("miniscript" in share) {
-    elEditMiniscript.value = share.miniscript.toString();
-    getElement("input-script-context", HTMLSelectElement).value = share.scriptContext;
-    return update(elEditMiniscript, getOptions());
-  }
-  if ("scriptBytes" in share) {
-    elEditBitcoinScriptHex.value = toHex(share.scriptBytes);
-    return update(elEditBitcoinScriptHex, getOptions());
-  }
-}
-
-let share;
-try {
-  share = getShare();
-} catch (e) {
-  console.error(e);
-}
-
-if (share) {
-  updateFromShare(share);
+// Handle both cases: DOMContentLoaded already fired or not yet
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
 } else {
-  update(getElement("input-example", HTMLSelectElement), getOptions());
+  init();
 }
-
-window.addEventListener("error", (event) => {
-  console.error(event);
-  event.preventDefault();
-});

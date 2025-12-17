@@ -4,55 +4,131 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="X-UA-Compatible" content="ie=edge" />
-    <title>Wasm-Miniscript Playground</title>
-  </head>
+    <title>BitGoWASM Demos</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        /* BitGo Brand Colors */
+        /* Primary */
+        --brand-blue: #1647db;
+        --brand-blue-shade1: #0f3199;
+        --brand-blue-shade2: #121e5c;
+        --brand-off-black: #0e0f0f;
+        --brand-white: #ffffff;
+        --brand-gold: #cfac53;
+        --brand-gold-shade1: #b78a31;
+        --brand-gold-shade2: #3c2f19;
 
+        /* Grays */
+        --gray-5: #2e2e2e;
+        --gray-4: #595959;
+        --gray-3: #969696;
+        --gray-2: #d9d9d9;
+        --gray-1: #f2f2f2;
+
+        /* Secondary Colors */
+        --sky-blue: #62abf4;
+        --sky-blue-tint1: #b6d8ff;
+        --sky-blue-tint2: #dfe8f2;
+        --purple: #594dff;
+        --lavender: #8780ff;
+        --teal: #2e9987;
+        --green: #7acc8f;
+        --red: #d13b54;
+        --orange: #ff704c;
+        --yellow: #ebc55e;
+
+        /* Theme mapping (dark mode) */
+        --bg: var(--brand-off-black);
+        --fg: var(--gray-1);
+        --muted: var(--gray-3);
+        --accent: var(--sky-blue);
+        --accent-hover: var(--sky-blue-tint1);
+        --surface: var(--gray-5);
+        --surface-hover: var(--gray-4);
+        --border: var(--gray-4);
+        --border-subtle: var(--gray-5);
+        --error: var(--red);
+        --success: var(--green);
+        --warning: var(--brand-gold);
+
+        --mono: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", Consolas, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        min-height: 100vh;
+      }
+
+      body {
+        font-family: var(--mono);
+        font-size: 14px;
+        line-height: 1.5;
+        background: var(--bg);
+        color: var(--fg);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      #app {
+        padding: 2rem;
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      /* Selection styling */
+      ::selection {
+        background: var(--accent);
+        color: var(--bg);
+      }
+
+      /* Scrollbar styling */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+
+      ::-webkit-scrollbar-track {
+        background: var(--surface);
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 4px;
+      }
+
+      ::-webkit-scrollbar-thumb:hover {
+        background: var(--muted);
+      }
+
+      /* Focus visible styling for accessibility */
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      /* Loading state */
+      #app:empty::before {
+        content: "Loading...";
+        display: block;
+        text-align: center;
+        padding: 4rem;
+        color: var(--muted);
+      }
+    </style>
+  </head>
   <body>
-    <div class="container">
-      <div>
-        <h3>Descriptor</h3>
-        <div class="toolbar">
-          <label for="input-example">Example</label>
-          <select id="input-example"></select>
-          <label for="input-derivation-index">Derivation Index</label>
-          <input id="input-derivation-index" type="number" value="0" min="0" />
-        </div>
-        <textarea id="edit-descriptor" spellcheck="false"></textarea>
-      </div>
-      <div>
-        <h3>Descriptor AST</h3>
-        <div class="ast" id="output-descriptor-ast">AST</div>
-      </div>
-      <div>
-        <h3>Miniscript</h3>
-        <div class="toolbar">
-          <label for="input-script-context">Script Context</label>
-          <select id="input-script-context"></select>
-        </div>
-        <textarea id="edit-miniscript" spellcheck="false"></textarea>
-      </div>
-      <div>
-        <h3>Miniscript AST</h3>
-        <div class="ast" id="output-miniscript-ast">AST</div>
-      </div>
-      <div>
-        <h3>Bitcoin Address</h3>
-        <textarea
-          id="bitcoin-script-pubkey-address"
-          spellcheck="false"
-          readonly="readonly"
-        ></textarea>
-        <textarea id="bitcoin-script-pubkey-hex" spellcheck="false" readonly="readonly"></textarea>
-      </div>
-      <div>
-        <h3>Bitcoin Script (hex)</h3>
-        <textarea id="edit-bitcoin-script-hex" spellcheck="false"></textarea>
-      </div>
-      <div>
-        <h3>Bitcoin Script (asm)</h3>
-        <textarea id="edit-bitcoin-script-asm" spellcheck="false" readonly="readonly"></textarea>
-      </div>
-    </div>
-    <div id="status">Status</div>
+    <div id="app"></div>
   </body>
 </html>
