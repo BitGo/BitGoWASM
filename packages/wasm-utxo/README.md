@@ -20,7 +20,7 @@ This project is under active development.
 | Descriptor Wallet: Address Support      | ✅ Complete | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          |
 | Descriptor Wallet: Transaction Support  | ✅ Complete | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          |
 | FixedScript Wallet: Address Generation  | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete |
-| FixedScript Wallet: Transaction Support | ⏳ TODO     | ⏳ TODO     | ⏳ TODO     | ⏳ TODO     | ⏳ TODO     | ⏳ TODO     | ⏳ TODO     |
+| FixedScript Wallet: Transaction Support | ✅ Complete | ⏳ TODO     | ⏳ TODO     | ⏳ TODO     | ⏳ TODO     | ✅ Complete | ⏳ TODO     |
 
 ## Building
 
