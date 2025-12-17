@@ -14,6 +14,7 @@ import {
   type Fixture,
   loadReplayProtectionKeyFromFixture,
 } from "./fixtureUtil.js";
+import { getFixtureNetworks } from "./networkSupport.util.js";
 
 type SignatureStage = "unsigned" | "halfsigned" | "fullsigned";
 
@@ -279,18 +280,7 @@ function runTestsForFixture(
 }
 
 describe("verifySignature", function () {
-  const supportedNetworks = utxolib.getNetworkList().filter((network) => {
-    return (
-      utxolib.isMainnet(network) &&
-      network !== utxolib.networks.bitcoincash &&
-      network !== utxolib.networks.bitcoingold &&
-      network !== utxolib.networks.bitcoinsv &&
-      network !== utxolib.networks.ecash &&
-      network !== utxolib.networks.zcash
-    );
-  });
-
-  supportedNetworks.forEach((network) => {
+  getFixtureNetworks().forEach((network) => {
     const networkName = utxolib.getNetworkName(network);
 
     describe(`network: ${networkName}`, function () {
