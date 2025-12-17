@@ -7,20 +7,10 @@ import {
   getExtractedTransactionHex,
   type Fixture,
 } from "./fixtureUtil.js";
+import { getFixtureNetworks } from "./networkSupport.util.js";
 
 describe("finalize and extract transaction", function () {
-  const supportedNetworks = utxolib.getNetworkList().filter((network) => {
-    return (
-      utxolib.isMainnet(network) &&
-      network !== utxolib.networks.bitcoincash &&
-      network !== utxolib.networks.bitcoingold &&
-      network !== utxolib.networks.bitcoinsv &&
-      network !== utxolib.networks.ecash &&
-      network !== utxolib.networks.zcash
-    );
-  });
-
-  supportedNetworks.forEach((network) => {
+  getFixtureNetworks().forEach((network) => {
     const networkName = utxolib.getNetworkName(network);
 
     describe(`network: ${networkName}`, function () {

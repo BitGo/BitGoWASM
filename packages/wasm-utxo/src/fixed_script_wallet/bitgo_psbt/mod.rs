@@ -314,7 +314,7 @@ impl BitGoPsbt {
         use miniscript::psbt::PsbtExt;
 
         match self {
-            BitGoPsbt::BitcoinLike(ref mut psbt, _network) => {
+            BitGoPsbt::BitcoinLike(ref mut psbt, network) => {
                 // Use custom bitgo p2trMusig2 input finalization for MuSig2 inputs
                 if p2tr_musig2_input::Musig2Input::is_musig2_input(&psbt.inputs[input_index]) {
                     let mut ctx = p2tr_musig2_input::Musig2Context::new(psbt, input_index)
@@ -322,8 +322,16 @@ impl BitGoPsbt {
                     ctx.finalize_input(secp).map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-                // other inputs can be finalized using the standard miniscript::psbt::finalize_input
-                psbt.finalize_inp_mut(secp, input_index)
+
+                // Check if this network uses SIGHASH_FORKID (BCH, BTG, XEC, BSV)
+                let fork_id = match network.mainnet() {
+                    Network::BitcoinCash | Network::Ecash | Network::BitcoinSV => Some(0u32),
+                    Network::BitcoinGold => Some(79u32),
+                    _ => None,
+                };
+
+                // Finalize with fork_id support for FORKID networks
+                psbt.finalize_inp_mut_with_fork_id(secp, input_index, fork_id)
                     .map_err(|e| e.to_string())?;
                 Ok(())
             }
@@ -589,19 +597,56 @@ impl BitGoPsbt {
                     );
                 }
 
-                // Sign the replay protection input with legacy P2SH sighash
-                let sighash_type = miniscript::bitcoin::sighash::EcdsaSighashType::All;
-                let cache = SighashCache::new(&psbt.unsigned_tx);
-                let sighash = cache
-                    .legacy_signature_hash(input_index, redeem_script, sighash_type.to_u32())
-                    .map_err(|e| format!("Failed to compute sighash: {}", e))?;
+                // Check if this network uses SIGHASH_FORKID (BCH-style networks)
+                let fork_id = match network.mainnet() {
+                    Network::BitcoinCash | Network::Ecash | Network::BitcoinSV => Some(0u32),
+                    Network::BitcoinGold => Some(79u32),
+                    _ => None,
+                };
+
+                // Get input value for BIP143-style sighash (required for FORKID)
+                let input = &psbt.inputs[input_index];
+                let prevout = psbt.unsigned_tx.input[input_index].previous_output;
+                let value = psbt_wallet_input::get_output_script_and_value(input, prevout)
+                    .map(|(_, v)| v)
+                    .unwrap_or(miniscript::bitcoin::Amount::ZERO);
+
+                // Compute sighash based on network type
+                let mut cache = SighashCache::new(&psbt.unsigned_tx);
+                let (message, sighash_type_u32) = if let Some(fork_id) = fork_id {
+                    // BCH-style BIP143 sighash with FORKID
+                    // SIGHASH_ALL | SIGHASH_FORKID = 0x01 | 0x40 = 0x41
+                    let sighash_type = 0x41u32;
+                    let sighash = cache
+                        .p2wsh_signature_hash_forkid(
+                            input_index,
+                            redeem_script,
+                            value,
+                            sighash_type,
+                            Some(fork_id),
+                        )
+                        .map_err(|e| format!("Failed to compute FORKID sighash: {}", e))?;
+                    (
+                        secp256k1::Message::from_digest(sighash.to_byte_array()),
+                        sighash_type,
+                    )
+                } else {
+                    // Legacy P2SH sighash for standard Bitcoin
+                    let sighash_type = miniscript::bitcoin::sighash::EcdsaSighashType::All;
+                    let sighash = cache
+                        .legacy_signature_hash(input_index, redeem_script, sighash_type.to_u32())
+                        .map_err(|e| format!("Failed to compute sighash: {}", e))?;
+                    (
+                        secp256k1::Message::from_digest(sighash.to_byte_array()),
+                        sighash_type.to_u32(),
+                    )
+                };
 
                 // Create ECDSA signature
-                let message = secp256k1::Message::from_digest(sighash.to_byte_array());
                 let signature = secp.sign_ecdsa(&message, privkey);
                 let ecdsa_sig = EcdsaSignature {
                     signature,
-                    sighash_type,
+                    sighash_type: sighash_type_u32,
                 };
 
                 // Add signature to partial_sigs
@@ -688,7 +733,18 @@ impl BitGoPsbt {
         K: miniscript::bitcoin::psbt::GetKey,
     {
         match self {
-            BitGoPsbt::BitcoinLike(ref mut psbt, _network) => psbt.sign(k, secp),
+            BitGoPsbt::BitcoinLike(ref mut psbt, network) => {
+                // Check if this network uses SIGHASH_FORKID
+                // BCH, XEC, BSV: fork_id = 0
+                // BTG: fork_id = 79
+                match network.mainnet() {
+                    Network::BitcoinCash | Network::Ecash | Network::BitcoinSV => {
+                        psbt.sign_forkid(k, secp, 0)
+                    }
+                    Network::BitcoinGold => psbt.sign_forkid(k, secp, 79),
+                    _ => psbt.sign(k, secp),
+                }
+            }
             BitGoPsbt::Zcash(_zcash_psbt, _network) => {
                 // Return an error indicating Zcash signing is not implemented
                 Err((
@@ -911,6 +967,7 @@ impl BitGoPsbt {
         use miniscript::bitcoin::{hashes::Hash, sighash::SighashCache};
 
         let psbt = self.psbt();
+        let network = self.network();
 
         // Check input index bounds
         if input_index >= psbt.inputs.len() {
@@ -920,10 +977,9 @@ impl BitGoPsbt {
         let input = &psbt.inputs[input_index];
         let prevout = psbt.unsigned_tx.input[input_index].previous_output;
 
-        // Get output script from input
-        let (output_script, _value) =
-            psbt_wallet_input::get_output_script_and_value(input, prevout)
-                .map_err(|e| format!("Failed to get output script: {}", e))?;
+        // Get output script and value from input
+        let (output_script, value) = psbt_wallet_input::get_output_script_and_value(input, prevout)
+            .map_err(|e| format!("Failed to get output script: {}", e))?;
 
         // Verify this is a replay protection input
         if !replay_protection.is_replay_protection_input(output_script) {
@@ -951,14 +1007,37 @@ impl BitGoPsbt {
             return Ok(false);
         };
 
-        // Compute legacy P2SH sighash
-        let cache = SighashCache::new(&psbt.unsigned_tx);
-        let sighash = cache
-            .legacy_signature_hash(input_index, redeem_script, ecdsa_sig.sighash_type.to_u32())
-            .map_err(|e| format!("Failed to compute sighash: {}", e))?;
+        // Check if this network uses SIGHASH_FORKID
+        let fork_id = match network.mainnet() {
+            Network::BitcoinCash | Network::Ecash | Network::BitcoinSV => Some(0u32),
+            Network::BitcoinGold => Some(79u32),
+            _ => None,
+        };
 
-        // Verify the signature using the bitcoin crate's built-in verification
-        let message = secp256k1::Message::from_digest(sighash.to_byte_array());
+        // Compute sighash based on network type
+        let mut cache = SighashCache::new(&psbt.unsigned_tx);
+        let message = if let Some(fork_id) = fork_id {
+            // BCH-style BIP143 sighash with FORKID
+            // Use p2wsh_signature_hash_forkid which handles the forkid encoding
+            let sighash = cache
+                .p2wsh_signature_hash_forkid(
+                    input_index,
+                    redeem_script,
+                    value,
+                    ecdsa_sig.sighash_type as u32,
+                    Some(fork_id),
+                )
+                .map_err(|e| format!("Failed to compute FORKID sighash: {}", e))?;
+            secp256k1::Message::from_digest(sighash.to_byte_array())
+        } else {
+            // Legacy P2SH sighash for standard Bitcoin
+            let sighash = cache
+                .legacy_signature_hash(input_index, redeem_script, ecdsa_sig.sighash_type)
+                .map_err(|e| format!("Failed to compute sighash: {}", e))?;
+            secp256k1::Message::from_digest(sighash.to_byte_array())
+        };
+
+        // Verify the signature
         match secp.verify_ecdsa(&message, &ecdsa_sig.signature, &public_key.inner) {
             Ok(()) => Ok(true),
             Err(_) => Ok(false),
@@ -986,6 +1065,7 @@ impl BitGoPsbt {
         public_key: CompressedPublicKey,
     ) -> Result<bool, String> {
         let psbt = self.psbt();
+        let network = self.network();
 
         let input = &psbt.inputs[input_index];
 
@@ -999,8 +1079,15 @@ impl BitGoPsbt {
             );
         }
 
+        // Determine fork_id based on network
+        let fork_id = match network.mainnet() {
+            Network::BitcoinCash | Network::Ecash | Network::BitcoinSV => Some(0u32),
+            Network::BitcoinGold => Some(79u32),
+            _ => None,
+        };
+
         // Fall back to ECDSA signature verification for legacy/SegWit inputs
-        psbt_wallet_input::verify_ecdsa_signature(secp, psbt, input_index, public_key)
+        psbt_wallet_input::verify_ecdsa_signature(secp, psbt, input_index, public_key, fork_id)
     }
 
     /// Verify if a valid signature exists for a given extended public key at the specified input index
@@ -1584,6 +1671,62 @@ mod tests {
         Ok(())
     }
 
+    /// Test that sign_with_privkey → verify_replay_protection_signature roundtrip works.
+    ///
+    /// This test guards against sighash algorithm mismatches between signing and verification.
+    /// Specifically, it catches the bug where sign_with_privkey used legacy_signature_hash
+    /// for all networks, but verify_replay_protection_signature used p2wsh_signature_hash_forkid
+    /// for BCH-like networks (BitcoinCash, BitcoinGold, Ecash).
+    fn assert_p2shp2pk_sign_verify_roundtrip(
+        unsigned_fixture: &fixtures::PsbtFixture,
+        wallet_keys: &fixtures::XprvTriple,
+        input_index: usize,
+        network: Network,
+    ) -> Result<(), String> {
+        // Get the xpriv for signing (user key)
+        let xpriv = wallet_keys.user_key();
+        let privkey = xpriv.private_key;
+
+        // Deserialize the unsigned PSBT
+        let original_bytes = BASE64_STANDARD
+            .decode(&unsigned_fixture.psbt_base64)
+            .map_err(|e| format!("Failed to decode base64: {}", e))?;
+        let mut psbt = BitGoPsbt::deserialize(&original_bytes, network)
+            .map_err(|e| format!("Failed to deserialize PSBT: {:?}", e))?;
+
+        // Sign the p2shP2pk input
+        psbt.sign_with_privkey(input_index, &privkey)
+            .map_err(|e| format!("Failed to sign p2shP2pk input: {}", e))?;
+
+        // Get the output script for replay protection verification
+        let psbt_ref = psbt.psbt();
+        let input = &psbt_ref.inputs[input_index];
+        let prevout = psbt_ref.unsigned_tx.input[input_index].previous_output;
+        let (output_script, _value) =
+            psbt_wallet_input::get_output_script_and_value(input, prevout)
+                .map_err(|e| format!("Failed to get output script: {}", e))?;
+
+        let replay_protection =
+            crate::fixed_script_wallet::ReplayProtection::new(vec![output_script.clone()]);
+
+        // Verify the signature
+        let secp = secp256k1::Secp256k1::new();
+        let has_valid_signature = psbt
+            .verify_replay_protection_signature(&secp, input_index, &replay_protection)
+            .map_err(|e| format!("Failed to verify signature: {}", e))?;
+
+        if !has_valid_signature {
+            return Err(format!(
+                "p2shP2pk sign→verify roundtrip failed for {:?}. \
+                 This indicates a sighash mismatch between sign_with_privkey and \
+                 verify_replay_protection_signature (e.g., SIGHASH_FORKID handling).",
+                network
+            ));
+        }
+
+        Ok(())
+    }
+
     fn assert_signature_count(
         bitgo_psbt: &BitGoPsbt,
         wallet_keys: &RootWalletKeys,
@@ -1685,6 +1828,17 @@ mod tests {
                 &psbt_input_stages.wallet_keys,
                 psbt_input_stages.input_index,
             )?;
+
+            // Test sign→verify roundtrip from unsigned state.
+            // This verifies that sign_with_privkey uses the correct sighash algorithm:
+            // - BCH-like networks (BitcoinCash, BitcoinGold, Ecash): SIGHASH_FORKID | SIGHASH_ALL
+            // - Standard networks: SIGHASH_ALL (legacy)
+            assert_p2shp2pk_sign_verify_roundtrip(
+                &psbt_stages.unsigned,
+                &psbt_input_stages.wallet_keys,
+                psbt_input_stages.input_index,
+                network,
+            )?;
         } else {
             assert_full_signed_matches_wallet_scripts(
                 network,
@@ -1722,8 +1876,6 @@ mod tests {
     crate::test_psbt_fixtures!(test_p2sh_p2pk_suite, network, format, {
         test_wallet_script_type(fixtures::ScriptType::P2shP2pk, network, format).unwrap();
     }, ignore: [
-        // TODO: sighash support
-        BitcoinCash, Ecash, BitcoinGold,
         // TODO: zec support
         Zcash,
         ]);
@@ -1731,33 +1883,17 @@ mod tests {
     crate::test_psbt_fixtures!(test_p2sh_suite, network, format, {
         test_wallet_script_type(fixtures::ScriptType::P2sh, network, format).unwrap();
     }, ignore: [
-        // TODO: sighash support
-        BitcoinCash, Ecash, BitcoinGold,
         // TODO: zec support
         Zcash,
         ]);
 
-    crate::test_psbt_fixtures!(
-        test_p2sh_p2wsh_suite,
-        network,
-        format,
-        {
-            test_wallet_script_type(fixtures::ScriptType::P2shP2wsh, network, format).unwrap();
-        },
-        // TODO: sighash support
-        ignore: [BitcoinGold]
-    );
+    crate::test_psbt_fixtures!(test_p2sh_p2wsh_suite, network, format, {
+        test_wallet_script_type(fixtures::ScriptType::P2shP2wsh, network, format).unwrap();
+    });
 
-    crate::test_psbt_fixtures!(
-        test_p2wsh_suite,
-        network,
-        format,
-        {
-            test_wallet_script_type(fixtures::ScriptType::P2wsh, network, format).unwrap();
-        },
-        // TODO: sighash support
-        ignore: [BitcoinGold]
-    );
+    crate::test_psbt_fixtures!(test_p2wsh_suite, network, format, {
+        test_wallet_script_type(fixtures::ScriptType::P2wsh, network, format).unwrap();
+    });
 
     crate::test_psbt_fixtures!(
         test_p2tr_legacy_script_path_suite,
@@ -1822,7 +1958,7 @@ mod tests {
             extracted_transaction_hex, fixture_extracted_transaction,
             "Extracted transaction should match"
         );
-    }, ignore: [BitcoinGold, BitcoinCash, Ecash, Zcash]);
+    }, ignore: [Zcash]);
 
     #[test]
     fn test_add_paygo_attestation() {
@@ -2116,7 +2252,7 @@ mod tests {
             parsed.spend_amount > 0,
             "Spend amount should be greater than 0 when there are external outputs"
         );
-    }, ignore: [BitcoinGold, BitcoinCash, Ecash, Zcash]);
+    }, ignore: [Zcash]);
 
     #[test]
     fn test_serialize_bitcoin_psbt() {
