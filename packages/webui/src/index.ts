@@ -32,6 +32,10 @@ export const commonStyles = `
     text-decoration: underline;
   }
 
+  button, input, textarea, select {
+    font-family: inherit;
+  }
+
   h1, h2, h3 {
     margin: 0 0 1rem;
     font-weight: 500;
