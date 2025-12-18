@@ -197,6 +197,117 @@ impl BitGoPsbt {
         }
     }
 
+    /// Create an empty PSBT with the given network
+    ///
+    /// # Arguments
+    /// * `network` - The network this PSBT is for
+    /// * `version` - Transaction version (default: 2)
+    /// * `lock_time` - Lock time (default: 0)
+    pub fn new(network: Network, version: Option<i32>, lock_time: Option<u32>) -> Self {
+        use miniscript::bitcoin::{absolute::LockTime, transaction::Version, Transaction};
+
+        let tx = Transaction {
+            version: Version(version.unwrap_or(2)),
+            lock_time: LockTime::from_consensus(lock_time.unwrap_or(0)),
+            input: vec![],
+            output: vec![],
+        };
+
+        let psbt = Psbt::from_unsigned_tx(tx).expect("empty transaction should be valid");
+
+        match network {
+            Network::Zcash | Network::ZcashTestnet => BitGoPsbt::Zcash(
+                ZcashPsbt {
+                    psbt,
+                    version_group_id: None,
+                    expiry_height: None,
+                    sapling_fields: vec![],
+                },
+                network,
+            ),
+            _ => BitGoPsbt::BitcoinLike(psbt, network),
+        }
+    }
+
+    /// Add an input to the PSBT
+    ///
+    /// This adds a transaction input and corresponding PSBT input metadata.
+    /// The witness_utxo is automatically populated for modern signing compatibility.
+    ///
+    /// # Arguments
+    /// * `txid` - The transaction ID of the output being spent
+    /// * `vout` - The output index being spent
+    /// * `value` - The value in satoshis of the output being spent
+    /// * `script` - The output script (scriptPubKey) of the output being spent
+    /// * `sequence` - Optional sequence number (default: 0xFFFFFFFE for RBF)
+    ///
+    /// # Returns
+    /// The index of the newly added input
+    pub fn add_input(
+        &mut self,
+        txid: Txid,
+        vout: u32,
+        value: u64,
+        script: miniscript::bitcoin::ScriptBuf,
+        sequence: Option<u32>,
+    ) -> usize {
+        use miniscript::bitcoin::{transaction::Sequence, Amount, OutPoint, TxIn, TxOut};
+
+        let psbt = self.psbt_mut();
+
+        // Create the transaction input
+        let tx_in = TxIn {
+            previous_output: OutPoint { txid, vout },
+            script_sig: miniscript::bitcoin::ScriptBuf::new(),
+            sequence: Sequence(sequence.unwrap_or(0xFFFFFFFE)),
+            witness: miniscript::bitcoin::Witness::default(),
+        };
+
+        // Create the PSBT input with witness_utxo populated
+        let psbt_input = miniscript::bitcoin::psbt::Input {
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(value),
+                script_pubkey: script,
+            }),
+            ..Default::default()
+        };
+
+        // Add to the PSBT
+        psbt.unsigned_tx.input.push(tx_in);
+        psbt.inputs.push(psbt_input);
+
+        psbt.inputs.len() - 1
+    }
+
+    /// Add an output to the PSBT
+    ///
+    /// # Arguments
+    /// * `script` - The output script (scriptPubKey)
+    /// * `value` - The value in satoshis
+    ///
+    /// # Returns
+    /// The index of the newly added output
+    pub fn add_output(&mut self, script: miniscript::bitcoin::ScriptBuf, value: u64) -> usize {
+        use miniscript::bitcoin::{Amount, TxOut};
+
+        let psbt = self.psbt_mut();
+
+        // Create the transaction output
+        let tx_out = TxOut {
+            value: Amount::from_sat(value),
+            script_pubkey: script,
+        };
+
+        // Create the PSBT output
+        let psbt_output = miniscript::bitcoin::psbt::Output::default();
+
+        // Add to the PSBT
+        psbt.unsigned_tx.output.push(tx_out);
+        psbt.outputs.push(psbt_output);
+
+        psbt.outputs.len() - 1
+    }
+
     pub fn network(&self) -> Network {
         match self {
             BitGoPsbt::BitcoinLike(_, network) => *network,

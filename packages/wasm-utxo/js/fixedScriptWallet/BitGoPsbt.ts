@@ -49,8 +49,56 @@ export type ParsedTransaction = {
   virtualSize: number;
 };
 
+export type CreateEmptyOptions = {
+  /** Transaction version (default: 2) */
+  version?: number;
+  /** Lock time (default: 0) */
+  lockTime?: number;
+};
+
+export type AddInputOptions = {
+  /** Previous transaction ID (hex string) */
+  txid: string;
+  /** Output index being spent */
+  vout: number;
+  /** Value in satoshis (for witness_utxo) */
+  value: bigint;
+  /** Output script of UTXO being spent */
+  script: Uint8Array;
+  /** Sequence number (default: 0xFFFFFFFE for RBF) */
+  sequence?: number;
+};
+
+export type AddOutputOptions = {
+  /** Output script (scriptPubKey) */
+  script: Uint8Array;
+  /** Value in satoshis */
+  value: bigint;
+};
+
 export class BitGoPsbt {
   private constructor(private wasm: WasmBitGoPsbt) {}
+
+  /**
+   * Create an empty PSBT for the given network
+   *
+   * @param network - Network name (utxolib name like "bitcoin" or coin name like "btc")
+   * @param options - Optional transaction parameters (version, lockTime)
+   * @returns A new empty BitGoPsbt instance
+   *
+   * @example
+   * ```typescript
+   * // Create empty PSBT with defaults (version 2, lockTime 0)
+   * const psbt = BitGoPsbt.createEmpty("bitcoin");
+   *
+   * // Create with custom version and lockTime
+   * const psbt = BitGoPsbt.createEmpty("bitcoin", { version: 1, lockTime: 500000 });
+   * ```
+   */
+  static createEmpty(network: NetworkName, options?: CreateEmptyOptions): BitGoPsbt {
+    const wasm = WasmBitGoPsbt.create_empty(network, options?.version, options?.lockTime);
+    return new BitGoPsbt(wasm);
+  }
 
   /**
    * Deserialize a PSBT from bytes
@@ -61,6 +109,53 @@ export class BitGoPsbt {
   static fromBytes(bytes: Uint8Array, network: NetworkName): BitGoPsbt {
     const wasm = WasmBitGoPsbt.from_bytes(bytes, network);
     return new BitGoPsbt(wasm);
+  }
+
+  /**
+   * Add an input to the PSBT
+   *
+   * This adds a transaction input and corresponding PSBT input metadata.
+   * The witness_utxo is automatically populated for modern signing compatibility.
+   *
+   * @param options - Input options (txid, vout, value, script, sequence)
+   * @returns The index of the newly added input
+   *
+   * @example
+   * ```typescript
+   * const inputIndex = psbt.addInput({
+   *   txid: "abc123...",
+   *   vout: 0,
+   *   value: 100000n,
+   *   script: outputScript,
+   * });
+   * ```
+   */
+  addInput(options: AddInputOptions): number {
+    return this.wasm.add_input(
+      options.txid,
+      options.vout,
+      options.value,
+      options.script,
+      options.sequence,
+    );
+  }
+
+  /**
+   * Add an output to the PSBT
+   *
+   * @param options - Output options (script, value)
+   * @returns The index of the newly added output
+   *
+   * @example
+   * ```typescript
+   * const outputIndex = psbt.addOutput({
+   *   script: outputScript,
+   *   value: 50000n,
+   * });
+   * ```
+   */
+  addOutput(options: AddOutputOptions): number {
+    return this.wasm.add_output(options.script, options.value);
   }
 
   /**

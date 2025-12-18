@@ -105,6 +105,72 @@ impl BitGoPsbt {
         })
     }
 
+    /// Create an empty PSBT for the given network
+    ///
+    /// # Arguments
+    /// * `network` - Network name (utxolib or coin name)
+    /// * `version` - Optional transaction version (default: 2)
+    /// * `lock_time` - Optional lock time (default: 0)
+    pub fn create_empty(
+        network: &str,
+        version: Option<i32>,
+        lock_time: Option<u32>,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        let network = parse_network(network)?;
+
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::new(network, version, lock_time);
+
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
+    /// Add an input to the PSBT
+    ///
+    /// # Arguments
+    /// * `txid` - The transaction ID (hex string) of the output being spent
+    /// * `vout` - The output index being spent
+    /// * `value` - The value in satoshis of the output being spent
+    /// * `script` - The output script (scriptPubKey) of the output being spent
+    /// * `sequence` - Optional sequence number (default: 0xFFFFFFFE for RBF)
+    ///
+    /// # Returns
+    /// The index of the newly added input
+    pub fn add_input(
+        &mut self,
+        txid: &str,
+        vout: u32,
+        value: u64,
+        script: &[u8],
+        sequence: Option<u32>,
+    ) -> Result<usize, WasmUtxoError> {
+        use miniscript::bitcoin::{ScriptBuf, Txid};
+        use std::str::FromStr;
+
+        let txid = Txid::from_str(txid)
+            .map_err(|e| WasmUtxoError::new(&format!("Invalid txid: {}", e)))?;
+        let script = ScriptBuf::from_bytes(script.to_vec());
+
+        Ok(self.psbt.add_input(txid, vout, value, script, sequence))
+    }
+
+    /// Add an output to the PSBT
+    ///
+    /// # Arguments
+    /// * `script` - The output script (scriptPubKey)
+    /// * `value` - The value in satoshis
+    ///
+    /// # Returns
+    /// The index of the newly added output
+    pub fn add_output(&mut self, script: &[u8], value: u64) -> Result<usize, WasmUtxoError> {
+        use miniscript::bitcoin::ScriptBuf;
+
+        let script = ScriptBuf::from_bytes(script.to_vec());
+
+        Ok(self.psbt.add_output(script, value))
+    }
+
     /// Get the unsigned transaction ID
     pub fn unsigned_txid(&self) -> String {
         self.psbt.unsigned_txid().to_string()
