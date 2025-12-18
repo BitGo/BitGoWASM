@@ -30,6 +30,66 @@ pub fn build_p2tr_ns_script(keys: &[CompressedPublicKey]) -> ScriptBuf {
     builder.into_script()
 }
 
+/// A resolved tap leaf with depth and the actual keys
+struct TapLeaf {
+    depth: u8,
+    keys: [CompressedPublicKey; 2],
+}
+
+/// Get the tap leaf configuration for a BitGo wallet.
+///
+/// For p2trMusig2: 2 leaves at depth 1
+///   - user+backup
+///   - backup+bitgo
+///
+/// For p2trLegacy: 3 leaves
+///   - user+bitgo at depth 1
+///   - user+backup at depth 2
+///   - backup+bitgo at depth 2
+fn get_tap_leaves(keys: &PubTriple, is_musig2: bool) -> Vec<TapLeaf> {
+    let [user, backup, bitgo] = *keys;
+
+    if is_musig2 {
+        vec![
+            TapLeaf {
+                depth: 1,
+                keys: [user, backup],
+            },
+            TapLeaf {
+                depth: 1,
+                keys: [backup, bitgo],
+            },
+        ]
+    } else {
+        vec![
+            TapLeaf {
+                depth: 1,
+                keys: [user, bitgo],
+            },
+            TapLeaf {
+                depth: 2,
+                keys: [user, backup],
+            },
+            TapLeaf {
+                depth: 2,
+                keys: [backup, bitgo],
+            },
+        ]
+    }
+}
+
+/// Build a TaprootBuilder with all leaves added (but not finalized)
+fn build_taproot_builder(keys: &PubTriple, is_musig2: bool) -> TaprootBuilder {
+    let mut builder = TaprootBuilder::new();
+
+    for leaf in get_tap_leaves(keys, is_musig2) {
+        let script = build_p2tr_ns_script(&leaf.keys);
+        builder = builder.add_leaf(leaf.depth, script).expect("valid leaf");
+    }
+
+    builder
+}
+
 fn build_p2tr_spend_info(keys: &PubTriple, p2tr_musig2: bool) -> TaprootSpendInfo {
     use super::bitgo_musig::key_agg_bitgo_p2tr_legacy;
     use super::bitgo_musig::key_agg_p2tr_musig2;
@@ -37,9 +97,7 @@ fn build_p2tr_spend_info(keys: &PubTriple, p2tr_musig2: bool) -> TaprootSpendInf
     use crate::bitcoin::XOnlyPublicKey;
 
     let secp = Secp256k1::new();
-    let user = keys[0];
-    let backup = keys[1];
-    let bitgo = keys[2];
+    let [user, _backup, bitgo] = *keys;
 
     let agg_key_bytes = if p2tr_musig2 {
         key_agg_p2tr_musig2(&[user, bitgo]).expect("valid aggregation")
@@ -48,32 +106,81 @@ fn build_p2tr_spend_info(keys: &PubTriple, p2tr_musig2: bool) -> TaprootSpendInf
     };
     let internal_key = XOnlyPublicKey::from_slice(&agg_key_bytes).expect("valid xonly key");
 
-    if p2tr_musig2 {
-        // Build taptree with 2 script paths:
-        // - user+backup (depth 1)
-        // - backup+bitgo (depth 1)
-        TaprootBuilder::new()
-            .add_leaf(1, build_p2tr_ns_script(&[user, backup]))
-            .expect("valid leaf")
-            .add_leaf(1, build_p2tr_ns_script(&[backup, bitgo]))
-            .expect("valid leaf")
-            .finalize(&secp, internal_key)
-            .expect("valid taptree")
-    } else {
-        // Build taptree with 3 script paths:
-        // - user+bitgo (depth 1)
-        // - user+backup (depth 2)
-        // - backup+bitgo (depth 2)
-        TaprootBuilder::new()
-            .add_leaf(1, build_p2tr_ns_script(&[user, bitgo]))
-            .expect("valid leaf")
-            .add_leaf(2, build_p2tr_ns_script(&[user, backup]))
-            .expect("valid leaf")
-            .add_leaf(2, build_p2tr_ns_script(&[backup, bitgo]))
-            .expect("valid leaf")
-            .finalize(&secp, internal_key)
-            .expect("valid taptree")
+    build_taproot_builder(keys, p2tr_musig2)
+        .finalize(&secp, internal_key)
+        .expect("valid taptree")
+}
+
+/// Build a TapTree for PSBT output from wallet keys
+pub fn build_tap_tree_for_output(
+    pub_triple: &PubTriple,
+    is_musig2: bool,
+) -> miniscript::bitcoin::taproot::TapTree {
+    miniscript::bitcoin::taproot::TapTree::try_from(build_taproot_builder(pub_triple, is_musig2))
+        .expect("valid tap tree")
+}
+
+/// Create tap key origins for outputs with multiple leaf hashes per key.
+/// Each key gets the leaf hashes for all leaves it participates in.
+pub fn create_tap_bip32_derivation_for_output(
+    wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+    chain: u32,
+    index: u32,
+    pub_triple: &PubTriple,
+    is_musig2: bool,
+) -> std::collections::BTreeMap<
+    miniscript::bitcoin::XOnlyPublicKey,
+    (
+        Vec<miniscript::bitcoin::taproot::TapLeafHash>,
+        (
+            miniscript::bitcoin::bip32::Fingerprint,
+            miniscript::bitcoin::bip32::DerivationPath,
+        ),
+    ),
+> {
+    use crate::fixed_script_wallet::derivation_path;
+    use miniscript::bitcoin::secp256k1::{PublicKey, Secp256k1};
+    use miniscript::bitcoin::taproot::{LeafVersion, TapLeafHash};
+    use std::collections::BTreeMap;
+
+    let secp = Secp256k1::new();
+
+    // Build leaf scripts and compute their hashes
+    let leaf_data: Vec<([CompressedPublicKey; 2], TapLeafHash)> =
+        get_tap_leaves(pub_triple, is_musig2)
+            .into_iter()
+            .map(|leaf| {
+                let script = build_p2tr_ns_script(&leaf.keys);
+                let hash = TapLeafHash::from_script(&script, LeafVersion::TapScript);
+                (leaf.keys, hash)
+            })
+            .collect();
+
+    // For each key in the triple, collect leaf hashes of leaves it participates in
+    let mut map = BTreeMap::new();
+    for (i, key) in pub_triple.iter().enumerate() {
+        let xpub = &wallet_keys.xpubs[i];
+        let path = derivation_path(&wallet_keys.derivation_prefixes[i], chain, index);
+        let derived = xpub.derive_pub(&secp, &path).expect("valid derivation");
+        let pubkey = PublicKey::from_slice(&derived.to_pub().to_bytes()).expect("valid public key");
+        let (x_only, _parity) = pubkey.x_only_public_key();
+
+        // Collect leaf hashes for leaves this key participates in
+        let key_leaf_hashes: Vec<TapLeafHash> = leaf_data
+            .iter()
+            .filter_map(|(leaf_keys, hash)| {
+                if leaf_keys.contains(key) {
+                    Some(*hash)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        map.insert(x_only, (key_leaf_hashes, (xpub.fingerprint(), path)));
     }
+
+    map
 }
 
 #[derive(Debug)]

@@ -514,6 +514,75 @@ pub struct ScriptId {
     pub index: u32,
 }
 
+/// Identifies a key in the wallet triple (user, backup, bitgo)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignerKey {
+    User,
+    Backup,
+    Bitgo,
+}
+
+impl SignerKey {
+    /// Returns the index of this key in the wallet triple
+    pub fn index(&self) -> usize {
+        match self {
+            SignerKey::User => 0,
+            SignerKey::Backup => 1,
+            SignerKey::Bitgo => 2,
+        }
+    }
+
+    /// Check if this is the backup key
+    pub fn is_backup(&self) -> bool {
+        matches!(self, SignerKey::Backup)
+    }
+}
+
+impl std::str::FromStr for SignerKey {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "user" => Ok(SignerKey::User),
+            "backup" => Ok(SignerKey::Backup),
+            "bitgo" => Ok(SignerKey::Bitgo),
+            _ => Err(format!(
+                "Invalid key name '{}': expected 'user', 'backup', or 'bitgo'",
+                s
+            )),
+        }
+    }
+}
+
+/// Specifies the signer and cosigner for Taproot inputs
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignPath {
+    pub signer: SignerKey,
+    pub cosigner: SignerKey,
+}
+
+/// Optional parameters for replay protection inputs
+#[derive(Debug, Clone, Default)]
+pub struct ReplayProtectionOptions<'a> {
+    /// Sequence number (default: 0xFFFFFFFE for RBF)
+    pub sequence: Option<u32>,
+    /// Sighash type override (default: network-appropriate value)
+    pub sighash_type: Option<miniscript::bitcoin::psbt::PsbtSighashType>,
+    /// Previous transaction bytes; if provided, uses non_witness_utxo
+    pub prev_tx: Option<&'a [u8]>,
+}
+
+/// Optional parameters for wallet inputs
+#[derive(Debug, Clone, Default)]
+pub struct WalletInputOptions<'a> {
+    /// Signer and cosigner for Taproot inputs (required for p2tr/p2trMusig2)
+    pub sign_path: Option<SignPath>,
+    /// Sequence number (default: 0xFFFFFFFE for RBF)
+    pub sequence: Option<u32>,
+    /// Previous transaction bytes; if provided, uses non_witness_utxo
+    pub prev_tx: Option<&'a [u8]>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputScriptType {
     P2shP2pk,
@@ -584,6 +653,7 @@ pub struct ParsedInput {
     pub value: u64,
     pub script_id: Option<ScriptId>,
     pub script_type: InputScriptType,
+    pub sequence: u32,
 }
 
 impl ParsedInput {
@@ -647,6 +717,7 @@ impl ParsedInput {
             value: value.to_sat(),
             script_id,
             script_type,
+            sequence: tx_input.sequence.0,
         })
     }
 }

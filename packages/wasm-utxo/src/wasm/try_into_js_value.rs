@@ -355,7 +355,8 @@ impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedInput {
             "address" => self.address.clone(),
             "value" => self.value,
             "scriptId" => self.script_id,
-            "scriptType" => self.script_type
+            "scriptType" => self.script_type,
+            "sequence" => self.sequence
         )
     }
 }

@@ -105,6 +105,245 @@ impl BitGoPsbt {
         })
     }
 
+    /// Create an empty PSBT for the given network with wallet keys
+    ///
+    /// # Arguments
+    /// * `network` - Network name (utxolib or coin name)
+    /// * `wallet_keys` - The wallet's root keys (used to set global xpubs)
+    /// * `version` - Optional transaction version (default: 2)
+    /// * `lock_time` - Optional lock time (default: 0)
+    pub fn create_empty(
+        network: &str,
+        wallet_keys: &WasmRootWalletKeys,
+        version: Option<i32>,
+        lock_time: Option<u32>,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        let network = parse_network(network)?;
+        let wallet_keys = wallet_keys.inner();
+
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::new(
+            network,
+            wallet_keys,
+            version,
+            lock_time,
+        );
+
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
+    /// Add an input to the PSBT
+    ///
+    /// # Arguments
+    /// * `txid` - The transaction ID (hex string) of the output being spent
+    /// * `vout` - The output index being spent
+    /// * `value` - The value in satoshis of the output being spent
+    /// * `script` - The output script (scriptPubKey) of the output being spent
+    /// * `sequence` - Optional sequence number (default: 0xFFFFFFFE for RBF)
+    ///
+    /// # Returns
+    /// The index of the newly added input
+    pub fn add_input(
+        &mut self,
+        txid: &str,
+        vout: u32,
+        value: u64,
+        script: &[u8],
+        sequence: Option<u32>,
+        prev_tx: Option<Vec<u8>>,
+    ) -> Result<usize, WasmUtxoError> {
+        use miniscript::bitcoin::consensus::Decodable;
+        use miniscript::bitcoin::{ScriptBuf, Transaction, Txid};
+        use std::str::FromStr;
+
+        let txid = Txid::from_str(txid)
+            .map_err(|e| WasmUtxoError::new(&format!("Invalid txid: {}", e)))?;
+        let script = ScriptBuf::from_bytes(script.to_vec());
+
+        let prev_tx = prev_tx
+            .map(|bytes| {
+                Transaction::consensus_decode(&mut bytes.as_slice())
+                    .map_err(|e| WasmUtxoError::new(&format!("Invalid prev_tx: {}", e)))
+            })
+            .transpose()?;
+
+        Ok(self
+            .psbt
+            .add_input(txid, vout, value, script, sequence, prev_tx))
+    }
+
+    /// Add an output to the PSBT
+    ///
+    /// # Arguments
+    /// * `script` - The output script (scriptPubKey)
+    /// * `value` - The value in satoshis
+    ///
+    /// # Returns
+    /// The index of the newly added output
+    pub fn add_output(&mut self, script: &[u8], value: u64) -> Result<usize, WasmUtxoError> {
+        use miniscript::bitcoin::ScriptBuf;
+
+        let script = ScriptBuf::from_bytes(script.to_vec());
+
+        Ok(self.psbt.add_output(script, value))
+    }
+
+    /// Add a wallet input with full PSBT metadata
+    ///
+    /// This is a higher-level method that adds an input and populates all required
+    /// PSBT fields (scripts, derivation info, etc.) based on the wallet's chain type.
+    ///
+    /// # Arguments
+    /// * `txid` - The transaction ID (hex string)
+    /// * `vout` - The output index being spent
+    /// * `value` - The value in satoshis
+    /// * `chain` - The chain code (0/1=p2sh, 10/11=p2shP2wsh, 20/21=p2wsh, 30/31=p2tr, 40/41=p2trMusig2)
+    /// * `index` - The derivation index
+    /// * `wallet_keys` - The root wallet keys
+    /// * `signer` - The key that will sign ("user", "backup", or "bitgo") - required for p2tr/p2trMusig2
+    /// * `cosigner` - The key that will co-sign - required for p2tr/p2trMusig2
+    /// * `sequence` - Optional sequence number (default: 0xFFFFFFFE for RBF)
+    /// * `prev_tx` - Optional full previous transaction bytes (for non-segwit)
+    ///
+    /// # Returns
+    /// The index of the newly added input
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_wallet_input(
+        &mut self,
+        txid: &str,
+        vout: u32,
+        value: u64,
+        wallet_keys: &WasmRootWalletKeys,
+        chain: u32,
+        index: u32,
+        signer: Option<String>,
+        cosigner: Option<String>,
+        sequence: Option<u32>,
+        prev_tx: Option<Vec<u8>>,
+    ) -> Result<usize, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::{
+            ScriptId, SignPath, SignerKey,
+        };
+        use miniscript::bitcoin::Txid;
+        use std::str::FromStr;
+
+        let txid = Txid::from_str(txid)
+            .map_err(|e| WasmUtxoError::new(&format!("Invalid txid: {}", e)))?;
+
+        let wallet_keys = wallet_keys.inner();
+
+        let script_id = ScriptId { chain, index };
+        let sign_path = match (signer.as_deref(), cosigner.as_deref()) {
+            (Some(signer_str), Some(cosigner_str)) => {
+                let signer: SignerKey = signer_str
+                    .parse()
+                    .map_err(|e: String| WasmUtxoError::new(&e))?;
+                let cosigner: SignerKey = cosigner_str
+                    .parse()
+                    .map_err(|e: String| WasmUtxoError::new(&e))?;
+                Some(SignPath { signer, cosigner })
+            }
+            (None, None) => None,
+            _ => {
+                return Err(WasmUtxoError::new(
+                    "Both signer and cosigner must be provided together or both omitted",
+                ))
+            }
+        };
+
+        use crate::fixed_script_wallet::bitgo_psbt::WalletInputOptions;
+
+        self.psbt
+            .add_wallet_input(
+                txid,
+                vout,
+                value,
+                wallet_keys,
+                script_id,
+                WalletInputOptions {
+                    sign_path,
+                    sequence,
+                    prev_tx: prev_tx.as_deref(),
+                },
+            )
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// Add a wallet output with full PSBT metadata
+    ///
+    /// This creates a verifiable wallet output (typically for change) with all required
+    /// PSBT fields (scripts, derivation info) based on the wallet's chain type.
+    ///
+    /// # Arguments
+    /// * `chain` - The chain code (0/1=p2sh, 10/11=p2shP2wsh, 20/21=p2wsh, 30/31=p2tr, 40/41=p2trMusig2)
+    /// * `index` - The derivation index
+    /// * `value` - The value in satoshis
+    /// * `wallet_keys` - The root wallet keys
+    ///
+    /// # Returns
+    /// The index of the newly added output
+    pub fn add_wallet_output(
+        &mut self,
+        chain: u32,
+        index: u32,
+        value: u64,
+        wallet_keys: &WasmRootWalletKeys,
+    ) -> Result<usize, WasmUtxoError> {
+        let wallet_keys = wallet_keys.inner();
+
+        self.psbt
+            .add_wallet_output(chain, index, value, wallet_keys)
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// Add a replay protection input to the PSBT
+    ///
+    /// Replay protection inputs are P2SH-P2PK inputs used on forked networks to prevent
+    /// transaction replay attacks. They use a simple pubkey script without wallet derivation.
+    ///
+    /// # Arguments
+    /// * `ecpair` - The ECPair containing the public key for the replay protection input
+    /// * `txid` - The transaction ID (hex string) of the output being spent
+    /// * `vout` - The output index being spent
+    /// * `value` - The value in satoshis
+    /// * `sequence` - Optional sequence number (default: 0xFFFFFFFE for RBF)
+    ///
+    /// # Returns
+    /// The index of the newly added input
+    pub fn add_replay_protection_input(
+        &mut self,
+        ecpair: &WasmECPair,
+        txid: &str,
+        vout: u32,
+        value: u64,
+        sequence: Option<u32>,
+    ) -> Result<usize, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ReplayProtectionOptions;
+        use miniscript::bitcoin::{CompressedPublicKey, Txid};
+        use std::str::FromStr;
+
+        // Parse txid
+        let txid = Txid::from_str(txid)
+            .map_err(|e| WasmUtxoError::new(&format!("Invalid txid: {}", e)))?;
+
+        // Get public key from ECPair and convert to CompressedPublicKey
+        let pubkey = ecpair.get_public_key();
+        let compressed_pubkey = CompressedPublicKey::from_slice(&pubkey.serialize())
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to convert public key: {}", e)))?;
+
+        let options = ReplayProtectionOptions {
+            sequence,
+            sighash_type: None,
+            prev_tx: None,
+        };
+
+        Ok(self
+            .psbt
+            .add_replay_protection_input(compressed_pubkey, txid, vout, value, options))
+    }
+
     /// Get the unsigned transaction ID
     pub fn unsigned_txid(&self) -> String {
         self.psbt.unsigned_txid().to_string()
@@ -113,6 +352,16 @@ impl BitGoPsbt {
     /// Get the network of the PSBT
     pub fn network(&self) -> String {
         self.psbt.network().to_string()
+    }
+
+    /// Get the transaction version
+    pub fn version(&self) -> i32 {
+        self.psbt.psbt().unsigned_tx.version.0
+    }
+
+    /// Get the transaction lock time
+    pub fn lock_time(&self) -> u32 {
+        self.psbt.psbt().unsigned_tx.lock_time.to_consensus_u32()
     }
 
     /// Parse transaction with wallet keys to identify wallet inputs/outputs

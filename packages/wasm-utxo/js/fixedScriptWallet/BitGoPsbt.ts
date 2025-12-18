@@ -31,6 +31,7 @@ export type ParsedInput = {
   value: bigint;
   scriptId: ScriptId | null;
   scriptType: InputScriptType;
+  sequence: number;
 };
 
 export type ParsedOutput = {
@@ -49,8 +50,97 @@ export type ParsedTransaction = {
   virtualSize: number;
 };
 
+export type CreateEmptyOptions = {
+  /** Transaction version (default: 2) */
+  version?: number;
+  /** Lock time (default: 0) */
+  lockTime?: number;
+};
+
+export type AddInputOptions = {
+  /** Previous transaction ID (hex string) */
+  txid: string;
+  /** Output index being spent */
+  vout: number;
+  /** Value in satoshis (for witness_utxo) */
+  value: bigint;
+  /** Sequence number (default: 0xFFFFFFFE for RBF) */
+  sequence?: number;
+  /** Full previous transaction (for non-segwit strict compliance) */
+  prevTx?: Uint8Array;
+};
+
+export type AddOutputOptions = {
+  /** Output script (scriptPubKey) */
+  script: Uint8Array;
+  /** Value in satoshis */
+  value: bigint;
+};
+
+/** Key identifier for signing ("user", "backup", or "bitgo") */
+export type SignerKey = "user" | "backup" | "bitgo";
+
+/** Specifies signer and cosigner for Taproot inputs */
+export type SignPath = {
+  /** Key that will sign */
+  signer: SignerKey;
+  /** Key that will co-sign */
+  cosigner: SignerKey;
+};
+
+export type AddWalletInputOptions = {
+  /** Script location in wallet (chain + index) */
+  scriptId: ScriptId;
+  /** Sign path - required for p2tr/p2trMusig2 (chains 30-41) */
+  signPath?: SignPath;
+};
+
+export type AddWalletOutputOptions = {
+  /** Chain code (0/1=p2sh, 10/11=p2shP2wsh, 20/21=p2wsh, 30/31=p2tr, 40/41=p2trMusig2) */
+  chain: number;
+  /** Derivation index */
+  index: number;
+  /** Value in satoshis */
+  value: bigint;
+};
+
 export class BitGoPsbt {
   private constructor(private wasm: WasmBitGoPsbt) {}
+
+  /**
+   * Create an empty PSBT for the given network with wallet keys
+   *
+   * The wallet keys are used to set global xpubs in the PSBT, which identifies
+   * the keys that will be used for signing.
+   *
+   * @param network - Network name (utxolib name like "bitcoin" or coin name like "btc")
+   * @param walletKeys - The wallet's root keys (sets global xpubs in the PSBT)
+   * @param options - Optional transaction parameters (version, lockTime)
+   * @returns A new empty BitGoPsbt instance
+   *
+   * @example
+   * ```typescript
+   * // Create empty PSBT with wallet keys
+   * const psbt = BitGoPsbt.createEmpty("bitcoin", walletKeys);
+   *
+   * // Create with custom version and lockTime
+   * const psbt = BitGoPsbt.createEmpty("bitcoin", walletKeys, { version: 1, lockTime: 500000 });
+   * ```
+   */
+  static createEmpty(
+    network: NetworkName,
+    walletKeys: WalletKeysArg,
+    options?: CreateEmptyOptions,
+  ): BitGoPsbt {
+    const keys = RootWalletKeys.from(walletKeys);
+    const wasm = WasmBitGoPsbt.create_empty(
+      network,
+      keys.wasm,
+      options?.version,
+      options?.lockTime,
+    );
+    return new BitGoPsbt(wasm);
+  }
 
   /**
    * Deserialize a PSBT from bytes
@@ -64,11 +154,199 @@ export class BitGoPsbt {
   }
 
   /**
+   * Add an input to the PSBT
+   *
+   * This adds a transaction input and corresponding PSBT input metadata.
+   * The witness_utxo is automatically populated for modern signing compatibility.
+   *
+   * @param options - Input options (txid, vout, value, sequence)
+   * @param script - Output script of the UTXO being spent
+   * @returns The index of the newly added input
+   *
+   * @example
+   * ```typescript
+   * const inputIndex = psbt.addInput({
+   *   txid: "abc123...",
+   *   vout: 0,
+   *   value: 100000n,
+   * }, outputScript);
+   * ```
+   */
+  addInput(options: AddInputOptions, script: Uint8Array): number {
+    return this.wasm.add_input(
+      options.txid,
+      options.vout,
+      options.value,
+      script,
+      options.sequence,
+      options.prevTx,
+    );
+  }
+
+  /**
+   * Add an output to the PSBT
+   *
+   * @param options - Output options (script, value)
+   * @returns The index of the newly added output
+   *
+   * @example
+   * ```typescript
+   * const outputIndex = psbt.addOutput({
+   *   script: outputScript,
+   *   value: 50000n,
+   * });
+   * ```
+   */
+  addOutput(options: AddOutputOptions): number {
+    return this.wasm.add_output(options.script, options.value);
+  }
+
+  /**
+   * Add a wallet input with full PSBT metadata
+   *
+   * This is a higher-level method that adds an input and populates all required
+   * PSBT fields (scripts, derivation info, etc.) based on the wallet's chain type.
+   *
+   * For p2sh/p2shP2wsh/p2wsh: Sets bip32Derivation, witnessScript, redeemScript (signPath not needed)
+   * For p2tr/p2trMusig2 script path: Sets tapLeafScript, tapBip32Derivation (signPath required)
+   * For p2trMusig2 key path: Sets tapInternalKey, tapMerkleRoot, tapBip32Derivation, musig2 participants (signPath required)
+   *
+   * @param inputOptions - Common input options (txid, vout, value, sequence)
+   * @param walletKeys - The wallet's root keys
+   * @param walletOptions - Wallet-specific options (scriptId, signPath, prevTx)
+   * @returns The index of the newly added input
+   *
+   * @example
+   * ```typescript
+   * // Add a p2shP2wsh input (signPath not needed)
+   * const inputIndex = psbt.addWalletInput(
+   *   { txid: "abc123...", vout: 0, value: 100000n },
+   *   walletKeys,
+   *   { scriptId: { chain: 10, index: 0 } },  // p2shP2wsh external
+   * );
+   *
+   * // Add a p2trMusig2 key path input (signPath required)
+   * const inputIndex = psbt.addWalletInput(
+   *   { txid: "def456...", vout: 1, value: 50000n },
+   *   walletKeys,
+   *   { scriptId: { chain: 40, index: 5 }, signPath: { signer: "user", cosigner: "bitgo" } },
+   * );
+   *
+   * // Add p2trMusig2 with backup key (script path spend)
+   * const inputIndex = psbt.addWalletInput(
+   *   { txid: "ghi789...", vout: 0, value: 75000n },
+   *   walletKeys,
+   *   { scriptId: { chain: 40, index: 3 }, signPath: { signer: "user", cosigner: "backup" } },
+   * );
+   * ```
+   */
+  addWalletInput(
+    inputOptions: AddInputOptions,
+    walletKeys: WalletKeysArg,
+    walletOptions: AddWalletInputOptions,
+  ): number {
+    const keys = RootWalletKeys.from(walletKeys);
+    return this.wasm.add_wallet_input(
+      inputOptions.txid,
+      inputOptions.vout,
+      inputOptions.value,
+      keys.wasm,
+      walletOptions.scriptId.chain,
+      walletOptions.scriptId.index,
+      walletOptions.signPath?.signer,
+      walletOptions.signPath?.cosigner,
+      inputOptions.sequence,
+      inputOptions.prevTx,
+    );
+  }
+
+  /**
+   * Add a wallet output with full PSBT metadata
+   *
+   * This creates a verifiable wallet output (typically for change) with all required
+   * PSBT fields (scripts, derivation info) based on the wallet's chain type.
+   *
+   * For p2sh/p2shP2wsh/p2wsh: Sets bip32Derivation, witnessScript, redeemScript
+   * For p2tr/p2trMusig2: Sets tapInternalKey, tapBip32Derivation
+   *
+   * @param walletKeys - The wallet's root keys
+   * @param options - Output options including chain, index, and value
+   * @returns The index of the newly added output
+   *
+   * @example
+   * ```typescript
+   * // Add a p2shP2wsh change output
+   * const outputIndex = psbt.addWalletOutput(walletKeys, {
+   *   chain: 11,  // p2shP2wsh internal (change)
+   *   index: 0,
+   *   value: 50000n,
+   * });
+   *
+   * // Add a p2trMusig2 change output
+   * const outputIndex = psbt.addWalletOutput(walletKeys, {
+   *   chain: 41,  // p2trMusig2 internal (change)
+   *   index: 5,
+   *   value: 25000n,
+   * });
+   * ```
+   */
+  addWalletOutput(walletKeys: WalletKeysArg, options: AddWalletOutputOptions): number {
+    const keys = RootWalletKeys.from(walletKeys);
+    return this.wasm.add_wallet_output(options.chain, options.index, options.value, keys.wasm);
+  }
+
+  /**
+   * Add a replay protection input to the PSBT
+   *
+   * Replay protection inputs are P2SH-P2PK inputs used on forked networks to prevent
+   * transaction replay attacks. They use a simple pubkey script without wallet derivation.
+   *
+   * @param inputOptions - Common input options (txid, vout, value, sequence)
+   * @param key - ECPair containing the public key for the replay protection input
+   * @returns The index of the newly added input
+   *
+   * @example
+   * ```typescript
+   * // Add a replay protection input using ECPair
+   * const inputIndex = psbt.addReplayProtectionInput(
+   *   { txid: "abc123...", vout: 0, value: 1000n },
+   *   replayProtectionKey,
+   * );
+   * ```
+   */
+  addReplayProtectionInput(inputOptions: AddInputOptions, key: ECPairArg): number {
+    const ecpair = ECPair.from(key);
+    return this.wasm.add_replay_protection_input(
+      ecpair.wasm,
+      inputOptions.txid,
+      inputOptions.vout,
+      inputOptions.value,
+      inputOptions.sequence,
+    );
+  }
+
+  /**
    * Get the unsigned transaction ID
    * @returns The unsigned transaction ID
    */
   unsignedTxid(): string {
     return this.wasm.unsigned_txid();
+  }
+
+  /**
+   * Get the transaction version
+   * @returns The transaction version number
+   */
+  get version(): number {
+    return this.wasm.version();
+  }
+
+  /**
+   * Get the transaction lock time
+   * @returns The transaction lock time
+   */
+  get lockTime(): number {
+    return this.wasm.lock_time();
   }
 
   /**
