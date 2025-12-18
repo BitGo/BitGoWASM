@@ -24,10 +24,20 @@ This project is under active development.
 
 ## Building
 
-If your system has problems with `wasm-pack` (Mac M1), you can use the `Container.mk` Makefile to build the wasm files:
+### Mac
+
+Requires Homebrew LLVM (Apple's Clang doesn't support WASM targets):
 
 ```bash
-cd packages/wasm-utxo
+brew install llvm
+npm run build
+```
+
+### Docker (optional)
+
+If you prefer a containerized build environment:
+
+```bash
 make -f Container.mk build-image
 make -f Container.mk build-wasm
 ```
