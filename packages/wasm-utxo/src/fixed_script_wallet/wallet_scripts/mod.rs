@@ -9,7 +9,10 @@ pub use checkmultisig::{
     build_multisig_script_2_of_3, parse_multisig_script_2_of_3, ScriptP2sh, ScriptP2shP2wsh,
     ScriptP2wsh,
 };
-pub use checksigverify::{build_p2tr_ns_script, ScriptP2tr};
+pub use checksigverify::{
+    build_p2tr_ns_script, build_tap_tree_for_output, create_tap_bip32_derivation_for_output,
+    ScriptP2tr,
+};
 pub use singlesig::{build_p2pk_script, ScriptP2shP2pk};
 
 use crate::address::networks::OutputScriptSupport;

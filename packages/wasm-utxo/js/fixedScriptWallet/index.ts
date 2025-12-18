@@ -9,4 +9,5 @@ export {
   type ParsedInput,
   type ParsedOutput,
   type ParsedTransaction,
+  type SignPath,
 } from "./BitGoPsbt.js";
