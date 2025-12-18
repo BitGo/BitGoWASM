@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 /// Get test wallet xpubs from a seed string
+/// This matches the TypeScript getWalletKeysForSeed function from keys.ts
 pub fn get_test_wallet_keys(seed: &str) -> XpubTriple {
     use crate::bitcoin::hashes::{sha256, Hash};
     use crate::bitcoin::Network;
@@ -21,9 +22,11 @@ pub fn get_test_wallet_keys(seed: &str) -> XpubTriple {
         Xpriv::new_master(Network::Testnet, &seed_hash).expect("could not create xpriv from seed")
     }
 
-    let a = get_xpriv_from_seed(&format!("{}/0", seed));
-    let b = get_xpriv_from_seed(&format!("{}/1", seed));
-    let c = get_xpriv_from_seed(&format!("{}/2", seed));
+    // Note: TypeScript uses `.` separator (e.g., "seed.0", "seed.1", "seed.2")
+    // to match utxo-lib's getKeyTriple function in keys.ts
+    let a = get_xpriv_from_seed(&format!("{}.0", seed));
+    let b = get_xpriv_from_seed(&format!("{}.1", seed));
+    let c = get_xpriv_from_seed(&format!("{}.2", seed));
 
     let secp = crate::bitcoin::secp256k1::Secp256k1::new();
     [a, b, c].map(|x| Xpub::from_priv(&secp, &x))
