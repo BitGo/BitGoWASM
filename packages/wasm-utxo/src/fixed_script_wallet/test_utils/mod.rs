@@ -1,6 +1,7 @@
 //! Test utilities for fixed_script_wallet module
 
 pub mod fixtures;
+pub mod psbt_compare;
 
 use super::wallet_keys::XpubTriple;
 use super::wallet_scripts::{Chain, WalletScripts};
