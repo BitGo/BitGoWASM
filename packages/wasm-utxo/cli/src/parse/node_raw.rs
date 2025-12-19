@@ -25,9 +25,9 @@
 ///
 /// - [BIP-174: PSBT Format](https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki)
 /// - [bitcoin::psbt::raw](https://docs.rs/bitcoin/latest/bitcoin/psbt/raw/index.html)
-use bitcoin::consensus::Decodable;
-use bitcoin::psbt::raw::{Key, Pair};
-use bitcoin::{Network, Transaction, VarInt};
+use wasm_utxo::bitcoin::consensus::Decodable;
+use wasm_utxo::bitcoin::psbt::raw::{Key, Pair};
+use wasm_utxo::bitcoin::{Network, Transaction, VarInt};
 
 pub use crate::node::{Node, Primitive};
 

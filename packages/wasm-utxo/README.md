@@ -20,7 +20,16 @@ This project is under active development.
 | Descriptor Wallet: Address Support      | ✅ Complete | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          |
 | Descriptor Wallet: Transaction Support  | ✅ Complete | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          |
 | FixedScript Wallet: Address Generation  | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete |
-| FixedScript Wallet: Transaction Support | ✅ Complete | ✅ Complete | ✅ Complete | ⏳ TODO     | ⏳ TODO     | ✅ Complete | ⏳ TODO     |
+| FixedScript Wallet: Transaction Support | ✅ Complete | ✅ Complete | ✅ Complete | ⏳ TODO     | ⏳ TODO     | ✅ Complete | ✅ Complete |
+
+### Zcash Features
+
+Zcash support includes:
+
+- **Network Upgrade Awareness**: Automatic consensus branch ID determination based on block height
+- **All Network Upgrades**: Support for Overwinter, Sapling, Blossom, Heartwood, Canopy, Nu5, Nu6, and Nu6_1
+- **Height-Based API**: Preferred `createEmpty()` method automatically selects correct consensus rules
+- **Parity Testing**: Validated against `zebra-chain` for accuracy across all network upgrades
 
 ## Building
 

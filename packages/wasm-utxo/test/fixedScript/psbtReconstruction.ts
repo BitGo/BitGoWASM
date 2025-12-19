@@ -3,6 +3,7 @@ import * as utxolib from "@bitgo/utxo-lib";
 import { fixedScriptWallet } from "../../js/index.js";
 import {
   BitGoPsbt,
+  ZcashBitGoPsbt,
   type InputScriptType,
   type SignPath,
 } from "../../js/fixedScriptWallet/index.js";
@@ -15,6 +16,9 @@ import {
   type Fixture,
 } from "./fixtureUtil.js";
 import { getFixtureNetworks } from "./networkSupport.util.js";
+
+// Zcash Sapling consensus branch ID for test fixtures
+const ZCASH_SAPLING_BRANCH_ID = 0x76b809bb;
 
 /**
  * Infer signPath from scriptType (matches Rust logic)
@@ -85,10 +89,26 @@ describe("PSBT reconstruction", function () {
         const parsedOutputsOther = originalPsbt.parseOutputsWithWalletKeys(otherWalletKeys);
 
         // Create empty PSBT with same version/locktime
-        const reconstructed = BitGoPsbt.createEmpty(networkName, rootWalletKeys, {
-          version: originalPsbt.version,
-          lockTime: originalPsbt.lockTime,
-        });
+        let reconstructed: BitGoPsbt;
+        if (networkName === "zcash" || networkName === "zcashTest") {
+          const zcashPsbt = ZcashBitGoPsbt.fromBytes(getPsbtBuffer(fixture), networkName);
+          reconstructed = ZcashBitGoPsbt.createEmptyWithConsensusBranchId(
+            networkName,
+            rootWalletKeys,
+            {
+              consensusBranchId: ZCASH_SAPLING_BRANCH_ID,
+              version: zcashPsbt.version,
+              lockTime: zcashPsbt.lockTime,
+              versionGroupId: zcashPsbt.versionGroupId,
+              expiryHeight: zcashPsbt.expiryHeight,
+            },
+          );
+        } else {
+          reconstructed = BitGoPsbt.createEmpty(networkName, rootWalletKeys, {
+            version: originalPsbt.version,
+            lockTime: originalPsbt.lockTime,
+          });
+        }
 
         // Add inputs
         for (let i = 0; i < parsedTx.inputs.length; i++) {
@@ -172,11 +192,18 @@ describe("PSBT reconstruction", function () {
         // Version and lockTime should be numbers
         assert.strictEqual(typeof originalPsbt.version, "number", "version should be a number");
         assert.strictEqual(typeof originalPsbt.lockTime, "number", "lockTime should be a number");
-        // Version should be 1 or 2 depending on network
-        assert.ok(
-          originalPsbt.version === 1 || originalPsbt.version === 2,
-          `version should be 1 or 2, got ${originalPsbt.version}`,
-        );
+        // Version depends on network: Zcash uses version 4 (Sapling) or 5 (NU5), others use 1 or 2
+        if (network === utxolib.networks.zcash) {
+          assert.ok(
+            originalPsbt.version === 4 || originalPsbt.version === 5,
+            `Zcash version should be 4 or 5, got ${originalPsbt.version}`,
+          );
+        } else {
+          assert.ok(
+            originalPsbt.version === 1 || originalPsbt.version === 2,
+            `version should be 1 or 2, got ${originalPsbt.version}`,
+          );
+        }
         // LockTime is typically 0 for these fixtures
         assert.strictEqual(originalPsbt.lockTime, 0, "lockTime should be 0 for unsigned fixtures");
       });
@@ -200,6 +227,123 @@ describe("PSBT reconstruction", function () {
             `Input ${i} sequence should match fixture`,
           );
         });
+      });
+
+      it("should create equivalent PSBTs using block height vs explicit branch ID (Zcash only)", function () {
+        // Skip for non-Zcash networks
+        if (networkName !== "zcash" && networkName !== "zcashTest") {
+          this.skip();
+        }
+
+        const replayProtectionKey = loadReplayProtectionKeyFromFixture(fixture);
+        const parsedTx = originalPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
+          publicKeys: [replayProtectionKey],
+        });
+        const parsedOutputsOther = originalPsbt.parseOutputsWithWalletKeys(otherWalletKeys);
+
+        // Get Zcash-specific parameters from original PSBT
+        const zcashPsbt = ZcashBitGoPsbt.fromBytes(getPsbtBuffer(fixture), networkName);
+
+        // Sapling activation heights: mainnet=419200, testnet=280000
+        const saplingHeight = networkName === "zcash" ? 419200 : 280000;
+
+        // Create PSBT using explicit branch ID (advanced approach)
+        const psbtWithBranchId = ZcashBitGoPsbt.createEmptyWithConsensusBranchId(
+          networkName,
+          rootWalletKeys,
+          {
+            consensusBranchId: ZCASH_SAPLING_BRANCH_ID,
+            version: zcashPsbt.version,
+            lockTime: zcashPsbt.lockTime,
+            versionGroupId: zcashPsbt.versionGroupId,
+            expiryHeight: zcashPsbt.expiryHeight,
+          },
+        );
+
+        // Create PSBT using block height (preferred approach)
+        const psbtWithHeight = ZcashBitGoPsbt.createEmpty(networkName, rootWalletKeys, {
+          blockHeight: saplingHeight,
+          version: zcashPsbt.version,
+          lockTime: zcashPsbt.lockTime,
+          versionGroupId: zcashPsbt.versionGroupId,
+          expiryHeight: zcashPsbt.expiryHeight,
+        });
+
+        // Add the same inputs and outputs to both PSBTs
+        for (let i = 0; i < parsedTx.inputs.length; i++) {
+          const parsedInput = parsedTx.inputs[i];
+          const fixtureInput = fixture.inputs[i];
+          const txid = reverseHex(fixtureInput.hash);
+
+          if (parsedInput.scriptId !== null) {
+            const signPath = getSignPathFromScriptType(parsedInput.scriptType);
+            const inputOptions = {
+              txid,
+              vout: fixtureInput.index,
+              value: parsedInput.value,
+              sequence: parsedInput.sequence,
+            };
+            const walletOptions = { scriptId: parsedInput.scriptId, signPath };
+
+            psbtWithBranchId.addWalletInput(inputOptions, rootWalletKeys, walletOptions);
+            psbtWithHeight.addWalletInput(inputOptions, rootWalletKeys, walletOptions);
+          } else {
+            const inputOptions = {
+              txid,
+              vout: fixtureInput.index,
+              value: parsedInput.value,
+              sequence: parsedInput.sequence,
+            };
+
+            psbtWithBranchId.addReplayProtectionInput(inputOptions, replayProtectionKey);
+            psbtWithHeight.addReplayProtectionInput(inputOptions, replayProtectionKey);
+          }
+        }
+
+        for (let i = 0; i < parsedTx.outputs.length; i++) {
+          const parsedOutput = parsedTx.outputs[i];
+          const parsedOutputOther = parsedOutputsOther[i];
+
+          if (parsedOutput.scriptId !== null) {
+            const outputOptions = {
+              chain: parsedOutput.scriptId.chain,
+              index: parsedOutput.scriptId.index,
+              value: parsedOutput.value,
+            };
+            psbtWithBranchId.addWalletOutput(rootWalletKeys, outputOptions);
+            psbtWithHeight.addWalletOutput(rootWalletKeys, outputOptions);
+          } else if (parsedOutputOther.scriptId !== null) {
+            const outputOptions = {
+              chain: parsedOutputOther.scriptId.chain,
+              index: parsedOutputOther.scriptId.index,
+              value: parsedOutputOther.value,
+            };
+            psbtWithBranchId.addWalletOutput(otherWalletKeys, outputOptions);
+            psbtWithHeight.addWalletOutput(otherWalletKeys, outputOptions);
+          } else {
+            const outputOptions = {
+              script: parsedOutput.script,
+              value: parsedOutput.value,
+            };
+            psbtWithBranchId.addOutput(outputOptions);
+            psbtWithHeight.addOutput(outputOptions);
+          }
+        }
+
+        // Verify both PSBTs produce the same unsigned txid
+        assert.strictEqual(
+          psbtWithHeight.unsignedTxid(),
+          psbtWithBranchId.unsignedTxid(),
+          "PSBT created with block height should have same unsigned txid as one created with explicit branch ID",
+        );
+
+        // Verify both PSBTs serialize to the same bytes
+        const serializedWithBranchId = psbtWithBranchId.serialize();
+        const serializedWithHeight = psbtWithHeight.serialize();
+        assert.ok(
+          Buffer.from(serializedWithBranchId).equals(Buffer.from(serializedWithHeight)),
+          "PSBTs should serialize to identical bytes",
+        );
       });
     });
   });

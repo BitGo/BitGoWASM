@@ -134,6 +134,93 @@ impl BitGoPsbt {
         })
     }
 
+    /// Create an empty Zcash PSBT with the required consensus branch ID
+    ///
+    /// This method is specifically for Zcash networks which require additional
+    /// parameters for sighash computation.
+    ///
+    /// # Arguments
+    /// * `network` - Network name (must be "zcash" or "zcashTest")
+    /// * `wallet_keys` - The wallet's root keys (used to set global xpubs)
+    /// * `consensus_branch_id` - Zcash consensus branch ID (e.g., 0xC2D6D0B4 for NU5)
+    /// * `version` - Optional transaction version (default: 4 for Zcash Sapling+)
+    /// * `lock_time` - Optional lock time (default: 0)
+    /// * `version_group_id` - Optional version group ID (defaults to Sapling: 0x892F2085)
+    /// * `expiry_height` - Optional expiry height
+    pub fn create_empty_zcash(
+        network: &str,
+        wallet_keys: &WasmRootWalletKeys,
+        consensus_branch_id: u32,
+        version: Option<i32>,
+        lock_time: Option<u32>,
+        version_group_id: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        let network = parse_network(network)?;
+        let wallet_keys = wallet_keys.inner();
+
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::new_zcash(
+            network,
+            wallet_keys,
+            consensus_branch_id,
+            version,
+            lock_time,
+            version_group_id,
+            expiry_height,
+        );
+
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
+    /// Create an empty Zcash PSBT with consensus branch ID determined from block height
+    ///
+    /// This method automatically determines the correct consensus branch ID based on
+    /// the network and block height using the network upgrade activation heights.
+    ///
+    /// # Arguments
+    /// * `network` - Network name (must be "zcash" or "zcashTest")
+    /// * `wallet_keys` - The wallet's root keys (used to set global xpubs)
+    /// * `block_height` - Block height to determine consensus rules
+    /// * `version` - Optional transaction version (default: 4 for Zcash Sapling+)
+    /// * `lock_time` - Optional lock time (default: 0)
+    /// * `version_group_id` - Optional version group ID (defaults to Sapling: 0x892F2085)
+    /// * `expiry_height` - Optional expiry height
+    ///
+    /// # Errors
+    /// Returns error if block height is before Overwinter activation
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_empty_zcash_at_height(
+        network: &str,
+        wallet_keys: &WasmRootWalletKeys,
+        block_height: u32,
+        version: Option<i32>,
+        lock_time: Option<u32>,
+        version_group_id: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        let network = parse_network(network)?;
+        let wallet_keys = wallet_keys.inner();
+
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::new_zcash_at_height(
+            network,
+            wallet_keys,
+            block_height,
+            version,
+            lock_time,
+            version_group_id,
+            expiry_height,
+        )
+        .map_err(|e| WasmUtxoError::new(&e))?;
+
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
     /// Add an input to the PSBT
     ///
     /// # Arguments
@@ -362,6 +449,24 @@ impl BitGoPsbt {
     /// Get the transaction lock time
     pub fn lock_time(&self) -> u32 {
         self.psbt.psbt().unsigned_tx.lock_time.to_consensus_u32()
+    }
+
+    /// Get the Zcash version group ID (returns None for non-Zcash PSBTs)
+    pub fn version_group_id(&self) -> Option<u32> {
+        use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt as InnerBitGoPsbt;
+        match &self.psbt {
+            InnerBitGoPsbt::Zcash(zcash_psbt, _) => zcash_psbt.version_group_id,
+            InnerBitGoPsbt::BitcoinLike(_, _) => None,
+        }
+    }
+
+    /// Get the Zcash expiry height (returns None for non-Zcash PSBTs)
+    pub fn expiry_height(&self) -> Option<u32> {
+        use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt as InnerBitGoPsbt;
+        match &self.psbt {
+            InnerBitGoPsbt::Zcash(zcash_psbt, _) => zcash_psbt.expiry_height,
+            InnerBitGoPsbt::BitcoinLike(_, _) => None,
+        }
     }
 
     /// Parse transaction with wallet keys to identify wallet inputs/outputs
@@ -838,13 +943,24 @@ impl BitGoPsbt {
     /// - `Ok(Vec<u8>)` containing the serialized transaction bytes
     /// - `Err(WasmUtxoError)` if the PSBT is not fully finalized or extraction fails
     pub fn extract_transaction(&self) -> Result<Vec<u8>, WasmUtxoError> {
-        let psbt = self.psbt.psbt().clone();
-        let tx = psbt
-            .extract_tx()
-            .map_err(|e| WasmUtxoError::new(&format!("Failed to extract transaction: {}", e)))?;
+        use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt as InnerBitGoPsbt;
 
-        // Serialize the transaction
-        use miniscript::bitcoin::consensus::encode::serialize;
-        Ok(serialize(&tx))
+        match &self.psbt {
+            InnerBitGoPsbt::Zcash(zcash_psbt, _) => {
+                // Use Zcash-specific serialization with version_group_id, expiry_height, etc.
+                zcash_psbt.extract_zcash_transaction().map_err(|e| {
+                    WasmUtxoError::new(&format!("Failed to extract Zcash transaction: {}", e))
+                })
+            }
+            InnerBitGoPsbt::BitcoinLike(psbt, _) => {
+                let tx = psbt.clone().extract_tx().map_err(|e| {
+                    WasmUtxoError::new(&format!("Failed to extract transaction: {}", e))
+                })?;
+
+                // Serialize the transaction
+                use miniscript::bitcoin::consensus::encode::serialize;
+                Ok(serialize(&tx))
+            }
+        }
     }
 }

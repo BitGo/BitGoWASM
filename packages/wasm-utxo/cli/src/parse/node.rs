@@ -1,8 +1,8 @@
 /// This contains low-level parsing of PSBT into a node structure suitable for display
-use bitcoin::consensus::Decodable;
-use bitcoin::hashes::Hash;
-use bitcoin::psbt::Psbt;
-use bitcoin::{Network, ScriptBuf, Transaction};
+use wasm_utxo::bitcoin::consensus::Decodable;
+use wasm_utxo::bitcoin::hashes::Hash;
+use wasm_utxo::bitcoin::psbt::Psbt;
+use wasm_utxo::bitcoin::{Network, ScriptBuf, Transaction};
 use wasm_utxo::fixed_script_wallet::bitgo_psbt::{
     p2tr_musig2_input::{Musig2PartialSig, Musig2Participants, Musig2PubNonce},
     BitGoKeyValue, ProprietaryKeySubtype, BITGO,
@@ -21,8 +21,11 @@ fn script_buf_to_node(label: &str, script_buf: &ScriptBuf) -> Node {
 
 fn bip32_derivations_to_nodes(
     bip32_derivation: &std::collections::BTreeMap<
-        bitcoin::secp256k1::PublicKey,
-        (bitcoin::bip32::Fingerprint, bitcoin::bip32::DerivationPath),
+        wasm_utxo::bitcoin::secp256k1::PublicKey,
+        (
+            wasm_utxo::bitcoin::bip32::Fingerprint,
+            wasm_utxo::bitcoin::bip32::DerivationPath,
+        ),
     >,
 ) -> Vec<Node> {
     bip32_derivation
@@ -100,7 +103,10 @@ fn musig2_partial_sig_to_node(sig: &Musig2PartialSig) -> Node {
     node
 }
 
-fn bitgo_proprietary_to_node(prop_key: &bitcoin::psbt::raw::ProprietaryKey, v: &[u8]) -> Node {
+fn bitgo_proprietary_to_node(
+    prop_key: &wasm_utxo::bitcoin::psbt::raw::ProprietaryKey,
+    v: &[u8],
+) -> Node {
     // Try to parse as BitGo key-value
     let v_vec = v.to_vec();
     let bitgo_kv_result = BitGoKeyValue::from_key_value(prop_key, &v_vec);
@@ -159,7 +165,7 @@ fn bitgo_proprietary_to_node(prop_key: &bitcoin::psbt::raw::ProprietaryKey, v: &
 
 fn raw_proprietary_to_node(
     label: &str,
-    prop_key: &bitcoin::psbt::raw::ProprietaryKey,
+    prop_key: &wasm_utxo::bitcoin::psbt::raw::ProprietaryKey,
     v: &[u8],
 ) -> Node {
     let mut prop_node = Node::new(label, Primitive::None);
@@ -177,7 +183,10 @@ fn raw_proprietary_to_node(
 }
 
 fn proprietary_to_nodes(
-    proprietary: &std::collections::BTreeMap<bitcoin::psbt::raw::ProprietaryKey, Vec<u8>>,
+    proprietary: &std::collections::BTreeMap<
+        wasm_utxo::bitcoin::psbt::raw::ProprietaryKey,
+        Vec<u8>,
+    >,
 ) -> Vec<Node> {
     proprietary
         .iter()
@@ -194,8 +203,11 @@ fn proprietary_to_nodes(
 
 fn xpubs_to_nodes(
     xpubs: &std::collections::BTreeMap<
-        bitcoin::bip32::Xpub,
-        (bitcoin::bip32::Fingerprint, bitcoin::bip32::DerivationPath),
+        wasm_utxo::bitcoin::bip32::Xpub,
+        (
+            wasm_utxo::bitcoin::bip32::Fingerprint,
+            wasm_utxo::bitcoin::bip32::DerivationPath,
+        ),
     >,
 ) -> Vec<Node> {
     xpubs
@@ -215,8 +227,11 @@ fn xpubs_to_nodes(
 
 pub fn xpubs_to_node(
     xpubs: &std::collections::BTreeMap<
-        bitcoin::bip32::Xpub,
-        (bitcoin::bip32::Fingerprint, bitcoin::bip32::DerivationPath),
+        wasm_utxo::bitcoin::bip32::Xpub,
+        (
+            wasm_utxo::bitcoin::bip32::Fingerprint,
+            wasm_utxo::bitcoin::bip32::DerivationPath,
+        ),
     >,
 ) -> Node {
     let mut xpubs_node = Node::new("xpubs", Primitive::U64(xpubs.len() as u64));
@@ -267,7 +282,7 @@ pub fn psbt_to_node(psbt: &Psbt, network: Network) -> Node {
             witness_node.add_child(Node::new(
                 "address",
                 Primitive::String(
-                    bitcoin::Address::from_script(&witness_utxo.script_pubkey, network)
+                    wasm_utxo::bitcoin::Address::from_script(&witness_utxo.script_pubkey, network)
                         .map(|a| a.to_string())
                         .unwrap_or_else(|_| "<invalid address>".to_string()),
                 ),
@@ -353,7 +368,7 @@ pub fn psbt_to_node(psbt: &Psbt, network: Network) -> Node {
     psbt_node
 }
 
-pub fn tx_to_node(tx: &Transaction, network: bitcoin::Network) -> Node {
+pub fn tx_to_node(tx: &Transaction, network: wasm_utxo::bitcoin::Network) -> Node {
     let mut tx_node = Node::new("tx", Primitive::None);
 
     tx_node.add_child(Node::new("version", Primitive::I32(tx.version.0)));
@@ -425,7 +440,9 @@ pub fn tx_to_node(tx: &Transaction, network: bitcoin::Network) -> Node {
             Primitive::Buffer(output.script_pubkey.as_bytes().to_vec()),
         ));
 
-        if let Ok(address) = bitcoin::Address::from_script(&output.script_pubkey, network) {
+        if let Ok(address) =
+            wasm_utxo::bitcoin::Address::from_script(&output.script_pubkey, network)
+        {
             output_node.add_child(Node::new("address", Primitive::String(address.to_string())));
         }
 
