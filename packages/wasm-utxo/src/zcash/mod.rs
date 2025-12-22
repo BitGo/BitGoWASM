@@ -9,6 +9,8 @@
 //!
 //! Tests verify parity with `zebra-chain` crate.
 
+pub mod transaction;
+
 /// Zcash network upgrade identifiers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NetworkUpgrade {

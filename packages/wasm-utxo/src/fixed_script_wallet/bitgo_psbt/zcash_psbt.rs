@@ -5,97 +5,12 @@
 
 use miniscript::bitcoin::consensus::{Decodable, Encodable};
 use miniscript::bitcoin::psbt::Psbt;
-use miniscript::bitcoin::{Transaction, TxIn, TxOut, VarInt};
+use miniscript::bitcoin::{Transaction, VarInt};
 use std::io::Read;
 
-/// Zcash Sapling version group ID
-pub const ZCASH_SAPLING_VERSION_GROUP_ID: u32 = 0x892F2085;
-
-/// Zcash transaction metadata extracted from transaction bytes
-///
-/// This struct provides the Zcash-specific fields without requiring
-/// the full transaction to be stored.
-#[derive(Debug, Clone)]
-pub struct ZcashTransactionMeta {
-    /// Number of inputs
-    pub input_count: usize,
-    /// Number of outputs
-    pub output_count: usize,
-    /// Zcash-specific: Version group ID for overwintered transactions
-    pub version_group_id: Option<u32>,
-    /// Zcash-specific: Expiry height
-    pub expiry_height: Option<u32>,
-    /// Whether this is a Zcash overwintered transaction
-    pub is_overwintered: bool,
-}
-
-/// Decode Zcash transaction metadata from bytes
-///
-/// Extracts input/output counts and Zcash-specific fields (version_group_id, expiry_height)
-/// from a Zcash overwintered transaction.
-pub fn decode_zcash_transaction_meta(bytes: &[u8]) -> Result<ZcashTransactionMeta, String> {
-    let mut slice = bytes;
-
-    // Read version
-    let version = u32::consensus_decode(&mut slice)
-        .map_err(|e| format!("Failed to decode version: {}", e))?;
-
-    let is_overwintered = (version & 0x80000000) != 0;
-
-    let version_group_id = if is_overwintered {
-        Some(
-            u32::consensus_decode(&mut slice)
-                .map_err(|e| format!("Failed to decode version group ID: {}", e))?,
-        )
-    } else {
-        None
-    };
-
-    // Read inputs
-    let inputs: Vec<TxIn> =
-        Vec::consensus_decode(&mut slice).map_err(|e| format!("Failed to decode inputs: {}", e))?;
-
-    // Read outputs
-    let outputs: Vec<TxOut> = Vec::consensus_decode(&mut slice)
-        .map_err(|e| format!("Failed to decode outputs: {}", e))?;
-
-    // Read lock_time
-    let _lock_time =
-        miniscript::bitcoin::locktime::absolute::LockTime::consensus_decode(&mut slice)
-            .map_err(|e| format!("Failed to decode lock_time: {}", e))?;
-
-    // Read expiry height if overwintered
-    let expiry_height = if is_overwintered {
-        Some(
-            u32::consensus_decode(&mut slice)
-                .map_err(|e| format!("Failed to decode expiry height: {}", e))?,
-        )
-    } else {
-        None
-    };
-
-    Ok(ZcashTransactionMeta {
-        input_count: inputs.len(),
-        output_count: outputs.len(),
-        version_group_id,
-        expiry_height,
-        is_overwintered,
-    })
-}
-
-/// Decoded Zcash transaction with extracted Zcash-specific fields (internal use)
-#[derive(Debug, Clone)]
-struct DecodedZcashTransaction {
-    /// The transaction in Bitcoin-compatible format
-    transaction: Transaction,
-    /// Zcash-specific: Version group ID for overwintered transactions
-    version_group_id: Option<u32>,
-    /// Zcash-specific: Expiry height
-    expiry_height: Option<u32>,
-    /// Zcash-specific: Additional Sapling fields (valueBalance, nShieldedSpend, nShieldedOutput, etc.)
-    /// These are preserved as-is to maintain exact serialization
-    sapling_fields: Vec<u8>,
-}
+pub use crate::zcash::transaction::{
+    decode_zcash_transaction_meta, ZcashTransactionMeta, ZCASH_SAPLING_VERSION_GROUP_ID,
+};
 
 /// A Zcash-compatible PSBT that can handle overwintered transactions
 ///
@@ -116,61 +31,6 @@ pub struct ZcashBitGoPsbt {
     pub sapling_fields: Vec<u8>,
 }
 
-/// Decode a Zcash transaction from bytes, extracting Zcash-specific fields
-fn decode_zcash_transaction(
-    bytes: &[u8],
-) -> Result<DecodedZcashTransaction, super::DeserializeError> {
-    let mut slice = bytes;
-
-    // Read version
-    let version = u32::consensus_decode(&mut slice)?;
-
-    let is_overwintered = (version & 0x80000000) != 0;
-
-    let version_group_id = if is_overwintered {
-        Some(u32::consensus_decode(&mut slice)?)
-    } else {
-        None
-    };
-
-    // Read inputs
-    let inputs: Vec<TxIn> = Vec::consensus_decode(&mut slice)?;
-
-    // Read outputs
-    let outputs: Vec<TxOut> = Vec::consensus_decode(&mut slice)?;
-
-    // Read lock_time
-    let lock_time =
-        miniscript::bitcoin::locktime::absolute::LockTime::consensus_decode(&mut slice)?;
-
-    // Read expiry height if overwintered
-    let expiry_height = if is_overwintered {
-        Some(u32::consensus_decode(&mut slice)?)
-    } else {
-        None
-    };
-
-    // Capture any remaining bytes (Sapling fields: valueBalance, nShieldedSpend, nShieldedOutput, etc.)
-    let sapling_fields = slice.to_vec();
-
-    // Create transaction with standard version (without overwintered bit)
-    let transaction = Transaction {
-        version: miniscript::bitcoin::transaction::Version::non_standard(
-            (version & 0x7FFFFFFF) as i32,
-        ),
-        input: inputs,
-        output: outputs,
-        lock_time,
-    };
-
-    Ok(DecodedZcashTransaction {
-        transaction,
-        version_group_id,
-        expiry_height,
-        sapling_fields,
-    })
-}
-
 impl ZcashBitGoPsbt {
     /// Get the network this PSBT is for
     pub fn network(&self) -> crate::Network {
@@ -182,52 +42,18 @@ impl ZcashBitGoPsbt {
         &self,
         tx: &Transaction,
     ) -> Result<Vec<u8>, super::DeserializeError> {
-        let mut tx_bytes = Vec::new();
-
-        // Version with overwintered bit
-        let zcash_version = (tx.version.0 as u32) | 0x80000000;
-        zcash_version.consensus_encode(&mut tx_bytes).map_err(|e| {
-            super::DeserializeError::Network(format!("Failed to encode Zcash version: {}", e))
-        })?;
-
-        // Version group ID
-        self.version_group_id
-            .unwrap_or(ZCASH_SAPLING_VERSION_GROUP_ID)
-            .consensus_encode(&mut tx_bytes)
-            .map_err(|e| {
-                super::DeserializeError::Network(format!(
-                    "Failed to encode version group ID: {}",
-                    e
-                ))
-            })?;
-
-        // Inputs
-        tx.input.consensus_encode(&mut tx_bytes).map_err(|e| {
-            super::DeserializeError::Network(format!("Failed to encode inputs: {}", e))
-        })?;
-
-        // Outputs
-        tx.output.consensus_encode(&mut tx_bytes).map_err(|e| {
-            super::DeserializeError::Network(format!("Failed to encode outputs: {}", e))
-        })?;
-
-        // Lock time
-        tx.lock_time.consensus_encode(&mut tx_bytes).map_err(|e| {
-            super::DeserializeError::Network(format!("Failed to encode lock_time: {}", e))
-        })?;
-
-        // Expiry height
-        self.expiry_height
-            .unwrap_or(0)
-            .consensus_encode(&mut tx_bytes)
-            .map_err(|e| {
-                super::DeserializeError::Network(format!("Failed to encode expiry height: {}", e))
-            })?;
-
-        // Sapling fields (valueBalance, nShieldedSpend, nShieldedOutput, etc.)
-        tx_bytes.extend_from_slice(&self.sapling_fields);
-
-        Ok(tx_bytes)
+        let parts = crate::zcash::transaction::ZcashTransactionParts {
+            transaction: tx.clone(),
+            is_overwintered: true,
+            version_group_id: Some(
+                self.version_group_id
+                    .unwrap_or(ZCASH_SAPLING_VERSION_GROUP_ID),
+            ),
+            expiry_height: Some(self.expiry_height.unwrap_or(0)),
+            sapling_fields: self.sapling_fields.clone(),
+        };
+        crate::zcash::transaction::encode_zcash_transaction_parts(&parts)
+            .map_err(super::DeserializeError::Network)
     }
 
     /// Reconstruct the unsigned Zcash transaction bytes from the PSBT
@@ -330,14 +156,15 @@ impl ZcashBitGoPsbt {
             if !key_data.is_empty() && key_data[0] == 0x00 && key_data.len() == 1 {
                 // This is the unsigned transaction
                 found_tx = true;
-                let decoded = decode_zcash_transaction(&val_data)?;
-                version_group_id = decoded.version_group_id;
-                expiry_height = decoded.expiry_height;
-                sapling_fields = decoded.sapling_fields;
+                let parts = crate::zcash::transaction::decode_zcash_transaction_parts(&val_data)
+                    .map_err(super::DeserializeError::Network)?;
+                version_group_id = parts.version_group_id;
+                expiry_height = parts.expiry_height;
+                sapling_fields = parts.sapling_fields;
 
                 // Serialize the modified transaction
                 let mut tx_bytes = Vec::new();
-                decoded
+                parts
                     .transaction
                     .consensus_encode(&mut tx_bytes)
                     .map_err(|e| {
@@ -577,17 +404,14 @@ mod tests {
         // Expiry height
         0u32.consensus_encode(&mut tx_bytes).unwrap();
 
-        let decoded = decode_zcash_transaction(&tx_bytes).unwrap();
+        let parts = crate::zcash::transaction::decode_zcash_transaction_parts(&tx_bytes).unwrap();
 
-        assert_eq!(
-            decoded.version_group_id,
-            Some(ZCASH_SAPLING_VERSION_GROUP_ID)
-        );
-        assert_eq!(decoded.expiry_height, Some(0));
-        assert_eq!(decoded.transaction.input.len(), 0);
-        assert_eq!(decoded.transaction.output.len(), 0);
+        assert_eq!(parts.version_group_id, Some(ZCASH_SAPLING_VERSION_GROUP_ID));
+        assert_eq!(parts.expiry_height, Some(0));
+        assert_eq!(parts.transaction.input.len(), 0);
+        assert_eq!(parts.transaction.output.len(), 0);
         // Should be empty for this simple test tx
-        assert!(decoded.sapling_fields.is_empty());
+        assert!(parts.sapling_fields.is_empty());
     }
 
     #[test]
