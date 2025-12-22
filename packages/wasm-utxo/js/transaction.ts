@@ -1,4 +1,4 @@
-import { WasmTransaction, WasmZcashTransaction } from "./wasm/wasm_utxo.js";
+import { WasmDashTransaction, WasmTransaction, WasmZcashTransaction } from "./wasm/wasm_utxo.js";
 
 /**
  * Transaction wrapper (Bitcoin-like networks)
@@ -44,6 +44,30 @@ export class ZcashTransaction {
    * @internal
    */
   get wasm(): WasmZcashTransaction {
+    return this._wasm;
+  }
+}
+
+/**
+ * Dash Transaction wrapper (supports EVO special transactions)
+ *
+ * Round-trip only: bytes -> parse -> bytes.
+ */
+export class DashTransaction {
+  private constructor(private _wasm: WasmDashTransaction) {}
+
+  static fromBytes(bytes: Uint8Array): DashTransaction {
+    return new DashTransaction(WasmDashTransaction.from_bytes(bytes));
+  }
+
+  toBytes(): Uint8Array {
+    return this._wasm.to_bytes();
+  }
+
+  /**
+   * @internal
+   */
+  get wasm(): WasmDashTransaction {
     return this._wasm;
   }
 }

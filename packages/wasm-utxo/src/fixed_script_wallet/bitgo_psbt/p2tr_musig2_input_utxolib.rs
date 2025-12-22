@@ -639,8 +639,11 @@ pub fn assert_set_nonce_and_sign_musig2_keypath_utxolib(
     input_index: usize,
 ) -> Result<(), String> {
     // Verify this is actually a MuSig2 input by checking for proprietary keys
-    let is_musig2 = match &unsigned_bitgo_psbt {
+    let is_musig2 = match unsigned_bitgo_psbt {
         BitGoPsbt::BitcoinLike(psbt, _) => Musig2Input::is_musig2_input(&psbt.inputs[input_index]),
+        BitGoPsbt::Dash(dash_psbt, _) => {
+            Musig2Input::is_musig2_input(&dash_psbt.psbt.inputs[input_index])
+        }
         BitGoPsbt::Zcash(_, _) => false,
     };
 

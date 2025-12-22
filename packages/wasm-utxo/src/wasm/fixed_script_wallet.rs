@@ -457,6 +457,7 @@ impl BitGoPsbt {
         match &self.psbt {
             InnerBitGoPsbt::Zcash(zcash_psbt, _) => zcash_psbt.version_group_id,
             InnerBitGoPsbt::BitcoinLike(_, _) => None,
+            InnerBitGoPsbt::Dash(_, _) => None,
         }
     }
 
@@ -466,6 +467,7 @@ impl BitGoPsbt {
         match &self.psbt {
             InnerBitGoPsbt::Zcash(zcash_psbt, _) => zcash_psbt.expiry_height,
             InnerBitGoPsbt::BitcoinLike(_, _) => None,
+            InnerBitGoPsbt::Dash(_, _) => None,
         }
     }
 
@@ -954,6 +956,15 @@ impl BitGoPsbt {
             }
             InnerBitGoPsbt::BitcoinLike(psbt, _) => {
                 let tx = psbt.clone().extract_tx().map_err(|e| {
+                    WasmUtxoError::new(&format!("Failed to extract transaction: {}", e))
+                })?;
+
+                // Serialize the transaction
+                use miniscript::bitcoin::consensus::encode::serialize;
+                Ok(serialize(&tx))
+            }
+            InnerBitGoPsbt::Dash(dash_psbt, _) => {
+                let tx = dash_psbt.psbt.clone().extract_tx().map_err(|e| {
                     WasmUtxoError::new(&format!("Failed to extract transaction: {}", e))
                 })?;
 
