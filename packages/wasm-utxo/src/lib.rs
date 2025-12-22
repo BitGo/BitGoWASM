@@ -5,6 +5,7 @@ mod networks;
 pub mod paygo;
 #[cfg(test)]
 mod test_utils;
+pub mod zcash;
 
 // re-export bitcoin from the miniscript crate
 // this package is transitioning to a all-purpose bitcoin package, so we want easy access

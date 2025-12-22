@@ -263,6 +263,64 @@ pub fn verify_ecdsa_signature<C: secp256k1::Verification>(
     }
 }
 
+/// Verify an ECDSA signature for a Zcash PSBT input using ZIP-243 sighash.
+///
+/// # Arguments
+/// - `secp`: Secp256k1 context for verification
+/// - `psbt`: The PSBT containing the signature
+/// - `input_index`: Index of the input to verify
+/// - `public_key`: The public key to check for a signature
+/// - `consensus_branch_id`: Zcash network upgrade branch ID
+/// - `version_group_id`: Zcash transaction version group ID
+/// - `expiry_height`: Transaction expiry height
+///
+/// # Returns
+/// - `Ok(true)` if a valid ECDSA signature exists for the public key
+/// - `Ok(false)` if no signature exists or verification fails
+/// - `Err(String)` if sighash computation fails
+pub fn verify_ecdsa_signature_zcash<C: secp256k1::Verification>(
+    secp: &secp256k1::Secp256k1<C>,
+    psbt: &miniscript::bitcoin::psbt::Psbt,
+    input_index: usize,
+    public_key: miniscript::bitcoin::CompressedPublicKey,
+    consensus_branch_id: u32,
+    version_group_id: u32,
+    expiry_height: u32,
+) -> Result<bool, String> {
+    use miniscript::bitcoin::{sighash::SighashCache, PublicKey};
+
+    let input = &psbt.inputs[input_index];
+
+    // Convert to PublicKey for ECDSA
+    let public_key_inner = PublicKey::from_slice(&public_key.to_bytes())
+        .map_err(|e| format!("Failed to convert public key: {}", e))?;
+
+    // Check if there's a partial signature for this public key
+    if let Some(signature) = input.partial_sigs.get(&public_key_inner) {
+        // Create sighash cache and compute sighash for this input using ZIP-243
+        let mut cache = SighashCache::new(&psbt.unsigned_tx);
+
+        let (sighash_msg, _) = psbt
+            .sighash_zcash(
+                input_index,
+                &mut cache,
+                consensus_branch_id,
+                version_group_id,
+                expiry_height,
+            )
+            .map_err(|e| format!("Failed to compute Zcash sighash: {}", e))?;
+
+        // Verify the signature
+        match secp.verify_ecdsa(&sighash_msg, &signature.signature, &public_key_inner.inner) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    } else {
+        // No signature found for this public key
+        Ok(false)
+    }
+}
+
 fn assert_bip32_derivation_map(
     wallet_keys: &RootWalletKeys,
     derivation_map: &Bip32DerivationMap,

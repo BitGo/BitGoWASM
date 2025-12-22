@@ -105,13 +105,15 @@ export type AddWalletOutputOptions = {
 };
 
 export class BitGoPsbt {
-  private constructor(private wasm: WasmBitGoPsbt) {}
+  protected constructor(protected wasm: WasmBitGoPsbt) {}
 
   /**
    * Create an empty PSBT for the given network with wallet keys
    *
    * The wallet keys are used to set global xpubs in the PSBT, which identifies
    * the keys that will be used for signing.
+   *
+   * For Zcash networks, use ZcashBitGoPsbt.createEmpty() instead.
    *
    * @param network - Network name (utxolib name like "bitcoin" or coin name like "btc")
    * @param walletKeys - The wallet's root keys (sets global xpubs in the PSBT)

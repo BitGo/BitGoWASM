@@ -1,6 +1,8 @@
 export { RootWalletKeys, type WalletKeysArg, type IWalletKeys } from "./RootWalletKeys.js";
 export { ReplayProtection, type ReplayProtectionArg } from "./ReplayProtection.js";
 export { outputScript, address } from "./address.js";
+
+// Bitcoin-like PSBT (for all non-Zcash networks)
 export {
   BitGoPsbt,
   type NetworkName,
@@ -10,4 +12,16 @@ export {
   type ParsedOutput,
   type ParsedTransaction,
   type SignPath,
+  type CreateEmptyOptions,
+  type AddInputOptions,
+  type AddOutputOptions,
+  type AddWalletInputOptions,
+  type AddWalletOutputOptions,
 } from "./BitGoPsbt.js";
+
+// Zcash-specific PSBT subclass
+export {
+  ZcashBitGoPsbt,
+  type ZcashNetworkName,
+  type CreateEmptyZcashOptions,
+} from "./ZcashBitGoPsbt.js";

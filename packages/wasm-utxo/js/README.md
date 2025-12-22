@@ -214,3 +214,38 @@ export { BIP32 } from "./bip32";
 - Methods need to return new instances of the same type
 - Need to encapsulate underlying WASM instance
 - Examples: BIP32 keys, RootWalletKeys, BitGoPsbt
+
+### Network-Specific APIs
+
+Some UTXO networks require additional parameters that don't apply to others. The TypeScript wrappers use specialized classes and overloaded signatures to handle these cases while maintaining type safety.
+
+**Example: Zcash-specific PSBT creation**
+
+Zcash transactions require consensus-specific parameters to prevent replay attacks across network upgrades. The `ZcashBitGoPsbt` class provides a height-based API that automatically determines the correct consensus rules:
+
+```typescript
+// Non-Zcash networks: simple signature
+const btcPsbt = BitGoPsbt.createEmpty("bitcoin", walletKeys, { version: 2 });
+
+// Zcash networks: blockHeight determines consensus rules (preferred)
+const zecPsbt = ZcashBitGoPsbt.createEmpty("zcash", walletKeys, {
+  blockHeight: 1687104, // Automatically uses NU5 consensus rules
+  version: 5,
+  versionGroupId: 0x26a7270a, // optional
+  expiryHeight: 1000000, // optional
+});
+
+// Advanced: Explicit consensus branch ID (when needed)
+const zecPsbtAdvanced = ZcashBitGoPsbt.createEmptyWithConsensusBranchId("zcash", walletKeys, {
+  consensusBranchId: 0xc2d6d0b4, // NU5 branch ID
+  version: 5,
+});
+```
+
+This pattern ensures:
+
+- Automatic consensus rule selection based on block height (preferred)
+- No need to manually look up consensus branch IDs
+- Future-proof as new network upgrades activate
+- Advanced control available when explicit branch ID is needed
+- Full type safety with network-specific options

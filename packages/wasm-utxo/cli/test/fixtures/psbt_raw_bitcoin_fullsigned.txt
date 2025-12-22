@@ -38,13 +38,13 @@ psbt_raw: None
 │  │  │  │  ├─ type_id: 2u8
 │  │  │  │  ├─ type_name: PSBT_IN_PARTIAL_SIG
 │  │  │  │  └─ key_data: 03e1524d7f6fc57ab3eacbb659b787106780a475d1db483952c2310b7e9a38975b (33 bytes)
-│  │  │  └─ value: 3044022068576594f32f0196dce83d0a2fadde3e3670ae4cee22295337c406374a14496602205858f9cbf54285930c2004045440956db1953a67d305ca3db0206ffd7e7d534301 (71 bytes)
+│  │  │  └─ value: 304402201720c319f1acfc962998bec10d8e1c918cd96f02d5f1b5ebf41c39ff1c627cba02206f7941de25ed468bf2e6ad1678d32d4a4ac2c19b74ea1c9a8089c7a2ba933cde01 (71 bytes)
 │  │  ├─ pair_2: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 2u8
 │  │  │  │  ├─ type_name: PSBT_IN_PARTIAL_SIG
 │  │  │  │  └─ key_data: 03f6f40764bd5d63f200a2778883acf75e96f15095c998263c087270d0c97e7e7f (33 bytes)
-│  │  │  └─ value: 3044022063f7d77b3e78d916fef10e0e3249730b0b364a07bd4d1de482e7dc3a6910e13402204925ac2db7e1e6a51970f288a12d88d8abfec4fc3b44686664f5a6d707e6b27101 (71 bytes)
+│  │  │  └─ value: 304402204ed1631487b06c29f7e586998de96acd42ceec747e33dc52a455efd0059da14a0220615d8d2f159314c45ef79dd831419dc5cab1c21987d0fa14d0dbfba4113e216401 (71 bytes)
 │  │  ├─ pair_3: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 3u8
@@ -85,13 +85,13 @@ psbt_raw: None
 │  │  │  │  ├─ type_id: 2u8
 │  │  │  │  ├─ type_name: PSBT_IN_PARTIAL_SIG
 │  │  │  │  └─ key_data: 02234531bc9119a36a7946e95aeb74915dd087c7b44f517b8eeeb73f89a0ff1a99 (33 bytes)
-│  │  │  └─ value: 304402204f46d55ab3c78be2dd7b2df1a04aa929478c32445ea948923dc36f13eea30d23022054db1d0f3e7922e1ee1e7c3610b73c0297050c37cc4ac12e8ac63cb71dc314a501 (71 bytes)
+│  │  │  └─ value: 304402206a7b992610f302ac7320a999aa42531e8b623b0492768daf032c39d6d52ec7c60220670939f9ecd102ce69e98750060646db5e1fb162b1891350b95a8ff21378f83c01 (71 bytes)
 │  │  ├─ pair_2: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 2u8
 │  │  │  │  ├─ type_name: PSBT_IN_PARTIAL_SIG
 │  │  │  │  └─ key_data: 02a585f3fab49b5ef95346d932221a221bd55ec191f15533e0f270b3582574f035 (33 bytes)
-│  │  │  └─ value: 3045022100c3dddbc8b20f4aac003165182fb72357486da8a1538d151b06aca94f7894e169022050756f3949e780fd15e3a25baf7b3b3f674422c7ee8aff1d2f77a0f4d7f42ada01 (72 bytes)
+│  │  │  └─ value: 304402200a2d971c408317038596ad6ab0ef17282fd3d8b368d599026bc4ef2dbe0d7ea40220415624b6b92e9846566cab7a828d22017d494064b72aa2620fd13225b54938d301 (71 bytes)
 │  │  ├─ pair_3: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 3u8
@@ -137,13 +137,13 @@ psbt_raw: None
 │  │  │  │  ├─ type_id: 2u8
 │  │  │  │  ├─ type_name: PSBT_IN_PARTIAL_SIG
 │  │  │  │  └─ key_data: 02e80a08885c353676b820cdc290e6d81a0ac95a03e8abbf4bb7aeebfb70feb418 (33 bytes)
-│  │  │  └─ value: 3045022100a9a571f171172962c80bf97099c0f1a809bec183af83dabe65bfc51ff1084548022047376a83e5d8bd5bfb07c5720bf90535d9a0ba5837172235132530387618b95901 (72 bytes)
+│  │  │  └─ value: 30440220162101914f7fadf5ca92de401acaf9f4e9995acfa222fc7bb09d692650290d81022020004b2656dda5efd0f8a48cdc5e362b092f53bc0a12bf32cbb96a00525bf27601 (71 bytes)
 │  │  ├─ pair_2: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 2u8
 │  │  │  │  ├─ type_name: PSBT_IN_PARTIAL_SIG
 │  │  │  │  └─ key_data: 03519e572ab468560d1f8d0f87699d098308e166905f5dcae4390f060faa8f1ce3 (33 bytes)
-│  │  │  └─ value: 304402207017fae20521ac634cfaf259714d370efcd196f83fb8d7c3133207900f27355902201e9b7f217987da96f77b3ba33e868987d13257cc03a05af959e34be2719fe1b501 (71 bytes)
+│  │  │  └─ value: 3045022100e57d42ff5e19de633312bcdeea3a8d298c2f0b7da59b80af50570d7bb9f6678a022013488e7e86183467c4430fe88536f1e40ddd4eb1b64fdbf00d0d5195ccb757a001 (72 bytes)
 │  │  ├─ pair_3: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 3u8
@@ -189,13 +189,13 @@ psbt_raw: None
 │  │  │  │  ├─ type_id: 20u8
 │  │  │  │  ├─ type_name: PSBT_IN_TAP_SCRIPT_SIG
 │  │  │  │  └─ key_data: 7373d723ce0a87f8fdd66843be12dae9d51939f68188d5ad96920bef5f51f49683d7f98e9ef0f7336a06f4a0115183a9f996cbac1228e9aa7638f447f0249f30 (64 bytes)
-│  │  │  └─ value: be30d2f4e624a99d258f9de83971d249611d1956908b64c8914fe2a347ecd9547b7b67aa6f544e9b5b21d265f7f2b83c67c40c1fc6e22deabbdc320ed1fc6080 (64 bytes)
+│  │  │  └─ value: 4be8acb13a61e47181481b6f2a061411cbade92f76ffa652f3b2bf3e07987f8a8ad6a7a02c8d5c1a3cdeb141cc189f08948d209f9fa044f7610bbec5b16e2772 (64 bytes)
 │  │  ├─ pair_3: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 20u8
 │  │  │  │  ├─ type_name: PSBT_IN_TAP_SCRIPT_SIG
 │  │  │  │  └─ key_data: aa88ca194fda43486504b86ac9b71f10fc41de7b1713874839427f74e78c2d5a83d7f98e9ef0f7336a06f4a0115183a9f996cbac1228e9aa7638f447f0249f30 (64 bytes)
-│  │  │  └─ value: ce28402fd5d3544b9f3a8f21bc122c2147a9b17256458eb5b69b33c0ea5d2531b72108238a7493f2dd264221a87119b5343c16dcc48e941ba507243624f3d3c8 (64 bytes)
+│  │  │  └─ value: 1465b7f642f60b6c6038576a7a206fadb437f495f8c4c8944b6cc245191fa813e588d1002547817beae03faaca034b290276b4083d35057239812bcc79cbd0b5 (64 bytes)
 │  │  ├─ pair_4: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 21u8
@@ -231,13 +231,13 @@ psbt_raw: None
 │  │  │  │  ├─ type_id: 20u8
 │  │  │  │  ├─ type_name: PSBT_IN_TAP_SCRIPT_SIG
 │  │  │  │  └─ key_data: 035c9d632db2ddb8f90cf3ccfc931822bcb1f24562b23ae041abf12e54bca64d429069c8320ff5f1c8ac2a0b1047ff1450b8c0d325e1d12f1c52684d91a3b9fb (64 bytes)
-│  │  │  └─ value: 63fb7b832f6aa0f406554c195a96086b7e14468e4622b8e9976b3a83dca53a7c9152649a6d42d77c91d078eee2044e40c9ded9c90c0ee73f73930e38480f5063 (64 bytes)
+│  │  │  └─ value: c666314befdb68879feaef3b4e4787d351bb6a26d711c68674a5e60fc63e10a2a0f01bba12af1914a2dde7857b1d0f333907f318c5d63be7e2aeb611f7135375 (64 bytes)
 │  │  ├─ pair_3: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 20u8
 │  │  │  │  ├─ type_name: PSBT_IN_TAP_SCRIPT_SIG
 │  │  │  │  └─ key_data: 643151ab03f3a97bb86d3592f12f8d25a8026d89cd47342fc1b49c5e2e63478b429069c8320ff5f1c8ac2a0b1047ff1450b8c0d325e1d12f1c52684d91a3b9fb (64 bytes)
-│  │  │  └─ value: 48ee7fb32dc07262ed7be7d907734df486ae6e54018d0b109518c7ae344366f72a234bdf28bce46a9fb1ef49e9292c26a4d1ce228936bf2824c38bf866ba371a (64 bytes)
+│  │  │  └─ value: 6aea690459b25692b2481dc55fd222d4e8f88596b93089328494af67c0eb22bcfa660617513af706876252150ab3236e965390d2d292c83999b21d1a8b0c88d3 (64 bytes)
 │  │  ├─ pair_4: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 21u8
@@ -305,7 +305,7 @@ psbt_raw: None
 │  │  │  │  ├─ prefix: BITGO
 │  │  │  │  ├─ subtype: 2u8
 │  │  │  │  └─ key_data: 020fdea69e40a3adef3cdc7fa6f3af02f4c9d9e3254503c96a6a2b4aa66e77817115c5815026f6a54b10194fc6980f1866a02d9ec128533c7997cdb4289bf3ef16 (65 bytes)
-│  │  │  └─ value: 02b4881cc04cf3173c6e8b15d00628725a2c13e7f4be2c1a282267a5ad99d75adf032439eda8b735b1c76cbcce28e6e38ff0296bf8fc49697e4139e69b618b91c317 (66 bytes)
+│  │  │  └─ value: 023b5df91ceaf9fd5494814cce7dd2edc8e7a1bb69100f6a805863da356fa8df8703dab0d93005f3b0cd39b73693d7d7692ba0a6b15daf4c28151c576f1f0e6215b5 (66 bytes)
 │  │  ├─ pair_8: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 252u8
@@ -313,7 +313,7 @@ psbt_raw: None
 │  │  │  │  ├─ prefix: BITGO
 │  │  │  │  ├─ subtype: 2u8
 │  │  │  │  └─ key_data: 021d978a17486ff9e47c82990269e531fc63981419d4ce73ee8bd2c99661c5395315c5815026f6a54b10194fc6980f1866a02d9ec128533c7997cdb4289bf3ef16 (65 bytes)
-│  │  │  └─ value: 02c5e3e6b77561cf40b98223232d555e5036e7cc6dff331b2ac56dbe88ac4596dd034e1a2caab3b4564c9edbd5cd9c3c9d9329b2aa0a1c10b95085429a4a5b5ce601 (66 bytes)
+│  │  │  └─ value: 023c524ddd0036a37e547009bfc9e937146f6d34012b65f9164ddfb9b085fece76020adc083deed55f820a950fb7af097cad224a929a46e3257e75768eb4339a08b0 (66 bytes)
 │  │  ├─ pair_9: None
 │  │  │  ├─ key: None
 │  │  │  │  ├─ type_id: 252u8
@@ -321,7 +321,7 @@ psbt_raw: None
 │  │  │  │  ├─ prefix: BITGO
 │  │  │  │  ├─ subtype: 3u8
 │  │  │  │  └─ key_data: 020fdea69e40a3adef3cdc7fa6f3af02f4c9d9e3254503c96a6a2b4aa66e77817115c5815026f6a54b10194fc6980f1866a02d9ec128533c7997cdb4289bf3ef16 (65 bytes)
-│  │  │  └─ value: 195d81caf2f957fb640de13e9490b065b54f0bd6a659f6144f88a635870ab68e (32 bytes)
+│  │  │  └─ value: bc1cc048a82394ceffcbc93a1724ed8e524b1707f15b412ee97a50b80a54fe30 (32 bytes)
 │  │  └─ pair_10: None
 │  │     ├─ key: None
 │  │     │  ├─ type_id: 252u8
@@ -329,7 +329,7 @@ psbt_raw: None
 │  │     │  ├─ prefix: BITGO
 │  │     │  ├─ subtype: 3u8
 │  │     │  └─ key_data: 021d978a17486ff9e47c82990269e531fc63981419d4ce73ee8bd2c99661c5395315c5815026f6a54b10194fc6980f1866a02d9ec128533c7997cdb4289bf3ef16 (65 bytes)
-│  │     └─ value: f1a4a1d7baece98c0d2c11aa5e31728b6456062824e961a59fcbc3831dd181e5 (32 bytes)
+│  │     └─ value: ea3135bfda975a100ff472637e798d12f9e3b288e73147ab3a18fc9c67d6e822 (32 bytes)
 │  └─ input_6: None
 │     ├─ pair_count: 4u64
 │     ├─ pair_0: None
@@ -342,7 +342,7 @@ psbt_raw: None
 │     │  │  ├─ type_id: 2u8
 │     │  │  ├─ type_name: PSBT_IN_PARTIAL_SIG
 │     │  │  └─ key_data: 0336ef228ffe9b8efffba052c32d334660dd1f8366cf8fe44ae5aa672b6b629095 (33 bytes)
-│     │  └─ value: 3044022066ba18beb6d351e087fe1203f4a0e47ddcc035882f9cd30a83e2d92febe9eff90220664396d8ebdcd04bef62a0781c1261279493b2ad88dc79eddc55f11e3ebcdb9d01 (71 bytes)
+│     │  └─ value: 304402204890fd617b33ecf9f56f5a53fadbcaa447701b219f107c39a1aceff88bea446102202ef154cd23b17e79a235767e568490149baae698628082664db2d9e629c53e6e01 (71 bytes)
 │     ├─ pair_2: None
 │     │  ├─ key: None
 │     │  │  ├─ type_id: 3u8

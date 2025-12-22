@@ -15,6 +15,28 @@ const SIGHASH_NONE: u32 = 0x02;
 const SIGHASH_SINGLE: u32 = 0x03;
 const SIGHASH_ANYONECANPAY: u32 = 0x80;
 
+/// Returns the SIGHASH_FORKID value for networks that use it.
+///
+/// Different networks use different fork IDs in their sighash computation:
+/// - Bitcoin Cash, Ecash, Bitcoin SV: fork_id = 0
+/// - Bitcoin Gold: fork_id = 79
+/// - All other networks: None (don't use SIGHASH_FORKID)
+///
+/// # Arguments
+///
+/// * `network` - The network to get the fork ID for
+///
+/// # Returns
+///
+/// `Some(fork_id)` for FORKID networks, `None` otherwise
+pub fn get_sighash_fork_id(network: Network) -> Option<u32> {
+    match network.mainnet() {
+        Network::BitcoinCash | Network::Ecash | Network::BitcoinSV => Some(0),
+        Network::BitcoinGold => Some(79),
+        _ => None,
+    }
+}
+
 /// Validates a sighash type for a given network
 ///
 /// Different networks have different valid sighash types:
@@ -79,6 +101,29 @@ pub fn validate_sighash_type(sighash_type: u32, network: Network) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_get_sighash_fork_id() {
+        // Networks with fork_id = 0
+        assert_eq!(get_sighash_fork_id(Network::BitcoinCash), Some(0));
+        assert_eq!(get_sighash_fork_id(Network::BitcoinCashTestnet), Some(0));
+        assert_eq!(get_sighash_fork_id(Network::Ecash), Some(0));
+        assert_eq!(get_sighash_fork_id(Network::EcashTestnet), Some(0));
+        assert_eq!(get_sighash_fork_id(Network::BitcoinSV), Some(0));
+        assert_eq!(get_sighash_fork_id(Network::BitcoinSVTestnet), Some(0));
+
+        // Bitcoin Gold has fork_id = 79
+        assert_eq!(get_sighash_fork_id(Network::BitcoinGold), Some(79));
+        assert_eq!(get_sighash_fork_id(Network::BitcoinGoldTestnet), Some(79));
+
+        // Standard networks don't use FORKID
+        assert_eq!(get_sighash_fork_id(Network::Bitcoin), None);
+        assert_eq!(get_sighash_fork_id(Network::BitcoinTestnet3), None);
+        assert_eq!(get_sighash_fork_id(Network::Litecoin), None);
+        assert_eq!(get_sighash_fork_id(Network::Dogecoin), None);
+        assert_eq!(get_sighash_fork_id(Network::Dash), None);
+        assert_eq!(get_sighash_fork_id(Network::Zcash), None);
+    }
 
     #[test]
     fn test_bitcoin_sighash_types() {

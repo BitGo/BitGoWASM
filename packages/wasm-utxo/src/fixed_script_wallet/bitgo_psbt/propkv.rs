@@ -128,6 +128,54 @@ pub fn is_musig2_key(key: &ProprietaryKey) -> bool {
     )
 }
 
+/// Extract Zcash consensus branch ID from PSBT global proprietary map.
+///
+/// The consensus branch ID is stored as a 4-byte little-endian u32 value
+/// under the BitGo proprietary key with subtype `ZecConsensusBranchId` (0x00).
+///
+/// # Returns
+/// - `Some(u32)` if the consensus branch ID is present and valid
+/// - `None` if the key is not present or the value is malformed
+pub fn get_zec_consensus_branch_id(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<u32> {
+    let kv = find_kv(
+        ProprietaryKeySubtype::ZecConsensusBranchId,
+        &psbt.proprietary,
+    )
+    .next()?;
+    if kv.value.len() == 4 {
+        let bytes: [u8; 4] = kv.value.as_slice().try_into().ok()?;
+        Some(u32::from_le_bytes(bytes))
+    } else {
+        None
+    }
+}
+
+/// Set Zcash consensus branch ID in PSBT global proprietary map.
+///
+/// The consensus branch ID is stored as a 4-byte little-endian u32 value
+/// under the BitGo proprietary key with subtype `ZecConsensusBranchId` (0x00).
+///
+/// # Arguments
+/// * `psbt` - The PSBT to modify
+/// * `branch_id` - The Zcash consensus branch ID to store
+///
+/// # Example
+/// ```ignore
+/// use crate::zcash::NetworkUpgrade;
+/// set_zec_consensus_branch_id(&mut psbt, NetworkUpgrade::Nu5.branch_id());
+/// ```
+///
+/// See [`crate::zcash`] module for available network upgrades and their branch IDs.
+pub fn set_zec_consensus_branch_id(psbt: &mut miniscript::bitcoin::psbt::Psbt, branch_id: u32) {
+    let kv = BitGoKeyValue::new(
+        ProprietaryKeySubtype::ZecConsensusBranchId,
+        vec![], // empty key
+        branch_id.to_le_bytes().to_vec(),
+    );
+    let (key, value) = kv.to_key_value();
+    psbt.proprietary.insert(key, value);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +191,52 @@ mod tests {
         assert_eq!(key.prefix, b"BITGO");
         assert_eq!(key.subtype, 0x03);
         assert_eq!(key.key, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_zec_consensus_branch_id_roundtrip() {
+        use crate::zcash::NetworkUpgrade;
+        use miniscript::bitcoin::psbt::Psbt;
+        use miniscript::bitcoin::Transaction;
+
+        // Create a minimal PSBT
+        let tx = Transaction {
+            version: miniscript::bitcoin::transaction::Version::TWO,
+            lock_time: miniscript::bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
+
+        // Initially no branch ID
+        assert_eq!(get_zec_consensus_branch_id(&psbt), None);
+
+        // Set NU5 branch ID using generated constant
+        let nu5_branch_id = NetworkUpgrade::Nu5.branch_id();
+        set_zec_consensus_branch_id(&mut psbt, nu5_branch_id);
+
+        // Should be retrievable
+        assert_eq!(get_zec_consensus_branch_id(&psbt), Some(nu5_branch_id));
+
+        // Update to Sapling branch ID using generated constant
+        let sapling_branch_id = NetworkUpgrade::Sapling.branch_id();
+        set_zec_consensus_branch_id(&mut psbt, sapling_branch_id);
+
+        // Should return the updated value
+        assert_eq!(get_zec_consensus_branch_id(&psbt), Some(sapling_branch_id));
+    }
+
+    #[test]
+    fn test_zec_consensus_branch_id_values() {
+        use crate::zcash::NetworkUpgrade;
+
+        // Verify known Zcash branch IDs match expected values from ZIP-200
+        assert_eq!(NetworkUpgrade::Overwinter.branch_id(), 0x5ba81b19);
+        assert_eq!(NetworkUpgrade::Sapling.branch_id(), 0x76b809bb);
+        assert_eq!(NetworkUpgrade::Blossom.branch_id(), 0x2bb40e60);
+        assert_eq!(NetworkUpgrade::Heartwood.branch_id(), 0xf5b9230b);
+        assert_eq!(NetworkUpgrade::Canopy.branch_id(), 0xe9ff75a6);
+        assert_eq!(NetworkUpgrade::Nu5.branch_id(), 0xc2d6d0b4);
+        assert_eq!(NetworkUpgrade::Nu6.branch_id(), 0xc8e71055);
     }
 }

@@ -16,6 +16,5 @@ base64 = "0.21"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 num-bigint = "0.4"
-bitcoin = { git = "https://github.com/BitGo/rust-bitcoin", tag = "bitcoin-0.32.8-forkid" }
 colored = "2.1"
 ptree = "0.5"
