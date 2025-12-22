@@ -63,3 +63,4 @@ declare module "./wasm/wasm_utxo.js" {
 export { WrapDescriptor as Descriptor } from "./wasm/wasm_utxo.js";
 export { WrapMiniscript as Miniscript } from "./wasm/wasm_utxo.js";
 export { WrapPsbt as Psbt } from "./wasm/wasm_utxo.js";
+export { DashTransaction, Transaction, ZcashTransaction } from "./transaction.js";

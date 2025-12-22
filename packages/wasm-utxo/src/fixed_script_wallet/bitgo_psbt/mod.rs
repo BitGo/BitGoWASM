@@ -3,6 +3,7 @@
 //! This module provides PSBT deserialization that works across different
 //! bitcoin-like networks, including those with non-standard transaction formats.
 
+pub mod dash_psbt;
 pub mod p2tr_musig2_input;
 #[cfg(test)]
 mod p2tr_musig2_input_utxolib;
@@ -13,6 +14,7 @@ mod sighash;
 pub mod zcash_psbt;
 
 use crate::Network;
+pub use dash_psbt::DashBitGoPsbt;
 use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey, Txid};
 pub use propkv::{BitGoKeyValue, ProprietaryKeySubtype, BITGO};
 pub use sighash::validate_sighash_type;
@@ -96,6 +98,7 @@ impl From<DeserializeError> for SerializeError {
 #[derive(Debug, Clone)]
 pub enum BitGoPsbt {
     BitcoinLike(Psbt, Network),
+    Dash(DashBitGoPsbt, Network),
     Zcash(ZcashBitGoPsbt, Network),
 }
 
@@ -294,6 +297,11 @@ impl BitGoPsbt {
                 Ok(BitGoPsbt::Zcash(zcash_psbt, network))
             }
 
+            Network::Dash | Network::DashTestnet => {
+                let dash_psbt = DashBitGoPsbt::deserialize(psbt_bytes, network)?;
+                Ok(BitGoPsbt::Dash(dash_psbt, network))
+            }
+
             // All other networks use standard Bitcoin transaction format
             Network::Bitcoin
             | Network::BitcoinTestnet3
@@ -308,8 +316,6 @@ impl BitGoPsbt {
             | Network::BitcoinGoldTestnet
             | Network::BitcoinSV
             | Network::BitcoinSVTestnet
-            | Network::Dash
-            | Network::DashTestnet
             | Network::Dogecoin
             | Network::DogecoinTestnet
             | Network::Litecoin
@@ -990,6 +996,7 @@ impl BitGoPsbt {
     pub fn network(&self) -> Network {
         match self {
             BitGoPsbt::BitcoinLike(_, network) => *network,
+            BitGoPsbt::Dash(_, network) => *network,
             BitGoPsbt::Zcash(_, network) => *network,
         }
     }
@@ -1063,6 +1070,7 @@ impl BitGoPsbt {
     pub fn serialize(&self) -> Result<Vec<u8>, SerializeError> {
         match self {
             BitGoPsbt::BitcoinLike(psbt, _network) => Ok(psbt.serialize()),
+            BitGoPsbt::Dash(dash_psbt, _network) => Ok(dash_psbt.serialize()?),
             BitGoPsbt::Zcash(zcash_psbt, _network) => Ok(zcash_psbt.serialize()?),
         }
     }
@@ -1070,6 +1078,7 @@ impl BitGoPsbt {
     pub fn into_psbt(self) -> Psbt {
         match self {
             BitGoPsbt::BitcoinLike(psbt, _network) => psbt,
+            BitGoPsbt::Dash(dash_psbt, _network) => dash_psbt.into_bitcoin_psbt(),
             BitGoPsbt::Zcash(zcash_psbt, _network) => zcash_psbt.into_bitcoin_psbt(),
         }
     }
@@ -1081,6 +1090,7 @@ impl BitGoPsbt {
     pub fn psbt(&self) -> &Psbt {
         match self {
             BitGoPsbt::BitcoinLike(ref psbt, _network) => psbt,
+            BitGoPsbt::Dash(ref dash_psbt, _network) => &dash_psbt.psbt,
             BitGoPsbt::Zcash(ref zcash_psbt, _network) => &zcash_psbt.psbt,
         }
     }
@@ -1092,6 +1102,7 @@ impl BitGoPsbt {
     pub fn psbt_mut(&mut self) -> &mut Psbt {
         match self {
             BitGoPsbt::BitcoinLike(ref mut psbt, _network) => psbt,
+            BitGoPsbt::Dash(ref mut dash_psbt, _network) => &mut dash_psbt.psbt,
             BitGoPsbt::Zcash(ref mut zcash_psbt, _network) => &mut zcash_psbt.psbt,
         }
     }
@@ -1105,6 +1116,24 @@ impl BitGoPsbt {
 
         match self {
             BitGoPsbt::BitcoinLike(ref mut psbt, network) => {
+                // Use custom bitgo p2trMusig2 input finalization for MuSig2 inputs
+                if p2tr_musig2_input::Musig2Input::is_musig2_input(&psbt.inputs[input_index]) {
+                    let mut ctx = p2tr_musig2_input::Musig2Context::new(psbt, input_index)
+                        .map_err(|e| e.to_string())?;
+                    ctx.finalize_input(secp).map_err(|e| e.to_string())?;
+                    return Ok(());
+                }
+
+                let fork_id = sighash::get_sighash_fork_id(*network);
+
+                // Finalize with fork_id support for FORKID networks
+                psbt.finalize_inp_mut_with_fork_id(secp, input_index, fork_id)
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            BitGoPsbt::Dash(ref mut dash_psbt, network) => {
+                let psbt = &mut dash_psbt.psbt;
+
                 // Use custom bitgo p2trMusig2 input finalization for MuSig2 inputs
                 if p2tr_musig2_input::Musig2Input::is_musig2_input(&psbt.inputs[input_index]) {
                     let mut ctx = p2tr_musig2_input::Musig2Context::new(psbt, input_index)
@@ -1207,6 +1236,11 @@ impl BitGoPsbt {
     pub fn unsigned_txid(&self) -> Txid {
         match self {
             BitGoPsbt::BitcoinLike(psbt, _) => psbt.unsigned_tx.compute_txid(),
+            BitGoPsbt::Dash(dash_psbt, _) => {
+                use miniscript::bitcoin::hashes::{sha256d, Hash};
+                let hash = sha256d::Hash::hash(&dash_psbt.unsigned_tx_bytes);
+                Txid::from_raw_hash(hash)
+            }
             BitGoPsbt::Zcash(zcash_psbt, _) => {
                 use miniscript::bitcoin::hashes::{sha256d, Hash};
                 // Compute txid from full Zcash transaction bytes
@@ -1486,6 +1520,47 @@ impl BitGoPsbt {
                     }
                 }
             }
+            BitGoPsbt::Dash(ref mut dash_psbt, _network) => {
+                let psbt = &mut dash_psbt.psbt;
+                // Create a key provider that returns our single key
+                // Convert SecretKey to PrivateKey for the GetKey trait
+                // Note: The network parameter is only used for WIF serialization, not for signing
+                let bitcoin_network = if is_testnet {
+                    miniscript::bitcoin::Network::Testnet
+                } else {
+                    miniscript::bitcoin::Network::Bitcoin
+                };
+                let private_key = miniscript::bitcoin::PrivateKey::new(*privkey, bitcoin_network);
+                let key_map = std::collections::BTreeMap::from_iter([(public_key, private_key)]);
+
+                // Sign the PSBT
+                let result = psbt.sign(&key_map, &secp);
+
+                // Check if our specific input was signed
+                match result {
+                    Ok(signing_keys) => {
+                        if signing_keys.contains_key(&input_index) {
+                            Ok(())
+                        } else {
+                            Err(format!(
+                                "Input {} was not signed (no key found or already signed)",
+                                input_index
+                            ))
+                        }
+                    }
+                    Err((partial_success, errors)) => {
+                        // Check if there's an error for our specific input
+                        if let Some(error) = errors.get(&input_index) {
+                            Err(format!("Failed to sign input {}: {:?}", input_index, error))
+                        } else if partial_success.contains_key(&input_index) {
+                            // Input was signed successfully despite other errors
+                            Ok(())
+                        } else {
+                            Err(format!("Input {} was not signed", input_index))
+                        }
+                    }
+                }
+            }
             BitGoPsbt::Zcash(ref mut zcash_psbt, network) => {
                 // Extract consensus branch ID from PSBT proprietary map
                 let branch_id = propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt)
@@ -1610,6 +1685,16 @@ impl BitGoPsbt {
                 // Check if this network uses SIGHASH_FORKID
                 // BCH, XEC, BSV: fork_id = 0
                 // BTG: fork_id = 79
+                match network.mainnet() {
+                    Network::BitcoinCash | Network::Ecash | Network::BitcoinSV => {
+                        psbt.sign_forkid(k, secp, 0)
+                    }
+                    Network::BitcoinGold => psbt.sign_forkid(k, secp, 79),
+                    _ => psbt.sign(k, secp),
+                }
+            }
+            BitGoPsbt::Dash(ref mut dash_psbt, network) => {
+                let psbt = &mut dash_psbt.psbt;
                 match network.mainnet() {
                     Network::BitcoinCash | Network::Ecash | Network::BitcoinSV => {
                         psbt.sign_forkid(k, secp, 0)
@@ -2139,6 +2224,29 @@ impl BitGoPsbt {
                     fork_id,
                 )
             }
+            BitGoPsbt::Dash(dash_psbt, network) => {
+                let psbt = &dash_psbt.psbt;
+                let input = &psbt.inputs[input_index];
+
+                // Check for Taproot script path signatures first
+                if !input.tap_script_sigs.is_empty() {
+                    return psbt_wallet_input::verify_taproot_script_signature(
+                        secp,
+                        psbt,
+                        input_index,
+                        public_key,
+                    );
+                }
+
+                let fork_id = sighash::get_sighash_fork_id(*network);
+                psbt_wallet_input::verify_ecdsa_signature(
+                    secp,
+                    psbt,
+                    input_index,
+                    public_key,
+                    fork_id,
+                )
+            }
             BitGoPsbt::Zcash(zcash_psbt, _network) => {
                 // Use Zcash-specific signature verification with ZIP-243 sighash
                 let branch_id = propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt)
@@ -2528,6 +2636,10 @@ mod tests {
                 assert_eq!(net1, net2, "Networks should match");
                 assert_eq!(psbt1, psbt2);
             }
+            (BitGoPsbt::Dash(dpsbt1, net1), BitGoPsbt::Dash(dpsbt2, net2)) => {
+                assert_eq!(net1, net2, "Networks should match");
+                assert_eq!(dpsbt1, dpsbt2);
+            }
             (BitGoPsbt::Zcash(zpsbt1, net1), BitGoPsbt::Zcash(zpsbt2, net2)) => {
                 assert_eq!(net1, net2, "Networks should match");
                 assert_eq!(zpsbt1, zpsbt2);
@@ -2654,6 +2766,7 @@ mod tests {
         // Extract partial signatures from the signed input
         let signed_input = match &unsigned_bitgo_psbt {
             BitGoPsbt::BitcoinLike(psbt, _) => &psbt.inputs[input_index],
+            BitGoPsbt::Dash(dash_psbt, _) => &dash_psbt.psbt.inputs[input_index],
             BitGoPsbt::Zcash(zcash_psbt, _) => &zcash_psbt.psbt.inputs[input_index],
         };
 
@@ -3583,7 +3696,7 @@ mod tests {
                 let prev_tx: Option<Vec<u8>> = orig_psbt_input
                     .non_witness_utxo
                     .as_ref()
-                    .map(|tx| miniscript::bitcoin::consensus::serialize(tx));
+                    .map(miniscript::bitcoin::consensus::serialize);
 
                 let result = reconstructed.add_wallet_input(
                     txid,
@@ -3617,7 +3730,7 @@ mod tests {
                 let prev_tx = orig_psbt_input
                     .non_witness_utxo
                     .as_ref()
-                    .map(|tx| miniscript::bitcoin::consensus::encode::serialize(tx));
+                    .map(miniscript::bitcoin::consensus::encode::serialize);
 
                 reconstructed.add_replay_protection_input(
                     compressed_pubkey,
@@ -3740,9 +3853,6 @@ mod tests {
             .enumerate()
         {
             // Compare utxo fields - either witness_utxo or non_witness_utxo should match
-            // For segwit: witness_utxo is used
-            // For non-segwit with prev_tx: non_witness_utxo is used
-            // For non-segwit without prev_tx: witness_utxo is used as fallback
             let orig_has_utxo = orig.witness_utxo.is_some() || orig.non_witness_utxo.is_some();
             let recon_has_utxo = recon.witness_utxo.is_some() || recon.non_witness_utxo.is_some();
             assert!(
@@ -3793,7 +3903,6 @@ mod tests {
             }
 
             // For taproot wallet inputs, compare tap_internal_key
-            // (but not tap_leaf_script which depends on signer/cosigner choice)
             if orig.tap_internal_key.is_some() {
                 assert_eq!(
                     orig.tap_internal_key, recon.tap_internal_key,
@@ -3812,7 +3921,7 @@ mod tests {
             .zip(reconstructed_outputs.iter())
             .enumerate()
         {
-            // Skip metadata comparison for non-wallet outputs (external or from different keys)
+            // Skip metadata comparison for non-wallet outputs
             if !wallet_output_indices.contains(&idx) {
                 continue;
             }
@@ -3858,4 +3967,97 @@ mod tests {
     crate::test_psbt_fixtures!(test_psbt_reconstruction, network, format, {
         test_psbt_reconstruction_for_network(network, format);
     }, ignore: [Zcash]);
+
+    #[test]
+    fn test_dogecoin_single_input_single_output_large_amount() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use miniscript::bitcoin::bip32::{DerivationPath, Xpriv};
+        use miniscript::bitcoin::consensus::{deserialize, serialize};
+        use miniscript::bitcoin::hashes::{sha256, Hash};
+        use miniscript::bitcoin::psbt::Psbt as BitcoinPsbt;
+        use miniscript::bitcoin::secp256k1::Secp256k1;
+        use miniscript::bitcoin::{Network as BitcoinNetwork, Txid};
+        use std::str::FromStr;
+
+        let wallet_keys =
+            crate::fixed_script_wallet::RootWalletKeys::new(get_test_wallet_keys("doge_1e19"));
+
+        let mut psbt = BitGoPsbt::new(Network::Dogecoin, &wallet_keys, Some(2), Some(0));
+
+        // Large output amount (1e19) should fit in u64 and round-trip.
+        let value: u64 = 10_000_000_000_000_000_000;
+
+        let txid = Txid::all_zeros();
+        let vout = 0u32;
+        let script_id = ScriptId { chain: 0, index: 0 };
+
+        psbt.add_wallet_input(
+            txid,
+            vout,
+            value,
+            &wallet_keys,
+            script_id,
+            WalletInputOptions::default(),
+        )
+        .expect("add_wallet_input");
+
+        psbt.add_wallet_output(0, 0, value, &wallet_keys)
+            .expect("add_wallet_output");
+
+        assert_eq!(psbt.psbt().unsigned_tx.input.len(), 1);
+        assert_eq!(psbt.psbt().unsigned_tx.output.len(), 1);
+        assert_eq!(psbt.psbt().unsigned_tx.output[0].value.to_sat(), value);
+
+        // Sign, finalize, and extract the signed transaction.
+        //
+        // This mirrors utxo-lib testutil.getKeyTriple("doge_1e19") which uses sha256("seed.{i}")
+        // and RootWalletKeys derives at m/0/0/{chain}/{index}.
+        let secp = Secp256k1::new();
+        let seed = "doge_1e19";
+        let user_seed_hash = sha256::Hash::hash(format!("{}.0", seed).as_bytes()).to_byte_array();
+        let bitgo_seed_hash = sha256::Hash::hash(format!("{}.2", seed).as_bytes()).to_byte_array();
+        let user_xpriv =
+            Xpriv::new_master(BitcoinNetwork::Testnet, &user_seed_hash).expect("user xpriv");
+        let bitgo_xpriv =
+            Xpriv::new_master(BitcoinNetwork::Testnet, &bitgo_seed_hash).expect("bitgo xpriv");
+        let user_path = DerivationPath::from_str("m/0/0/0/0").expect("derivation path");
+        let derived = user_xpriv
+            .derive_priv(&secp, &user_path)
+            .expect("derive user xpriv");
+        let user_privkey = derived.private_key;
+        let derived_bitgo = bitgo_xpriv
+            .derive_priv(&secp, &user_path)
+            .expect("derive bitgo xpriv");
+        let bitgo_privkey = derived_bitgo.private_key;
+
+        psbt.sign_with_privkey(0, &user_privkey)
+            .expect("sign_with_privkey");
+        psbt.sign_with_privkey(0, &bitgo_privkey)
+            .expect("sign_with_privkey (bitgo)");
+
+        // P2SH multisig needs 2 signatures to finalize.
+        assert!(
+            psbt.psbt().inputs[0].partial_sigs.len() >= 2,
+            "expected at least 2 partial signatures before finalization"
+        );
+
+        let finalized_psbt: BitcoinPsbt = psbt.finalize(&secp).expect("finalize");
+        let extracted_tx = finalized_psbt.extract_tx().expect("extract_tx");
+        let extracted_bytes = serialize(&extracted_tx);
+
+        // Sanity checks: has spend data and preserves amounts.
+        assert_eq!(extracted_tx.input.len(), 1);
+        assert!(
+            !extracted_tx.input[0].script_sig.is_empty()
+                || !extracted_tx.input[0].witness.is_empty(),
+            "expected script_sig or witness to be present after finalization"
+        );
+        assert_eq!(extracted_tx.output.len(), 1);
+        assert_eq!(extracted_tx.output[0].value.to_sat(), value);
+
+        // Also ensure the extracted tx bytes can be decoded again.
+        let decoded = deserialize::<miniscript::bitcoin::Transaction>(&extracted_bytes)
+            .expect("decode extracted tx");
+        assert_eq!(decoded.compute_txid(), extracted_tx.compute_txid());
+    }
 }

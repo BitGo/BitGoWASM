@@ -1,5 +1,6 @@
 mod address;
 mod bip32;
+mod dash_transaction;
 mod descriptor;
 mod ecpair;
 mod fixed_script_wallet;
@@ -7,6 +8,7 @@ mod miniscript;
 mod psbt;
 mod recursive_tap_tree;
 mod replay_protection;
+mod transaction;
 mod try_from_js_value;
 mod try_into_js_value;
 mod utxolib_compat;
@@ -14,11 +16,13 @@ mod wallet_keys;
 
 pub use address::AddressNamespace;
 pub use bip32::WasmBIP32;
+pub use dash_transaction::WasmDashTransaction;
 pub use descriptor::WrapDescriptor;
 pub use ecpair::WasmECPair;
 pub use fixed_script_wallet::FixedScriptWalletNamespace;
 pub use miniscript::WrapMiniscript;
 pub use psbt::WrapPsbt;
 pub use replay_protection::WasmReplayProtection;
+pub use transaction::{WasmTransaction, WasmZcashTransaction};
 pub use utxolib_compat::UtxolibCompatNamespace;
 pub use wallet_keys::WasmRootWalletKeys;
