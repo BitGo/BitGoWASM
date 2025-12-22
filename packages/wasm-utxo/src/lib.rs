@@ -1,4 +1,5 @@
 mod address;
+pub mod dash;
 mod error;
 pub mod fixed_script_wallet;
 mod networks;
