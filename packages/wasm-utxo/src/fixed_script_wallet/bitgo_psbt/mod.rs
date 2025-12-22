@@ -3696,7 +3696,7 @@ mod tests {
                 let prev_tx: Option<Vec<u8>> = orig_psbt_input
                     .non_witness_utxo
                     .as_ref()
-                    .map(|tx| miniscript::bitcoin::consensus::serialize(tx));
+                    .map(miniscript::bitcoin::consensus::serialize);
 
                 let result = reconstructed.add_wallet_input(
                     txid,
@@ -3730,7 +3730,7 @@ mod tests {
                 let prev_tx = orig_psbt_input
                     .non_witness_utxo
                     .as_ref()
-                    .map(|tx| miniscript::bitcoin::consensus::encode::serialize(tx));
+                    .map(miniscript::bitcoin::consensus::encode::serialize);
 
                 reconstructed.add_replay_protection_input(
                     compressed_pubkey,
@@ -3853,9 +3853,6 @@ mod tests {
             .enumerate()
         {
             // Compare utxo fields - either witness_utxo or non_witness_utxo should match
-            // For segwit: witness_utxo is used
-            // For non-segwit with prev_tx: non_witness_utxo is used
-            // For non-segwit without prev_tx: witness_utxo is used as fallback
             let orig_has_utxo = orig.witness_utxo.is_some() || orig.non_witness_utxo.is_some();
             let recon_has_utxo = recon.witness_utxo.is_some() || recon.non_witness_utxo.is_some();
             assert!(
@@ -3906,7 +3903,6 @@ mod tests {
             }
 
             // For taproot wallet inputs, compare tap_internal_key
-            // (but not tap_leaf_script which depends on signer/cosigner choice)
             if orig.tap_internal_key.is_some() {
                 assert_eq!(
                     orig.tap_internal_key, recon.tap_internal_key,
@@ -3925,7 +3921,7 @@ mod tests {
             .zip(reconstructed_outputs.iter())
             .enumerate()
         {
-            // Skip metadata comparison for non-wallet outputs (external or from different keys)
+            // Skip metadata comparison for non-wallet outputs
             if !wallet_output_indices.contains(&idx) {
                 continue;
             }
@@ -3971,4 +3967,97 @@ mod tests {
     crate::test_psbt_fixtures!(test_psbt_reconstruction, network, format, {
         test_psbt_reconstruction_for_network(network, format);
     }, ignore: [Zcash]);
+
+    #[test]
+    fn test_dogecoin_single_input_single_output_large_amount() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use miniscript::bitcoin::bip32::{DerivationPath, Xpriv};
+        use miniscript::bitcoin::consensus::{deserialize, serialize};
+        use miniscript::bitcoin::hashes::{sha256, Hash};
+        use miniscript::bitcoin::psbt::Psbt as BitcoinPsbt;
+        use miniscript::bitcoin::secp256k1::Secp256k1;
+        use miniscript::bitcoin::{Network as BitcoinNetwork, Txid};
+        use std::str::FromStr;
+
+        let wallet_keys =
+            crate::fixed_script_wallet::RootWalletKeys::new(get_test_wallet_keys("doge_1e19"));
+
+        let mut psbt = BitGoPsbt::new(Network::Dogecoin, &wallet_keys, Some(2), Some(0));
+
+        // Large output amount (1e19) should fit in u64 and round-trip.
+        let value: u64 = 10_000_000_000_000_000_000;
+
+        let txid = Txid::all_zeros();
+        let vout = 0u32;
+        let script_id = ScriptId { chain: 0, index: 0 };
+
+        psbt.add_wallet_input(
+            txid,
+            vout,
+            value,
+            &wallet_keys,
+            script_id,
+            WalletInputOptions::default(),
+        )
+        .expect("add_wallet_input");
+
+        psbt.add_wallet_output(0, 0, value, &wallet_keys)
+            .expect("add_wallet_output");
+
+        assert_eq!(psbt.psbt().unsigned_tx.input.len(), 1);
+        assert_eq!(psbt.psbt().unsigned_tx.output.len(), 1);
+        assert_eq!(psbt.psbt().unsigned_tx.output[0].value.to_sat(), value);
+
+        // Sign, finalize, and extract the signed transaction.
+        //
+        // This mirrors utxo-lib testutil.getKeyTriple("doge_1e19") which uses sha256("seed.{i}")
+        // and RootWalletKeys derives at m/0/0/{chain}/{index}.
+        let secp = Secp256k1::new();
+        let seed = "doge_1e19";
+        let user_seed_hash = sha256::Hash::hash(format!("{}.0", seed).as_bytes()).to_byte_array();
+        let bitgo_seed_hash = sha256::Hash::hash(format!("{}.2", seed).as_bytes()).to_byte_array();
+        let user_xpriv =
+            Xpriv::new_master(BitcoinNetwork::Testnet, &user_seed_hash).expect("user xpriv");
+        let bitgo_xpriv =
+            Xpriv::new_master(BitcoinNetwork::Testnet, &bitgo_seed_hash).expect("bitgo xpriv");
+        let user_path = DerivationPath::from_str("m/0/0/0/0").expect("derivation path");
+        let derived = user_xpriv
+            .derive_priv(&secp, &user_path)
+            .expect("derive user xpriv");
+        let user_privkey = derived.private_key;
+        let derived_bitgo = bitgo_xpriv
+            .derive_priv(&secp, &user_path)
+            .expect("derive bitgo xpriv");
+        let bitgo_privkey = derived_bitgo.private_key;
+
+        psbt.sign_with_privkey(0, &user_privkey)
+            .expect("sign_with_privkey");
+        psbt.sign_with_privkey(0, &bitgo_privkey)
+            .expect("sign_with_privkey (bitgo)");
+
+        // P2SH multisig needs 2 signatures to finalize.
+        assert!(
+            psbt.psbt().inputs[0].partial_sigs.len() >= 2,
+            "expected at least 2 partial signatures before finalization"
+        );
+
+        let finalized_psbt: BitcoinPsbt = psbt.finalize(&secp).expect("finalize");
+        let extracted_tx = finalized_psbt.extract_tx().expect("extract_tx");
+        let extracted_bytes = serialize(&extracted_tx);
+
+        // Sanity checks: has spend data and preserves amounts.
+        assert_eq!(extracted_tx.input.len(), 1);
+        assert!(
+            !extracted_tx.input[0].script_sig.is_empty()
+                || !extracted_tx.input[0].witness.is_empty(),
+            "expected script_sig or witness to be present after finalization"
+        );
+        assert_eq!(extracted_tx.output.len(), 1);
+        assert_eq!(extracted_tx.output[0].value.to_sat(), value);
+
+        // Also ensure the extracted tx bytes can be decoded again.
+        let decoded = deserialize::<miniscript::bitcoin::Transaction>(&extracted_bytes)
+            .expect("decode extracted tx");
+        assert_eq!(decoded.compute_txid(), extracted_tx.compute_txid());
+    }
 }

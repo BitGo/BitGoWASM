@@ -20,7 +20,7 @@ This project is under active development.
 | Descriptor Wallet: Address Support      | ✅ Complete | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          |
 | Descriptor Wallet: Transaction Support  | ✅ Complete | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          | 🚫          |
 | FixedScript Wallet: Address Generation  | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete |
-| FixedScript Wallet: Transaction Support | ✅ Complete | ✅ Complete | ✅ Complete | ⏳ TODO     | ⏳ TODO     | ✅ Complete | ✅ Complete |
+| FixedScript Wallet: Transaction Support | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete | ✅ Complete |
 
 ### Zcash Features
 
