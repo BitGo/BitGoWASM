@@ -939,39 +939,16 @@ impl BitGoPsbt {
     /// Extract the final transaction from a finalized PSBT
     ///
     /// This method should be called after all inputs have been finalized.
-    /// It extracts the fully signed transaction.
+    /// It extracts the fully signed transaction with network-appropriate serialization.
     ///
     /// # Returns
     /// - `Ok(Vec<u8>)` containing the serialized transaction bytes
     /// - `Err(WasmUtxoError)` if the PSBT is not fully finalized or extraction fails
     pub fn extract_transaction(&self) -> Result<Vec<u8>, WasmUtxoError> {
-        use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt as InnerBitGoPsbt;
-
-        match &self.psbt {
-            InnerBitGoPsbt::Zcash(zcash_psbt, _) => {
-                // Use Zcash-specific serialization with version_group_id, expiry_height, etc.
-                zcash_psbt.extract_zcash_transaction().map_err(|e| {
-                    WasmUtxoError::new(&format!("Failed to extract Zcash transaction: {}", e))
-                })
-            }
-            InnerBitGoPsbt::BitcoinLike(psbt, _) => {
-                let tx = psbt.clone().extract_tx().map_err(|e| {
-                    WasmUtxoError::new(&format!("Failed to extract transaction: {}", e))
-                })?;
-
-                // Serialize the transaction
-                use miniscript::bitcoin::consensus::encode::serialize;
-                Ok(serialize(&tx))
-            }
-            InnerBitGoPsbt::Dash(dash_psbt, _) => {
-                let tx = dash_psbt.psbt.clone().extract_tx().map_err(|e| {
-                    WasmUtxoError::new(&format!("Failed to extract transaction: {}", e))
-                })?;
-
-                // Serialize the transaction
-                use miniscript::bitcoin::consensus::encode::serialize;
-                Ok(serialize(&tx))
-            }
-        }
+        // Clone and use extract_tx() which handles all network-specific serialization
+        self.psbt
+            .clone()
+            .extract_tx()
+            .map_err(|e| WasmUtxoError::new(&e))
     }
 }
