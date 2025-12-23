@@ -454,6 +454,52 @@ impl BitGoPsbt {
         ))
     }
 
+    /// Create a new empty PSBT with the same network parameters as an existing PSBT
+    ///
+    /// This is useful for reconstructing PSBTs - it copies:
+    /// - Network
+    /// - Transaction version and locktime
+    /// - For Zcash: consensus_branch_id, version_group_id, expiry_height
+    ///
+    /// # Arguments
+    /// * `template` - The existing PSBT to copy network parameters from
+    /// * `wallet_keys` - The wallet's root keys for the new PSBT
+    ///
+    /// # Returns
+    /// * `Ok(Self)` - A new empty PSBT with the same network parameters
+    /// * `Err(String)` - If the template is a Zcash PSBT missing the consensus branch ID
+    pub fn new_like(
+        template: &BitGoPsbt,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+    ) -> Result<Self, String> {
+        let network = template.network();
+        let version = template.psbt().unsigned_tx.version.0;
+        let lock_time = template.psbt().unsigned_tx.lock_time.to_consensus_u32();
+
+        match template {
+            BitGoPsbt::Zcash(zcash_psbt, _) => {
+                // For Zcash, extract all required parameters from the template
+                let consensus_branch_id = propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt)
+                    .ok_or("Template PSBT missing ZecConsensusBranchId")?;
+                Ok(Self::new_zcash(
+                    network,
+                    wallet_keys,
+                    consensus_branch_id,
+                    Some(version),
+                    Some(lock_time),
+                    zcash_psbt.version_group_id,
+                    zcash_psbt.expiry_height,
+                ))
+            }
+            _ => Ok(Self::new(
+                network,
+                wallet_keys,
+                Some(version),
+                Some(lock_time),
+            )),
+        }
+    }
+
     fn new_internal(
         network: Network,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
@@ -1072,6 +1118,37 @@ impl BitGoPsbt {
             BitGoPsbt::BitcoinLike(psbt, _network) => Ok(psbt.serialize()),
             BitGoPsbt::Dash(dash_psbt, _network) => Ok(dash_psbt.serialize()?),
             BitGoPsbt::Zcash(zcash_psbt, _network) => Ok(zcash_psbt.serialize()?),
+        }
+    }
+
+    /// Extract the finalized transaction bytes with network-appropriate serialization
+    ///
+    /// This method extracts the fully-signed transaction from a finalized PSBT,
+    /// serializing it with the correct format for the network:
+    /// - For Zcash: includes version_group_id, expiry_height, and sapling fields
+    /// - For other networks: uses standard Bitcoin transaction serialization
+    ///
+    /// This method consumes the PSBT since the underlying `extract_tx()` requires ownership.
+    ///
+    /// # Requirements
+    /// All inputs must be finalized before calling this method.
+    ///
+    /// # Returns
+    /// * `Ok(Vec<u8>)` - The serialized transaction bytes
+    /// * `Err(String)` - If transaction extraction fails
+    pub fn extract_tx(self) -> Result<Vec<u8>, String> {
+        use miniscript::bitcoin::consensus::serialize;
+
+        match self {
+            BitGoPsbt::Zcash(zcash_psbt, _) => zcash_psbt
+                .extract_tx()
+                .map_err(|e| format!("Failed to extract transaction: {}", e)),
+            BitGoPsbt::BitcoinLike(psbt, _) | BitGoPsbt::Dash(DashBitGoPsbt { psbt, .. }, _) => {
+                let tx = psbt
+                    .extract_tx()
+                    .map_err(|e| format!("Failed to extract transaction: {}", e))?;
+                Ok(serialize(&tx))
+            }
         }
     }
 
@@ -3212,27 +3289,29 @@ mod tests {
             format,
         )
         .expect("Failed to load fixture");
-        let bitgo_psbt = fixture
+        let mut bitgo_psbt = fixture
             .to_bitgo_psbt(network)
             .expect("Failed to convert to BitGo PSBT");
         let fixture_extracted_transaction = fixture
             .extracted_transaction
             .expect("Failed to extract transaction");
 
-        // // Use BitGoPsbt::finalize() which handles MuSig2 inputs
+        // Finalize and extract using the network-aware extract_tx() method
         let secp = crate::bitcoin::secp256k1::Secp256k1::new();
-        let finalized_psbt = bitgo_psbt.finalize(&secp).expect("Failed to finalize PSBT");
-        let extracted_transaction = finalized_psbt
+        bitgo_psbt
+            .finalize_mut(&secp)
+            .expect("Failed to finalize PSBT");
+
+        let extracted_tx_bytes = bitgo_psbt
             .extract_tx()
             .expect("Failed to extract transaction");
-        use miniscript::bitcoin::consensus::serialize;
-        let extracted_transaction_hex = hex::encode(serialize(&extracted_transaction));
+        let extracted_transaction_hex = hex::encode(extracted_tx_bytes);
+
         assert_eq!(
             extracted_transaction_hex, fixture_extracted_transaction,
             "Extracted transaction should match"
         );
-    // Zcash fixtures were created with legacy Bitcoin sighash; implementation uses ZIP-243
-    }, ignore: [Zcash]);
+    });
 
     #[test]
     fn test_add_paygo_attestation() {
@@ -3418,32 +3497,37 @@ mod tests {
             format,
         )
         .expect("Failed to load fixture");
-        
+
         let bitgo_psbt = fixture
             .to_bitgo_psbt(network)
             .expect("Failed to convert to BitGo PSBT");
-        
+
         // Get wallet keys from fixture
         let wallet_xprv = fixture
             .get_wallet_xprvs()
             .expect("Failed to get wallet keys");
         let wallet_keys = wallet_xprv.to_root_wallet_keys();
-        
+
         // Create replay protection with the replay protection script from fixture
         let replay_protection = crate::fixed_script_wallet::ReplayProtection::new(vec![
-            miniscript::bitcoin::ScriptBuf::from_hex("a91420b37094d82a513451ff0ccd9db23aba05bc5ef387")
-                .expect("Failed to parse replay protection output script"),
+            miniscript::bitcoin::ScriptBuf::from_hex(
+                "a91420b37094d82a513451ff0ccd9db23aba05bc5ef387",
+            )
+            .expect("Failed to parse replay protection output script"),
         ]);
-        
+
         // Parse the transaction (no PayGo verification in tests)
         let parsed = bitgo_psbt
             .parse_transaction_with_wallet_keys(&wallet_keys, &replay_protection, &[])
             .expect("Failed to parse transaction");
-        
+
         // Basic validations
         assert!(!parsed.inputs.is_empty(), "Should have at least one input");
-        assert!(!parsed.outputs.is_empty(), "Should have at least one output");
-        
+        assert!(
+            !parsed.outputs.is_empty(),
+            "Should have at least one output"
+        );
+
         // Verify at least one replay protection input exists
         let replay_protection_inputs = parsed
             .inputs
@@ -3454,18 +3538,15 @@ mod tests {
             replay_protection_inputs > 0,
             "Should have at least one replay protection input"
         );
-        
+
         // Verify at least one wallet input exists
         let wallet_inputs = parsed
             .inputs
             .iter()
             .filter(|i| i.script_id.is_some())
             .count();
-        assert!(
-            wallet_inputs > 0,
-            "Should have at least one wallet input"
-        );
-        
+        assert!(wallet_inputs > 0, "Should have at least one wallet input");
+
         // Count internal (wallet) and external outputs
         let internal_outputs = parsed
             .outputs
@@ -3477,13 +3558,13 @@ mod tests {
             .iter()
             .filter(|o| o.script_id.is_none())
             .count();
-        
+
         assert_eq!(
             internal_outputs + external_outputs,
             parsed.outputs.len(),
             "All outputs should be either internal or external"
         );
-        
+
         // Verify spend amount only includes external outputs
         let calculated_spend_amount: u64 = parsed
             .outputs
@@ -3495,23 +3576,23 @@ mod tests {
             parsed.spend_amount, calculated_spend_amount,
             "Spend amount should equal sum of external output values"
         );
-        
+
         // Verify total values
         let total_input_value: u64 = parsed.inputs.iter().map(|i| i.value).sum();
         let total_output_value: u64 = parsed.outputs.iter().map(|o| o.value).sum();
-        
+
         assert_eq!(
             parsed.miner_fee,
             total_input_value - total_output_value,
             "Miner fee should equal inputs minus outputs"
         );
-        
+
         // Verify virtual size is reasonable
         assert!(
             parsed.virtual_size > 0,
             "Virtual size should be greater than 0"
         );
-        
+
         // Verify outputs (fixtures now have 3 external outputs)
         assert_eq!(
             external_outputs, 3,
@@ -3526,7 +3607,7 @@ mod tests {
             parsed.spend_amount > 0,
             "Spend amount should be greater than 0 when there are external outputs"
         );
-    }, ignore: []);
+    });
 
     #[test]
     fn test_serialize_bitcoin_psbt() {
@@ -3636,19 +3717,9 @@ mod tests {
             .parse_outputs(&other_wallet_keys, &[])
             .expect("Failed to parse outputs with other wallet keys");
 
-        // Create empty PSBT with same version and locktime as original
-        let original_version = original_psbt.psbt().unsigned_tx.version.0 as i32;
-        let original_locktime = original_psbt
-            .psbt()
-            .unsigned_tx
-            .lock_time
-            .to_consensus_u32();
-        let mut reconstructed = BitGoPsbt::new(
-            network,
-            &wallet_keys,
-            Some(original_version),
-            Some(original_locktime),
-        );
+        // Create empty PSBT with same network parameters as original (handles Zcash automatically)
+        let mut reconstructed = BitGoPsbt::new_like(&original_psbt, &wallet_keys)
+            .expect("Failed to create PSBT from template");
 
         // Track which inputs are wallet inputs vs replay protection
         let mut wallet_input_indices = Vec::new();
@@ -3958,15 +4029,14 @@ mod tests {
         let reconstructed_bytes = reconstructed
             .serialize()
             .expect("Failed to serialize reconstructed");
-        assert_equal_psbt(&original_bytes, &reconstructed_bytes);
+        assert_equal_psbt(&original_bytes, &reconstructed_bytes, network);
     }
 
     // Note: Only testing PsbtLite format for now because full PSBT format
     // uses non_witness_utxo instead of witness_utxo for non-segwit inputs
-    // Zcash: Transaction decoding fails because Zcash tx format differs from Bitcoin
     crate::test_psbt_fixtures!(test_psbt_reconstruction, network, format, {
         test_psbt_reconstruction_for_network(network, format);
-    }, ignore: [Zcash]);
+    });
 
     #[test]
     fn test_dogecoin_single_input_single_output_large_amount() {
