@@ -9,6 +9,7 @@ import { initRouter, type Route } from "./lib/router";
 
 // Import demo components (registers them as custom elements)
 import "./wasm-utxo/addresses";
+import "./wasm-utxo/parser";
 
 // Common styles used across components
 export const commonStyles = `
@@ -122,7 +123,7 @@ class HomePage extends BaseComponent {
         "div",
         { class: "home" },
         h("h1", {}, "BitGoWASM Demos"),
-        h("p", { class: "subtitle" }, "Interactive demos for BitGo WASM libraries"),
+        h("p", { class: "subtitle" }, "Developer tools for BitGoWASM libraries"),
         h(
           "ul",
           { class: "demo-list" },
@@ -140,6 +141,20 @@ class HomePage extends BaseComponent {
               ),
             ),
           ),
+          h(
+            "li",
+            {},
+            h(
+              "a",
+              { class: "demo-link", href: "#/wasm-utxo/parser" },
+              h("div", { class: "demo-title" }, "UTXO PSBT/TX Parser"),
+              h(
+                "div",
+                { class: "demo-desc" },
+                "Parse and inspect PSBTs and transactions as collapsible trees",
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -152,6 +167,7 @@ defineComponent("home-page", HomePage);
 const routes: Route[] = [
   { path: "/", component: "home-page" },
   { path: "/wasm-utxo/addresses", component: "address-converter" },
+  { path: "/wasm-utxo/parser", component: "psbt-tx-parser" },
 ];
 
 // Initialize router when DOM is ready

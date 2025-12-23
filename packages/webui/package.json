@@ -11,10 +11,11 @@
   "main": "./dist/src/index.js",
   "private": true,
   "scripts": {
-    "build": "webpack --mode production --progress --config ./webpack.config.js",
+    "extract-samples": "node scripts/extract-samples.js",
+    "build": "npm run extract-samples && webpack --mode production --progress --config ./webpack.config.js",
     "typecheck": "tsc --noEmit",
     "test": "echo \"Error: no test specified\"",
-    "dev": "webpack serve --mode development --progress --hot --config ./webpack.config.js",
+    "dev": "npm run extract-samples && webpack serve --mode development --progress --hot --config ./webpack.config.js",
     "fmt": "prettier --write .",
     "check-fmt": "prettier --check '{src,webpack}/**/*.{tsx,ts,js}'",
     "clean": "rm -r ./dist",
