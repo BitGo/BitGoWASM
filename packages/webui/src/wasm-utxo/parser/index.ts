@@ -55,27 +55,50 @@ const networkLabels: Record<CoinName, string> = {
 };
 
 /**
- * Decode hex or base64 input to bytes.
+ * Try to decode input as hex.
  */
-function decodeInput(input: string): Uint8Array {
+function tryDecodeHex(input: string): Uint8Array | null {
   const trimmed = input.trim();
-
-  // Try hex first
-  if (/^[0-9a-fA-F]+$/.test(trimmed)) {
-    const bytes = new Uint8Array(trimmed.length / 2);
-    for (let i = 0; i < bytes.length; i++) {
-      bytes[i] = parseInt(trimmed.slice(i * 2, i * 2 + 2), 16);
-    }
-    return bytes;
+  if (!/^[0-9a-fA-F]*$/.test(trimmed) || trimmed.length % 2 !== 0) {
+    return null;
   }
-
-  // Try base64
-  const binary = atob(trimmed);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+  const bytes = new Uint8Array(trimmed.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(trimmed.slice(i * 2, i * 2 + 2), 16);
   }
   return bytes;
+}
+
+/**
+ * Try to decode input as base64.
+ */
+function tryDecodeBase64(input: string): Uint8Array | null {
+  const trimmed = input.trim();
+  try {
+    const binary = atob(trimmed);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get all possible decodings of the input (hex, base64).
+ */
+function possibleDecodings(input: string): Uint8Array[] {
+  const decodings: Uint8Array[] = [];
+
+  const hex = tryDecodeHex(input);
+  if (hex) decodings.push(hex);
+
+  const base64 = tryDecodeBase64(input);
+  if (base64) decodings.push(base64);
+
+  return decodings;
 }
 
 /**
@@ -1076,76 +1099,94 @@ class PsbtTxParser extends BaseComponent {
     this.expandedPaths = new Set(["root"]);
     this.expandedValues = new Set();
 
-    let bytes: Uint8Array;
-    try {
-      bytes = decodeInput(input);
-    } catch (e) {
-      errorEl.replaceChildren(h("div", { class: "error-message" }, `Failed to decode input: ${e}`));
+    // Get all possible decodings (hex, base64)
+    const decodings = possibleDecodings(input);
+    if (decodings.length === 0) {
+      errorEl.replaceChildren(
+        h("div", { class: "error-message" }, "Failed to decode input: not valid hex or base64"),
+      );
       resultsEl.replaceChildren(
         h("div", { class: "empty-state" }, h("p", {}, "Enter valid hex or base64 data")),
       );
       return;
     }
 
-    // Auto-detect type (PSBT vs TX)
-    const detectedPsbt = isPsbt(bytes);
-
     // Parse based on mode with network handling
-    let node: Node;
+    // Try all decodings and pick the first one that parses successfully
+    let node: Node | null = null;
     let detectedNetwork: CoinName | null = null;
+    let successBytes: Uint8Array | null = null;
+    let lastError: string | null = null;
 
-    try {
-      if (this.autoDetectNetwork) {
-        // Try all networks and pick the first one that works
-        if (this.currentMode === "psbt") {
-          const result = tryParsePsbt(bytes);
-          if (result) {
-            detectedNetwork = result.network;
-            this.currentNetwork = result.network;
-            node = result.node;
+    for (const bytes of decodings) {
+      try {
+        if (this.autoDetectNetwork) {
+          // Try all networks and pick the first one that works
+          if (this.currentMode === "psbt") {
+            const result = tryParsePsbt(bytes);
+            if (result) {
+              detectedNetwork = result.network;
+              this.currentNetwork = result.network;
+              node = result.node;
+              successBytes = bytes;
+              break;
+            }
+          } else if (this.currentMode === "psbt-raw") {
+            const result = tryParsePsbtRaw(bytes);
+            if (result) {
+              detectedNetwork = result.network;
+              this.currentNetwork = result.network;
+              node = result.node;
+              successBytes = bytes;
+              break;
+            }
           } else {
-            throw new Error("Failed to parse PSBT with any known network");
-          }
-        } else if (this.currentMode === "psbt-raw") {
-          const result = tryParsePsbtRaw(bytes);
-          if (result) {
-            detectedNetwork = result.network;
-            this.currentNetwork = result.network;
-            node = result.node;
-          } else {
-            throw new Error("Failed to parse raw PSBT with any known network");
+            const result = tryParseTx(bytes);
+            if (result) {
+              detectedNetwork = result.network;
+              this.currentNetwork = result.network;
+              node = result.node;
+              successBytes = bytes;
+              break;
+            }
           }
         } else {
-          const result = tryParseTx(bytes);
-          if (result) {
-            detectedNetwork = result.network;
-            this.currentNetwork = result.network;
-            node = result.node;
-          } else {
-            throw new Error("Failed to parse transaction with any known network");
+          // Use the specified network
+          switch (this.currentMode) {
+            case "psbt":
+              node = parsePsbtToNode(bytes, this.currentNetwork);
+              break;
+            case "psbt-raw":
+              node = parsePsbtRawToNode(bytes, this.currentNetwork);
+              break;
+            case "tx":
+              node = parseTxToNode(bytes, this.currentNetwork);
+              break;
+          }
+          if (node) {
+            successBytes = bytes;
+            break;
           }
         }
-      } else {
-        // Use the specified network
-        switch (this.currentMode) {
-          case "psbt":
-            node = parsePsbtToNode(bytes, this.currentNetwork);
-            break;
-          case "psbt-raw":
-            node = parsePsbtRawToNode(bytes, this.currentNetwork);
-            break;
-          case "tx":
-            node = parseTxToNode(bytes, this.currentNetwork);
-            break;
-        }
+      } catch (e) {
+        lastError = String(e);
+        // Continue trying other decodings
       }
-    } catch (e) {
-      errorEl.replaceChildren(h("div", { class: "error-message" }, `Parse error: ${e}`));
+    }
+
+    if (!node) {
+      const errorMsg = lastError
+        ? `Parse error (tried hex and base64): ${lastError}`
+        : "Failed to parse with any encoding";
+      errorEl.replaceChildren(h("div", { class: "error-message" }, errorMsg));
       resultsEl.replaceChildren(
         h("div", { class: "empty-state" }, h("p", {}, "Failed to parse data")),
       );
       return;
     }
+
+    // Auto-detect type (PSBT vs TX) based on successfully decoded bytes
+    const detectedPsbt = successBytes ? isPsbt(successBytes) : false;
 
     // Update detected type display
     const typeStr = detectedPsbt ? "PSBT" : "Transaction";
