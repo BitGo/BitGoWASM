@@ -43,8 +43,8 @@ function extractSamples() {
     const stateName = state.charAt(0).toUpperCase() + state.slice(1);
     const liteLabel = lite ? " Lite" : "";
 
-    // Add psbtBase64 (unsigned/halfsigned)
-    if (fixture.psbtBase64 && state !== "fullsigned") {
+    // Add psbtBase64 (unsigned/halfsigned/fullsigned)
+    if (fixture.psbtBase64) {
       samples.push({
         name: `${networkName}${liteLabel} PSBT (${stateName})`,
         type: "psbt",
@@ -52,8 +52,8 @@ function extractSamples() {
       });
     }
 
-    // Add psbtBase64Finalized (fullsigned)
-    if (fixture.psbtBase64Finalized) {
+    // Add psbtBase64Finalized (from fullsigned files only)
+    if (fixture.psbtBase64Finalized && state === "fullsigned") {
       samples.push({
         name: `${networkName}${liteLabel} PSBT (Finalized)`,
         type: "psbt",

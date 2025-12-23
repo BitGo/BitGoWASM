@@ -99,11 +99,12 @@ function isPsbt(bytes: Uint8Array): boolean {
 /**
  * Format a primitive value for display.
  */
-function formatPrimitive(primitive: Primitive): string {
+function formatPrimitive(primitive: Primitive, expanded: boolean = false): string {
   if (primitive.type === "None") return "";
   if (primitive.type === "Buffer") {
     const hex = String(primitive.value ?? "");
-    if (hex.length > 64) {
+    // Only truncate when hiding more than 8 characters (64 shown + 8 hidden = 72)
+    if (!expanded && hex.length > 72) {
       return hex.slice(0, 32) + "..." + hex.slice(-32);
     }
     return hex;
@@ -112,6 +113,16 @@ function formatPrimitive(primitive: Primitive): string {
     return primitive.value ? "true" : "false";
   }
   return String(primitive.value ?? "");
+}
+
+/**
+ * Check if a buffer value is truncatable.
+ */
+function isTruncatable(primitive: Primitive): boolean {
+  if (primitive.type !== "Buffer") return false;
+  const hex = String(primitive.value ?? "");
+  // Only expandable when truncation would hide more than 8 characters
+  return hex.length > 72;
 }
 
 /**
@@ -148,14 +159,23 @@ function renderTreeNode(
   node: Node,
   expandedPaths: Set<string>,
   onToggle: (path: string) => void,
+  expandedValues: Set<string>,
+  onToggleValue: (path: string) => void,
   path: string = "root",
 ): HTMLElement {
   const hasChildren = node.children.length > 0;
   const isExpanded = expandedPaths.has(path);
   const hasValue = node.value.type !== "None";
+  const isValueExpanded = expandedValues.has(path);
+  const canExpandValue = isTruncatable(node.value);
 
   const toggleExpand = () => {
     onToggle(path);
+  };
+
+  const toggleValueExpand = (e: Event) => {
+    e.stopPropagation();
+    onToggleValue(path);
   };
 
   // Leaf node - just show label: value
@@ -170,10 +190,12 @@ function renderTreeNode(
             h(
               "span",
               {
-                class: `tree-value tree-value-${node.value.type.toLowerCase()}`,
-                title: getFullValue(node.value),
+                class: `tree-value tree-value-${node.value.type.toLowerCase()}${canExpandValue ? " expandable" : ""}${isValueExpanded ? " expanded" : ""}`,
+                title:
+                  canExpandValue && !isValueExpanded ? "Click to expand" : getFullValue(node.value),
+                onclick: canExpandValue ? toggleValueExpand : undefined,
               },
-              formatPrimitive(node.value),
+              formatPrimitive(node.value, isValueExpanded),
             ),
             h(
               "button",
@@ -194,7 +216,7 @@ function renderTreeNode(
   // Branch node - collapsible
   const childCount = node.children.length;
   const labelText = hasValue
-    ? `${node.label}: ${formatPrimitive(node.value)}`
+    ? `${node.label}: ${formatPrimitive(node.value, isValueExpanded)}`
     : `${node.label} [${childCount}]`;
 
   return h(
@@ -214,7 +236,14 @@ function renderTreeNode(
           "div",
           { class: "tree-children" },
           ...node.children.map((child, i) =>
-            renderTreeNode(child, expandedPaths, onToggle, `${path}.${i}`),
+            renderTreeNode(
+              child,
+              expandedPaths,
+              onToggle,
+              expandedValues,
+              onToggleValue,
+              `${path}.${i}`,
+            ),
           ),
         )
       : null,
@@ -227,6 +256,7 @@ function renderTreeNode(
 class PsbtTxParser extends BaseComponent {
   private debounceTimer: number | null = null;
   private expandedPaths: Set<string> = new Set(["root"]);
+  private expandedValues: Set<string> = new Set();
   private currentMode: ParseMode = "psbt";
   private currentNode: Node | null = null;
   private currentNetwork: CoinName = "btc";
@@ -451,6 +481,23 @@ class PsbtTxParser extends BaseComponent {
         .tree-value-buffer {
           color: var(--green, #7ACC8F);
           font-family: inherit;
+        }
+
+        .tree-value-buffer.expandable {
+          cursor: pointer;
+          text-decoration: underline dotted;
+          text-underline-offset: 2px;
+        }
+
+        .tree-value-buffer.expandable:hover {
+          background: rgba(122, 204, 143, 0.1);
+          border-radius: 2px;
+        }
+
+        .tree-value-buffer.expanded {
+          text-decoration: none;
+          word-break: break-all;
+          max-width: none;
         }
 
         .tree-value-string {
@@ -862,11 +909,7 @@ class PsbtTxParser extends BaseComponent {
                         onclick: () => this.selectSample(index),
                       },
                       sample.name,
-                      h(
-                        "span",
-                        { class: "sample-type" },
-                        sample.type === "tx" ? "TX" : "PSBT",
-                      ),
+                      h("span", { class: "sample-type" }, sample.type === "tx" ? "TX" : "PSBT"),
                     ),
                   ),
                 ),
@@ -1031,6 +1074,7 @@ class PsbtTxParser extends BaseComponent {
     // Clear previous state
     errorEl.innerHTML = "";
     this.expandedPaths = new Set(["root"]);
+    this.expandedValues = new Set();
 
     let bytes: Uint8Array;
     try {
@@ -1118,14 +1162,27 @@ class PsbtTxParser extends BaseComponent {
     const resultsEl = this.$("#results");
     if (!resultsEl || !this.currentNode) return;
 
-    const treeEl = renderTreeNode(this.currentNode, this.expandedPaths, (path) => {
-      if (this.expandedPaths.has(path)) {
-        this.expandedPaths.delete(path);
-      } else {
-        this.expandedPaths.add(path);
-      }
-      this.renderTree();
-    });
+    const treeEl = renderTreeNode(
+      this.currentNode,
+      this.expandedPaths,
+      (path) => {
+        if (this.expandedPaths.has(path)) {
+          this.expandedPaths.delete(path);
+        } else {
+          this.expandedPaths.add(path);
+        }
+        this.renderTree();
+      },
+      this.expandedValues,
+      (path) => {
+        if (this.expandedValues.has(path)) {
+          this.expandedValues.delete(path);
+        } else {
+          this.expandedValues.add(path);
+        }
+        this.renderTree();
+      },
+    );
 
     resultsEl.replaceChildren(h("div", { class: "tree-container" }, treeEl));
   }
@@ -1147,6 +1204,7 @@ class PsbtTxParser extends BaseComponent {
 
   private collapseAll(): void {
     this.expandedPaths = new Set(["root"]);
+    this.expandedValues = new Set();
     this.renderTree();
   }
 
