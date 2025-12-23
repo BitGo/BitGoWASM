@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::format::{render_tree_with_scheme, ColorScheme};
 use crate::input::{decode_input, read_input_bytes};
-use crate::parse::{parse_psbt_bytes_internal, parse_psbt_bytes_raw};
+use wasm_utxo::parse_node::{parse_psbt_bytes_internal, parse_psbt_bytes_raw};
 
 pub fn handle_parse_command(path: PathBuf, no_color: bool, raw: bool) -> Result<()> {
     // Read from file or stdin

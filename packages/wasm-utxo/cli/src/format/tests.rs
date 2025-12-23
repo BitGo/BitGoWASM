@@ -1,6 +1,6 @@
 use crate::format::fixtures::assert_or_update_fixture;
-use crate::node::{Node, Primitive};
 use num_bigint::BigInt;
+use wasm_utxo::parse_node::{Node, Primitive};
 
 #[test]
 fn test_simple_tree() -> std::io::Result<()> {

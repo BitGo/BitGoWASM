@@ -10,6 +10,7 @@ export * as address from "./address.js";
 export * as ast from "./ast/index.js";
 export * as bip322 from "./bip322/index.js";
 export * as inscriptions from "./inscriptions.js";
+export * as parseNode from "./parseNode.js";
 export * as utxolibCompat from "./utxolibCompat.js";
 export * as fixedScriptWallet from "./fixedScriptWallet/index.js";
 export * as bip32 from "./bip32.js";

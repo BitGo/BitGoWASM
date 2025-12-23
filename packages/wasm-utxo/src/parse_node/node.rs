@@ -340,3 +340,4 @@ mod tests {
         assert_eq!(deserialized.children[1].label, "child2");
     }
 }
+

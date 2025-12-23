@@ -25,11 +25,12 @@
 ///
 /// - [BIP-174: PSBT Format](https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki)
 /// - [bitcoin::psbt::raw](https://docs.rs/bitcoin/latest/bitcoin/psbt/raw/index.html)
-use wasm_utxo::bitcoin::consensus::Decodable;
-use wasm_utxo::bitcoin::psbt::raw::{Key, Pair};
-use wasm_utxo::bitcoin::{Network, Transaction, VarInt};
+use crate::bitcoin::consensus::Decodable;
+use crate::bitcoin::psbt::raw::{Key, Pair};
+use crate::bitcoin::{Transaction, VarInt};
+use crate::zcash::transaction::decode_zcash_transaction_parts;
 
-pub use crate::node::{Node, Primitive};
+pub use super::node::{Node, Primitive};
 
 /// Context for interpreting PSBT key types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,11 +282,22 @@ fn decode_pair(bytes: &[u8], pos: usize) -> Result<(Pair, usize), String> {
 }
 
 /// Extract transaction input/output counts from global map
-fn extract_tx_counts(global_pairs: &[Pair]) -> Result<(usize, usize), String> {
+/// Supports both Bitcoin and Zcash transaction formats
+fn extract_tx_counts(global_pairs: &[Pair], is_zcash: bool) -> Result<(usize, usize), String> {
     // Find the unsigned transaction (type 0x00)
     for pair in global_pairs {
         if pair.key.type_value == 0x00 {
-            // Parse the transaction
+            // Try Zcash parser first if requested
+            if is_zcash {
+                if let Ok(parts) = decode_zcash_transaction_parts(&pair.value) {
+                    return Ok((
+                        parts.transaction.input.len(),
+                        parts.transaction.output.len(),
+                    ));
+                }
+            }
+
+            // Fall back to standard Bitcoin transaction parser
             let tx = Transaction::consensus_decode(&mut &pair.value[..])
                 .map_err(|e| format!("Failed to decode unsigned transaction: {}", e))?;
             return Ok((tx.input.len(), tx.output.len()));
@@ -346,7 +358,8 @@ fn decode_map(
 }
 
 /// Parse PSBT showing raw key-value structure from bytes
-pub fn psbt_to_raw_node(bytes: &[u8], _network: Network) -> Result<Node, String> {
+/// Supports both Bitcoin and Zcash PSBT formats
+fn psbt_to_raw_node_internal(bytes: &[u8], is_zcash: bool) -> Result<Node, String> {
     let mut psbt_node = Node::new("psbt_raw", Primitive::None);
 
     // 1. Check magic bytes: "psbt" + 0xff
@@ -373,7 +386,7 @@ pub fn psbt_to_raw_node(bytes: &[u8], _network: Network) -> Result<Node, String>
     pos = new_pos;
 
     // 3. Extract transaction input/output counts from unsigned tx
-    let (expected_input_count, expected_output_count) = extract_tx_counts(&global_pairs)?;
+    let (expected_input_count, expected_output_count) = extract_tx_counts(&global_pairs, is_zcash)?;
 
     // 4. Decode input maps
     let mut input_maps_node = Node::new("input_maps", Primitive::None);
@@ -421,8 +434,19 @@ pub fn psbt_to_raw_node(bytes: &[u8], _network: Network) -> Result<Node, String>
     Ok(psbt_node)
 }
 
+/// Parse raw PSBT bytes with network support
+pub fn parse_psbt_bytes_raw_with_network(
+    bytes: &[u8],
+    network: crate::networks::Network,
+) -> Result<Node, String> {
+    use crate::networks::Network as NetEnum;
+    let is_zcash = matches!(network, NetEnum::Zcash | NetEnum::ZcashTestnet);
+    psbt_to_raw_node_internal(bytes, is_zcash)
+}
+
+/// Parse raw PSBT bytes (defaults to Bitcoin)
 pub fn parse_psbt_bytes_raw(bytes: &[u8]) -> Result<Node, String> {
-    psbt_to_raw_node(bytes, Network::Bitcoin)
+    psbt_to_raw_node_internal(bytes, false)
 }
 
 #[cfg(test)]
@@ -478,20 +502,5 @@ mod tests {
         let magic = b"psbt\xff";
         assert_eq!(magic.len(), 5);
         assert_eq!(magic[4], 0xff);
-    }
-
-    #[test]
-    fn test_parse_psbt_bitcoin_fullsigned() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::format::fixtures::assert_tree_matches_fixture;
-        use crate::test_utils::{load_psbt_bytes, SignatureState, TxFormat};
-        use wasm_utxo::Network;
-
-        let psbt_bytes =
-            load_psbt_bytes(Network::Bitcoin, SignatureState::Fullsigned, TxFormat::Psbt)?;
-
-        let node = parse_psbt_bytes_raw(&psbt_bytes)?;
-
-        assert_tree_matches_fixture(&node, "psbt_raw_bitcoin_fullsigned")?;
-        Ok(())
     }
 }

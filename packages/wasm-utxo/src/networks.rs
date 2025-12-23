@@ -296,6 +296,26 @@ impl Network {
     pub fn is_testnet(self) -> bool {
         !self.is_mainnet()
     }
+
+    /// Convert to bitcoin crate Network type for address encoding
+    pub fn to_bitcoin_network(self) -> crate::bitcoin::Network {
+        use crate::bitcoin::Network as BitcoinNetwork;
+        match self {
+            Network::Bitcoin => BitcoinNetwork::Bitcoin,
+            Network::BitcoinTestnet3 => BitcoinNetwork::Testnet,
+            Network::BitcoinTestnet4 => BitcoinNetwork::Testnet,
+            Network::BitcoinPublicSignet => BitcoinNetwork::Signet,
+            Network::BitcoinBitGoSignet => BitcoinNetwork::Signet,
+            // Non-Bitcoin networks - use Bitcoin mainnet/testnet based on whether they're mainnet
+            _ => {
+                if self.is_mainnet() {
+                    BitcoinNetwork::Bitcoin
+                } else {
+                    BitcoinNetwork::Testnet
+                }
+            }
+        }
+    }
 }
 
 impl fmt::Display for Network {

@@ -1,7 +1,7 @@
 #[cfg(test)]
 use super::tree::{node_to_string_with_scheme, ColorScheme};
 #[cfg(test)]
-use crate::node::Node;
+use wasm_utxo::parse_node::Node;
 #[cfg(test)]
 use std::env;
 #[cfg(test)]

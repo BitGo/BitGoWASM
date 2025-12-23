@@ -25,7 +25,7 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 define WASM_PACK_COMMAND
-	$(WASM_PACK) build --no-opt --out-dir $(1) $(WASM_PACK_FLAGS) --target $(2)
+	$(WASM_PACK) build --no-opt --out-dir $(1) $(WASM_PACK_FLAGS) --target $(2) --features parse_node
 endef
 
 # run wasm-opt separately so we can pass `--enable-bulk-memory`

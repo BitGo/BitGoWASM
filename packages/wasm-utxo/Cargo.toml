@@ -13,6 +13,10 @@ crate-type = ["cdylib", "rlib"]
 [lints.clippy]
 all = "warn"
 
+[features]
+default = []
+parse_node = ["dep:num-bigint", "dep:serde", "dep:serde_json", "dep:hex"]
+
 [dependencies]
 wasm-bindgen = "0.2"
 js-sys = "0.3"
@@ -21,6 +25,10 @@ bech32 = "0.11"
 musig2 = { version = "0.3.1", default-features = false, features = ["k256"] }
 getrandom = { version = "0.2", features = ["js"] }
 pastey = "0.1"
+num-bigint = { version = "0.4", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+hex = { version = "0.4", optional = true }
 
 [dev-dependencies]
 base64 = "0.22.1"

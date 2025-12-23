@@ -3146,6 +3146,7 @@ dependencies = [
  "js-sys",
  "miniscript",
  "musig2",
+ "num-bigint",
  "pastey",
  "rstest",
  "serde",

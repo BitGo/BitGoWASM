@@ -4,11 +4,11 @@ use clap::{Parser, Subcommand};
 mod address;
 mod format;
 mod input;
-mod node;
-mod parse;
 mod psbt;
 mod tx;
 
+#[cfg(test)]
+mod parse_tests;
 #[cfg(test)]
 pub mod test_utils;
 
