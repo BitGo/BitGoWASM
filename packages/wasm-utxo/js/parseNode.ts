@@ -86,7 +86,7 @@ export interface Node {
  * @returns A Node tree representing the parsed PSBT structure
  * @throws If the PSBT bytes are invalid or network is unknown
  */
-export function parsePsbtToNode(psbtBytes: Uint8Array, network: CoinName = "btc"): Node {
+export function parsePsbtToNode(psbtBytes: Uint8Array, network: CoinName): Node {
   const json = wasmParsePsbtToJson(psbtBytes, network);
   return JSON.parse(json) as Node;
 }
@@ -99,7 +99,7 @@ export function parsePsbtToNode(psbtBytes: Uint8Array, network: CoinName = "btc"
  * @returns A Node tree representing the parsed transaction structure
  * @throws If the transaction bytes are invalid or network is unknown
  */
-export function parseTxToNode(txBytes: Uint8Array, network: CoinName = "btc"): Node {
+export function parseTxToNode(txBytes: Uint8Array, network: CoinName): Node {
   const json = wasmParseTxToJson(txBytes, network);
   return JSON.parse(json) as Node;
 }
@@ -162,7 +162,7 @@ export function tryParseTx(
  * @returns A Node tree representing the raw PSBT key-value structure
  * @throws If the PSBT bytes are invalid or network is unknown
  */
-export function parsePsbtRawToNode(psbtBytes: Uint8Array, network: CoinName = "btc"): Node {
+export function parsePsbtRawToNode(psbtBytes: Uint8Array, network: CoinName): Node {
   const json = wasmParsePsbtRawToJson(psbtBytes, network);
   return JSON.parse(json) as Node;
 }

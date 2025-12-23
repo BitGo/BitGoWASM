@@ -1,12 +1,14 @@
 /// This contains low-level parsing of PSBT into a node structure suitable for display
+use crate::address::from_output_script_with_network;
 use crate::bitcoin::consensus::Decodable;
 use crate::bitcoin::hashes::Hash;
 use crate::bitcoin::psbt::Psbt;
-use crate::bitcoin::{Network, ScriptBuf, Transaction};
+use crate::bitcoin::{ScriptBuf, Transaction};
 use crate::fixed_script_wallet::bitgo_psbt::{
     p2tr_musig2_input::{Musig2PartialSig, Musig2Participants, Musig2PubNonce},
     BitGoKeyValue, ProprietaryKeySubtype, ZcashBitGoPsbt, BITGO,
 };
+use crate::networks::Network;
 use crate::zcash::transaction::{decode_zcash_transaction_parts, ZcashTransactionParts};
 
 pub use super::node::{Node, Primitive};
@@ -298,8 +300,8 @@ fn tx_output_to_node(output: &crate::bitcoin::TxOut, index: usize, network: Netw
         Primitive::Buffer(output.script_pubkey.as_bytes().to_vec()),
     ));
 
-    if let Ok(address) = crate::bitcoin::Address::from_script(&output.script_pubkey, network) {
-        output_node.add_child(Node::new("address", Primitive::String(address.to_string())));
+    if let Ok(address) = from_output_script_with_network(&output.script_pubkey, network) {
+        output_node.add_child(Node::new("address", Primitive::String(address)));
     }
 
     output_node
@@ -340,8 +342,7 @@ fn psbt_input_to_node(input: &crate::bitcoin::psbt::Input, index: usize, network
         witness_node.add_child(Node::new(
             "address",
             Primitive::String(
-                crate::bitcoin::Address::from_script(&witness_utxo.script_pubkey, network)
-                    .map(|a| a.to_string())
+                from_output_script_with_network(&witness_utxo.script_pubkey, network)
                     .unwrap_or_else(|_| "<invalid address>".to_string()),
             ),
         ));
@@ -472,7 +473,7 @@ pub fn psbt_to_node(psbt: &Psbt, network: Network) -> Node {
     psbt_node
 }
 
-pub fn tx_to_node(tx: &Transaction, network: crate::bitcoin::Network) -> Node {
+pub fn tx_to_node(tx: &Transaction, network: Network) -> Node {
     let mut tx_node = Node::new("tx", Primitive::None);
 
     tx_node.add_child(Node::new("version", Primitive::I32(tx.version.0)));
@@ -589,33 +590,23 @@ pub fn zcash_psbt_to_node(zcash_psbt: &ZcashBitGoPsbt, network: Network) -> Node
     psbt_node
 }
 
-pub fn parse_psbt_bytes_internal(bytes: &[u8]) -> Result<Node, String> {
-    parse_psbt_bytes_with_network(bytes, crate::networks::Network::Bitcoin)
-}
-
 pub fn parse_psbt_bytes_with_network(
     bytes: &[u8],
     network: crate::networks::Network,
 ) -> Result<Node, String> {
     use crate::networks::Network as NetEnum;
 
-    let bitcoin_network = network.to_bitcoin_network();
-
     // Use Zcash-specific parser for Zcash networks
     if matches!(network, NetEnum::Zcash | NetEnum::ZcashTestnet) {
         let zcash_psbt = ZcashBitGoPsbt::deserialize(bytes, network)
             .map_err(|e| format!("Zcash PSBT parse error: {}", e))?;
-        return Ok(zcash_psbt_to_node(&zcash_psbt, bitcoin_network));
+        return Ok(zcash_psbt_to_node(&zcash_psbt, network));
     }
 
     // Standard Bitcoin-compatible PSBT parsing
     Psbt::deserialize(bytes)
-        .map(|psbt| psbt_to_node(&psbt, bitcoin_network))
+        .map(|psbt| psbt_to_node(&psbt, network))
         .map_err(|e| e.to_string())
-}
-
-pub fn parse_tx_bytes_internal(bytes: &[u8]) -> Result<Node, String> {
-    parse_tx_bytes_with_network(bytes, crate::networks::Network::Bitcoin)
 }
 
 pub fn parse_tx_bytes_with_network(
@@ -624,17 +615,15 @@ pub fn parse_tx_bytes_with_network(
 ) -> Result<Node, String> {
     use crate::networks::Network as NetEnum;
 
-    let bitcoin_network = network.to_bitcoin_network();
-
     // Use Zcash-specific parser for Zcash networks
     if matches!(network, NetEnum::Zcash | NetEnum::ZcashTestnet) {
         let parts = decode_zcash_transaction_parts(bytes)
             .map_err(|e| format!("Zcash transaction parse error: {}", e))?;
-        return Ok(zcash_tx_to_node(&parts, bitcoin_network));
+        return Ok(zcash_tx_to_node(&parts, network));
     }
 
     // Standard Bitcoin-compatible transaction parsing
     Transaction::consensus_decode(&mut &bytes[..])
-        .map(|tx| tx_to_node(&tx, bitcoin_network))
+        .map(|tx| tx_to_node(&tx, network))
         .map_err(|e| e.to_string())
 }

@@ -3,9 +3,15 @@ use std::path::PathBuf;
 
 use crate::format::{render_tree_with_scheme, ColorScheme};
 use crate::input::{decode_input, read_input_bytes};
-use wasm_utxo::parse_node::{parse_psbt_bytes_internal, parse_psbt_bytes_raw};
+use wasm_utxo::parse_node::{parse_psbt_bytes_raw_with_network, parse_psbt_bytes_with_network};
+use wasm_utxo::Network;
 
-pub fn handle_parse_command(path: PathBuf, no_color: bool, raw: bool) -> Result<()> {
+pub fn handle_parse_command(
+    path: PathBuf,
+    no_color: bool,
+    raw: bool,
+    network: Network,
+) -> Result<()> {
     // Read from file or stdin
     let raw_bytes = read_input_bytes(&path, "PSBT")?;
 
@@ -13,10 +19,10 @@ pub fn handle_parse_command(path: PathBuf, no_color: bool, raw: bool) -> Result<
     let bytes = decode_input(&raw_bytes)?;
 
     let node = if raw {
-        parse_psbt_bytes_raw(&bytes)
+        parse_psbt_bytes_raw_with_network(&bytes, network)
             .map_err(|e| anyhow::anyhow!("Failed to parse PSBT (raw): {}", e))?
     } else {
-        parse_psbt_bytes_internal(&bytes)
+        parse_psbt_bytes_with_network(&bytes, network)
             .map_err(|e| anyhow::anyhow!("Failed to parse PSBT: {}", e))?
     };
 

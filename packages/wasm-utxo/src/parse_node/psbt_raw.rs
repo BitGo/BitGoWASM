@@ -14,10 +14,11 @@
 /// # Example
 ///
 /// ```ignore
-/// use parse::node_raw::parse_psbt_bytes_raw;
+/// use wasm_utxo::Network;
+/// use wasm_utxo::parse_node::parse_psbt_bytes_raw_with_network;
 ///
 /// let psbt_bytes = /* your PSBT data */;
-/// let node = parse_psbt_bytes_raw(&psbt_bytes)?;
+/// let node = parse_psbt_bytes_raw_with_network(&psbt_bytes, Network::Bitcoin)?;
 /// // Returns a tree structure showing raw PSBT key-value pairs
 /// ```
 ///
@@ -442,11 +443,6 @@ pub fn parse_psbt_bytes_raw_with_network(
     use crate::networks::Network as NetEnum;
     let is_zcash = matches!(network, NetEnum::Zcash | NetEnum::ZcashTestnet);
     psbt_to_raw_node_internal(bytes, is_zcash)
-}
-
-/// Parse raw PSBT bytes (defaults to Bitcoin)
-pub fn parse_psbt_bytes_raw(bytes: &[u8]) -> Result<Node, String> {
-    psbt_to_raw_node_internal(bytes, false)
 }
 
 #[cfg(test)]

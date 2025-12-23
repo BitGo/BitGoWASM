@@ -4,8 +4,11 @@ use clap::{Parser, Subcommand};
 mod address;
 mod format;
 mod input;
+mod network;
 mod psbt;
 mod tx;
+
+pub use network::NetworkArg;
 
 #[cfg(test)]
 mod parse_tests;
