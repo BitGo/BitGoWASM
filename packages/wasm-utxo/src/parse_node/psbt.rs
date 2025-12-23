@@ -356,6 +356,24 @@ fn psbt_input_to_node(input: &crate::bitcoin::psbt::Input, index: usize, network
         input_node.add_child(script_buf_to_node("witness_script", witness_script))
     }
 
+    if let Some(final_script_sig) = &input.final_script_sig {
+        input_node.add_child(script_buf_to_node("final_script_sig", final_script_sig));
+    }
+
+    if let Some(final_script_witness) = &input.final_script_witness {
+        let mut witness_node = Node::new(
+            "final_script_witness",
+            Primitive::U64(final_script_witness.len() as u64),
+        );
+        for (i, item) in final_script_witness.iter().enumerate() {
+            witness_node.add_child(Node::new(
+                format!("item_{}", i),
+                Primitive::Buffer(item.to_vec()),
+            ));
+        }
+        input_node.add_child(witness_node);
+    }
+
     let mut sigs_node = Node::new(
         "signatures",
         Primitive::U64(input.partial_sigs.len() as u64),
