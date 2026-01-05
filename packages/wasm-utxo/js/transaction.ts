@@ -17,6 +17,17 @@ export class Transaction {
   }
 
   /**
+   * Get the virtual size of the transaction
+   *
+   * Virtual size accounts for the segwit discount on witness data.
+   *
+   * @returns The virtual size in virtual bytes (vbytes)
+   */
+  getVSize(): number {
+    return this._wasm.get_vsize();
+  }
+
+  /**
    * @internal
    */
   get wasm(): WasmTransaction {
