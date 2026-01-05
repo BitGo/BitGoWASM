@@ -1,4 +1,4 @@
-use wasm_utxo::parse_node::{Node, Primitive};
+use crate::node::{Node, Primitive};
 use colored::*;
 use ptree::print_tree;
 #[cfg(test)]

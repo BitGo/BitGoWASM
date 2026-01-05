@@ -7,7 +7,6 @@ mod ecpair;
 mod fixed_script_wallet;
 mod inscriptions;
 mod miniscript;
-mod parse_node;
 mod psbt;
 mod recursive_tap_tree;
 mod replay_protection;

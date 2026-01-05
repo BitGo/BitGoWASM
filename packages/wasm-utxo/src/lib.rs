@@ -5,8 +5,6 @@ mod error;
 pub mod fixed_script_wallet;
 pub mod inscriptions;
 mod networks;
-#[cfg(feature = "parse_node")]
-pub mod parse_node;
 pub mod paygo;
 #[cfg(test)]
 mod test_utils;
