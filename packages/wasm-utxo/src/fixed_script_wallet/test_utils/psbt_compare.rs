@@ -8,13 +8,15 @@
 //!
 //! ```ignore
 //! use crate::fixed_script_wallet::test_utils::psbt_compare::assert_equal_psbt;
+//! use crate::Network;
 //!
 //! let original_bytes = original_psbt.serialize().unwrap();
 //! let reconstructed_bytes = reconstructed_psbt.serialize().unwrap();
 //!
-//! assert_equal_psbt(&original_bytes, &reconstructed_bytes);
+//! assert_equal_psbt(&original_bytes, &reconstructed_bytes, Network::Bitcoin);
 //! ```
 
+use crate::Network;
 use miniscript::bitcoin::consensus::Decodable;
 use miniscript::bitcoin::{Transaction, VarInt};
 use std::collections::HashMap;
@@ -130,12 +132,25 @@ fn decode_pair(bytes: &[u8], pos: usize) -> Result<(RawPair, usize), String> {
 }
 
 /// Extract transaction input/output counts from global map
-fn extract_tx_counts(global_pairs: &[RawPair]) -> Result<(usize, usize), String> {
+///
+/// Uses the network parameter to determine whether to decode as Bitcoin or Zcash.
+fn extract_tx_counts(global_pairs: &[RawPair], network: Network) -> Result<(usize, usize), String> {
     for pair in global_pairs {
         if pair.type_value == 0x00 {
-            let tx = Transaction::consensus_decode(&mut &pair.value[..])
-                .map_err(|e| format!("Failed to decode unsigned transaction: {}", e))?;
-            return Ok((tx.input.len(), tx.output.len()));
+            if matches!(network, Network::Zcash | Network::ZcashTestnet) {
+                // Zcash transaction decoding
+                let parts = crate::zcash::transaction::decode_zcash_transaction_parts(&pair.value)
+                    .map_err(|e| format!("Failed to decode Zcash transaction: {}", e))?;
+                return Ok((
+                    parts.transaction.input.len(),
+                    parts.transaction.output.len(),
+                ));
+            } else {
+                // Standard Bitcoin transaction decoding
+                let tx = Transaction::consensus_decode(&mut &pair.value[..])
+                    .map_err(|e| format!("Failed to decode transaction: {}", e))?;
+                return Ok((tx.input.len(), tx.output.len()));
+            }
         }
     }
     Err("No unsigned transaction found in global map".to_string())
@@ -175,7 +190,11 @@ fn decode_map_pairs(bytes: &[u8], start_pos: usize) -> Result<(Vec<RawPair>, usi
 }
 
 /// Parse PSBT bytes into a structured ParsedPsbt
-pub fn parse_psbt_to_maps(bytes: &[u8]) -> Result<ParsedPsbt, String> {
+///
+/// # Arguments
+/// * `bytes` - The PSBT bytes to parse
+/// * `network` - The network to use for transaction decoding (Zcash uses a different format)
+pub fn parse_psbt_to_maps(bytes: &[u8], network: Network) -> Result<ParsedPsbt, String> {
     // Check magic bytes
     if bytes.len() < 5 {
         return Err("PSBT too short to contain magic bytes".to_string());
@@ -193,7 +212,7 @@ pub fn parse_psbt_to_maps(bytes: &[u8]) -> Result<ParsedPsbt, String> {
     pos = new_pos;
 
     // Extract input/output counts
-    let (input_count, output_count) = extract_tx_counts(&global_pairs)?;
+    let (input_count, output_count) = extract_tx_counts(&global_pairs, network)?;
 
     let global = ParsedMap {
         pairs: global_pairs,
@@ -407,9 +426,18 @@ pub fn compare_psbts(left: &ParsedPsbt, right: &ParsedPsbt) -> Vec<String> {
 }
 
 /// Compare two PSBTs and return Ok(()) if equal, or Err with detailed differences
-pub fn compare_psbt_bytes(left_bytes: &[u8], right_bytes: &[u8]) -> Result<(), String> {
-    let left = parse_psbt_to_maps(left_bytes)?;
-    let right = parse_psbt_to_maps(right_bytes)?;
+///
+/// # Arguments
+/// * `left_bytes` - First PSBT bytes
+/// * `right_bytes` - Second PSBT bytes
+/// * `network` - Network for transaction decoding (Zcash uses a different format)
+pub fn compare_psbt_bytes(
+    left_bytes: &[u8],
+    right_bytes: &[u8],
+    network: Network,
+) -> Result<(), String> {
+    let left = parse_psbt_to_maps(left_bytes, network)?;
+    let right = parse_psbt_to_maps(right_bytes, network)?;
 
     let diffs = compare_psbts(&left, &right);
 
@@ -429,12 +457,17 @@ pub fn compare_psbt_bytes(left_bytes: &[u8], right_bytes: &[u8]) -> Result<(), S
 /// This provides much more detailed error messages than simple byte comparison,
 /// showing exactly which fields differ between the two PSBTs.
 ///
+/// # Arguments
+/// * `left_bytes` - First PSBT bytes
+/// * `right_bytes` - Second PSBT bytes
+/// * `network` - Network for transaction decoding (Zcash uses a different format)
+///
 /// # Panics
 ///
 /// Panics if the PSBTs differ, with a detailed message showing which fields
 /// are different.
-pub fn assert_equal_psbt(left_bytes: &[u8], right_bytes: &[u8]) {
-    if let Err(e) = compare_psbt_bytes(left_bytes, right_bytes) {
+pub fn assert_equal_psbt(left_bytes: &[u8], right_bytes: &[u8], network: Network) {
+    if let Err(e) = compare_psbt_bytes(left_bytes, right_bytes, network) {
         panic!("{}", e);
     }
 }
@@ -455,7 +488,8 @@ mod tests {
         .expect("Failed to load fixture");
 
         let psbt_bytes = fixture.to_psbt_bytes().expect("Failed to serialize PSBT");
-        let parsed = parse_psbt_to_maps(&psbt_bytes).expect("Failed to parse PSBT");
+        let parsed =
+            parse_psbt_to_maps(&psbt_bytes, Network::Bitcoin).expect("Failed to parse PSBT");
 
         // Should have global map with at least unsigned tx
         assert!(parsed.global.has_type(0x00), "Should have unsigned tx");
@@ -479,7 +513,7 @@ mod tests {
         let psbt_bytes = fixture.to_psbt_bytes().expect("Failed to serialize PSBT");
 
         // Comparing identical PSBTs should succeed
-        assert_equal_psbt(&psbt_bytes, &psbt_bytes);
+        assert_equal_psbt(&psbt_bytes, &psbt_bytes, Network::Bitcoin);
     }
 
     #[test]
@@ -504,7 +538,7 @@ mod tests {
         let fullsigned_bytes = fullsigned.to_psbt_bytes().expect("Failed to serialize");
 
         // Different PSBTs should produce an error
-        let result = compare_psbt_bytes(&unsigned_bytes, &fullsigned_bytes);
+        let result = compare_psbt_bytes(&unsigned_bytes, &fullsigned_bytes, Network::Bitcoin);
         assert!(result.is_err(), "Different PSBTs should produce error");
 
         let err = result.unwrap_err();

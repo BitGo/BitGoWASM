@@ -65,10 +65,19 @@ impl ZcashBitGoPsbt {
     ///
     /// This extracts the fully-signed transaction with Zcash-specific fields.
     /// Must be called after all inputs have been finalized.
-    pub fn extract_zcash_transaction(&self) -> Result<Vec<u8>, super::DeserializeError> {
+    ///
+    /// This method consumes the PSBT to avoid cloning.
+    pub fn extract_tx(self) -> Result<Vec<u8>, super::DeserializeError> {
         use miniscript::bitcoin::psbt::ExtractTxError;
 
-        let tx = self.psbt.clone().extract_tx().map_err(|e| match e {
+        // Capture Zcash-specific fields before consuming psbt
+        let version_group_id = self
+            .version_group_id
+            .unwrap_or(ZCASH_SAPLING_VERSION_GROUP_ID);
+        let expiry_height = self.expiry_height.unwrap_or(0);
+        let sapling_fields = self.sapling_fields;
+
+        let tx = self.psbt.extract_tx().map_err(|e| match e {
             ExtractTxError::AbsurdFeeRate { .. } => {
                 super::DeserializeError::Network(format!("Absurd fee rate: {}", e))
             }
@@ -81,7 +90,15 @@ impl ZcashBitGoPsbt {
             _ => super::DeserializeError::Network(format!("Failed to extract transaction: {}", e)),
         })?;
 
-        self.serialize_as_zcash_transaction(&tx)
+        let parts = crate::zcash::transaction::ZcashTransactionParts {
+            transaction: tx,
+            is_overwintered: true,
+            version_group_id: Some(version_group_id),
+            expiry_height: Some(expiry_height),
+            sapling_fields,
+        };
+        crate::zcash::transaction::encode_zcash_transaction_parts(&parts)
+            .map_err(super::DeserializeError::Network)
     }
 
     /// Compute the transaction ID for the unsigned Zcash transaction
