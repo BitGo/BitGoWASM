@@ -19,7 +19,7 @@ pub use bip32::WasmBIP32;
 pub use dash_transaction::WasmDashTransaction;
 pub use descriptor::WrapDescriptor;
 pub use ecpair::WasmECPair;
-pub use fixed_script_wallet::FixedScriptWalletNamespace;
+pub use fixed_script_wallet::{FixedScriptWalletNamespace, WasmDimensions};
 pub use miniscript::WrapMiniscript;
 pub use psbt::WrapPsbt;
 pub use replay_protection::WasmReplayProtection;

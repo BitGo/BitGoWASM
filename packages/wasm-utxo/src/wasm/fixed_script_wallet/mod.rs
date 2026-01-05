@@ -1,3 +1,7 @@
+mod dimensions;
+
+pub use dimensions::WasmDimensions;
+
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsValue;
@@ -83,7 +87,7 @@ impl FixedScriptWalletNamespace {
 }
 #[wasm_bindgen]
 pub struct BitGoPsbt {
-    psbt: crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt,
+    pub(crate) psbt: crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt,
     // Store FirstRound states per (input_index, xpub_string)
     #[wasm_bindgen(skip)]
     first_rounds: HashMap<(usize, String), musig2::FirstRound>,

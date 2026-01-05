@@ -16,6 +16,7 @@ export * as ecpair from "./ecpair.js";
 // Only the most commonly used classes and types are exported at the top level for convenience
 export { ECPair } from "./ecpair.js";
 export { BIP32 } from "./bip32.js";
+export { Dimensions } from "./fixedScriptWallet/Dimensions.js";
 
 export type { CoinName } from "./coinName.js";
 export type { Triple } from "./triple.js";

@@ -105,7 +105,15 @@ export type AddWalletOutputOptions = {
 };
 
 export class BitGoPsbt {
-  protected constructor(protected wasm: WasmBitGoPsbt) {}
+  protected constructor(protected _wasm: WasmBitGoPsbt) {}
+
+  /**
+   * Get the underlying WASM instance
+   * @internal - for use by other wasm-utxo modules
+   */
+  get wasm(): WasmBitGoPsbt {
+    return this._wasm;
+  }
 
   /**
    * Create an empty PSBT for the given network with wallet keys
@@ -135,13 +143,13 @@ export class BitGoPsbt {
     options?: CreateEmptyOptions,
   ): BitGoPsbt {
     const keys = RootWalletKeys.from(walletKeys);
-    const wasm = WasmBitGoPsbt.create_empty(
+    const wasmPsbt = WasmBitGoPsbt.create_empty(
       network,
       keys.wasm,
       options?.version,
       options?.lockTime,
     );
-    return new BitGoPsbt(wasm);
+    return new BitGoPsbt(wasmPsbt);
   }
 
   /**
@@ -175,7 +183,7 @@ export class BitGoPsbt {
    * ```
    */
   addInput(options: AddInputOptions, script: Uint8Array): number {
-    return this.wasm.add_input(
+    return this._wasm.add_input(
       options.txid,
       options.vout,
       options.value,
@@ -200,7 +208,7 @@ export class BitGoPsbt {
    * ```
    */
   addOutput(options: AddOutputOptions): number {
-    return this.wasm.add_output(options.script, options.value);
+    return this._wasm.add_output(options.script, options.value);
   }
 
   /**
@@ -248,7 +256,7 @@ export class BitGoPsbt {
     walletOptions: AddWalletInputOptions,
   ): number {
     const keys = RootWalletKeys.from(walletKeys);
-    return this.wasm.add_wallet_input(
+    return this._wasm.add_wallet_input(
       inputOptions.txid,
       inputOptions.vout,
       inputOptions.value,
@@ -294,7 +302,7 @@ export class BitGoPsbt {
    */
   addWalletOutput(walletKeys: WalletKeysArg, options: AddWalletOutputOptions): number {
     const keys = RootWalletKeys.from(walletKeys);
-    return this.wasm.add_wallet_output(options.chain, options.index, options.value, keys.wasm);
+    return this._wasm.add_wallet_output(options.chain, options.index, options.value, keys.wasm);
   }
 
   /**
@@ -318,7 +326,7 @@ export class BitGoPsbt {
    */
   addReplayProtectionInput(inputOptions: AddInputOptions, key: ECPairArg): number {
     const ecpair = ECPair.from(key);
-    return this.wasm.add_replay_protection_input(
+    return this._wasm.add_replay_protection_input(
       ecpair.wasm,
       inputOptions.txid,
       inputOptions.vout,
@@ -332,7 +340,7 @@ export class BitGoPsbt {
    * @returns The unsigned transaction ID
    */
   unsignedTxid(): string {
-    return this.wasm.unsigned_txid();
+    return this._wasm.unsigned_txid();
   }
 
   /**
@@ -340,7 +348,7 @@ export class BitGoPsbt {
    * @returns The transaction version number
    */
   get version(): number {
-    return this.wasm.version();
+    return this._wasm.version();
   }
 
   /**
@@ -348,7 +356,7 @@ export class BitGoPsbt {
    * @returns The transaction lock time
    */
   get lockTime(): number {
-    return this.wasm.lock_time();
+    return this._wasm.lock_time();
   }
 
   /**
@@ -364,9 +372,9 @@ export class BitGoPsbt {
     payGoPubkeys?: ECPairArg[],
   ): ParsedTransaction {
     const keys = RootWalletKeys.from(walletKeys);
-    const rp = ReplayProtection.from(replayProtection, this.wasm.network());
+    const rp = ReplayProtection.from(replayProtection, this._wasm.network());
     const pubkeys = payGoPubkeys?.map((arg) => ECPair.from(arg).wasm);
-    return this.wasm.parse_transaction_with_wallet_keys(
+    return this._wasm.parse_transaction_with_wallet_keys(
       keys.wasm,
       rp.wasm,
       pubkeys,
@@ -391,7 +399,7 @@ export class BitGoPsbt {
   ): ParsedOutput[] {
     const keys = RootWalletKeys.from(walletKeys);
     const pubkeys = payGoPubkeys?.map((arg) => ECPair.from(arg).wasm);
-    return this.wasm.parse_outputs_with_wallet_keys(keys.wasm, pubkeys) as ParsedOutput[];
+    return this._wasm.parse_outputs_with_wallet_keys(keys.wasm, pubkeys) as ParsedOutput[];
   }
 
   /**
@@ -406,7 +414,7 @@ export class BitGoPsbt {
    * @throws Error if output index is out of bounds or entropy is not 64 bytes
    */
   addPayGoAttestation(outputIndex: number, entropy: Uint8Array, signature: Uint8Array): void {
-    this.wasm.add_paygo_attestation(outputIndex, entropy, signature);
+    this._wasm.add_paygo_attestation(outputIndex, entropy, signature);
   }
 
   /**
@@ -448,12 +456,12 @@ export class BitGoPsbt {
     // Try to parse as BIP32Arg first (string or BIP32 instance)
     if (typeof key === "string" || ("derive" in key && typeof key.derive === "function")) {
       const wasmKey = BIP32.from(key as BIP32Arg).wasm;
-      return this.wasm.verify_signature_with_xpub(inputIndex, wasmKey);
+      return this._wasm.verify_signature_with_xpub(inputIndex, wasmKey);
     }
 
     // Otherwise it's an ECPairArg (Uint8Array, ECPair, or WasmECPair)
     const wasmECPair = ECPair.from(key as ECPairArg).wasm;
-    return this.wasm.verify_signature_with_pub(inputIndex, wasmECPair);
+    return this._wasm.verify_signature_with_pub(inputIndex, wasmECPair);
   }
 
   /**
@@ -508,11 +516,11 @@ export class BitGoPsbt {
     ) {
       // It's a BIP32Arg
       const wasmKey = BIP32.from(key as BIP32Arg);
-      this.wasm.sign_with_xpriv(inputIndex, wasmKey.wasm);
+      this._wasm.sign_with_xpriv(inputIndex, wasmKey.wasm);
     } else {
       // It's an ECPairArg
       const wasmKey = ECPair.from(key as ECPairArg);
-      this.wasm.sign_with_privkey(inputIndex, wasmKey.wasm);
+      this._wasm.sign_with_privkey(inputIndex, wasmKey.wasm);
     }
   }
 
@@ -540,8 +548,8 @@ export class BitGoPsbt {
     inputIndex: number,
     replayProtection: ReplayProtectionArg,
   ): boolean {
-    const rp = ReplayProtection.from(replayProtection, this.wasm.network());
-    return this.wasm.verify_replay_protection_signature(inputIndex, rp.wasm);
+    const rp = ReplayProtection.from(replayProtection, this._wasm.network());
+    return this._wasm.verify_replay_protection_signature(inputIndex, rp.wasm);
   }
 
   /**
@@ -550,7 +558,7 @@ export class BitGoPsbt {
    * @returns The serialized PSBT as a byte array
    */
   serialize(): Uint8Array {
-    return this.wasm.serialize();
+    return this._wasm.serialize();
   }
 
   /**
@@ -593,7 +601,7 @@ export class BitGoPsbt {
    */
   generateMusig2Nonces(key: BIP32Arg, sessionId?: Uint8Array): void {
     const wasmKey = BIP32.from(key);
-    this.wasm.generate_musig2_nonces(wasmKey.wasm, sessionId);
+    this._wasm.generate_musig2_nonces(wasmKey.wasm, sessionId);
   }
 
   /**
@@ -616,7 +624,7 @@ export class BitGoPsbt {
    * ```
    */
   combineMusig2Nonces(sourcePsbt: BitGoPsbt): void {
-    this.wasm.combine_musig2_nonces(sourcePsbt.wasm);
+    this._wasm.combine_musig2_nonces(sourcePsbt.wasm);
   }
 
   /**
@@ -625,7 +633,7 @@ export class BitGoPsbt {
    * @throws Error if any input failed to finalize
    */
   finalizeAllInputs(): void {
-    this.wasm.finalize_all_inputs();
+    this._wasm.finalize_all_inputs();
   }
 
   /**
@@ -635,6 +643,6 @@ export class BitGoPsbt {
    * @throws Error if the PSBT is not fully finalized or extraction fails
    */
   extractTransaction(): Uint8Array {
-    return this.wasm.extract_transaction();
+    return this._wasm.extract_transaction();
   }
 }

@@ -42,6 +42,17 @@ impl WasmTransaction {
             .expect("encoding to vec should never fail");
         bytes
     }
+
+    /// Get the virtual size of the transaction
+    ///
+    /// Virtual size is calculated as ceil(weight / 4), where weight accounts
+    /// for the segwit discount on witness data.
+    ///
+    /// # Returns
+    /// The virtual size in virtual bytes (vbytes)
+    pub fn get_vsize(&self) -> usize {
+        self.tx.vsize()
+    }
 }
 
 /// A Zcash transaction with network-specific fields
