@@ -70,12 +70,17 @@ export type AddInputOptions = {
   prevTx?: Uint8Array;
 };
 
-export type AddOutputOptions = {
-  /** Output script (scriptPubKey) */
-  script: Uint8Array;
-  /** Value in satoshis */
-  value: bigint;
-};
+export type AddOutputOptions =
+  | {
+      script: Uint8Array;
+      /** Value in satoshis */
+      value: bigint;
+    }
+  | {
+      address: string;
+      /** Value in satoshis */
+      value: bigint;
+    };
 
 /** Key identifier for signing ("user", "backup", or "bitgo") */
 export type SignerKey = "user" | "backup" | "bitgo";
@@ -196,19 +201,70 @@ export class BitGoPsbt {
   /**
    * Add an output to the PSBT
    *
-   * @param options - Output options (script, value)
+   * @param script - The output script (scriptPubKey)
+   * @param value - Value in satoshis
    * @returns The index of the newly added output
    *
    * @example
    * ```typescript
+   * const outputIndex = psbt.addOutput(outputScript, 50000n);
+   * ```
+   */
+  addOutput(script: Uint8Array, value: bigint): number;
+  /**
+   * Add an output to the PSBT by address
+   *
+   * @param address - The destination address
+   * @param value - Value in satoshis
+   * @returns The index of the newly added output
+   *
+   * @example
+   * ```typescript
+   * const outputIndex = psbt.addOutput("bc1q...", 50000n);
+   * ```
+   */
+  addOutput(address: string, value: bigint): number;
+  /**
+   * Add an output to the PSBT
+   *
+   * @param options - Output options (script or address, and value)
+   * @returns The index of the newly added output
+   *
+   * @example
+   * ```typescript
+   * // Using script
    * const outputIndex = psbt.addOutput({
    *   script: outputScript,
    *   value: 50000n,
    * });
+   *
+   * // Using address
+   * const outputIndex = psbt.addOutput({
+   *   address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+   *   value: 50000n,
+   * });
    * ```
    */
-  addOutput(options: AddOutputOptions): number {
-    return this._wasm.add_output(options.script, options.value);
+  addOutput(options: AddOutputOptions): number;
+  addOutput(scriptOrOptions: Uint8Array | string | AddOutputOptions, value?: bigint): number {
+    if (scriptOrOptions instanceof Uint8Array || typeof scriptOrOptions === "string") {
+      if (value === undefined) {
+        throw new Error("Value is required when passing a script or address");
+      }
+      if (scriptOrOptions instanceof Uint8Array) {
+        return this._wasm.add_output(scriptOrOptions, value);
+      }
+      return this._wasm.add_output_with_address(scriptOrOptions, value);
+    }
+
+    const options = scriptOrOptions;
+    if ("script" in options) {
+      return this._wasm.add_output(options.script, options.value);
+    }
+    if ("address" in options) {
+      return this._wasm.add_output_with_address(options.address, options.value);
+    }
+    throw new Error("Invalid output options");
   }
 
   /**

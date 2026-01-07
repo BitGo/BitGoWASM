@@ -726,6 +726,13 @@ impl BitGoPsbt {
         psbt.outputs.len() - 1
     }
 
+    pub fn add_output_with_address(&mut self, address: &str, value: u64) -> Result<usize, String> {
+        let script =
+            crate::address::networks::to_output_script_with_network(address, self.network())
+                .map_err(|e| e.to_string())?;
+        Ok(self.add_output(script, value))
+    }
+
     /// Add a wallet input with full PSBT metadata
     ///
     /// This is a higher-level method that adds an input and populates all required
