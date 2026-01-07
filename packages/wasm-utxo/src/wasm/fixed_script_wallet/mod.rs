@@ -281,6 +281,22 @@ impl BitGoPsbt {
         Ok(self.psbt.add_output(script, value))
     }
 
+    /// Add an output to the PSBT by address
+    ///
+    /// # Arguments
+    /// * `address` - The destination address
+    /// * `value` - The value in satoshis
+    ///
+    /// # Returns
+    /// The index of the newly added output
+    pub fn add_output_with_address(
+        &mut self,
+        address: &str,
+        value: u64,
+    ) -> Result<usize, WasmUtxoError> {
+        Ok(self.psbt.add_output_with_address(address, value)?)
+    }
+
     /// Add a wallet input with full PSBT metadata
     ///
     /// This is a higher-level method that adds an input and populates all required
