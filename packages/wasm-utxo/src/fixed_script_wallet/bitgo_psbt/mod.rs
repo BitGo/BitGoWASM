@@ -211,7 +211,7 @@ fn get_default_sighash_type(
 }
 
 /// Create BIP32 derivation map for all 3 wallet keys
-fn create_bip32_derivation(
+pub(crate) fn create_bip32_derivation(
     wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
     chain: u32,
     index: u32,
@@ -241,7 +241,7 @@ fn create_bip32_derivation(
 }
 
 /// Create tap key origins for specified key indices
-fn create_tap_bip32_derivation(
+pub(crate) fn create_tap_bip32_derivation(
     wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
     chain: u32,
     index: u32,

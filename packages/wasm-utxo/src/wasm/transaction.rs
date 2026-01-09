@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 /// compatibility with third-party transaction fixtures.
 #[wasm_bindgen]
 pub struct WasmTransaction {
-    tx: Transaction,
+    pub(crate) tx: Transaction,
 }
 
 #[wasm_bindgen]

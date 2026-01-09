@@ -113,7 +113,7 @@ pub struct BitGoPsbt {
     pub(crate) psbt: crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt,
     // Store FirstRound states per (input_index, xpub_string)
     #[wasm_bindgen(skip)]
-    first_rounds: HashMap<(usize, String), musig2::FirstRound>,
+    pub(crate) first_rounds: HashMap<(usize, String), musig2::FirstRound>,
 }
 
 #[wasm_bindgen]
