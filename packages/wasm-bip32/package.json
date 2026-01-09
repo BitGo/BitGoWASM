@@ -41,6 +41,7 @@
     "build:ts": "npm run build:ts-esm && npm run build:ts-cjs",
     "build:package-json": "echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
     "build": "npm run build:wasm && npm run build:ts && npm run build:package-json",
+    "check-fmt": "prettier --check . && cargo fmt -- --check",
     "lint": "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings"
   },
   "devDependencies": {
