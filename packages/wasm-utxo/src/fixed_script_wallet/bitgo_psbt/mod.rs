@@ -184,16 +184,13 @@ fn get_default_sighash_type(
     network: Network,
     chain: crate::fixed_script_wallet::wallet_scripts::Chain,
 ) -> miniscript::bitcoin::psbt::PsbtSighashType {
-    use crate::fixed_script_wallet::wallet_scripts::Chain;
+    use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
     use miniscript::bitcoin::sighash::{EcdsaSighashType, TapSighashType};
 
     // For taproot, always use Default
     if matches!(
-        chain,
-        Chain::P2trInternal
-            | Chain::P2trExternal
-            | Chain::P2trMusig2Internal
-            | Chain::P2trMusig2External
+        chain.script_type,
+        OutputScriptType::P2trLegacy | OutputScriptType::P2trMusig2
     ) {
         return TapSighashType::Default.into();
     }
@@ -758,7 +755,7 @@ impl BitGoPsbt {
         options: WalletInputOptions,
     ) -> Result<usize, String> {
         use crate::fixed_script_wallet::to_pub_triple;
-        use crate::fixed_script_wallet::wallet_scripts::{Chain, WalletScripts};
+        use crate::fixed_script_wallet::wallet_scripts::{Chain, OutputScriptType, WalletScripts};
         use miniscript::bitcoin::psbt::Input;
         use miniscript::bitcoin::taproot::{LeafVersion, TapLeafHash};
         use miniscript::bitcoin::{transaction::Sequence, Amount, OutPoint, TxIn, TxOut};
@@ -799,18 +796,8 @@ impl BitGoPsbt {
         // Create the PSBT input
         let mut psbt_input = Input::default();
 
-        // Determine if segwit based on chain type
-        let is_segwit = matches!(
-            chain_enum,
-            Chain::P2shP2wshExternal
-                | Chain::P2shP2wshInternal
-                | Chain::P2wshExternal
-                | Chain::P2wshInternal
-                | Chain::P2trInternal
-                | Chain::P2trExternal
-                | Chain::P2trMusig2Internal
-                | Chain::P2trMusig2External
-        );
+        // Determine if segwit based on chain type (all types except P2sh are segwit)
+        let is_segwit = chain_enum.script_type != OutputScriptType::P2sh;
 
         if let (false, Some(tx_bytes)) = (is_segwit, options.prev_tx) {
             // Non-segwit with prev_tx: use non_witness_utxo

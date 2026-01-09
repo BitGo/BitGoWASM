@@ -3,11 +3,13 @@ mod dimensions;
 pub use dimensions::WasmDimensions;
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsValue;
 
 use crate::address::networks::AddressFormat;
 use crate::error::WasmUtxoError;
+use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
 use crate::fixed_script_wallet::{Chain, WalletScripts};
 use crate::utxolib_compat::UtxolibNetwork;
 use crate::wasm::bip32::WasmBIP32;
@@ -83,6 +85,27 @@ impl FixedScriptWalletNamespace {
         )
         .map_err(|e| WasmUtxoError::new(&format!("Failed to generate address: {}", e)))?;
         Ok(address)
+    }
+
+    /// Check if a network supports a given fixed-script wallet script type
+    ///
+    /// # Arguments
+    /// * `coin` - Coin name (e.g., "btc", "ltc", "doge")
+    /// * `script_type` - Script type name: "p2sh", "p2shP2wsh", "p2wsh", "p2tr", "p2trMusig2"
+    ///
+    /// # Returns
+    /// `true` if the network supports the script type, `false` otherwise
+    ///
+    /// # Examples
+    /// - Bitcoin supports all script types (p2sh, p2shP2wsh, p2wsh, p2tr, p2trMusig2)
+    /// - Litecoin supports segwit but not taproot (p2sh, p2shP2wsh, p2wsh)
+    /// - Dogecoin only supports legacy scripts (p2sh)
+    #[wasm_bindgen]
+    pub fn supports_script_type(coin: &str, script_type: &str) -> Result<bool, WasmUtxoError> {
+        let network = crate::networks::Network::from_coin_name(coin)
+            .ok_or_else(|| WasmUtxoError::new(&format!("Unknown coin: {}", coin)))?;
+        let st = OutputScriptType::from_str(script_type).map_err(|e| WasmUtxoError::new(&e))?;
+        Ok(network.output_script_support().supports_script_type(st))
     }
 }
 #[wasm_bindgen]

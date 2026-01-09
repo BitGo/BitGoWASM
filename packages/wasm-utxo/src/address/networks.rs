@@ -13,6 +13,7 @@ use super::{
     ZCASH_TEST,
 };
 use crate::bitcoin::Script;
+use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
 use crate::networks::Network;
 use miniscript::bitcoin::WitnessVersion;
 
@@ -119,6 +120,15 @@ impl OutputScriptSupport {
             }
         }
         Ok(())
+    }
+
+    /// Check if the network supports a given fixed-script wallet script type
+    pub fn supports_script_type(&self, script_type: OutputScriptType) -> bool {
+        match script_type {
+            OutputScriptType::P2sh => true, // all networks support legacy scripts
+            OutputScriptType::P2shP2wsh | OutputScriptType::P2wsh => self.segwit,
+            OutputScriptType::P2trLegacy | OutputScriptType::P2trMusig2 => self.taproot,
+        }
     }
 }
 
