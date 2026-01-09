@@ -9,10 +9,10 @@ on:
         default: false
 
 jobs:
-  run:
-    name: "Test"
+  # Shared build job - builds all packages first
+  build:
+    name: "Build"
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,7 +26,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
-          workspaces: "packages/wasm-utxo"
+          workspaces: |
+            packages/wasm-utxo
+            packages/wasm-bip32
           cache-on-failure: true
 
       - name: Setup node 20
@@ -35,8 +37,7 @@ jobs:
           node-version: 20
 
       - name: Ensure npm 11.5.1
-        run: |
-          npm install -g npm@11.5.1
+        run: npm install -g npm@11.5.1
 
       - name: Install wasm tools
         run: |
@@ -59,8 +60,7 @@ jobs:
 
       - name: Fetch Base Ref
         if: github.event_name == 'pull_request'
-        run: |
-          git fetch origin $GITHUB_BASE_REF
+        run: git fetch origin $GITHUB_BASE_REF
 
       - name: Install Packages
         run: npm ci --workspaces --include-workspace-root
@@ -69,11 +69,114 @@ jobs:
         run: cargo deny check
         working-directory: packages/wasm-utxo
 
-      - name: build packages
+      - name: Build packages
         run: npm --workspaces run build
 
       - name: Check Source Code Formatting
         run: npm run check-fmt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            packages/wasm-utxo/dist/
+            packages/wasm-utxo/js/wasm/
+            packages/wasm-bip32/dist/
+            packages/wasm-bip32/js/wasm/
+          retention-days: 1
+
+  # Test wasm-bip32 (runs in parallel with test-wasm-utxo)
+  test-wasm-bip32:
+    name: "Test wasm-bip32"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly-2025-10-23
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          workspaces: packages/wasm-bip32
+          cache-on-failure: true
+
+      - name: Setup node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Ensure npm 11.5.1
+        run: npm install -g npm@11.5.1
+
+      - name: Install Packages
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: packages/
+
+      - name: wasm-bip32 / Lint
+        run: npm run lint
+        working-directory: packages/wasm-bip32
+
+      - name: wasm-bip32 / cargo test
+        run: cargo test --workspace
+        working-directory: packages/wasm-bip32
+
+      - name: wasm-bip32 / Unit Test
+        run: npm test
+        working-directory: packages/wasm-bip32
+
+  # Test wasm-utxo (runs in parallel with test-wasm-bip32)
+  test-wasm-utxo:
+    name: "Test wasm-utxo"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly-2025-10-23
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          workspaces: packages/wasm-utxo
+          cache-on-failure: true
+
+      - name: Setup node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Ensure npm 11.5.1
+        run: npm install -g npm@11.5.1
+
+      - name: Install wasm tools
+        run: |
+          cargo install wasm-pack --version 0.13.1
+
+      - name: Install Packages
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: packages/
 
       - name: wasm-utxo / Lint
         run: npm run lint
@@ -91,10 +194,42 @@ jobs:
         run: npm run test:wasm-pack-chrome
         working-directory: packages/wasm-utxo
 
-      - name: Unit Test
-        run: npm --workspaces test
+      - name: wasm-utxo / Unit Test
+        run: npm test
+        working-directory: packages/wasm-utxo
 
-      - name: Upload build artifacts
+  # Final tests that run after both packages are tested
+  test-integration:
+    name: "Integration Tests"
+    needs: [test-wasm-bip32, test-wasm-utxo]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Ensure npm 11.5.1
+        run: npm install -g npm@11.5.1
+
+      - name: Install Packages
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: packages/
+
+      - name: webui / Unit Test
+        run: npm test
+        working-directory: packages/webui
+
+      - name: Upload final build artifacts
         if: inputs.upload-artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -103,4 +238,3 @@ jobs:
             packages/wasm-utxo/pkg/
             packages/wasm-utxo/dist/
           retention-days: 1
-
