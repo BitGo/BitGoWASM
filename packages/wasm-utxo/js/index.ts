@@ -8,6 +8,7 @@ void wasm;
 // and to make imports more explicit (e.g., `import { address } from '@bitgo/wasm-utxo'`)
 export * as address from "./address.js";
 export * as ast from "./ast/index.js";
+export * as bip322 from "./bip322/index.js";
 export * as utxolibCompat from "./utxolibCompat.js";
 export * as fixedScriptWallet from "./fixedScriptWallet/index.js";
 export * as bip32 from "./bip32.js";

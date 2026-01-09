@@ -1,5 +1,6 @@
 mod address;
 mod bip32;
+mod bip322;
 mod dash_transaction;
 mod descriptor;
 mod ecpair;
@@ -16,10 +17,11 @@ mod wallet_keys;
 
 pub use address::AddressNamespace;
 pub use bip32::WasmBIP32;
+pub use bip322::Bip322Namespace;
 pub use dash_transaction::WasmDashTransaction;
 pub use descriptor::WrapDescriptor;
 pub use ecpair::WasmECPair;
-pub use fixed_script_wallet::{FixedScriptWalletNamespace, WasmDimensions};
+pub use fixed_script_wallet::{BitGoPsbt, FixedScriptWalletNamespace, WasmDimensions};
 pub use miniscript::WrapMiniscript;
 pub use psbt::WrapPsbt;
 pub use replay_protection::WasmReplayProtection;
