@@ -4,7 +4,9 @@ use miniscript::bitcoin::secp256k1::{self, PublicKey};
 use miniscript::bitcoin::{OutPoint, ScriptBuf, TapLeafHash, XOnlyPublicKey};
 
 use crate::bitcoin::bip32::KeySource;
-use crate::fixed_script_wallet::{Chain, ReplayProtection, RootWalletKeys, WalletScripts};
+use crate::fixed_script_wallet::{
+    Chain, OutputScriptType, ReplayProtection, RootWalletKeys, WalletScripts,
+};
 use crate::Network;
 
 pub type Bip32DerivationMap = std::collections::BTreeMap<PublicKey, KeySource>;
@@ -655,12 +657,12 @@ pub enum InputScriptType {
 impl InputScriptType {
     pub fn from_script_id(script_id: ScriptId, psbt_input: &Input) -> Result<Self, String> {
         let chain = Chain::try_from(script_id.chain).map_err(|e| e.to_string())?;
-        match chain {
-            Chain::P2shExternal | Chain::P2shInternal => Ok(InputScriptType::P2sh),
-            Chain::P2shP2wshExternal | Chain::P2shP2wshInternal => Ok(InputScriptType::P2shP2wsh),
-            Chain::P2wshExternal | Chain::P2wshInternal => Ok(InputScriptType::P2wsh),
-            Chain::P2trInternal | Chain::P2trExternal => Ok(InputScriptType::P2trLegacy),
-            Chain::P2trMusig2Internal | Chain::P2trMusig2External => {
+        match chain.script_type {
+            OutputScriptType::P2sh => Ok(InputScriptType::P2sh),
+            OutputScriptType::P2shP2wsh => Ok(InputScriptType::P2shP2wsh),
+            OutputScriptType::P2wsh => Ok(InputScriptType::P2wsh),
+            OutputScriptType::P2trLegacy => Ok(InputScriptType::P2trLegacy),
+            OutputScriptType::P2trMusig2 => {
                 // check if tap_script_sigs or tap_scripts are set
                 if !psbt_input.tap_script_sigs.is_empty() || !psbt_input.tap_scripts.is_empty() {
                     Ok(InputScriptType::P2trMusig2ScriptPath)

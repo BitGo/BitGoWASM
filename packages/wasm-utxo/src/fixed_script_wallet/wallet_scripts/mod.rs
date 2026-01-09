@@ -62,15 +62,15 @@ impl WalletScripts {
         chain: Chain,
         script_support: &OutputScriptSupport,
     ) -> Result<WalletScripts, WasmUtxoError> {
-        match chain {
-            Chain::P2shExternal | Chain::P2shInternal => {
+        match chain.script_type {
+            OutputScriptType::P2sh => {
                 script_support.assert_legacy()?;
                 let script = build_multisig_script_2_of_3(keys);
                 Ok(WalletScripts::P2sh(ScriptP2sh {
                     redeem_script: script,
                 }))
             }
-            Chain::P2shP2wshExternal | Chain::P2shP2wshInternal => {
+            OutputScriptType::P2shP2wsh => {
                 script_support.assert_segwit()?;
                 let script = build_multisig_script_2_of_3(keys);
                 Ok(WalletScripts::P2shP2wsh(ScriptP2shP2wsh {
@@ -78,18 +78,18 @@ impl WalletScripts {
                     witness_script: script,
                 }))
             }
-            Chain::P2wshExternal | Chain::P2wshInternal => {
+            OutputScriptType::P2wsh => {
                 script_support.assert_segwit()?;
                 let script = build_multisig_script_2_of_3(keys);
                 Ok(WalletScripts::P2wsh(ScriptP2wsh {
                     witness_script: script,
                 }))
             }
-            Chain::P2trInternal | Chain::P2trExternal => {
+            OutputScriptType::P2trLegacy => {
                 script_support.assert_taproot()?;
                 Ok(WalletScripts::P2trLegacy(ScriptP2tr::new(keys, false)))
             }
-            Chain::P2trMusig2Internal | Chain::P2trMusig2External => {
+            OutputScriptType::P2trMusig2 => {
                 script_support.assert_taproot()?;
                 Ok(WalletScripts::P2trMusig2(ScriptP2tr::new(keys, true)))
             }
@@ -103,7 +103,7 @@ impl WalletScripts {
         script_support: &OutputScriptSupport,
     ) -> Result<WalletScripts, WasmUtxoError> {
         let derived_keys = wallet_keys
-            .derive_for_chain_and_index(chain as u32, index)
+            .derive_for_chain_and_index(chain.value(), index)
             .unwrap();
         WalletScripts::new(&to_pub_triple(&derived_keys), chain, script_support)
     }
@@ -119,39 +119,45 @@ impl WalletScripts {
     }
 }
 
-/// BitGo-Defined mappings between derivation path component and script type
+/// Whether a chain is for receiving (external) or change (internal) addresses.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum Chain {
-    P2shExternal = 0,
-    P2shInternal = 1,
-    P2shP2wshExternal = 10,
-    P2shP2wshInternal = 11,
-    P2wshExternal = 20,
-    P2wshInternal = 21,
-    P2trInternal = 30,
-    P2trExternal = 31,
-    P2trMusig2Internal = 40,
-    P2trMusig2External = 41,
+pub enum Scope {
+    /// External chains are for receiving addresses (even chain values: 0, 10, 20, 30, 40).
+    External,
+    /// Internal chains are for change addresses (odd chain values: 1, 11, 21, 31, 41).
+    Internal,
 }
 
-/// Useful for iterating over enum values
-const ALL_CHAINS: [Chain; 10] = [
-    Chain::P2shExternal,
-    Chain::P2shInternal,
-    Chain::P2shP2wshExternal,
-    Chain::P2shP2wshInternal,
-    Chain::P2wshExternal,
-    Chain::P2wshInternal,
-    Chain::P2trInternal,
-    Chain::P2trExternal,
-    Chain::P2trMusig2Internal,
-    Chain::P2trMusig2External,
-];
+/// BitGo-Defined mappings between derivation path component and script type.
+///
+/// A Chain combines an `OutputScriptType` with a `Scope` (external/internal).
+/// The chain value is used in derivation paths: `m/0/0/{chain}/{index}`.
+///
+/// Chain values are normalized: external = base, internal = base + 1.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct Chain {
+    pub script_type: OutputScriptType,
+    pub scope: Scope,
+}
 
 impl Chain {
-    #[allow(dead_code)]
-    pub fn all() -> &'static [Chain; 10] {
-        &ALL_CHAINS
+    /// Create a new Chain from script type and scope.
+    pub const fn new(script_type: OutputScriptType, scope: Scope) -> Self {
+        Self { script_type, scope }
+    }
+
+    /// Get the u32 chain value for derivation paths.
+    pub const fn value(&self) -> u32 {
+        (match self.script_type {
+            OutputScriptType::P2sh => 0,
+            OutputScriptType::P2shP2wsh => 10,
+            OutputScriptType::P2wsh => 20,
+            OutputScriptType::P2trLegacy => 30,
+            OutputScriptType::P2trMusig2 => 40,
+        }) + match self.scope {
+            Scope::External => 0,
+            Scope::Internal => 1,
+        }
     }
 }
 
@@ -159,12 +165,20 @@ impl TryFrom<u32> for Chain {
     type Error = String;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
-        for chain in &ALL_CHAINS {
-            if *chain as u32 == value {
-                return Ok(*chain);
-            }
-        }
-        Err(format!("no chain for {}", value))
+        let (script_type, scope) = match value {
+            0 => (OutputScriptType::P2sh, Scope::External),
+            1 => (OutputScriptType::P2sh, Scope::Internal),
+            10 => (OutputScriptType::P2shP2wsh, Scope::External),
+            11 => (OutputScriptType::P2shP2wsh, Scope::Internal),
+            20 => (OutputScriptType::P2wsh, Scope::External),
+            21 => (OutputScriptType::P2wsh, Scope::Internal),
+            30 => (OutputScriptType::P2trLegacy, Scope::External),
+            31 => (OutputScriptType::P2trLegacy, Scope::Internal),
+            40 => (OutputScriptType::P2trMusig2, Scope::External),
+            41 => (OutputScriptType::P2trMusig2, Scope::Internal),
+            _ => return Err(format!("no chain for {}", value)),
+        };
+        Ok(Chain::new(script_type, scope))
     }
 }
 
@@ -174,6 +188,85 @@ impl FromStr for Chain {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let chain: u32 = u32::from_str(s).map_err(|v| v.to_string())?;
         Chain::try_from(chain)
+    }
+}
+
+/// Fixed-script wallet script types (2-of-3 multisig)
+///
+/// This enum represents the abstract script type, independent of chain (external/internal).
+/// Use this for checking network support or when you need the script type without derivation info.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum OutputScriptType {
+    /// Legacy Pay-To-Script-Hash (chains 0, 1)
+    P2sh,
+    /// Wrapped-Segwit Pay-To-Script-Hash (chains 10, 11)
+    P2shP2wsh,
+    /// Native Segwit Pay-To-Witness-Script-Hash (chains 20, 21)
+    P2wsh,
+    /// Legacy Taproot, script-path only (chains 30, 31)
+    P2trLegacy,
+    /// Taproot with MuSig2 key-path support (chains 40, 41)
+    P2trMusig2,
+}
+
+/// All OutputScriptType variants for iteration.
+const ALL_SCRIPT_TYPES: [OutputScriptType; 5] = [
+    OutputScriptType::P2sh,
+    OutputScriptType::P2shP2wsh,
+    OutputScriptType::P2wsh,
+    OutputScriptType::P2trLegacy,
+    OutputScriptType::P2trMusig2,
+];
+
+impl FromStr for OutputScriptType {
+    type Err = String;
+
+    /// Parse a script type string into an OutputScriptType.
+    ///
+    /// Accepts both output script types and input script types:
+    /// - Output types: "p2sh", "p2shP2wsh", "p2wsh", "p2tr"/"p2trLegacy", "p2trMusig2"
+    /// - Input types: "p2shP2pk" (→ P2sh), "p2trMusig2ScriptPath"/"p2trMusig2KeyPath" (→ P2trMusig2)
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            // Output script types
+            "p2sh" => Ok(OutputScriptType::P2sh),
+            "p2shP2wsh" => Ok(OutputScriptType::P2shP2wsh),
+            "p2wsh" => Ok(OutputScriptType::P2wsh),
+            // "p2tr" is kept as alias for backwards compatibility
+            "p2tr" | "p2trLegacy" => Ok(OutputScriptType::P2trLegacy),
+            "p2trMusig2" => Ok(OutputScriptType::P2trMusig2),
+            // Input script types (normalized to output types)
+            "p2shP2pk" => Ok(OutputScriptType::P2sh),
+            "p2trMusig2ScriptPath" | "p2trMusig2KeyPath" => Ok(OutputScriptType::P2trMusig2),
+            _ => Err(format!(
+                "Unknown script type '{}'. Expected: p2sh, p2shP2wsh, p2wsh, p2trLegacy, p2trMusig2",
+                s
+            )),
+        }
+    }
+}
+
+impl OutputScriptType {
+    /// Returns all possible OutputScriptType values.
+    pub fn all() -> &'static [OutputScriptType; 5] {
+        &ALL_SCRIPT_TYPES
+    }
+
+    /// Get the string representation of the script type
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OutputScriptType::P2sh => "p2sh",
+            OutputScriptType::P2shP2wsh => "p2shP2wsh",
+            OutputScriptType::P2wsh => "p2wsh",
+            OutputScriptType::P2trLegacy => "p2trLegacy",
+            OutputScriptType::P2trMusig2 => "p2trMusig2",
+        }
+    }
+}
+
+impl std::fmt::Display for OutputScriptType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -200,7 +293,7 @@ pub fn derive_xpubs(
     let p = DerivationPath::from_str("m/0/0")
         .unwrap()
         .child(ChildNumber::Normal {
-            index: chain as u32,
+            index: chain.value(),
         })
         .child(ChildNumber::Normal { index });
     derive_xpubs_with_path(xpubs, ctx, p)
@@ -211,6 +304,19 @@ mod tests {
     use super::*;
     use crate::fixed_script_wallet::wallet_keys::tests::get_test_wallet_keys;
     use crate::Network;
+
+    const ALL_CHAINS: [Chain; 10] = [
+        Chain::new(OutputScriptType::P2sh, Scope::External),
+        Chain::new(OutputScriptType::P2sh, Scope::Internal),
+        Chain::new(OutputScriptType::P2shP2wsh, Scope::External),
+        Chain::new(OutputScriptType::P2shP2wsh, Scope::Internal),
+        Chain::new(OutputScriptType::P2wsh, Scope::External),
+        Chain::new(OutputScriptType::P2wsh, Scope::Internal),
+        Chain::new(OutputScriptType::P2trLegacy, Scope::External),
+        Chain::new(OutputScriptType::P2trLegacy, Scope::Internal),
+        Chain::new(OutputScriptType::P2trMusig2, Scope::External),
+        Chain::new(OutputScriptType::P2trMusig2, Scope::Internal),
+    ];
 
     fn assert_output_script(keys: &RootWalletKeys, chain: Chain, expected_script: &str) {
         let scripts = WalletScripts::from_wallet_keys(
@@ -225,84 +331,40 @@ mod tests {
     }
 
     fn test_build_multisig_chain_with(keys: &RootWalletKeys, chain: Chain) {
-        match chain {
-            Chain::P2shExternal => {
-                assert_output_script(
-                    keys,
-                    chain,
-                    "a914999a8eb861e3fabae1efe4fb16ff4752e1f5976687",
-                );
+        use OutputScriptType::*;
+        use Scope::*;
+
+        let expected = match (chain.script_type, chain.scope) {
+            (P2sh, External) => "a914999a8eb861e3fabae1efe4fb16ff4752e1f5976687",
+            (P2sh, Internal) => "a914487ca5843f23b9f3b85a00136bec647846d179ab87",
+            (P2shP2wsh, External) => "a9141219b6d9430fffb8de14f14969a5c07172c4613b87",
+            (P2shP2wsh, Internal) => "a914cbfab1a5a25afab05ff420bd9dd0958c6f1a7a2f87",
+            (P2wsh, External) => {
+                "0020ce670e65fd69ef2eb1aa6087643a18ae5bff198ca20ef26da546e85962386c76"
             }
-            Chain::P2shInternal => {
-                assert_output_script(
-                    keys,
-                    chain,
-                    "a914487ca5843f23b9f3b85a00136bec647846d179ab87",
-                );
+            (P2wsh, Internal) => {
+                "00209cca08a252f9846a1417afbe46ed96bf09d5ec6d25f0effb7d841188d5992b7c"
             }
-            Chain::P2shP2wshExternal => {
-                assert_output_script(
-                    keys,
-                    chain,
-                    "a9141219b6d9430fffb8de14f14969a5c07172c4613b87",
-                );
+            (P2trLegacy, External) => {
+                "51203a81504b836967a69399fcf3822adfdb7d61061e42418f6aad0d473cbcc69b86"
             }
-            Chain::P2shP2wshInternal => {
-                assert_output_script(
-                    keys,
-                    chain,
-                    "a914cbfab1a5a25afab05ff420bd9dd0958c6f1a7a2f87",
-                );
+            (P2trLegacy, Internal) => {
+                "512093e5e3c8885a6f87b4449e1bffa3ba8a45a9ee634dc27408394c7d9b68f01adc"
             }
-            Chain::P2wshExternal => {
-                assert_output_script(
-                    keys,
-                    chain,
-                    "0020ce670e65fd69ef2eb1aa6087643a18ae5bff198ca20ef26da546e85962386c76",
-                );
+            (P2trMusig2, External) => {
+                "5120c7c4dd55b2bf3cd7ea5b27d3da521699ce761aa345523d8486f0336364957ef2"
             }
-            Chain::P2wshInternal => {
-                assert_output_script(
-                    keys,
-                    chain,
-                    "00209cca08a252f9846a1417afbe46ed96bf09d5ec6d25f0effb7d841188d5992b7c",
-                );
+            (P2trMusig2, Internal) => {
+                "51202629eea5dbef6841160a0b752dedd4b8e206f046835ee944848679d6dea2ac2c"
             }
-            Chain::P2trInternal => {
-                assert_output_script(
-                    keys,
-                    chain,
-                    "51203a81504b836967a69399fcf3822adfdb7d61061e42418f6aad0d473cbcc69b86",
-                );
-            }
-            Chain::P2trExternal => {
-                assert_output_script(
-                    keys,
-                    chain,
-                    "512093e5e3c8885a6f87b4449e1bffa3ba8a45a9ee634dc27408394c7d9b68f01adc",
-                );
-            }
-            Chain::P2trMusig2Internal => {
-                assert_output_script(
-                    keys,
-                    chain,
-                    "5120c7c4dd55b2bf3cd7ea5b27d3da521699ce761aa345523d8486f0336364957ef2",
-                );
-            }
-            Chain::P2trMusig2External => {
-                assert_output_script(
-                    keys,
-                    chain,
-                    "51202629eea5dbef6841160a0b752dedd4b8e206f046835ee944848679d6dea2ac2c",
-                );
-            }
-        }
+        };
+        assert_output_script(keys, chain, expected);
     }
 
     #[test]
     fn test_build_multisig_chain() {
         let keys = get_test_wallet_keys("lol");
-        for chain in Chain::all() {
+        for chain in &ALL_CHAINS {
             test_build_multisig_chain_with(&keys, *chain);
         }
     }
@@ -317,16 +379,27 @@ mod tests {
             taproot: false,
         };
 
-        let result =
-            WalletScripts::from_wallet_keys(&keys, Chain::P2wshExternal, 0, &no_segwit_support);
+        use OutputScriptType::*;
+        use Scope::*;
+
+        let result = WalletScripts::from_wallet_keys(
+            &keys,
+            Chain::new(P2wsh, External),
+            0,
+            &no_segwit_support,
+        );
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
             .contains("Network does not support segwit"));
 
-        let result =
-            WalletScripts::from_wallet_keys(&keys, Chain::P2shP2wshExternal, 0, &no_segwit_support);
+        let result = WalletScripts::from_wallet_keys(
+            &keys,
+            Chain::new(P2shP2wsh, External),
+            0,
+            &no_segwit_support,
+        );
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -339,8 +412,12 @@ mod tests {
             taproot: false,
         };
 
-        let result =
-            WalletScripts::from_wallet_keys(&keys, Chain::P2trExternal, 0, &no_taproot_support);
+        let result = WalletScripts::from_wallet_keys(
+            &keys,
+            Chain::new(P2trLegacy, External),
+            0,
+            &no_taproot_support,
+        );
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -349,7 +426,7 @@ mod tests {
 
         let result = WalletScripts::from_wallet_keys(
             &keys,
-            Chain::P2trMusig2External,
+            Chain::new(P2trMusig2, External),
             0,
             &no_taproot_support,
         );
@@ -360,14 +437,19 @@ mod tests {
             .contains("Network does not support taproot"));
 
         // Test that legacy scripts work regardless of support flags
-        let result =
-            WalletScripts::from_wallet_keys(&keys, Chain::P2shExternal, 0, &no_segwit_support);
+        let result = WalletScripts::from_wallet_keys(
+            &keys,
+            Chain::new(P2sh, External),
+            0,
+            &no_segwit_support,
+        );
         assert!(result.is_ok());
 
         // Test real-world network scenarios
         // Dogecoin doesn't support segwit or taproot
         let doge_support = Network::Dogecoin.output_script_support();
-        let result = WalletScripts::from_wallet_keys(&keys, Chain::P2wshExternal, 0, &doge_support);
+        let result =
+            WalletScripts::from_wallet_keys(&keys, Chain::new(P2wsh, External), 0, &doge_support);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -376,7 +458,12 @@ mod tests {
 
         // Litecoin supports segwit but not taproot
         let ltc_support = Network::Litecoin.output_script_support();
-        let result = WalletScripts::from_wallet_keys(&keys, Chain::P2trExternal, 0, &ltc_support);
+        let result = WalletScripts::from_wallet_keys(
+            &keys,
+            Chain::new(P2trLegacy, External),
+            0,
+            &ltc_support,
+        );
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -384,23 +471,73 @@ mod tests {
             .contains("Network does not support taproot"));
 
         // Litecoin should support segwit scripts
-        let result = WalletScripts::from_wallet_keys(&keys, Chain::P2wshExternal, 0, &ltc_support);
+        let result =
+            WalletScripts::from_wallet_keys(&keys, Chain::new(P2wsh, External), 0, &ltc_support);
         assert!(result.is_ok());
 
         // Bitcoin should support all script types
         let btc_support = Network::Bitcoin.output_script_support();
-        assert!(
-            WalletScripts::from_wallet_keys(&keys, Chain::P2shExternal, 0, &btc_support).is_ok()
+        assert!(WalletScripts::from_wallet_keys(
+            &keys,
+            Chain::new(P2sh, External),
+            0,
+            &btc_support
+        )
+        .is_ok());
+        assert!(WalletScripts::from_wallet_keys(
+            &keys,
+            Chain::new(P2wsh, External),
+            0,
+            &btc_support
+        )
+        .is_ok());
+        assert!(WalletScripts::from_wallet_keys(
+            &keys,
+            Chain::new(P2trLegacy, External),
+            0,
+            &btc_support
+        )
+        .is_ok());
+        assert!(WalletScripts::from_wallet_keys(
+            &keys,
+            Chain::new(P2trMusig2, External),
+            0,
+            &btc_support
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_output_script_type_from_str() {
+        use OutputScriptType::*;
+
+        // Output script types
+        assert_eq!(OutputScriptType::from_str("p2sh").unwrap(), P2sh);
+        assert_eq!(OutputScriptType::from_str("p2shP2wsh").unwrap(), P2shP2wsh);
+        assert_eq!(OutputScriptType::from_str("p2wsh").unwrap(), P2wsh);
+        assert_eq!(OutputScriptType::from_str("p2tr").unwrap(), P2trLegacy);
+        assert_eq!(
+            OutputScriptType::from_str("p2trLegacy").unwrap(),
+            P2trLegacy
         );
-        assert!(
-            WalletScripts::from_wallet_keys(&keys, Chain::P2wshExternal, 0, &btc_support).is_ok()
+        assert_eq!(
+            OutputScriptType::from_str("p2trMusig2").unwrap(),
+            P2trMusig2
         );
-        assert!(
-            WalletScripts::from_wallet_keys(&keys, Chain::P2trExternal, 0, &btc_support).is_ok()
+
+        // Input script types (normalized to output types)
+        assert_eq!(OutputScriptType::from_str("p2shP2pk").unwrap(), P2sh);
+        assert_eq!(
+            OutputScriptType::from_str("p2trMusig2ScriptPath").unwrap(),
+            P2trMusig2
         );
-        assert!(
-            WalletScripts::from_wallet_keys(&keys, Chain::P2trMusig2External, 0, &btc_support)
-                .is_ok()
+        assert_eq!(
+            OutputScriptType::from_str("p2trMusig2KeyPath").unwrap(),
+            P2trMusig2
         );
+
+        // Invalid script types
+        assert!(OutputScriptType::from_str("invalid").is_err());
+        assert!(OutputScriptType::from_str("p2pkh").is_err());
     }
 }

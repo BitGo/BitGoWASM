@@ -7,7 +7,7 @@ use crate::error::WasmUtxoError;
 use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::{
     parse_shared_chain_and_index, InputScriptType,
 };
-use crate::fixed_script_wallet::wallet_scripts::Chain;
+use crate::fixed_script_wallet::wallet_scripts::{Chain, OutputScriptType};
 use miniscript::bitcoin::VarInt;
 use wasm_bindgen::prelude::*;
 
@@ -230,17 +230,11 @@ fn get_input_weights_for_chain(
 ) -> Result<InputWeights, String> {
     let chain_enum = Chain::try_from(chain).map_err(|e| e.to_string())?;
 
-    match chain_enum {
-        Chain::P2shExternal | Chain::P2shInternal => {
-            Ok(get_input_weights_for_type(InputScriptType::P2sh))
-        }
-        Chain::P2shP2wshExternal | Chain::P2shP2wshInternal => {
-            Ok(get_input_weights_for_type(InputScriptType::P2shP2wsh))
-        }
-        Chain::P2wshExternal | Chain::P2wshInternal => {
-            Ok(get_input_weights_for_type(InputScriptType::P2wsh))
-        }
-        Chain::P2trExternal | Chain::P2trInternal => {
+    match chain_enum.script_type {
+        OutputScriptType::P2sh => Ok(get_input_weights_for_type(InputScriptType::P2sh)),
+        OutputScriptType::P2shP2wsh => Ok(get_input_weights_for_type(InputScriptType::P2shP2wsh)),
+        OutputScriptType::P2wsh => Ok(get_input_weights_for_type(InputScriptType::P2wsh)),
+        OutputScriptType::P2trLegacy => {
             // Legacy p2tr - always script path
             // user+bitgo = level 1, user+backup = level 2
             let is_recovery = cosigner == Some("backup");
@@ -253,7 +247,7 @@ fn get_input_weights_for_chain(
                 is_segwit: true,
             })
         }
-        Chain::P2trMusig2External | Chain::P2trMusig2Internal => {
+        OutputScriptType::P2trMusig2 => {
             // p2trMusig2 - keypath for user+bitgo, scriptpath for user+backup
             let is_recovery = cosigner == Some("backup");
             if is_recovery {
@@ -356,14 +350,12 @@ impl WasmDimensions {
                     })?;
 
                     // For p2trMusig2, check if it's keypath or scriptpath
-                    let script_type = match chain_enum {
-                        Chain::P2shExternal | Chain::P2shInternal => InputScriptType::P2sh,
-                        Chain::P2shP2wshExternal | Chain::P2shP2wshInternal => {
-                            InputScriptType::P2shP2wsh
-                        }
-                        Chain::P2wshExternal | Chain::P2wshInternal => InputScriptType::P2wsh,
-                        Chain::P2trExternal | Chain::P2trInternal => InputScriptType::P2trLegacy,
-                        Chain::P2trMusig2External | Chain::P2trMusig2Internal => {
+                    let script_type = match chain_enum.script_type {
+                        OutputScriptType::P2sh => InputScriptType::P2sh,
+                        OutputScriptType::P2shP2wsh => InputScriptType::P2shP2wsh,
+                        OutputScriptType::P2wsh => InputScriptType::P2wsh,
+                        OutputScriptType::P2trLegacy => InputScriptType::P2trLegacy,
+                        OutputScriptType::P2trMusig2 => {
                             // Check if tap_scripts are populated to distinguish keypath/scriptpath
                             if !psbt_input.tap_script_sigs.is_empty()
                                 || !psbt_input.tap_scripts.is_empty()

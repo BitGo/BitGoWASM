@@ -5,19 +5,13 @@ import { type BIP32Arg, BIP32 } from "../bip32.js";
 import { type ECPairArg, ECPair } from "../ecpair.js";
 import type { UtxolibName } from "../utxolibCompat.js";
 import type { CoinName } from "../coinName.js";
+import type { InputScriptType } from "./scriptType.js";
+
+export type { InputScriptType };
 
 export type NetworkName = UtxolibName | CoinName;
 
 export type ScriptId = { chain: number; index: number };
-
-export type InputScriptType =
-  | "p2shP2pk"
-  | "p2sh"
-  | "p2shP2wsh"
-  | "p2wsh"
-  | "p2trLegacy"
-  | "p2trMusig2ScriptPath"
-  | "p2trMusig2KeyPath";
 
 export type OutPoint = {
   txid: string;
