@@ -53,6 +53,7 @@ impl BIP32Key {
         }
     }
 
+    #[allow(dead_code)]
     fn is_testnet(&self) -> bool {
         // Check based on prefix - we'll track this separately if needed
         false // Default to mainnet
@@ -251,7 +252,7 @@ impl WasmBIP32 {
     pub fn identifier(&self) -> js_sys::Uint8Array {
         let pubkey_bytes = self.key.verifying_key().to_sec1_bytes();
         let sha256_hash = Sha256::digest(&pubkey_bytes);
-        let hash160 = Ripemd160::digest(&sha256_hash);
+        let hash160 = Ripemd160::digest(sha256_hash);
         js_sys::Uint8Array::from(&hash160[..])
     }
 
@@ -260,7 +261,7 @@ impl WasmBIP32 {
     pub fn fingerprint(&self) -> js_sys::Uint8Array {
         let pubkey_bytes = self.key.verifying_key().to_sec1_bytes();
         let sha256_hash = Sha256::digest(&pubkey_bytes);
-        let hash160 = Ripemd160::digest(&sha256_hash);
+        let hash160 = Ripemd160::digest(sha256_hash);
         js_sys::Uint8Array::from(&hash160[..4])
     }
 
@@ -323,6 +324,7 @@ impl WasmBIP32 {
 }
 
 // Internal methods for use by other modules
+#[allow(dead_code)]
 impl WasmBIP32 {
     pub(crate) fn signing_key(&self) -> Option<&SigningKey> {
         match &self.key {

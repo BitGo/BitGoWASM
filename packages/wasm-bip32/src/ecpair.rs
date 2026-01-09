@@ -254,6 +254,7 @@ impl WasmECPair {
 }
 
 // Internal methods
+#[allow(dead_code)]
 impl WasmECPair {
     pub(crate) fn signing_key(&self) -> Option<&SigningKey> {
         self.key.signing_key()
