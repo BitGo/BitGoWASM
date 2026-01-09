@@ -13,7 +13,7 @@
   "scripts": {
     "build": "webpack --mode production --progress --config ./webpack.config.js",
     "typecheck": "tsc --noEmit",
-    "test": "echo \"No tests specified\" && exit 0",
+    "test": "true",
     "dev": "webpack serve --mode development --progress --hot --config ./webpack.config.js",
     "fmt": "prettier --write .",
     "check-fmt": "prettier --check '{src,webpack}/**/*.{tsx,ts,js}'",
