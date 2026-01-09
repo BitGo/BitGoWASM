@@ -21,7 +21,6 @@ k256 = { version = "0.13", default-features = false, features = [
     "sha256",
     "alloc",
     "precomputed-tables",
-    "critical-section",
 ] }
 sha2 = { version = "0.10", default-features = false }
 ripemd = { version = "0.1", default-features = false }
