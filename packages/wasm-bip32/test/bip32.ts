@@ -138,10 +138,8 @@ describe("WasmBIP32", () => {
   });
 });
 
-describe("BIP32 Benchmarks: wasm-bip32 vs utxo-lib", function () {
-  // Increase timeout for benchmark tests (default mocha timeout is 2000ms)
-  this.timeout(30000);
-  const ops = 100;
+describe("BIP32 Benchmarks: wasm-bip32 vs utxo-lib", () => {
+  const ops = 1000;
   const seed = new Uint8Array(32).fill(1);
   const xprv =
     "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi";

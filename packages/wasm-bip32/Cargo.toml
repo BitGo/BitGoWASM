@@ -20,6 +20,8 @@ k256 = { version = "0.13", default-features = false, features = [
     "ecdsa",
     "sha256",
     "alloc",
+    "precomputed-tables",
+    "critical-section",
 ] }
 sha2 = { version = "0.10", default-features = false }
 ripemd = { version = "0.1", default-features = false }
@@ -28,6 +30,8 @@ bs58 = { version = "0.5", default-features = false, features = [
     "alloc",
 ] }
 getrandom = { version = "0.2", features = ["js"] }
+# Provide critical-section implementation for WASM (single-threaded, so no-op)
+critical-section = "1.2"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
