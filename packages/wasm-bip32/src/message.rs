@@ -18,7 +18,7 @@ fn bitcoin_message_hash(message: &str) -> [u8; 32] {
 
     // Double SHA256
     let first_hash = Sha256::digest(&data);
-    let second_hash = Sha256::digest(&first_hash);
+    let second_hash = Sha256::digest(first_hash);
 
     let mut result = [0u8; 32];
     result.copy_from_slice(&second_hash);
@@ -104,9 +104,9 @@ pub fn verify_bitcoin_message(
 
     // Extract recovery id from header
     // Header values: 27-30 uncompressed, 31-34 compressed
-    let recovery_id = if header >= 31 && header <= 34 {
+    let recovery_id = if (31..=34).contains(&header) {
         header - 31
-    } else if header >= 27 && header <= 30 {
+    } else if (27..=30).contains(&header) {
         header - 27
     } else {
         return Err(WasmBip32Error::new("Invalid signature header"));
