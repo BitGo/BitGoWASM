@@ -138,7 +138,9 @@ describe("WasmBIP32", () => {
   });
 });
 
-describe("BIP32 Benchmarks: wasm-bip32 vs utxo-lib", () => {
+describe("BIP32 Benchmarks: wasm-bip32 vs utxo-lib", function () {
+  // Increase timeout for benchmark tests on slower CI runners
+  this.timeout(30000);
   const ops = 1000;
   const seed = new Uint8Array(32).fill(1);
   const xprv =
