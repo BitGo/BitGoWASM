@@ -252,15 +252,3 @@ impl WasmECPair {
         message::verify_bitcoin_message(verifying_key, message, signature)
     }
 }
-
-// Internal methods
-#[allow(dead_code)]
-impl WasmECPair {
-    pub(crate) fn signing_key(&self) -> Option<&SigningKey> {
-        self.key.signing_key()
-    }
-
-    pub(crate) fn verifying_key(&self) -> &VerifyingKey {
-        self.key.verifying_key()
-    }
-}

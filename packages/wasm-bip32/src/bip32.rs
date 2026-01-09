@@ -1,6 +1,6 @@
 use crate::error::WasmBip32Error;
 use bip32::{ChildNumber, DerivationPath, Prefix, XPrv, XPub};
-use k256::ecdsa::{SigningKey, VerifyingKey};
+use k256::ecdsa::VerifyingKey;
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 use std::str::FromStr;
@@ -51,12 +51,6 @@ impl BIP32Key {
             BIP32Key::Public(xpub) => xpub.attrs().parent_fingerprint,
             BIP32Key::Private(xprv) => xprv.attrs().parent_fingerprint,
         }
-    }
-
-    #[allow(dead_code)]
-    fn is_testnet(&self) -> bool {
-        // Check based on prefix - we'll track this separately if needed
-        false // Default to mainnet
     }
 
     fn derive(&self, index: u32) -> Result<BIP32Key, WasmBip32Error> {
@@ -320,20 +314,5 @@ impl WasmBIP32 {
             key: self.key.derive_path(path)?,
             testnet: self.testnet,
         })
-    }
-}
-
-// Internal methods for use by other modules
-#[allow(dead_code)]
-impl WasmBIP32 {
-    pub(crate) fn signing_key(&self) -> Option<&SigningKey> {
-        match &self.key {
-            BIP32Key::Private(xprv) => Some(xprv.private_key()),
-            BIP32Key::Public(_) => None,
-        }
-    }
-
-    pub(crate) fn verifying_key(&self) -> VerifyingKey {
-        self.key.verifying_key()
     }
 }
