@@ -128,10 +128,10 @@ pub enum Chain {
     P2shP2wshInternal = 11,
     P2wshExternal = 20,
     P2wshInternal = 21,
-    P2trInternal = 30,
-    P2trExternal = 31,
-    P2trMusig2Internal = 40,
-    P2trMusig2External = 41,
+    P2trExternal = 30,
+    P2trInternal = 31,
+    P2trMusig2External = 40,
+    P2trMusig2Internal = 41,
 }
 
 /// Useful for iterating over enum values
@@ -142,10 +142,10 @@ const ALL_CHAINS: [Chain; 10] = [
     Chain::P2shP2wshInternal,
     Chain::P2wshExternal,
     Chain::P2wshInternal,
-    Chain::P2trInternal,
     Chain::P2trExternal,
-    Chain::P2trMusig2Internal,
+    Chain::P2trInternal,
     Chain::P2trMusig2External,
+    Chain::P2trMusig2Internal,
 ];
 
 impl Chain {
@@ -272,28 +272,28 @@ mod tests {
                 assert_output_script(
                     keys,
                     chain,
-                    "51203a81504b836967a69399fcf3822adfdb7d61061e42418f6aad0d473cbcc69b86",
+                    "512093e5e3c8885a6f87b4449e1bffa3ba8a45a9ee634dc27408394c7d9b68f01adc",
                 );
             }
             Chain::P2trExternal => {
                 assert_output_script(
                     keys,
                     chain,
-                    "512093e5e3c8885a6f87b4449e1bffa3ba8a45a9ee634dc27408394c7d9b68f01adc",
+                    "51203a81504b836967a69399fcf3822adfdb7d61061e42418f6aad0d473cbcc69b86",
                 );
             }
             Chain::P2trMusig2Internal => {
                 assert_output_script(
                     keys,
                     chain,
-                    "5120c7c4dd55b2bf3cd7ea5b27d3da521699ce761aa345523d8486f0336364957ef2",
+                    "51202629eea5dbef6841160a0b752dedd4b8e206f046835ee944848679d6dea2ac2c",
                 );
             }
             Chain::P2trMusig2External => {
                 assert_output_script(
                     keys,
                     chain,
-                    "51202629eea5dbef6841160a0b752dedd4b8e206f046835ee944848679d6dea2ac2c",
+                    "5120c7c4dd55b2bf3cd7ea5b27d3da521699ce761aa345523d8486f0336364957ef2",
                 );
             }
         }
