@@ -1,0 +1,59 @@
+{
+  "name": "@bitgo/wasm-bip32",
+  "description": "Minimal WebAssembly BIP32/ECPair implementation with message signing",
+  "version": "0.0.1",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BitGo/BitGoWASM"
+  },
+  "license": "MIT",
+  "files": [
+    "dist/esm/js/**/*",
+    "dist/cjs/js/**/*",
+    "dist/cjs/package.json"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/js/index.d.ts",
+        "default": "./dist/esm/js/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/js/index.d.ts",
+        "default": "./dist/cjs/js/index.js"
+      }
+    }
+  },
+  "main": "./dist/cjs/js/index.js",
+  "module": "./dist/esm/js/index.js",
+  "types": "./dist/esm/js/index.d.ts",
+  "sideEffects": [
+    "./dist/esm/js/wasm/wasm_bip32.js",
+    "./dist/cjs/js/wasm/wasm_bip32.js"
+  ],
+  "scripts": {
+    "test": "npm run test:mocha",
+    "test:mocha": "mocha --recursive test",
+    "build:wasm": "make js/wasm && make dist/esm/js/wasm && make dist/cjs/js/wasm",
+    "build:ts-esm": "tsc",
+    "build:ts-cjs": "tsc --project tsconfig.cjs.json",
+    "build:ts": "npm run build:ts-esm && npm run build:ts-cjs",
+    "build:package-json": "echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
+    "build": "npm run build:wasm && npm run build:ts && npm run build:package-json",
+    "check-fmt": "prettier --check . && cargo fmt -- --check",
+    "lint": "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings"
+  },
+  "devDependencies": {
+    "@bitgo/utxo-lib": "^11.2.0",
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^22.10.5",
+    "mocha": "^10.6.0",
+    "tsx": "4.20.6",
+    "typescript": "^5.5.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

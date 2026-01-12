@@ -1,0 +1,44 @@
+[package]
+name = "wasm-bip32"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+bip32 = { version = "0.5", default-features = false, features = [
+    "alloc",
+    "secp256k1",
+] }
+k256 = { version = "0.13", default-features = false, features = [
+    "ecdsa",
+    "sha256",
+    "alloc",
+    "precomputed-tables",
+    "std",
+] }
+sha2 = { version = "0.10", default-features = false }
+ripemd = { version = "0.1", default-features = false }
+bs58 = { version = "0.5", default-features = false, features = [
+    "check",
+    "alloc",
+] }
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+hex = "0.4"
+web-sys = { version = "0.3", features = ["console"] }
+hmac = "0.12"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
