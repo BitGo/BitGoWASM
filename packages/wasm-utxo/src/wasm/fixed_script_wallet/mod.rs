@@ -9,7 +9,7 @@ use wasm_bindgen::JsValue;
 
 use crate::address::networks::AddressFormat;
 use crate::error::WasmUtxoError;
-use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
+use crate::fixed_script_wallet::wallet_scripts::{OutputScriptType, Scope};
 use crate::fixed_script_wallet::{Chain, WalletScripts};
 use crate::utxolib_compat::UtxolibNetwork;
 use crate::wasm::bip32::WasmBIP32;
@@ -106,6 +106,35 @@ impl FixedScriptWalletNamespace {
             .ok_or_else(|| WasmUtxoError::new(&format!("Unknown coin: {}", coin)))?;
         let st = OutputScriptType::from_str(script_type).map_err(|e| WasmUtxoError::new(&e))?;
         Ok(network.output_script_support().supports_script_type(st))
+    }
+
+    /// Get all chain code metadata for building TypeScript lookup tables
+    ///
+    /// Returns an array of [chainCode, scriptType, scope] tuples where:
+    /// - chainCode: u32 (0, 1, 10, 11, 20, 21, 30, 31, 40, 41)
+    /// - scriptType: string ("p2sh", "p2shP2wsh", "p2wsh", "p2trLegacy", "p2trMusig2")
+    /// - scope: string ("external" or "internal")
+    #[wasm_bindgen]
+    pub fn chain_code_table() -> JsValue {
+        use js_sys::Array;
+
+        let result = Array::new();
+
+        for script_type in OutputScriptType::all() {
+            for scope in [Scope::External, Scope::Internal] {
+                let chain = Chain::new(*script_type, scope);
+                let tuple = Array::new();
+                tuple.push(&JsValue::from(chain.value()));
+                tuple.push(&JsValue::from_str(script_type.as_str()));
+                tuple.push(&JsValue::from_str(match scope {
+                    Scope::External => "external",
+                    Scope::Internal => "internal",
+                }));
+                result.push(&tuple);
+            }
+        }
+
+        result.into()
     }
 }
 #[wasm_bindgen]

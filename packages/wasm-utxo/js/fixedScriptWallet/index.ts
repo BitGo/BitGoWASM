@@ -6,6 +6,7 @@ export { ReplayProtection, type ReplayProtectionArg } from "./ReplayProtection.j
 export { outputScript, address } from "./address.js";
 export { Dimensions } from "./Dimensions.js";
 export { type OutputScriptType, type InputScriptType, type ScriptType } from "./scriptType.js";
+export { ChainCode, chainCodes, type Scope } from "./chains.js";
 
 // Bitcoin-like PSBT (for all non-Zcash networks)
 export {
