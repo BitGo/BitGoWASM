@@ -207,6 +207,116 @@ describe("Dimensions", function () {
     });
   });
 
+  describe("times", function () {
+    it("should multiply dimensions by a scalar", function () {
+      const input = Dimensions.fromInput({ chain: 10 });
+      const doubled = input.times(2);
+
+      assert.strictEqual(doubled.getInputWeight("min"), input.getInputWeight("min") * 2);
+      assert.strictEqual(doubled.getInputWeight("max"), input.getInputWeight("max") * 2);
+      assert.strictEqual(doubled.hasSegwit, input.hasSegwit);
+    });
+
+    it("should return zero for times(0)", function () {
+      const input = Dimensions.fromInput({ chain: 10 });
+      const zeroed = input.times(0);
+
+      assert.strictEqual(zeroed.getInputWeight(), 0);
+      assert.strictEqual(zeroed.getOutputWeight(), 0);
+    });
+
+    it("should multiply outputs", function () {
+      const output = Dimensions.fromOutput(Buffer.alloc(34));
+      const tripled = output.times(3);
+
+      assert.strictEqual(tripled.getOutputWeight(), output.getOutputWeight() * 3);
+    });
+
+    it("times(1) should return equivalent dimensions", function () {
+      const dim = Dimensions.fromInput({ chain: 20 }).plus(Dimensions.fromOutput(Buffer.alloc(23)));
+      const same = dim.times(1);
+
+      assert.strictEqual(same.getInputWeight("min"), dim.getInputWeight("min"));
+      assert.strictEqual(same.getInputWeight("max"), dim.getInputWeight("max"));
+      assert.strictEqual(same.getOutputWeight(), dim.getOutputWeight());
+    });
+  });
+
+  describe("getInputWeight and getInputVSize", function () {
+    it("should return input weight only (no overhead)", function () {
+      const input = Dimensions.fromInput({ chain: 10 });
+      const inputWeight = input.getInputWeight();
+
+      // Input weight should be less than total weight (which includes overhead)
+      assert.ok(inputWeight < input.getWeight());
+      assert.ok(inputWeight > 0);
+    });
+
+    it("should return min/max input weights for ECDSA inputs", function () {
+      const input = Dimensions.fromInput({ chain: 10 });
+
+      // p2shP2wsh has ECDSA variance
+      assert.ok(input.getInputWeight("min") < input.getInputWeight("max"));
+      assert.ok(input.getInputVSize("min") < input.getInputVSize("max"));
+    });
+
+    it("should return equal min/max for Schnorr inputs", function () {
+      const input = Dimensions.fromInput({ chain: 40 });
+
+      // p2trMusig2 keypath has no variance
+      assert.strictEqual(input.getInputWeight("min"), input.getInputWeight("max"));
+      assert.strictEqual(input.getInputVSize("min"), input.getInputVSize("max"));
+    });
+
+    it("getInputVSize should be ceiling of weight/4", function () {
+      const input = Dimensions.fromInput({ chain: 20 });
+
+      assert.strictEqual(input.getInputVSize("min"), Math.ceil(input.getInputWeight("min") / 4));
+      assert.strictEqual(input.getInputVSize("max"), Math.ceil(input.getInputWeight("max") / 4));
+    });
+
+    it("should return zero for output-only dimensions", function () {
+      const output = Dimensions.fromOutput(Buffer.alloc(34));
+
+      assert.strictEqual(output.getInputWeight(), 0);
+      assert.strictEqual(output.getInputVSize(), 0);
+    });
+  });
+
+  describe("getOutputWeight and getOutputVSize", function () {
+    it("should return output weight only (no overhead)", function () {
+      const output = Dimensions.fromOutput(Buffer.alloc(23));
+      const outputWeight = output.getOutputWeight();
+
+      // Output weight = 4 * (8 + 1 + 23) = 128
+      assert.strictEqual(outputWeight, 128);
+    });
+
+    it("getOutputVSize should be ceiling of weight/4", function () {
+      const output = Dimensions.fromOutput(Buffer.alloc(23));
+
+      assert.strictEqual(output.getOutputVSize(), Math.ceil(output.getOutputWeight() / 4));
+      // 128 / 4 = 32
+      assert.strictEqual(output.getOutputVSize(), 32);
+    });
+
+    it("should return zero for input-only dimensions", function () {
+      const input = Dimensions.fromInput({ chain: 10 });
+
+      assert.strictEqual(input.getOutputWeight(), 0);
+      assert.strictEqual(input.getOutputVSize(), 0);
+    });
+
+    it("should combine correctly with plus", function () {
+      const input = Dimensions.fromInput({ chain: 10 });
+      const output = Dimensions.fromOutput(Buffer.alloc(34));
+      const combined = input.plus(output);
+
+      assert.strictEqual(combined.getInputWeight(), input.getInputWeight());
+      assert.strictEqual(combined.getOutputWeight(), output.getOutputWeight());
+    });
+  });
+
   describe("integration tests with fixtures", function () {
     // Zcash has additional transaction overhead (version group, expiry height, etc.)
     // that we don't account for in Dimensions - skip it for now

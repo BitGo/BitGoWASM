@@ -456,6 +456,16 @@ impl WasmDimensions {
         }
     }
 
+    /// Multiply dimensions by a scalar
+    pub fn times(&self, n: u32) -> WasmDimensions {
+        WasmDimensions {
+            input_weight_min: self.input_weight_min * n as usize,
+            input_weight_max: self.input_weight_max * n as usize,
+            output_weight: self.output_weight * n as usize,
+            has_segwit: self.has_segwit,
+        }
+    }
+
     /// Whether any inputs are segwit (affects overhead calculation)
     pub fn has_segwit(&self) -> bool {
         self.has_segwit
@@ -500,5 +510,36 @@ impl WasmDimensions {
     pub fn get_vsize(&self, size: Option<String>) -> u32 {
         let weight = self.get_weight(size);
         weight.div_ceil(4)
+    }
+
+    /// Get input weight only (min or max)
+    ///
+    /// # Arguments
+    /// * `size` - "min" or "max", defaults to "max"
+    pub fn get_input_weight(&self, size: Option<String>) -> u32 {
+        let use_min = size.as_deref() == Some("min");
+        if use_min {
+            self.input_weight_min as u32
+        } else {
+            self.input_weight_max as u32
+        }
+    }
+
+    /// Get input virtual size (min or max)
+    ///
+    /// # Arguments
+    /// * `size` - "min" or "max", defaults to "max"
+    pub fn get_input_vsize(&self, size: Option<String>) -> u32 {
+        self.get_input_weight(size).div_ceil(4)
+    }
+
+    /// Get output weight
+    pub fn get_output_weight(&self) -> u32 {
+        self.output_weight as u32
+    }
+
+    /// Get output virtual size
+    pub fn get_output_vsize(&self) -> u32 {
+        (self.output_weight as u32).div_ceil(4)
     }
 }

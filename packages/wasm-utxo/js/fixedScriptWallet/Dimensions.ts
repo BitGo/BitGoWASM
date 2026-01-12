@@ -75,6 +75,13 @@ export class Dimensions {
   }
 
   /**
+   * Multiply dimensions by a scalar
+   */
+  times(n: number): Dimensions {
+    return new Dimensions(this._wasm.times(n));
+  }
+
+  /**
    * Whether any inputs are segwit (affects overhead calculation)
    */
   get hasSegwit(): boolean {
@@ -95,5 +102,35 @@ export class Dimensions {
    */
   getVSize(size: "min" | "max" = "max"): number {
     return this._wasm.get_vsize(size);
+  }
+
+  /**
+   * Get input weight only (min or max)
+   * @param size - "min" or "max", defaults to "max"
+   */
+  getInputWeight(size: "min" | "max" = "max"): number {
+    return this._wasm.get_input_weight(size);
+  }
+
+  /**
+   * Get input virtual size (min or max)
+   * @param size - "min" or "max", defaults to "max"
+   */
+  getInputVSize(size: "min" | "max" = "max"): number {
+    return this._wasm.get_input_vsize(size);
+  }
+
+  /**
+   * Get output weight
+   */
+  getOutputWeight(): number {
+    return this._wasm.get_output_weight();
+  }
+
+  /**
+   * Get output virtual size
+   */
+  getOutputVSize(): number {
+    return this._wasm.get_output_vsize();
   }
 }
