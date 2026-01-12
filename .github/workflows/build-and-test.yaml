@@ -201,3 +201,12 @@ jobs:
             packages/wasm-utxo/pkg/
             packages/wasm-utxo/dist/
           retention-days: 1
+
+  # This job provides a stable "test / Test" status check for branch protection.
+  # It runs after all other jobs complete successfully.
+  gate:
+    name: "Test"
+    needs: [build, test, finalize]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All checks passed"
