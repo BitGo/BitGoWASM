@@ -3,6 +3,8 @@
 //! This module provides weight-based estimation for transaction fees,
 //! tracking min/max bounds to account for ECDSA signature variance.
 
+use std::str::FromStr;
+
 use crate::error::WasmUtxoError;
 use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::{
     parse_shared_chain_and_index, InputScriptType,
@@ -435,15 +437,32 @@ impl WasmDimensions {
         })
     }
 
-    /// Create dimensions for a single output from script bytes
-    pub fn from_output_script(script: &[u8]) -> WasmDimensions {
-        let weight = compute_output_weight(script.len());
+    /// Create dimensions for a single output from script length
+    pub fn from_output_script_length(length: u32) -> WasmDimensions {
+        let weight = compute_output_weight(length as usize);
         WasmDimensions {
             input_weight_min: 0,
             input_weight_max: 0,
             output_weight: weight,
             has_segwit: false,
         }
+    }
+
+    /// Create dimensions for a single output from script type string
+    ///
+    /// # Arguments
+    /// * `script_type` - One of: "p2sh", "p2shP2wsh", "p2wsh", "p2tr"/"p2trLegacy", "p2trMusig2"
+    pub fn from_output_script_type(script_type: &str) -> Result<WasmDimensions, WasmUtxoError> {
+        let parsed = OutputScriptType::from_str(script_type).map_err(|e| WasmUtxoError::new(&e))?;
+        let length = match parsed {
+            // P2SH: OP_HASH160 [20 bytes] OP_EQUAL = 23 bytes
+            OutputScriptType::P2sh | OutputScriptType::P2shP2wsh => 23,
+            // P2WSH: OP_0 [32 bytes] = 34 bytes
+            OutputScriptType::P2wsh => 34,
+            // P2TR: OP_1 [32 bytes] = 34 bytes
+            OutputScriptType::P2trLegacy | OutputScriptType::P2trMusig2 => 34,
+        };
+        Ok(Self::from_output_script_length(length))
     }
 
     /// Combine with another Dimensions instance

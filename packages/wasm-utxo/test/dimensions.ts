@@ -173,9 +173,72 @@ describe("Dimensions", function () {
 
     it("should throw when address is provided without network", function () {
       assert.throws(() => {
-        // @ts-expect-error - testing runtime error
+        // String matches { length: number } but implementation detects string and throws
         Dimensions.fromOutput("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
       }, /network is required/);
+    });
+
+    it("should create dimensions from script length only", function () {
+      // Compare with actual script
+      const script = Buffer.alloc(23);
+      const fromScript = Dimensions.fromOutput(script);
+      const fromLength = Dimensions.fromOutput({ length: 23 });
+
+      assert.strictEqual(fromLength.getWeight(), fromScript.getWeight());
+      assert.strictEqual(fromLength.getVSize(), fromScript.getVSize());
+      assert.strictEqual(fromLength.getOutputWeight(), fromScript.getOutputWeight());
+    });
+
+    it("should calculate correct weight for different script lengths", function () {
+      // p2pkh: 25 bytes -> weight = 4 * (8 + 1 + 25) = 136
+      const p2pkh = Dimensions.fromOutput({ length: 25 });
+      assert.strictEqual(p2pkh.getOutputWeight(), 136);
+
+      // p2wpkh: 22 bytes -> weight = 4 * (8 + 1 + 22) = 124
+      const p2wpkh = Dimensions.fromOutput({ length: 22 });
+      assert.strictEqual(p2wpkh.getOutputWeight(), 124);
+
+      // p2tr: 34 bytes -> weight = 4 * (8 + 1 + 34) = 172
+      const p2tr = Dimensions.fromOutput({ length: 34 });
+      assert.strictEqual(p2tr.getOutputWeight(), 172);
+    });
+
+    it("should create dimensions from script type", function () {
+      // p2sh/p2shP2wsh: 23 bytes -> weight = 4 * (8 + 1 + 23) = 128
+      const p2sh = Dimensions.fromOutput({ scriptType: "p2sh" });
+      assert.strictEqual(p2sh.getOutputWeight(), 128);
+
+      const p2shP2wsh = Dimensions.fromOutput({ scriptType: "p2shP2wsh" });
+      assert.strictEqual(p2shP2wsh.getOutputWeight(), 128);
+
+      // p2wsh: 34 bytes -> weight = 4 * (8 + 1 + 34) = 172
+      const p2wsh = Dimensions.fromOutput({ scriptType: "p2wsh" });
+      assert.strictEqual(p2wsh.getOutputWeight(), 172);
+
+      // p2tr/p2trLegacy: 34 bytes -> weight = 4 * (8 + 1 + 34) = 172
+      const p2tr = Dimensions.fromOutput({ scriptType: "p2tr" });
+      assert.strictEqual(p2tr.getOutputWeight(), 172);
+
+      const p2trLegacy = Dimensions.fromOutput({ scriptType: "p2trLegacy" });
+      assert.strictEqual(p2trLegacy.getOutputWeight(), 172);
+
+      // p2trMusig2: 34 bytes -> weight = 4 * (8 + 1 + 34) = 172
+      const p2trMusig2 = Dimensions.fromOutput({ scriptType: "p2trMusig2" });
+      assert.strictEqual(p2trMusig2.getOutputWeight(), 172);
+    });
+
+    it("scriptType should match equivalent length", function () {
+      // p2sh = 23 bytes
+      assert.strictEqual(
+        Dimensions.fromOutput({ scriptType: "p2sh" }).getOutputWeight(),
+        Dimensions.fromOutput({ length: 23 }).getOutputWeight(),
+      );
+
+      // p2wsh = 34 bytes
+      assert.strictEqual(
+        Dimensions.fromOutput({ scriptType: "p2wsh" }).getOutputWeight(),
+        Dimensions.fromOutput({ length: 34 }).getOutputWeight(),
+      );
     });
   });
 

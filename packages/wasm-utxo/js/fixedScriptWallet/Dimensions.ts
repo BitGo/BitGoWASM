@@ -1,6 +1,7 @@
 import { WasmDimensions } from "../wasm/wasm_utxo.js";
 import type { BitGoPsbt, InputScriptType, SignPath } from "./BitGoPsbt.js";
 import type { CoinName } from "../coinName.js";
+import type { OutputScriptType } from "./scriptType.js";
 import { toOutputScriptWithCoin } from "../address.js";
 
 type FromInputParams = { chain: number; signPath?: SignPath } | { scriptType: InputScriptType };
@@ -56,15 +57,30 @@ export class Dimensions {
    * Create dimensions for a single output from an address
    */
   static fromOutput(address: string, network: CoinName): Dimensions;
-  static fromOutput(scriptOrAddress: Uint8Array | string, network?: CoinName): Dimensions {
-    if (typeof scriptOrAddress === "string") {
+  /**
+   * Create dimensions for a single output from script length only
+   */
+  static fromOutput(params: { length: number }): Dimensions;
+  /**
+   * Create dimensions for a single output from script type
+   */
+  static fromOutput(params: { scriptType: OutputScriptType }): Dimensions;
+  static fromOutput(
+    params: Uint8Array | string | { length: number } | { scriptType: OutputScriptType },
+    network?: CoinName,
+  ): Dimensions {
+    if (typeof params === "string") {
       if (network === undefined) {
         throw new Error("network is required when passing an address string");
       }
-      const script = toOutputScriptWithCoin(scriptOrAddress, network);
-      return new Dimensions(WasmDimensions.from_output_script(script));
+      const script = toOutputScriptWithCoin(params, network);
+      return new Dimensions(WasmDimensions.from_output_script_length(script.length));
     }
-    return new Dimensions(WasmDimensions.from_output_script(scriptOrAddress));
+    if (typeof params === "object" && "scriptType" in params) {
+      return new Dimensions(WasmDimensions.from_output_script_type(params.scriptType));
+    }
+    // Both Uint8Array and { length: number } have .length
+    return new Dimensions(WasmDimensions.from_output_script_length(params.length));
   }
 
   /**
