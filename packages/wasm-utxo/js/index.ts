@@ -9,6 +9,7 @@ void wasm;
 export * as address from "./address.js";
 export * as ast from "./ast/index.js";
 export * as bip322 from "./bip322/index.js";
+export * as inscriptions from "./inscriptions.js";
 export * as utxolibCompat from "./utxolibCompat.js";
 export * as fixedScriptWallet from "./fixedScriptWallet/index.js";
 export * as bip32 from "./bip32.js";
@@ -22,6 +23,7 @@ export { Dimensions } from "./fixedScriptWallet/Dimensions.js";
 export type { CoinName } from "./coinName.js";
 export type { Triple } from "./triple.js";
 export type { AddressFormat } from "./address.js";
+export type { TapLeafScript, PreparedInscriptionRevealData } from "./inscriptions.js";
 
 // TODO: the exports below should be namespaced under `descriptor` in the future
 

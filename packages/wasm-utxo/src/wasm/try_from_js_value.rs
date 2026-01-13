@@ -159,3 +159,17 @@ impl TryFromJsValue for CashAddr {
         })
     }
 }
+
+impl TryFromJsValue for crate::inscriptions::TapLeafScript {
+    fn try_from_js_value(value: &JsValue) -> Result<Self, WasmUtxoError> {
+        let leaf_version: u8 = get_field(value, "leafVersion")?;
+        let script = get_buffer_field_vec(value, "script")?;
+        let control_block = get_buffer_field_vec(value, "controlBlock")?;
+
+        Ok(crate::inscriptions::TapLeafScript {
+            leaf_version,
+            script,
+            control_block,
+        })
+    }
+}
