@@ -8,11 +8,17 @@ on:
         type: boolean
         default: false
 
-jobs:
-  run:
-    name: "Test"
-    runs-on: ubuntu-latest
+env:
+  RUST_TOOLCHAIN: nightly-2025-10-23
+  NODE_VERSION: 20
+  NPM_VERSION: 11.5.1
+  WASM_PACK_VERSION: 0.13.1
+  WASM_OPT_VERSION: 0.116.1
 
+jobs:
+  build:
+    name: "Build"
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,28 +27,27 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: nightly-2025-10-23
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
-          workspaces: "packages/wasm-utxo"
+          workspaces: |
+            packages/wasm-utxo
+            packages/wasm-bip32
           cache-on-failure: true
 
-      - name: Setup node 20
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
 
-      - name: Ensure npm 11.5.1
+      - name: Install npm and wasm tools
         run: |
-          npm install -g npm@11.5.1
-
-      - name: Install wasm tools
-        run: |
-          rustup component add rustfmt
-          cargo install wasm-pack --version 0.13.1
-          cargo install wasm-opt --version 0.116.1
+          npm install -g npm@${{ env.NPM_VERSION }}
+          cargo install wasm-pack --version ${{ env.WASM_PACK_VERSION }}
+          cargo install wasm-opt --version ${{ env.WASM_OPT_VERSION }}
           cargo install cargo-deny --locked
 
       - name: Build Info
@@ -53,14 +58,10 @@ jobs:
           echo "wasm-pack $(wasm-pack --version)"
           echo "wasm-opt $(wasm-opt --version)"
           echo "cargo-deny $(cargo deny --version)"
-          git --version
-          echo "base ref $GITHUB_BASE_REF"
-          echo "head ref $GITHUB_HEAD_REF"
 
       - name: Fetch Base Ref
         if: github.event_name == 'pull_request'
-        run: |
-          git fetch origin $GITHUB_BASE_REF
+        run: git fetch origin $GITHUB_BASE_REF
 
       - name: Install Packages
         run: npm ci --workspaces --include-workspace-root
@@ -69,32 +70,129 @@ jobs:
         run: cargo deny check
         working-directory: packages/wasm-utxo
 
-      - name: build packages
+      - name: Build packages
         run: npm --workspaces run build
 
       - name: Check Source Code Formatting
         run: npm run check-fmt
 
-      - name: wasm-utxo / Lint
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            packages/wasm-utxo/dist/
+            packages/wasm-utxo/js/wasm/
+            packages/wasm-bip32/dist/
+            packages/wasm-bip32/js/wasm/
+          retention-days: 1
+
+  test:
+    name: "Test ${{ matrix.package }}"
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [wasm-bip32, wasm-utxo]
+        include:
+          - package: wasm-utxo
+            needs-wasm-pack: true
+            has-wasm-pack-tests: true
+          - package: wasm-bip32
+            needs-wasm-pack: false
+            has-wasm-pack-tests: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          workspaces: packages/${{ matrix.package }}
+          cache-on-failure: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install npm
+        run: npm install -g npm@${{ env.NPM_VERSION }}
+
+      - name: Install wasm-pack
+        if: matrix.needs-wasm-pack
+        run: cargo install wasm-pack --version ${{ env.WASM_PACK_VERSION }}
+
+      - name: Install Packages
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: packages/
+
+      - name: Lint
         run: npm run lint
-        working-directory: packages/wasm-utxo
+        working-directory: packages/${{ matrix.package }}
 
-      - name: wasm-utxo / cargo test
+      - name: Cargo Test
         run: cargo test --workspace
-        working-directory: packages/wasm-utxo
+        working-directory: packages/${{ matrix.package }}
 
-      - name: wasm-utxo / Wasm-Pack Test (Node)
+      - name: Wasm-Pack Test (Node)
+        if: matrix.has-wasm-pack-tests
         run: npm run test:wasm-pack-node
-        working-directory: packages/wasm-utxo
+        working-directory: packages/${{ matrix.package }}
 
-      - name: wasm-utxo / Wasm-Pack Test (Chrome)
+      - name: Wasm-Pack Test (Chrome)
+        if: matrix.has-wasm-pack-tests
         run: npm run test:wasm-pack-chrome
-        working-directory: packages/wasm-utxo
+        working-directory: packages/${{ matrix.package }}
 
       - name: Unit Test
-        run: npm --workspaces test
+        run: npm test
+        working-directory: packages/${{ matrix.package }}
 
-      - name: Upload build artifacts
+  finalize:
+    name: "Finalize"
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install npm
+        run: npm install -g npm@${{ env.NPM_VERSION }}
+
+      - name: Install Packages
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: packages/
+
+      - name: webui / Unit Test
+        run: npm test
+        working-directory: packages/webui
+
+      - name: Upload final build artifacts
         if: inputs.upload-artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -104,3 +202,11 @@ jobs:
             packages/wasm-utxo/dist/
           retention-days: 1
 
+  # This job provides a stable "test / Test" status check for branch protection.
+  # It runs after all other jobs complete successfully.
+  gate:
+    name: "Test"
+    needs: [build, test, finalize]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All checks passed"
