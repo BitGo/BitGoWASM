@@ -383,3 +383,23 @@ impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedTransactio
         )
     }
 }
+
+impl TryIntoJsValue for crate::inscriptions::TapLeafScript {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "leafVersion" => self.leaf_version as u32,
+            "script" => self.script.clone(),
+            "controlBlock" => self.control_block.clone()
+        )
+    }
+}
+
+impl TryIntoJsValue for crate::inscriptions::InscriptionRevealData {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "outputScript" => self.output_script.clone(),
+            "revealTransactionVSize" => self.reveal_transaction_vsize as u32,
+            "tapLeafScript" => self.tap_leaf_script.clone()
+        )
+    }
+}
