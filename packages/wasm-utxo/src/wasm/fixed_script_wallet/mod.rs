@@ -87,6 +87,57 @@ impl FixedScriptWalletNamespace {
         Ok(address)
     }
 
+    #[wasm_bindgen]
+    pub fn output_script_with_network_str(
+        keys: &WasmRootWalletKeys,
+        chain: u32,
+        index: u32,
+        network: &str,
+    ) -> Result<Vec<u8>, WasmUtxoError> {
+        let network = parse_network(network)?;
+        let chain = Chain::try_from(chain)
+            .map_err(|e| WasmUtxoError::new(&format!("Invalid chain: {}", e)))?;
+
+        let wallet_keys = keys.inner();
+        let scripts = WalletScripts::from_wallet_keys(
+            wallet_keys,
+            chain,
+            index,
+            &network.output_script_support(),
+        )?;
+        Ok(scripts.output_script().to_bytes())
+    }
+
+    #[wasm_bindgen]
+    pub fn address_with_network_str(
+        keys: &WasmRootWalletKeys,
+        chain: u32,
+        index: u32,
+        network: &str,
+        address_format: Option<String>,
+    ) -> Result<String, WasmUtxoError> {
+        let network = parse_network(network)?;
+        let wallet_keys = keys.inner();
+        let chain = Chain::try_from(chain)
+            .map_err(|e| WasmUtxoError::new(&format!("Invalid chain: {}", e)))?;
+        let scripts = WalletScripts::from_wallet_keys(
+            wallet_keys,
+            chain,
+            index,
+            &network.output_script_support(),
+        )?;
+        let script = scripts.output_script();
+        let address_format = AddressFormat::from_optional_str(address_format.as_deref())
+            .map_err(|e| WasmUtxoError::new(&format!("Invalid address format: {}", e)))?;
+        let address = crate::address::networks::from_output_script_with_network_and_format(
+            &script,
+            network,
+            address_format,
+        )
+        .map_err(|e| WasmUtxoError::new(&format!("Failed to generate address: {}", e)))?;
+        Ok(address)
+    }
+
     /// Check if a network supports a given fixed-script wallet script type
     ///
     /// # Arguments

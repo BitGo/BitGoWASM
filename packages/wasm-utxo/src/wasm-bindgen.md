@@ -155,3 +155,59 @@ Common Rust ↔ JavaScript type mappings:
 8. **Document with Rust doc comments** - They'll appear in the generated TypeScript
 
 9. **Coordinate with TypeScript wrappers** - Keep the wrapper layer in mind when designing the Rust API
+
+## String vs Object Parameter Pattern
+
+Some functions support both string and object parameters for the same concept. The pattern is:
+
+1. **WASM Layer**: Expose separate functions:
+
+   - Main function (e.g., `output_script`) accepts object via `JsValue`
+   - Variant with `_with_network_str` suffix accepts `&str` for string parameters
+
+2. **TypeScript Wrapper Layer**: Detects parameter type and routes to appropriate WASM function:
+
+   ```typescript
+   export function outputScript(
+     keys: RootWalletKeys,
+     chain: number,
+     index: number,
+     network: NetworkName | UtxolibNetwork  // Union type
+   ): Uint8Array {
+     if (typeof network === 'string') {
+       return FixedScriptWalletNamespace.output_script_with_network_str(...);
+     } else {
+       return FixedScriptWalletNamespace.output_script(...);
+     }
+   }
+   ```
+
+3. **Benefits**:
+   - Clear function signatures in Rust (no runtime type detection)
+   - Type-safe routing in TypeScript
+   - Backward compatible (existing object-based code continues to work)
+   - Simpler new code (can use strings directly)
+
+### Example: Network Parameter
+
+```rust
+// WASM: Object-based (existing)
+#[wasm_bindgen]
+pub fn output_script(
+    keys: &WasmRootWalletKeys,
+    chain: u32,
+    index: u32,
+    network: JsValue,  // UtxolibNetwork object
+) -> Result<Vec<u8>, WasmUtxoError>
+
+// WASM: String-based (new)
+#[wasm_bindgen]
+pub fn output_script_with_network_str(
+    keys: &WasmRootWalletKeys,
+    chain: u32,
+    index: u32,
+    network: &str,  // Network name as string
+) -> Result<Vec<u8>, WasmUtxoError>
+```
+
+The TypeScript wrapper provides a unified API that accepts both types.

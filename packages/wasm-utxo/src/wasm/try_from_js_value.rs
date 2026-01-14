@@ -173,3 +173,20 @@ impl TryFromJsValue for crate::inscriptions::TapLeafScript {
         })
     }
 }
+
+impl TryFromJsValue for crate::networks::Network {
+    fn try_from_js_value(value: &JsValue) -> Result<Self, WasmUtxoError> {
+        let network_str = value
+            .as_string()
+            .ok_or_else(|| WasmUtxoError::new("Expected a string for network parameter"))?;
+
+        crate::networks::Network::from_utxolib_name(&network_str)
+            .or_else(|| crate::networks::Network::from_coin_name(&network_str))
+            .ok_or_else(|| {
+                WasmUtxoError::new(&format!(
+                    "Unknown network '{}'. Expected a utxolib name (e.g., 'bitcoin', 'testnet') or coin name (e.g., 'btc', 'tbtc')",
+                    network_str
+                ))
+            })
+    }
+}
