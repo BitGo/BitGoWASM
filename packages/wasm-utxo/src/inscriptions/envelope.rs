@@ -3,9 +3,7 @@
 //! Creates the taproot script containing the inscription data following
 //! the Ordinals protocol format.
 
-use miniscript::bitcoin::opcodes::all::{
-    OP_CHECKSIG, OP_ENDIF, OP_IF, OP_PUSHBYTES_0, OP_PUSHNUM_1,
-};
+use miniscript::bitcoin::opcodes::all::{OP_CHECKSIG, OP_ENDIF, OP_IF, OP_PUSHBYTES_0};
 use miniscript::bitcoin::opcodes::OP_FALSE;
 use miniscript::bitcoin::script::{Builder, PushBytesBuf};
 use miniscript::bitcoin::secp256k1::XOnlyPublicKey;
@@ -56,11 +54,10 @@ pub fn build_inscription_script(
     let ord_bytes = PushBytesBuf::try_from(b"ord".to_vec()).expect("ord is 3 bytes");
     builder = builder.push_slice(ord_bytes);
 
-    // OP_1 OP_1 - content type tag
-    // Note: The ordinals decoder has a quirk where it expects two separate OP_1s
-    // instead of a single OP_PUSHNUM_1
-    builder = builder.push_opcode(OP_PUSHNUM_1);
-    builder = builder.push_opcode(OP_PUSHNUM_1);
+    // Content type tag: push byte 0x01 (tag number for content-type)
+    // Encoded as PUSHBYTES_1 0x01 (two bytes: 01 01)
+    let tag_content_type = PushBytesBuf::try_from(vec![0x01]).expect("single byte");
+    builder = builder.push_slice(tag_content_type);
 
     // <content_type>
     let content_type_bytes =
