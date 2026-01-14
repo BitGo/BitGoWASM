@@ -5,13 +5,34 @@
 
 use super::envelope::build_inscription_script;
 use crate::error::WasmUtxoError;
+use miniscript::bitcoin::consensus::Encodable;
+use miniscript::bitcoin::hashes::sha256;
 use miniscript::bitcoin::hashes::Hash;
 use miniscript::bitcoin::key::UntweakedKeypair;
-use miniscript::bitcoin::psbt::Psbt;
-use miniscript::bitcoin::secp256k1::{Secp256k1, SecretKey, XOnlyPublicKey};
+use miniscript::bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, XOnlyPublicKey};
 use miniscript::bitcoin::sighash::{Prevouts, SighashCache};
 use miniscript::bitcoin::taproot::{ControlBlock, LeafVersion, TapLeafHash, TaprootBuilder};
 use miniscript::bitcoin::{ScriptBuf, Transaction, TxOut, Witness};
+
+/// NUMS point (Nothing Up My Sleeve) - a secp256k1 x coordinate with unknown discrete logarithm.
+/// Equal to SHA256(uncompressedDER(SECP256K1_GENERATOR_POINT)).
+/// Used as internal key when key-path spending is disabled.
+/// This matches utxo-lib's implementation for compatibility.
+fn nums_point() -> XOnlyPublicKey {
+    let secp = Secp256k1::new();
+    // Generator point G is the public key for secret key = 1
+    let one = SecretKey::from_slice(&[
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 1,
+    ])
+    .expect("valid secret key");
+    let generator = PublicKey::from_secret_key(&secp, &one);
+    // Uncompressed format: 04 || x || y (65 bytes)
+    let uncompressed = generator.serialize_uncompressed();
+    // SHA256 hash of uncompressed generator point
+    let hash = sha256::Hash::hash(&uncompressed);
+    XOnlyPublicKey::from_slice(hash.as_ref()).expect("valid x-only pubkey")
+}
 
 /// Taproot leaf script data needed for spending
 #[derive(Debug, Clone)]
@@ -33,32 +54,32 @@ pub struct InscriptionRevealData {
 /// Create inscription reveal data including the commit output script and tap leaf script
 ///
 /// # Arguments
-/// * `internal_key` - The x-only public key (32 bytes)
+/// * `script_pubkey` - The x-only public key for the OP_CHECKSIG in the inscription script
 /// * `content_type` - MIME type of the inscription
 /// * `data` - The inscription data
 ///
 /// # Returns
 /// `InscriptionRevealData` containing the commit output script, estimated vsize, and tap leaf script
 pub fn create_inscription_reveal_data(
-    internal_key: &XOnlyPublicKey,
+    script_pubkey: &XOnlyPublicKey,
     content_type: &str,
     data: &[u8],
 ) -> Result<InscriptionRevealData, WasmUtxoError> {
     let secp = Secp256k1::new();
 
-    // Build the inscription script
-    let script = build_inscription_script(internal_key, content_type, data);
+    // Build the inscription script (pubkey is used for OP_CHECKSIG inside the script)
+    let script = build_inscription_script(script_pubkey, content_type, data);
 
     // Create taproot tree with the inscription script as the only leaf
     let builder = TaprootBuilder::new()
         .add_leaf(0, script.clone())
         .map_err(|e| WasmUtxoError::new(&format!("Failed to build taproot tree: {:?}", e)))?;
 
-    // Finalize the taproot spend info
-    // Use an unspendable internal key (all zeros XOR'd with script root)
-    // For simplicity, we use the provided internal_key
+    // Use NUMS point as internal key (disables key-path spending)
+    // This matches utxo-lib's behavior for compatibility
+    let internal_key = nums_point();
     let spend_info = builder
-        .finalize(&secp, *internal_key)
+        .finalize(&secp, internal_key)
         .map_err(|e| WasmUtxoError::new(&format!("Failed to finalize taproot: {:?}", e)))?;
 
     // Get the output script (network-agnostic)
@@ -94,7 +115,7 @@ pub fn create_inscription_reveal_data(
 /// * `output_value_sats` - Value in satoshis for the inscription output
 ///
 /// # Returns
-/// A signed PSBT containing the reveal transaction
+/// The signed reveal transaction as bytes (ready to broadcast)
 pub fn sign_reveal_transaction(
     private_key: &SecretKey,
     tap_leaf_script: &TapLeafScript,
@@ -102,7 +123,7 @@ pub fn sign_reveal_transaction(
     commit_output_script: &[u8],
     recipient_output_script: &[u8],
     output_value_sats: u64,
-) -> Result<Psbt, WasmUtxoError> {
+) -> Result<Vec<u8>, WasmUtxoError> {
     let secp = Secp256k1::new();
 
     // Convert output scripts
@@ -187,14 +208,13 @@ pub fn sign_reveal_transaction(
     witness.push(control_block.serialize());
     reveal_tx.input[0].witness = witness;
 
-    // Create PSBT from finalized transaction
-    let psbt = Psbt::from_unsigned_tx(reveal_tx.clone())
-        .map_err(|e| WasmUtxoError::new(&format!("Failed to create PSBT: {}", e)))?;
+    // Serialize the signed transaction
+    let mut tx_bytes = Vec::new();
+    reveal_tx
+        .consensus_encode(&mut tx_bytes)
+        .map_err(|e| WasmUtxoError::new(&format!("Failed to serialize transaction: {}", e)))?;
 
-    // Note: The PSBT is created from the signed transaction for compatibility
-    // with the expected return type. In practice, this is already finalized.
-
-    Ok(psbt)
+    Ok(tx_bytes)
 }
 
 /// Estimate the virtual size of a reveal transaction
@@ -224,6 +244,7 @@ fn estimate_reveal_vsize(script: &ScriptBuf, control_block: &ControlBlock) -> us
 #[cfg(test)]
 mod tests {
     use super::*;
+    use miniscript::bitcoin::hashes::hex::FromHex;
 
     fn test_keypair() -> (SecretKey, XOnlyPublicKey) {
         let secp = Secp256k1::new();
@@ -246,5 +267,124 @@ mod tests {
         assert!(data.reveal_transaction_vsize > 100);
         assert!(!data.tap_leaf_script.script.is_empty());
         assert!(!data.tap_leaf_script.control_block.is_empty());
+    }
+
+    /// Test with the same x-only pubkey as utxo-ord test
+    /// Expected output script: 5120dc8b12eec336e7215fd1213acf66fb0d5dd962813c0616988a12c08493831109
+    /// Expected address: tb1pmj939mkrxmnjzh73yyav7ehmp4wajc5p8srpdxy2ztqgfyurzyys4sg9zx
+    #[test]
+    fn test_utxo_ord_fixture_short_data() {
+        // Same x-only pubkey as utxo-ord test
+        let xonly_hex = "af455f4989d122e9185f8c351dbaecd13adca3eef8a9d38ef8ffed6867e342e3";
+        let xonly_bytes = Vec::<u8>::from_hex(xonly_hex).unwrap();
+        let pubkey = XOnlyPublicKey::from_slice(&xonly_bytes).unwrap();
+
+        let inscription_data = b"Never Gonna Give You Up";
+        let result = create_inscription_reveal_data(&pubkey, "text/plain", inscription_data);
+
+        assert!(result.is_ok());
+        let data = result.unwrap();
+
+        // Log the actual output for debugging
+        let output_hex = hex::encode(&data.output_script);
+        println!("X-only pubkey: {}", xonly_hex);
+        println!(
+            "Inscription data: {:?}",
+            String::from_utf8_lossy(inscription_data)
+        );
+        println!("Output script (actual):   {}", output_hex);
+        println!("Output script (expected): 5120dc8b12eec336e7215fd1213acf66fb0d5dd962813c0616988a12c08493831109");
+
+        // Log the tap leaf script for debugging
+        println!(
+            "Tap leaf script hex: {}",
+            hex::encode(&data.tap_leaf_script.script)
+        );
+        println!(
+            "Control block hex: {}",
+            hex::encode(&data.tap_leaf_script.control_block)
+        );
+
+        // Basic structure checks
+        assert_eq!(data.output_script.len(), 34);
+        assert_eq!(data.output_script[0], 0x51); // OP_1
+        assert_eq!(data.output_script[1], 0x20); // PUSH32
+
+        // Assert byte-exact match with utxo-ord
+        let expected_hex = "5120dc8b12eec336e7215fd1213acf66fb0d5dd962813c0616988a12c08493831109";
+        assert_eq!(
+            output_hex, expected_hex,
+            "Output script should match utxo-ord fixture"
+        );
+    }
+
+    /// Test with large data (>520 bytes) - same as utxo-ord test
+    /// Expected output script: 5120ec90ba87f3e7c5462eb2173afdc50e00cea6fc69166677171d70f45dfb3a31b8
+    /// Expected address: tb1pajgt4plnulz5vt4jzua0m3gwqr82dlrfzen8w9cawr69m7e6xxuq7dzypl
+    #[test]
+    fn test_utxo_ord_fixture_large_data() {
+        let xonly_hex = "af455f4989d122e9185f8c351dbaecd13adca3eef8a9d38ef8ffed6867e342e3";
+        let xonly_bytes = Vec::<u8>::from_hex(xonly_hex).unwrap();
+        let pubkey = XOnlyPublicKey::from_slice(&xonly_bytes).unwrap();
+
+        // "Never Gonna Let You Down" repeated 100 times
+        let base = b"Never Gonna Let You Down";
+        let inscription_data: Vec<u8> = base
+            .iter()
+            .cycle()
+            .take(base.len() * 100)
+            .copied()
+            .collect();
+
+        let result = create_inscription_reveal_data(&pubkey, "text/plain", &inscription_data);
+
+        assert!(result.is_ok());
+        let data = result.unwrap();
+
+        let output_hex = hex::encode(&data.output_script);
+        println!("Output script (actual):   {}", output_hex);
+        println!("Output script (expected): 5120ec90ba87f3e7c5462eb2173afdc50e00cea6fc69166677171d70f45dfb3a31b8");
+
+        assert_eq!(data.output_script.len(), 34);
+        assert_eq!(data.output_script[0], 0x51);
+        assert_eq!(data.output_script[1], 0x20);
+
+        // Assert byte-exact match with utxo-ord
+        let expected_hex = "5120ec90ba87f3e7c5462eb2173afdc50e00cea6fc69166677171d70f45dfb3a31b8";
+        assert_eq!(
+            output_hex, expected_hex,
+            "Output script should match utxo-ord fixture"
+        );
+    }
+
+    /// Debug test to understand taproot key tweaking
+    #[test]
+    fn test_taproot_tweak_details() {
+        let xonly_hex = "af455f4989d122e9185f8c351dbaecd13adca3eef8a9d38ef8ffed6867e342e3";
+        let xonly_bytes = Vec::<u8>::from_hex(xonly_hex).unwrap();
+        let internal_key = XOnlyPublicKey::from_slice(&xonly_bytes).unwrap();
+
+        println!("Internal key: {}", internal_key);
+
+        let secp = Secp256k1::new();
+        let script =
+            build_inscription_script(&internal_key, "text/plain", b"Never Gonna Give You Up");
+
+        println!("Inscription script hex: {}", hex::encode(script.as_bytes()));
+        println!("Inscription script len: {}", script.len());
+
+        // Build taproot tree
+        let builder = TaprootBuilder::new().add_leaf(0, script.clone()).unwrap();
+
+        let spend_info = builder.finalize(&secp, internal_key).unwrap();
+
+        println!("Output key (tweaked): {}", spend_info.output_key());
+        println!(
+            "Merkle root: {:?}",
+            spend_info.merkle_root().map(|r| r.to_string())
+        );
+
+        let output_script = ScriptBuf::new_p2tr_tweaked(spend_info.output_key());
+        println!("Output script: {}", hex::encode(output_script.as_bytes()));
     }
 }

@@ -85,17 +85,14 @@ impl InscriptionsNamespace {
         // Parse the tap leaf script from JS using TryFromJsValue trait
         let tap_leaf = TapLeafScript::try_from_js_value(&tap_leaf_script)?;
 
-        // Sign the reveal transaction
-        let psbt = sign_reveal_impl(
+        // Sign the reveal transaction and return bytes
+        sign_reveal_impl(
             &secret_key,
             &tap_leaf,
             &commit_tx.tx,
             commit_output_script,
             recipient_output_script,
             output_value_sats,
-        )?;
-
-        // Serialize to bytes
-        Ok(psbt.serialize())
+        )
     }
 }

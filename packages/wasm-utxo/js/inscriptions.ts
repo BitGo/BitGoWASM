@@ -89,11 +89,11 @@ export function createInscriptionRevealData(
  * @param commitOutputScript - The commit output script (P2TR)
  * @param recipientOutputScript - Where to send the inscription (output script)
  * @param outputValueSats - Value in satoshis for the inscription output
- * @returns The signed PSBT as bytes
+ * @returns The signed transaction as bytes (ready to broadcast)
  *
  * @example
  * ```typescript
- * const psbtBytes = signRevealTransaction(
+ * const txBytes = signRevealTransaction(
  *   privateKey,
  *   revealData.tapLeafScript,
  *   commitTx,
