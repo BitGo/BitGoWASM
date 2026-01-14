@@ -36,6 +36,7 @@ jobs:
           workspaces: |
             packages/wasm-utxo
             packages/wasm-bip32
+            packages/wasm-solana
           cache-on-failure: true
 
       - name: Setup Node
@@ -85,6 +86,8 @@ jobs:
             packages/wasm-utxo/js/wasm/
             packages/wasm-bip32/dist/
             packages/wasm-bip32/js/wasm/
+            packages/wasm-solana/dist/
+            packages/wasm-solana/js/wasm/
           retention-days: 1
 
   test:
@@ -94,12 +97,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [wasm-bip32, wasm-utxo]
+        package: [wasm-bip32, wasm-utxo, wasm-solana]
         include:
           - package: wasm-utxo
             needs-wasm-pack: true
             has-wasm-pack-tests: true
           - package: wasm-bip32
+            needs-wasm-pack: false
+            has-wasm-pack-tests: false
+          - package: wasm-solana
             needs-wasm-pack: false
             has-wasm-pack-tests: false
     steps:
