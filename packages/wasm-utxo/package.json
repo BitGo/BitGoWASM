@@ -52,6 +52,7 @@
     "lint:fix": "eslint . --fix"
   },
   "devDependencies": {
+    "@bitgo/unspents": "^0.50.13",
     "@bitgo/utxo-lib": "^10.1.0",
     "@eslint/js": "^9.17.0",
     "@types/mocha": "^10.0.7",
