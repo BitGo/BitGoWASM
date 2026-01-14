@@ -26,12 +26,14 @@
 mod error;
 pub mod keypair;
 pub mod pubkey;
+pub mod transaction;
 pub mod wasm;
 
 // Re-export core types at crate root
 pub use error::WasmSolanaError;
 pub use keypair::{Keypair, KeypairExt};
 pub use pubkey::{Pubkey, PubkeyExt};
+pub use transaction::{Transaction, TransactionExt};
 
 // Re-export WASM types
-pub use wasm::{WasmKeypair, WasmPubkey};
+pub use wasm::{WasmKeypair, WasmPubkey, WasmTransaction};
