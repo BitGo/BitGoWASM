@@ -7,6 +7,17 @@ import { toOutputScriptWithCoin } from "../address.js";
 type FromInputParams = { chain: number; signPath?: SignPath } | { scriptType: InputScriptType };
 
 /**
+ * Options for input dimension calculation
+ */
+export type FromInputOptions = {
+  /**
+   * When true, use @bitgo/unspents-compatible signature sizes (72 bytes)
+   * for the "max" calculation instead of true maximum (73 bytes).
+   */
+  utxolibCompat?: boolean;
+};
+
+/**
  * Dimensions class for estimating transaction virtual size.
  *
  * Tracks weight internally with min/max bounds to handle ECDSA signature variance.
@@ -39,13 +50,20 @@ export class Dimensions {
    * Create dimensions for a single input
    *
    * @param params - Either `{ chain, signPath? }` or `{ scriptType }`
+   * @param options - Optional settings like `{ utxolibCompat: true }` for @bitgo/unspents-compatible sizing
    */
-  static fromInput(params: FromInputParams): Dimensions {
+  static fromInput(params: FromInputParams, options?: FromInputOptions): Dimensions {
+    const compat = options?.utxolibCompat;
     if ("scriptType" in params) {
-      return new Dimensions(WasmDimensions.from_input_script_type(params.scriptType));
+      return new Dimensions(WasmDimensions.from_input_script_type(params.scriptType, compat));
     }
     return new Dimensions(
-      WasmDimensions.from_input(params.chain, params.signPath?.signer, params.signPath?.cosigner),
+      WasmDimensions.from_input(
+        params.chain,
+        params.signPath?.signer,
+        params.signPath?.cosigner,
+        compat,
+      ),
     );
   }
 

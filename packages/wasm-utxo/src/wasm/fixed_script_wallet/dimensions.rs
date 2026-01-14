@@ -22,6 +22,8 @@ use super::BitGoPsbt;
 // ECDSA signature sizes (DER encoding variance)
 const ECDSA_SIG_MIN: usize = 71;
 const ECDSA_SIG_MAX: usize = 73;
+// @bitgo/unspents uses a fixed 72-byte signature size
+const ECDSA_SIG_COMPAT: usize = 72;
 
 // Schnorr signature (fixed size, no sighash byte in witness)
 const SCHNORR_SIG: usize = 64;
@@ -87,12 +89,19 @@ struct InputWeights {
 }
 
 /// Get p2sh 2-of-3 multisig input components
-fn get_p2sh_components(sig_size: usize) -> Vec<usize> {
+///
+/// # Arguments
+/// * `sig_size` - Signature size (71, 72, or 73 bytes)
+/// * `compat` - When true, use OP_PUSHDATA2 encoding for redeemScript (matches @bitgo/unspents)
+fn get_p2sh_components(sig_size: usize, compat: bool) -> Vec<usize> {
+    // @bitgo/unspents uses OP_PUSHDATA2 (3 bytes) for redeemScript push,
+    // while minimal encoding uses OP_PUSHDATA1 (2 bytes) for 105-byte scripts
+    let redeem_script_push_overhead = if compat { 3 } else { 2 };
     vec![
         OP_0_SIZE,
-        OP_PUSH_SIZE + sig_size,                 // sig 1
-        OP_PUSH_SIZE + sig_size,                 // sig 2
-        OP_PUSH_SIZE + 1 + P2MS_PUB_SCRIPT_SIZE, // OP_PUSHDATA1 + redeemScript
+        OP_PUSH_SIZE + sig_size,                            // sig 1
+        OP_PUSH_SIZE + sig_size,                            // sig 2
+        redeem_script_push_overhead + P2MS_PUB_SCRIPT_SIZE, // redeemScript with push
     ]
 }
 
@@ -143,19 +152,36 @@ fn get_p2tr_keypath_components() -> (Vec<usize>, Vec<usize>) {
 }
 
 /// Get p2sh-p2pk input components (single signature, used for replay protection)
-fn get_p2sh_p2pk_components(sig_size: usize) -> Vec<usize> {
+///
+/// # Arguments
+/// * `sig_size` - Signature size (71, 72, or 73 bytes)
+/// * `compat` - When true, use OP_PUSHDATA1 encoding for redeemScript (matches @bitgo/unspents)
+fn get_p2sh_p2pk_components(sig_size: usize, compat: bool) -> Vec<usize> {
+    // @bitgo/unspents uses OP_PUSHDATA1 (2 bytes) for redeemScript push,
+    // while minimal encoding uses direct push (1 byte) for 35-byte scripts
+    let redeem_script_push_overhead = if compat { 2 } else { 1 };
     vec![
-        OP_PUSH_SIZE + sig_size,             // signature
-        OP_PUSH_SIZE + P2PK_PUB_SCRIPT_SIZE, // redeemScript (pubkey + OP_CHECKSIG)
+        OP_PUSH_SIZE + sig_size,                            // signature
+        redeem_script_push_overhead + P2PK_PUB_SCRIPT_SIZE, // redeemScript (pubkey + OP_CHECKSIG)
     ]
 }
 
 /// Get input weight range for a given script type
-fn get_input_weights_for_type(script_type: InputScriptType) -> InputWeights {
+///
+/// # Arguments
+/// * `script_type` - The input script type
+/// * `compat` - When true, use 72-byte signatures for max (matches @bitgo/unspents)
+fn get_input_weights_for_type(script_type: InputScriptType, compat: bool) -> InputWeights {
+    let sig_max = if compat {
+        ECDSA_SIG_COMPAT
+    } else {
+        ECDSA_SIG_MAX
+    };
+
     match script_type {
         InputScriptType::P2sh => {
-            let min = compute_input_weight(&get_p2sh_components(ECDSA_SIG_MIN), &[]);
-            let max = compute_input_weight(&get_p2sh_components(ECDSA_SIG_MAX), &[]);
+            let min = compute_input_weight(&get_p2sh_components(ECDSA_SIG_MIN, false), &[]);
+            let max = compute_input_weight(&get_p2sh_components(sig_max, compat), &[]);
             InputWeights {
                 min,
                 max,
@@ -164,7 +190,7 @@ fn get_input_weights_for_type(script_type: InputScriptType) -> InputWeights {
         }
         InputScriptType::P2shP2wsh => {
             let (script_min, witness_min) = get_p2sh_p2wsh_components(ECDSA_SIG_MIN);
-            let (script_max, witness_max) = get_p2sh_p2wsh_components(ECDSA_SIG_MAX);
+            let (script_max, witness_max) = get_p2sh_p2wsh_components(sig_max);
             let min = compute_input_weight(&script_min, &witness_min);
             let max = compute_input_weight(&script_max, &witness_max);
             InputWeights {
@@ -175,7 +201,7 @@ fn get_input_weights_for_type(script_type: InputScriptType) -> InputWeights {
         }
         InputScriptType::P2wsh => {
             let (script_min, witness_min) = get_p2wsh_components(ECDSA_SIG_MIN);
-            let (script_max, witness_max) = get_p2wsh_components(ECDSA_SIG_MAX);
+            let (script_max, witness_max) = get_p2wsh_components(sig_max);
             let min = compute_input_weight(&script_min, &witness_min);
             let max = compute_input_weight(&script_max, &witness_max);
             InputWeights {
@@ -186,6 +212,7 @@ fn get_input_weights_for_type(script_type: InputScriptType) -> InputWeights {
         }
         InputScriptType::P2trLegacy => {
             // Legacy p2tr uses script path level 1 by default (user+bitgo)
+            // Schnorr signatures have no variance, compat flag has no effect
             let (script, witness) = get_p2tr_script_path_components(1);
             let w = compute_input_weight(&script, &witness);
             InputWeights {
@@ -195,6 +222,7 @@ fn get_input_weights_for_type(script_type: InputScriptType) -> InputWeights {
             }
         }
         InputScriptType::P2trMusig2KeyPath => {
+            // Schnorr signatures have no variance, compat flag has no effect
             let (script, witness) = get_p2tr_keypath_components();
             let w = compute_input_weight(&script, &witness);
             InputWeights {
@@ -204,6 +232,7 @@ fn get_input_weights_for_type(script_type: InputScriptType) -> InputWeights {
             }
         }
         InputScriptType::P2trMusig2ScriptPath => {
+            // Schnorr signatures have no variance, compat flag has no effect
             let (script, witness) = get_p2tr_script_path_components(1);
             let w = compute_input_weight(&script, &witness);
             InputWeights {
@@ -213,8 +242,8 @@ fn get_input_weights_for_type(script_type: InputScriptType) -> InputWeights {
             }
         }
         InputScriptType::P2shP2pk => {
-            let min = compute_input_weight(&get_p2sh_p2pk_components(ECDSA_SIG_MIN), &[]);
-            let max = compute_input_weight(&get_p2sh_p2pk_components(ECDSA_SIG_MAX), &[]);
+            let min = compute_input_weight(&get_p2sh_p2pk_components(ECDSA_SIG_MIN, false), &[]);
+            let max = compute_input_weight(&get_p2sh_p2pk_components(sig_max, compat), &[]);
             InputWeights {
                 min,
                 max,
@@ -229,13 +258,17 @@ fn get_input_weights_for_chain(
     chain: u32,
     _signer: Option<&str>,
     cosigner: Option<&str>,
+    compat: bool,
 ) -> Result<InputWeights, String> {
     let chain_enum = Chain::try_from(chain).map_err(|e| e.to_string())?;
 
     match chain_enum.script_type {
-        OutputScriptType::P2sh => Ok(get_input_weights_for_type(InputScriptType::P2sh)),
-        OutputScriptType::P2shP2wsh => Ok(get_input_weights_for_type(InputScriptType::P2shP2wsh)),
-        OutputScriptType::P2wsh => Ok(get_input_weights_for_type(InputScriptType::P2wsh)),
+        OutputScriptType::P2sh => Ok(get_input_weights_for_type(InputScriptType::P2sh, compat)),
+        OutputScriptType::P2shP2wsh => Ok(get_input_weights_for_type(
+            InputScriptType::P2shP2wsh,
+            compat,
+        )),
+        OutputScriptType::P2wsh => Ok(get_input_weights_for_type(InputScriptType::P2wsh, compat)),
         OutputScriptType::P2trLegacy => {
             // Legacy p2tr - always script path
             // user+bitgo = level 1, user+backup = level 2
@@ -369,13 +402,13 @@ impl WasmDimensions {
                         }
                     };
 
-                    get_input_weights_for_type(script_type)
+                    get_input_weights_for_type(script_type, false)
                 }
                 Err(_) => {
                     // No derivation path - check if it's a replay protection input
                     // Replay protection inputs have unknownKeyVals with specific markers
                     // For now, assume p2shP2pk for inputs without derivation paths
-                    get_input_weights_for_type(InputScriptType::P2shP2pk)
+                    get_input_weights_for_type(InputScriptType::P2shP2pk, false)
                 }
             };
 
@@ -404,13 +437,20 @@ impl WasmDimensions {
     /// * `chain` - Chain code (0/1=p2sh, 10/11=p2shP2wsh, 20/21=p2wsh, 30/31=p2tr, 40/41=p2trMusig2)
     /// * `signer` - Optional signer key ("user", "backup", "bitgo")
     /// * `cosigner` - Optional cosigner key ("user", "backup", "bitgo")
+    /// * `compat` - When true, use 72-byte signatures for max (matches @bitgo/unspents)
     pub fn from_input(
         chain: u32,
         signer: Option<String>,
         cosigner: Option<String>,
+        compat: Option<bool>,
     ) -> Result<WasmDimensions, WasmUtxoError> {
-        let weights = get_input_weights_for_chain(chain, signer.as_deref(), cosigner.as_deref())
-            .map_err(|e| WasmUtxoError::new(&e))?;
+        let weights = get_input_weights_for_chain(
+            chain,
+            signer.as_deref(),
+            cosigner.as_deref(),
+            compat.unwrap_or(false),
+        )
+        .map_err(|e| WasmUtxoError::new(&e))?;
 
         Ok(WasmDimensions {
             input_weight_min: weights.min,
@@ -425,9 +465,13 @@ impl WasmDimensions {
     /// # Arguments
     /// * `script_type` - One of: "p2sh", "p2shP2wsh", "p2wsh", "p2trLegacy",
     ///                   "p2trMusig2KeyPath", "p2trMusig2ScriptPath", "p2shP2pk"
-    pub fn from_input_script_type(script_type: &str) -> Result<WasmDimensions, WasmUtxoError> {
+    /// * `compat` - When true, use 72-byte signatures for max (matches @bitgo/unspents)
+    pub fn from_input_script_type(
+        script_type: &str,
+        compat: Option<bool>,
+    ) -> Result<WasmDimensions, WasmUtxoError> {
         let parsed = parse_script_type(script_type).map_err(|e| WasmUtxoError::new(&e))?;
-        let weights = get_input_weights_for_type(parsed);
+        let weights = get_input_weights_for_type(parsed, compat.unwrap_or(false));
 
         Ok(WasmDimensions {
             input_weight_min: weights.min,
