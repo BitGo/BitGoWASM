@@ -16,8 +16,12 @@ js-sys = "0.3"
 solana-pubkey = { version = "2.0", features = ["curve25519"] }
 solana-keypair = "2.0"
 solana-signer = "2.0"
+solana-transaction = { version = "3.0", features = ["serde", "bincode"] }
 # Ed25519 for deriving pubkey from 32-byte seed (solana-keypair expects 64-byte format)
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
+# Serialization for transaction deserialization
+bincode = "1.3"
+base64 = "0.22"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
