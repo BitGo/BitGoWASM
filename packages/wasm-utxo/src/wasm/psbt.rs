@@ -3,9 +3,13 @@ use crate::wasm::descriptor::WrapDescriptorEnum;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use crate::wasm::WrapDescriptor;
 use miniscript::bitcoin::bip32::Fingerprint;
+use miniscript::bitcoin::locktime::absolute::LockTime;
 use miniscript::bitcoin::secp256k1::{Secp256k1, Signing};
-use miniscript::bitcoin::{bip32, psbt, PublicKey, XOnlyPublicKey};
-use miniscript::bitcoin::{PrivateKey, Psbt};
+use miniscript::bitcoin::transaction::{Transaction, Version};
+use miniscript::bitcoin::{
+    bip32, psbt, Amount, OutPoint, PublicKey, ScriptBuf, Sequence, XOnlyPublicKey,
+};
+use miniscript::bitcoin::{PrivateKey, Psbt, TxIn, TxOut, Txid};
 use miniscript::descriptor::{SinglePub, SinglePubKey};
 use miniscript::psbt::PsbtExt;
 use miniscript::{DescriptorPublicKey, ToPublicKey};
@@ -78,6 +82,22 @@ pub struct WrapPsbt(Psbt);
 
 #[wasm_bindgen()]
 impl WrapPsbt {
+    /// Create an empty PSBT
+    ///
+    /// # Arguments
+    /// * `version` - Transaction version (default: 2)
+    /// * `lock_time` - Transaction lock time (default: 0)
+    #[wasm_bindgen(constructor)]
+    pub fn new(version: Option<i32>, lock_time: Option<u32>) -> WrapPsbt {
+        let tx = Transaction {
+            version: Version(version.unwrap_or(2)),
+            lock_time: LockTime::from_consensus(lock_time.unwrap_or(0)),
+            input: vec![],
+            output: vec![],
+        };
+        WrapPsbt(Psbt::from_unsigned_tx(tx).expect("empty transaction should be valid"))
+    }
+
     pub fn deserialize(psbt: Vec<u8>) -> Result<WrapPsbt, JsError> {
         Ok(WrapPsbt(Psbt::deserialize(&psbt).map_err(JsError::from)?))
     }
@@ -89,6 +109,91 @@ impl WrapPsbt {
     #[allow(clippy::should_implement_trait)]
     pub fn clone(&self) -> WrapPsbt {
         Clone::clone(self)
+    }
+
+    /// Add an input to the PSBT
+    ///
+    /// # Arguments
+    /// * `txid` - Transaction ID (hex string, 32 bytes reversed)
+    /// * `vout` - Output index being spent
+    /// * `value` - Value in satoshis of the output being spent
+    /// * `script` - The scriptPubKey of the output being spent
+    /// * `sequence` - Sequence number (default: 0xFFFFFFFE for RBF)
+    ///
+    /// # Returns
+    /// The index of the newly added input
+    #[wasm_bindgen(js_name = addInput)]
+    pub fn add_input(
+        &mut self,
+        txid: &str,
+        vout: u32,
+        value: u64,
+        script: &[u8],
+        sequence: Option<u32>,
+    ) -> Result<usize, JsError> {
+        let txid =
+            Txid::from_str(txid).map_err(|e| JsError::new(&format!("Invalid txid: {}", e)))?;
+        let script = ScriptBuf::from_bytes(script.to_vec());
+
+        let tx_in = TxIn {
+            previous_output: OutPoint { txid, vout },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence(sequence.unwrap_or(0xFFFFFFFE)),
+            witness: miniscript::bitcoin::Witness::default(),
+        };
+
+        let psbt_input = psbt::Input {
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(value),
+                script_pubkey: script,
+            }),
+            ..Default::default()
+        };
+
+        self.0.unsigned_tx.input.push(tx_in);
+        self.0.inputs.push(psbt_input);
+
+        Ok(self.0.inputs.len() - 1)
+    }
+
+    /// Add an output to the PSBT
+    ///
+    /// # Arguments
+    /// * `script` - The output script (scriptPubKey)
+    /// * `value` - Value in satoshis
+    ///
+    /// # Returns
+    /// The index of the newly added output
+    #[wasm_bindgen(js_name = addOutput)]
+    pub fn add_output(&mut self, script: &[u8], value: u64) -> usize {
+        let script = ScriptBuf::from_bytes(script.to_vec());
+
+        let tx_out = TxOut {
+            value: Amount::from_sat(value),
+            script_pubkey: script,
+        };
+
+        let psbt_output = psbt::Output::default();
+
+        self.0.unsigned_tx.output.push(tx_out);
+        self.0.outputs.push(psbt_output);
+
+        self.0.outputs.len() - 1
+    }
+
+    /// Get the unsigned transaction bytes
+    ///
+    /// # Returns
+    /// The serialized unsigned transaction
+    #[wasm_bindgen(js_name = getUnsignedTx)]
+    pub fn get_unsigned_tx(&self) -> Vec<u8> {
+        use miniscript::bitcoin::consensus::Encodable;
+        let mut buf = Vec::new();
+        self.0
+            .unsigned_tx
+            .consensus_encode(&mut buf)
+            .expect("encoding to vec should not fail");
+        buf
     }
 
     #[wasm_bindgen(js_name = updateInputWithDescriptor)]

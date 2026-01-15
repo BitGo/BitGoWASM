@@ -1,8 +1,7 @@
 import * as assert from "assert";
-import * as utxolib from "@bitgo/utxo-lib";
 import { ECPair } from "../js/ecpair.js";
 import { Transaction } from "../js/transaction.js";
-import { address, inscriptions } from "../js/index.js";
+import { address, inscriptions, Psbt } from "../js/index.js";
 
 describe("inscriptions (wasm-utxo)", () => {
   const contentType = "text/plain";
@@ -133,26 +132,21 @@ describe("inscriptions (wasm-utxo)", () => {
   describe("signRevealTransaction", () => {
     // Create a mock commit transaction with a P2TR output
     function createMockCommitTx(commitOutputScript: Uint8Array): Transaction {
-      const psbt = new utxolib.Psbt({ network: utxolib.networks.testnet });
+      const psbt = new Psbt();
 
       // Add a dummy input
-      psbt.addInput({
-        hash: Buffer.alloc(32), // dummy txid
-        index: 0,
-        witnessUtxo: {
-          script: Buffer.from(commitOutputScript),
-          value: BigInt(100_000),
-        },
-      });
+      psbt.addInput(
+        "0".repeat(64), // dummy txid (32 zero bytes as hex)
+        0,
+        BigInt(100_000),
+        commitOutputScript,
+      );
 
       // Add the commit output
-      psbt.addOutput({
-        script: Buffer.from(commitOutputScript),
-        value: BigInt(42),
-      });
+      psbt.addOutput(commitOutputScript, BigInt(42));
 
       // Get the unsigned transaction
-      const txBytes = psbt.data.globalMap.unsignedTx.toBuffer();
+      const txBytes = psbt.getUnsignedTx();
       return Transaction.fromBytes(txBytes);
     }
 
