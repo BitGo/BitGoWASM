@@ -24,6 +24,7 @@
 //! ```
 
 mod error;
+pub mod instructions;
 pub mod keypair;
 pub mod pubkey;
 pub mod transaction;
@@ -34,6 +35,12 @@ pub use error::WasmSolanaError;
 pub use keypair::{Keypair, KeypairExt};
 pub use pubkey::{Pubkey, PubkeyExt};
 pub use transaction::{Transaction, TransactionExt};
+
+// Re-export instruction types
+pub use instructions::{
+    ComputeBudgetInstruction, ComputeBudgetInstructionType, StakeAuthorize, StakeInstruction,
+    StakeInstructionType, SystemInstruction, SystemInstructionType,
+};
 
 // Re-export WASM types
 pub use wasm::{WasmKeypair, WasmPubkey, WasmTransaction};
