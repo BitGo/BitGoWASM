@@ -24,6 +24,7 @@
 //! ```
 
 mod error;
+pub mod instructions;
 pub mod keypair;
 pub mod pubkey;
 pub mod transaction;
@@ -31,6 +32,12 @@ pub mod wasm;
 
 // Re-export core types at crate root
 pub use error::WasmSolanaError;
+pub use instructions::{
+    decode_compute_budget_instruction, decode_stake_instruction, decode_system_instruction,
+    is_compute_budget_program, is_stake_program, is_system_program, ComputeBudgetInstruction,
+    StakeInstruction, SystemInstruction, COMPUTE_BUDGET_PROGRAM_ID, STAKE_PROGRAM_ID,
+    SYSTEM_PROGRAM_ID,
+};
 pub use keypair::{Keypair, KeypairExt};
 pub use pubkey::{Pubkey, PubkeyExt};
 pub use transaction::{Transaction, TransactionExt};
