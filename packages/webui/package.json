@@ -22,6 +22,7 @@
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
+    "@bitgo/wasm-solana": "*",
     "@bitgo/wasm-utxo": "*",
     "fp-ts": "^2.16.8",
     "io-ts": "^2.2.21",

@@ -21,6 +21,9 @@
   "references": [
     {
       "path": "../wasm-utxo"
+    },
+    {
+      "path": "../wasm-solana"
     }
   ]
 }
