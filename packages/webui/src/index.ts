@@ -9,6 +9,7 @@ import { initRouter, type Route } from "./lib/router";
 
 // Import demo components (registers them as custom elements)
 import "./wasm-utxo/addresses";
+import "./wasm-solana/transaction";
 
 // Common styles used across components
 export const commonStyles = `
@@ -136,6 +137,20 @@ class HomePage extends BaseComponent {
               ),
             ),
           ),
+          h(
+            "li",
+            {},
+            h(
+              "a",
+              { class: "demo-link", href: "#/wasm-solana/transaction" },
+              h("div", { class: "demo-title" }, "Solana Transaction Parser"),
+              h(
+                "div",
+                { class: "demo-desc" },
+                "Parse and decode Solana transaction instructions from base64",
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -148,6 +163,7 @@ defineComponent("home-page", HomePage);
 const routes: Route[] = [
   { path: "/", component: "home-page" },
   { path: "/wasm-utxo/addresses", component: "address-converter" },
+  { path: "/wasm-solana/transaction", component: "solana-transaction-parser" },
 ];
 
 // Initialize router when DOM is ready
