@@ -7,6 +7,10 @@ on:
         description: "Upload build artifacts"
         type: boolean
         default: false
+      upload-webui-artifact:
+        description: "Upload webui build artifact for pages deployment"
+        type: boolean
+        default: false
 
 env:
   RUST_TOOLCHAIN: nightly-2025-10-23
@@ -89,6 +93,12 @@ jobs:
             packages/wasm-solana/dist/
             packages/wasm-solana/js/wasm/
           retention-days: 1
+
+      - name: Upload webui artifact
+        if: inputs.upload-webui-artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/webui/dist
 
   test:
     name: "Test ${{ matrix.package }}"

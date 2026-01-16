@@ -18,67 +18,11 @@ concurrency:
   group: "pages"
   cancel-in-progress: false
 
-env:
-  RUST_TOOLCHAIN: nightly-2025-10-23
-  NODE_VERSION: 20
-  NPM_VERSION: 11.5.1
-  WASM_PACK_VERSION: 0.13.1
-  WASM_OPT_VERSION: 0.116.1
-
 jobs:
   build:
-    name: "Build"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: rustfmt, clippy
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
-        with:
-          workspaces: |
-            packages/wasm-utxo
-            packages/wasm-bip32
-            packages/wasm-solana
-          cache-on-failure: true
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Install npm and wasm tools
-        run: |
-          npm install -g npm@${{ env.NPM_VERSION }}
-          cargo install wasm-pack --version ${{ env.WASM_PACK_VERSION }}
-          cargo install wasm-opt --version ${{ env.WASM_OPT_VERSION }}
-
-      - name: Build Info
-        run: |
-          echo "node $(node --version)"
-          echo "npm $(npm --version)"
-          echo "rustc $(rustc --version)"
-          echo "wasm-pack $(wasm-pack --version)"
-          echo "wasm-opt $(wasm-opt --version)"
-
-      - name: Install Packages
-        run: npm ci --workspaces --include-workspace-root
-
-      - name: Build packages
-        run: npm --workspaces run build
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: packages/webui/dist
+    uses: ./.github/workflows/build-and-test.yaml
+    with:
+      upload-webui-artifact: true
 
   deploy:
     name: "Deploy"
