@@ -1,6 +1,5 @@
 {
   "name": "@bitgo/wasm-bip32",
-  "private": true,
   "description": "Minimal WebAssembly BIP32/ECPair implementation with message signing",
   "version": "0.0.1",
   "type": "module",
