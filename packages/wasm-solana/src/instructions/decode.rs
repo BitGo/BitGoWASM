@@ -21,6 +21,7 @@ pub fn decode_instruction(ctx: InstructionContext) -> ParsedInstruction {
         MEMO_PROGRAM_ID => decode_memo_instruction(ctx),
         TOKEN_PROGRAM_ID | TOKEN_2022_PROGRAM_ID => decode_token_instruction(ctx),
         ATA_PROGRAM_ID => decode_ata_instruction(ctx),
+        STAKE_POOL_PROGRAM_ID => decode_stake_pool_instruction(ctx),
         _ => make_unknown(ctx),
     }
 }
@@ -307,6 +308,95 @@ fn decode_ata_instruction(ctx: InstructionContext) -> ParsedInstruction {
         })
     } else {
         make_unknown(ctx)
+    }
+}
+
+// =============================================================================
+// Stake Pool (Jito) Decoding
+// =============================================================================
+
+/// Instruction discriminators for SPL Stake Pool program.
+const STAKE_POOL_DEPOSIT_SOL: u8 = 14;
+const STAKE_POOL_WITHDRAW_STAKE: u8 = 10;
+
+fn decode_stake_pool_instruction(ctx: InstructionContext) -> ParsedInstruction {
+    // Stake pool instruction format: first byte is discriminator, followed by u64 amount
+    if ctx.data.is_empty() {
+        return make_unknown(ctx);
+    }
+
+    let discriminator = ctx.data[0];
+
+    match discriminator {
+        STAKE_POOL_DEPOSIT_SOL => {
+            // DepositSol: deposit SOL into stake pool, receive pool tokens
+            // Data: [0] discriminator (14), [1..9] lamports (u64 LE)
+            // Accounts:
+            //   [0] stakePool
+            //   [1] withdrawAuthority
+            //   [2] reserveStake
+            //   [3] fundingAccount (signer)
+            //   [4] destinationPoolAccount
+            //   [5] managerFeeAccount
+            //   [6] referralPoolAccount
+            //   [7] poolMint
+            //   [8] systemProgram
+            //   [9] tokenProgram
+            //   [10] optional depositAuthority (signer)
+            if ctx.accounts.len() >= 8 && ctx.data.len() >= 9 {
+                let lamports = u64::from_le_bytes(ctx.data[1..9].try_into().unwrap_or([0; 8]));
+                ParsedInstruction::StakePoolDepositSol(StakePoolDepositSolParams {
+                    stake_pool: ctx.accounts[0].clone(),
+                    withdraw_authority: ctx.accounts[1].clone(),
+                    reserve_stake: ctx.accounts[2].clone(),
+                    funding_account: ctx.accounts[3].clone(),
+                    destination_pool_account: ctx.accounts[4].clone(),
+                    manager_fee_account: ctx.accounts[5].clone(),
+                    referral_pool_account: ctx.accounts[6].clone(),
+                    pool_mint: ctx.accounts[7].clone(),
+                    lamports: lamports.to_string(),
+                })
+            } else {
+                make_unknown(ctx)
+            }
+        }
+        STAKE_POOL_WITHDRAW_STAKE => {
+            // WithdrawStake: withdraw stake from pool by burning pool tokens
+            // Data: [0] discriminator (10), [1..9] poolTokens (u64 LE)
+            // Accounts:
+            //   [0] stakePool
+            //   [1] validatorList
+            //   [2] withdrawAuthority
+            //   [3] validatorStake
+            //   [4] destinationStake
+            //   [5] destinationStakeAuthority
+            //   [6] sourceTransferAuthority (signer)
+            //   [7] sourcePoolAccount
+            //   [8] managerFeeAccount
+            //   [9] poolMint
+            //   [10] clockSysvar
+            //   [11] tokenProgram
+            //   [12] stakeProgram
+            if ctx.accounts.len() >= 10 && ctx.data.len() >= 9 {
+                let pool_tokens = u64::from_le_bytes(ctx.data[1..9].try_into().unwrap_or([0; 8]));
+                ParsedInstruction::StakePoolWithdrawStake(StakePoolWithdrawStakeParams {
+                    stake_pool: ctx.accounts[0].clone(),
+                    validator_list: ctx.accounts[1].clone(),
+                    withdraw_authority: ctx.accounts[2].clone(),
+                    validator_stake: ctx.accounts[3].clone(),
+                    destination_stake: ctx.accounts[4].clone(),
+                    destination_stake_authority: ctx.accounts[5].clone(),
+                    source_transfer_authority: ctx.accounts[6].clone(),
+                    source_pool_account: ctx.accounts[7].clone(),
+                    manager_fee_account: ctx.accounts[8].clone(),
+                    pool_mint: ctx.accounts[9].clone(),
+                    pool_tokens: pool_tokens.to_string(),
+                })
+            } else {
+                make_unknown(ctx)
+            }
+        }
+        _ => make_unknown(ctx),
     }
 }
 

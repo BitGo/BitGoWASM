@@ -13,6 +13,7 @@ pub const MEMO_PROGRAM_ID: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 pub const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 pub const ATA_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+pub const STAKE_POOL_PROGRAM_ID: &str = "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy";
 
 /// A parsed instruction with type discriminant and params.
 #[derive(Debug, Clone, Serialize)]
@@ -42,6 +43,10 @@ pub enum ParsedInstruction {
 
     // Memo
     Memo(MemoParams),
+
+    // Stake Pool (Jito liquid staking) instructions
+    StakePoolDepositSol(StakePoolDepositSolParams),
+    StakePoolWithdrawStake(StakePoolWithdrawStakeParams),
 
     // Fallback for unknown/custom instructions
     Unknown(UnknownInstructionParams),
@@ -196,13 +201,90 @@ pub struct CloseAtaParams {
 }
 
 // =============================================================================
-// Memo & Unknown
+// Memo
 // =============================================================================
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MemoParams {
     pub memo: String,
 }
+
+// =============================================================================
+// Stake Pool (Jito) Params
+// =============================================================================
+
+/// Parameters for DepositSol instruction in stake pool (Jito liquid staking).
+#[derive(Debug, Clone, Serialize)]
+pub struct StakePoolDepositSolParams {
+    /// The stake pool address.
+    #[serde(rename = "stakePool")]
+    pub stake_pool: String,
+    /// The stake pool withdraw authority.
+    #[serde(rename = "withdrawAuthority")]
+    pub withdraw_authority: String,
+    /// The reserve stake account.
+    #[serde(rename = "reserveStake")]
+    pub reserve_stake: String,
+    /// The account providing lamports to deposit.
+    #[serde(rename = "fundingAccount")]
+    pub funding_account: String,
+    /// The user account to receive pool tokens.
+    #[serde(rename = "destinationPoolAccount")]
+    pub destination_pool_account: String,
+    /// The manager fee account.
+    #[serde(rename = "managerFeeAccount")]
+    pub manager_fee_account: String,
+    /// The referral pool account.
+    #[serde(rename = "referralPoolAccount")]
+    pub referral_pool_account: String,
+    /// The pool token mint.
+    #[serde(rename = "poolMint")]
+    pub pool_mint: String,
+    /// The amount of lamports to deposit.
+    pub lamports: String,
+}
+
+/// Parameters for WithdrawStake instruction in stake pool (Jito liquid staking).
+#[derive(Debug, Clone, Serialize)]
+pub struct StakePoolWithdrawStakeParams {
+    /// The stake pool address.
+    #[serde(rename = "stakePool")]
+    pub stake_pool: String,
+    /// The validator stake list account.
+    #[serde(rename = "validatorList")]
+    pub validator_list: String,
+    /// The stake pool withdraw authority.
+    #[serde(rename = "withdrawAuthority")]
+    pub withdraw_authority: String,
+    /// The validator stake account to split from.
+    #[serde(rename = "validatorStake")]
+    pub validator_stake: String,
+    /// The uninitialized stake account to receive withdrawal.
+    #[serde(rename = "destinationStake")]
+    pub destination_stake: String,
+    /// The user account to set as stake authority.
+    #[serde(rename = "destinationStakeAuthority")]
+    pub destination_stake_authority: String,
+    /// The authority allowed to transfer from source pool account.
+    #[serde(rename = "sourceTransferAuthority")]
+    pub source_transfer_authority: String,
+    /// The user account with pool tokens to burn.
+    #[serde(rename = "sourcePoolAccount")]
+    pub source_pool_account: String,
+    /// The manager fee account.
+    #[serde(rename = "managerFeeAccount")]
+    pub manager_fee_account: String,
+    /// The pool token mint.
+    #[serde(rename = "poolMint")]
+    pub pool_mint: String,
+    /// The amount of pool tokens to withdraw.
+    #[serde(rename = "poolTokens")]
+    pub pool_tokens: String,
+}
+
+// =============================================================================
+// Unknown (fallback)
+// =============================================================================
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UnknownInstructionParams {

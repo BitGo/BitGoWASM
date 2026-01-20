@@ -23,6 +23,8 @@ solana-transaction = { version = "3.0", features = ["serde", "bincode"] }
 solana-system-interface = { version = "2.0", features = ["bincode"] }
 solana-stake-interface = { version = "2.0", features = ["bincode"] }
 solana-compute-budget-interface = { version = "2.0", features = ["borsh"] }
+# SPL Stake Pool for Jito liquid staking support
+spl-stake-pool = { version = "2.0", default-features = false }
 # Serialization
 bincode = "1.3"
 borsh = "1.5"
