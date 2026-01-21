@@ -23,6 +23,7 @@
 //! let pubkey = Pubkey::from_base58("FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH").unwrap();
 //! ```
 
+pub mod builder;
 mod error;
 mod instructions;
 pub mod keypair;
@@ -38,4 +39,4 @@ pub use pubkey::{Pubkey, PubkeyExt};
 pub use transaction::{Transaction, TransactionExt};
 
 // Re-export WASM types
-pub use wasm::{ParserNamespace, WasmKeypair, WasmPubkey, WasmTransaction};
+pub use wasm::{BuilderNamespace, ParserNamespace, WasmKeypair, WasmPubkey, WasmTransaction};

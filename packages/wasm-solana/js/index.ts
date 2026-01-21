@@ -8,6 +8,7 @@ export * as keypair from "./keypair.js";
 export * as pubkey from "./pubkey.js";
 export * as transaction from "./transaction.js";
 export * as parser from "./parser.js";
+export * as builder from "./builder.js";
 
 // Top-level class exports for convenience
 export { Keypair } from "./keypair.js";
@@ -16,6 +17,7 @@ export { Transaction } from "./transaction.js";
 
 // Top-level function exports
 export { parseTransaction } from "./parser.js";
+export { buildTransaction } from "./builder.js";
 
 // Type exports
 export type { AccountMeta, Instruction } from "./transaction.js";
@@ -44,3 +46,20 @@ export type {
   StakePoolWithdrawStakeParams,
   UnknownInstructionParams,
 } from "./parser.js";
+
+// Builder type exports (prefixed to avoid conflict with parser/transaction types)
+export type {
+  TransactionIntent,
+  NonceSource,
+  BlockhashNonceSource,
+  DurableNonceSource,
+  Instruction as BuilderInstruction,
+  TransferInstruction,
+  CreateAccountInstruction,
+  NonceAdvanceInstruction,
+  NonceInitializeInstruction,
+  AllocateInstruction,
+  AssignInstruction,
+  MemoInstruction,
+  ComputeBudgetInstruction,
+} from "./builder.js";
