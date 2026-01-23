@@ -132,6 +132,36 @@ export interface MemoParams {
   memo: string;
 }
 
+/** Stake pool deposit SOL parameters (Jito liquid staking) */
+export interface StakePoolDepositSolParams {
+  type: "StakePoolDepositSol";
+  stakePool: string;
+  withdrawAuthority: string;
+  reserveStake: string;
+  fundingAccount: string;
+  destinationPoolAccount: string;
+  managerFeeAccount: string;
+  referralPoolAccount: string;
+  poolMint: string;
+  lamports: string;
+}
+
+/** Stake pool withdraw stake parameters (Jito liquid staking) */
+export interface StakePoolWithdrawStakeParams {
+  type: "StakePoolWithdrawStake";
+  stakePool: string;
+  validatorList: string;
+  withdrawAuthority: string;
+  validatorStake: string;
+  destinationStake: string;
+  destinationStakeAuthority: string;
+  sourceTransferAuthority: string;
+  sourcePoolAccount: string;
+  managerFeeAccount: string;
+  poolMint: string;
+  poolTokens: string;
+}
+
 /** Account metadata for unknown instructions */
 export interface AccountMeta {
   pubkey: string;
@@ -164,6 +194,8 @@ export type InstructionParams =
   | CreateAtaParams
   | CloseAtaParams
   | MemoParams
+  | StakePoolDepositSolParams
+  | StakePoolWithdrawStakeParams
   | UnknownInstructionParams;
 
 // =============================================================================

@@ -266,4 +266,38 @@ describe("BitGoJS Compatibility", () => {
       }
     });
   });
+
+  describe("Jito liquid staking transaction", () => {
+    // From BitGoJS: test/resources/sol.ts - JITO_STAKING_ACTIVATE_SIGNED_TX
+    // This is a Jito DepositSol instruction (discriminator 14) - deposits SOL into the Jito stake pool
+    const TX_BASE64 =
+      "AdOUrFCk9yyhi1iB1EfOOXHOeiaZGQnLRwnypt+be8r9lrYMx8w7/QTnithrqcuBApg1ctJAlJMxNZ925vMP2Q0BAAQKReV5vPklPPaLR9/x+zo6XCwhusWyPAmuEqbgVWvwi0Ecg6pe+BOG2OETfAVS9ftz6va1oE4onLBolJ2N+ZOOhJ6naP7fZEyKrpuOIYit0GvFUPv3Fsgiuc5jx3g9lS4fCeaj/uz5kDLhwd9rlyLcs2NOe440QJNrw0sMwcjrUh/80UHpgyyvEK2RdJXKDycbWyk81HAn6nNwB+1A6zmgvQSKPgjDtJW+F/RUJ9ib7FuAx+JpXBhk12dD2zm+00bWAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABU5Z4kwFGooUp7HpeX8OEs36dJAhZlMZWmpRKm8WZgKwaBTtTK9ooXRnL9rIYDGmPoTqFe+h1EtyKT9tvbABZQBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKnjMtr5L6vs6LY/96RABeX9/Zr6FYdWthxalfkEs7jQgQEICgUHAgABAwEEBgkJDuCTBAAAAAAA";
+
+    it("should parse Jito DepositSol instruction", () => {
+      const bytes = base64ToBytes(TX_BASE64);
+      const parsed = parseTransaction(bytes);
+
+      // Find the StakePoolDepositSol instruction
+      const depositSolInstr = parsed.instructionsData.find((i) => i.type === "StakePoolDepositSol");
+      assert.ok(depositSolInstr, "Should have StakePoolDepositSol instruction");
+
+      if (depositSolInstr && depositSolInstr.type === "StakePoolDepositSol") {
+        // Amount should be 300000 lamports (0x493e0 in little endian: e0 93 04 00 00 00 00 00)
+        assert.strictEqual(depositSolInstr.lamports, "300000");
+        // Stake pool should be the Jito stake pool program
+        assert.ok(depositSolInstr.stakePool, "Should have stakePool");
+        assert.ok(depositSolInstr.fundingAccount, "Should have fundingAccount");
+        assert.ok(depositSolInstr.destinationPoolAccount, "Should have destinationPoolAccount");
+        assert.ok(depositSolInstr.poolMint, "Should have poolMint");
+      }
+    });
+
+    it("should have correct fee payer for Jito transaction", () => {
+      const bytes = base64ToBytes(TX_BASE64);
+      const parsed = parseTransaction(bytes);
+
+      // Fee payer from BitGoJS tests
+      assert.strictEqual(parsed.feePayer, "5hr5fisPi6DXNuuRpm5XUbzpiEnmdyxXuBDTwzwZj5Pe");
+    });
+  });
 });

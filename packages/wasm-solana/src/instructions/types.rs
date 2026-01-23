@@ -13,6 +13,7 @@ pub const MEMO_PROGRAM_ID: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 pub const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 pub const ATA_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+pub const STAKE_POOL_PROGRAM_ID: &str = "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy";
 
 /// A parsed instruction with type discriminant and params.
 #[derive(Debug, Clone, Serialize)]
@@ -49,6 +50,10 @@ pub enum ParsedInstruction {
 
     // Memo
     Memo(MemoParams),
+
+    // Stake Pool (Jito liquid staking) instructions
+    StakePoolDepositSol(StakePoolDepositSolParams),
+    StakePoolWithdrawStake(StakePoolWithdrawStakeParams),
 
     // Fallback for unknown/custom instructions
     Unknown(UnknownInstructionParams),
@@ -229,6 +234,61 @@ pub struct CloseAtaParams {
     pub destination_address: String,
     #[serde(rename = "authorityAddress")]
     pub authority_address: String,
+}
+
+// =============================================================================
+// Stake Pool (Jito) Params
+// =============================================================================
+
+/// Parameters for DepositSol instruction in stake pool (Jito liquid staking).
+/// Discriminator: 14
+#[derive(Debug, Clone, Serialize)]
+pub struct StakePoolDepositSolParams {
+    #[serde(rename = "stakePool")]
+    pub stake_pool: String,
+    #[serde(rename = "withdrawAuthority")]
+    pub withdraw_authority: String,
+    #[serde(rename = "reserveStake")]
+    pub reserve_stake: String,
+    #[serde(rename = "fundingAccount")]
+    pub funding_account: String,
+    #[serde(rename = "destinationPoolAccount")]
+    pub destination_pool_account: String,
+    #[serde(rename = "managerFeeAccount")]
+    pub manager_fee_account: String,
+    #[serde(rename = "referralPoolAccount")]
+    pub referral_pool_account: String,
+    #[serde(rename = "poolMint")]
+    pub pool_mint: String,
+    pub lamports: String,
+}
+
+/// Parameters for WithdrawStake instruction in stake pool (Jito liquid staking).
+/// Discriminator: 10
+#[derive(Debug, Clone, Serialize)]
+pub struct StakePoolWithdrawStakeParams {
+    #[serde(rename = "stakePool")]
+    pub stake_pool: String,
+    #[serde(rename = "validatorList")]
+    pub validator_list: String,
+    #[serde(rename = "withdrawAuthority")]
+    pub withdraw_authority: String,
+    #[serde(rename = "validatorStake")]
+    pub validator_stake: String,
+    #[serde(rename = "destinationStake")]
+    pub destination_stake: String,
+    #[serde(rename = "destinationStakeAuthority")]
+    pub destination_stake_authority: String,
+    #[serde(rename = "sourceTransferAuthority")]
+    pub source_transfer_authority: String,
+    #[serde(rename = "sourcePoolAccount")]
+    pub source_pool_account: String,
+    #[serde(rename = "managerFeeAccount")]
+    pub manager_fee_account: String,
+    #[serde(rename = "poolMint")]
+    pub pool_mint: String,
+    #[serde(rename = "poolTokens")]
+    pub pool_tokens: String,
 }
 
 // =============================================================================
