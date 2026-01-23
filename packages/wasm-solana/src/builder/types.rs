@@ -198,6 +198,73 @@ pub enum Instruction {
         #[serde(rename = "programId", default = "default_token_program")]
         program_id: String,
     },
+    // ===== Jito Stake Pool Instructions =====
+    /// Deposit SOL into a stake pool (Jito liquid staking)
+    StakePoolDepositSol {
+        /// Stake pool address
+        #[serde(rename = "stakePool")]
+        stake_pool: String,
+        /// Withdraw authority PDA
+        #[serde(rename = "withdrawAuthority")]
+        withdraw_authority: String,
+        /// Reserve stake account
+        #[serde(rename = "reserveStake")]
+        reserve_stake: String,
+        /// Funding account (SOL source, signer)
+        #[serde(rename = "fundingAccount")]
+        funding_account: String,
+        /// Destination for pool tokens
+        #[serde(rename = "destinationPoolAccount")]
+        destination_pool_account: String,
+        /// Manager fee account
+        #[serde(rename = "managerFeeAccount")]
+        manager_fee_account: String,
+        /// Referral pool account
+        #[serde(rename = "referralPoolAccount")]
+        referral_pool_account: String,
+        /// Pool mint address
+        #[serde(rename = "poolMint")]
+        pool_mint: String,
+        /// Amount in lamports to deposit (as string)
+        lamports: String,
+    },
+
+    /// Withdraw stake from a stake pool (Jito liquid staking)
+    StakePoolWithdrawStake {
+        /// Stake pool address
+        #[serde(rename = "stakePool")]
+        stake_pool: String,
+        /// Validator list account
+        #[serde(rename = "validatorList")]
+        validator_list: String,
+        /// Withdraw authority PDA
+        #[serde(rename = "withdrawAuthority")]
+        withdraw_authority: String,
+        /// Validator stake account to split from
+        #[serde(rename = "validatorStake")]
+        validator_stake: String,
+        /// Destination stake account (uninitialized)
+        #[serde(rename = "destinationStake")]
+        destination_stake: String,
+        /// Authority for the destination stake account
+        #[serde(rename = "destinationStakeAuthority")]
+        destination_stake_authority: String,
+        /// Source pool token account authority (signer)
+        #[serde(rename = "sourceTransferAuthority")]
+        source_transfer_authority: String,
+        /// Source pool token account
+        #[serde(rename = "sourcePoolAccount")]
+        source_pool_account: String,
+        /// Manager fee account
+        #[serde(rename = "managerFeeAccount")]
+        manager_fee_account: String,
+        /// Pool mint address
+        #[serde(rename = "poolMint")]
+        pool_mint: String,
+        /// Amount of pool tokens to burn (as string)
+        #[serde(rename = "poolTokens")]
+        pool_tokens: String,
+    },
 }
 
 fn default_token_program() -> String {
