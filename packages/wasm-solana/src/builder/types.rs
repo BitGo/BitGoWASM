@@ -98,18 +98,63 @@ pub enum Instruction {
         #[serde(rename = "unitPrice")]
         unit_price: Option<u64>,
     },
-    // ===== Stake Program Instructions (Phase 10) =====
-    // TODO: Add in Phase 10
-    // StakeInitialize { ... }
-    // StakeDelegate { ... }
-    // StakeDeactivate { ... }
-    // StakeWithdraw { ... }
-    // StakeAuthorize { ... }
-    // StakeSplit { ... }
-    // StakeMerge { ... }
+    // ===== Stake Program Instructions =====
+    /// Initialize a stake account with authorized staker and withdrawer
+    StakeInitialize {
+        /// Stake account address
+        stake: String,
+        /// Authorized staker pubkey
+        staker: String,
+        /// Authorized withdrawer pubkey
+        withdrawer: String,
+    },
 
-    // ===== SPL Token Instructions (Phase 11) =====
-    // TODO: Add in Phase 11
+    /// Delegate stake to a validator
+    StakeDelegate {
+        /// Stake account address
+        stake: String,
+        /// Vote account (validator) to delegate to
+        vote: String,
+        /// Stake authority
+        authority: String,
+    },
+
+    /// Deactivate a stake account
+    StakeDeactivate {
+        /// Stake account address
+        stake: String,
+        /// Stake authority
+        authority: String,
+    },
+
+    /// Withdraw from a stake account
+    StakeWithdraw {
+        /// Stake account address
+        stake: String,
+        /// Recipient address for withdrawn lamports
+        recipient: String,
+        /// Amount in lamports to withdraw (as string)
+        lamports: String,
+        /// Withdraw authority
+        authority: String,
+    },
+
+    /// Change stake account authorization
+    StakeAuthorize {
+        /// Stake account address
+        stake: String,
+        /// New authority pubkey
+        #[serde(rename = "newAuthority")]
+        new_authority: String,
+        /// Authorization type: "staker" or "withdrawer"
+        #[serde(rename = "authorizeType")]
+        authorize_type: String,
+        /// Current authority
+        authority: String,
+    },
+
+    // ===== SPL Token Instructions =====
+    // TODO: Add SPL Token support
     // TokenTransfer { ... }
     // CreateAta { ... }
     // CloseAta { ... }
