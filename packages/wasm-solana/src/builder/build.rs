@@ -13,14 +13,46 @@ use solana_sdk::message::Message;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::transaction::Transaction;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
+use solana_stake_interface::instruction::StakeInstruction;
+use solana_stake_interface::state::{Authorized, Lockup, StakeAuthorize};
 use solana_system_interface::instruction::{self as system_ix, SystemInstruction};
 
-/// Well-known program IDs
+/// Well-known program IDs and sysvars
 mod program_ids {
     use super::Pubkey;
 
     pub fn memo_program() -> Pubkey {
         "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+            .parse()
+            .unwrap()
+    }
+
+    pub fn stake_program() -> Pubkey {
+        "Stake11111111111111111111111111111111111111"
+            .parse()
+            .unwrap()
+    }
+
+    pub fn clock_sysvar() -> Pubkey {
+        "SysvarC1ock11111111111111111111111111111111"
+            .parse()
+            .unwrap()
+    }
+
+    pub fn rent_sysvar() -> Pubkey {
+        "SysvarRent111111111111111111111111111111111"
+            .parse()
+            .unwrap()
+    }
+
+    pub fn stake_history_sysvar() -> Pubkey {
+        "SysvarStakeHistory1111111111111111111111111"
+            .parse()
+            .unwrap()
+    }
+
+    pub fn stake_config() -> Pubkey {
+        "StakeConfig11111111111111111111111111111111"
             .parse()
             .unwrap()
     }
@@ -192,6 +224,126 @@ fn build_instruction(ix: IntentInstruction) -> Result<Instruction, WasmSolanaErr
                 ))
             }
         }
+
+        // ===== Stake Program =====
+        IntentInstruction::StakeInitialize {
+            stake,
+            staker,
+            withdrawer,
+        } => {
+            let stake_pubkey: Pubkey = stake.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeInitialize.stake: {}", stake))
+            })?;
+            let staker_pubkey: Pubkey = staker.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeInitialize.staker: {}", staker))
+            })?;
+            let withdrawer_pubkey: Pubkey = withdrawer.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakeInitialize.withdrawer: {}",
+                    withdrawer
+                ))
+            })?;
+            Ok(build_stake_initialize(
+                &stake_pubkey,
+                &Authorized {
+                    staker: staker_pubkey,
+                    withdrawer: withdrawer_pubkey,
+                },
+            ))
+        }
+
+        IntentInstruction::StakeDelegate {
+            stake,
+            vote,
+            authority,
+        } => {
+            let stake_pubkey: Pubkey = stake.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeDelegate.stake: {}", stake))
+            })?;
+            let vote_pubkey: Pubkey = vote.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeDelegate.vote: {}", vote))
+            })?;
+            let authority_pubkey: Pubkey = authority.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeDelegate.authority: {}", authority))
+            })?;
+            Ok(build_stake_delegate(
+                &stake_pubkey,
+                &vote_pubkey,
+                &authority_pubkey,
+            ))
+        }
+
+        IntentInstruction::StakeDeactivate { stake, authority } => {
+            let stake_pubkey: Pubkey = stake.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeDeactivate.stake: {}", stake))
+            })?;
+            let authority_pubkey: Pubkey = authority.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeDeactivate.authority: {}", authority))
+            })?;
+            Ok(build_stake_deactivate(&stake_pubkey, &authority_pubkey))
+        }
+
+        IntentInstruction::StakeWithdraw {
+            stake,
+            recipient,
+            lamports,
+            authority,
+        } => {
+            let stake_pubkey: Pubkey = stake.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeWithdraw.stake: {}", stake))
+            })?;
+            let recipient_pubkey: Pubkey = recipient.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeWithdraw.recipient: {}", recipient))
+            })?;
+            let amount: u64 = lamports.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeWithdraw.lamports: {}", lamports))
+            })?;
+            let authority_pubkey: Pubkey = authority.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeWithdraw.authority: {}", authority))
+            })?;
+            Ok(build_stake_withdraw(
+                &stake_pubkey,
+                &recipient_pubkey,
+                amount,
+                &authority_pubkey,
+            ))
+        }
+
+        IntentInstruction::StakeAuthorize {
+            stake,
+            new_authority,
+            authorize_type,
+            authority,
+        } => {
+            let stake_pubkey: Pubkey = stake.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeAuthorize.stake: {}", stake))
+            })?;
+            let new_authority_pubkey: Pubkey = new_authority.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakeAuthorize.newAuthority: {}",
+                    new_authority
+                ))
+            })?;
+            let authority_pubkey: Pubkey = authority.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakeAuthorize.authority: {}", authority))
+            })?;
+            let stake_authorize = match authorize_type.to_lowercase().as_str() {
+                "staker" => StakeAuthorize::Staker,
+                "withdrawer" => StakeAuthorize::Withdrawer,
+                _ => {
+                    return Err(WasmSolanaError::new(&format!(
+                        "Invalid stakeAuthorize.authorizeType: {} (expected 'staker' or 'withdrawer')",
+                        authorize_type
+                    )))
+                }
+            };
+            Ok(build_stake_authorize(
+                &stake_pubkey,
+                &authority_pubkey,
+                &new_authority_pubkey,
+                stake_authorize,
+            ))
+        }
     }
 }
 
@@ -228,6 +380,87 @@ fn build_nonce_initialize(nonce: &Pubkey, authority: &Pubkey) -> Instruction {
 /// Build a memo instruction.
 fn build_memo(message: &str) -> Instruction {
     Instruction::new_with_bytes(program_ids::memo_program(), message.as_bytes(), vec![])
+}
+
+// ===== Stake Instruction Builders =====
+
+/// Build a stake initialize instruction.
+fn build_stake_initialize(stake: &Pubkey, authorized: &Authorized) -> Instruction {
+    Instruction::new_with_bincode(
+        program_ids::stake_program(),
+        &StakeInstruction::Initialize(*authorized, Lockup::default()),
+        vec![
+            AccountMeta::new(*stake, false),
+            AccountMeta::new_readonly(program_ids::rent_sysvar(), false),
+        ],
+    )
+}
+
+/// Build a stake delegate instruction.
+fn build_stake_delegate(stake: &Pubkey, vote: &Pubkey, authority: &Pubkey) -> Instruction {
+    Instruction::new_with_bincode(
+        program_ids::stake_program(),
+        &StakeInstruction::DelegateStake,
+        vec![
+            AccountMeta::new(*stake, false),
+            AccountMeta::new_readonly(*vote, false),
+            AccountMeta::new_readonly(program_ids::clock_sysvar(), false),
+            AccountMeta::new_readonly(program_ids::stake_history_sysvar(), false),
+            AccountMeta::new_readonly(program_ids::stake_config(), false),
+            AccountMeta::new_readonly(*authority, true),
+        ],
+    )
+}
+
+/// Build a stake deactivate instruction.
+fn build_stake_deactivate(stake: &Pubkey, authority: &Pubkey) -> Instruction {
+    Instruction::new_with_bincode(
+        program_ids::stake_program(),
+        &StakeInstruction::Deactivate,
+        vec![
+            AccountMeta::new(*stake, false),
+            AccountMeta::new_readonly(program_ids::clock_sysvar(), false),
+            AccountMeta::new_readonly(*authority, true),
+        ],
+    )
+}
+
+/// Build a stake withdraw instruction.
+fn build_stake_withdraw(
+    stake: &Pubkey,
+    recipient: &Pubkey,
+    lamports: u64,
+    authority: &Pubkey,
+) -> Instruction {
+    Instruction::new_with_bincode(
+        program_ids::stake_program(),
+        &StakeInstruction::Withdraw(lamports),
+        vec![
+            AccountMeta::new(*stake, false),
+            AccountMeta::new(*recipient, false),
+            AccountMeta::new_readonly(program_ids::clock_sysvar(), false),
+            AccountMeta::new_readonly(program_ids::stake_history_sysvar(), false),
+            AccountMeta::new_readonly(*authority, true),
+        ],
+    )
+}
+
+/// Build a stake authorize instruction.
+fn build_stake_authorize(
+    stake: &Pubkey,
+    authority: &Pubkey,
+    new_authority: &Pubkey,
+    stake_authorize: StakeAuthorize,
+) -> Instruction {
+    Instruction::new_with_bincode(
+        program_ids::stake_program(),
+        &StakeInstruction::Authorize(*new_authority, stake_authorize),
+        vec![
+            AccountMeta::new(*stake, false),
+            AccountMeta::new_readonly(program_ids::clock_sysvar(), false),
+            AccountMeta::new_readonly(*authority, true),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -326,5 +559,62 @@ mod tests {
         let result = build_transaction(intent);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid"));
+    }
+
+    #[test]
+    fn test_build_stake_delegate() {
+        let intent = TransactionIntent {
+            fee_payer: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            nonce: Nonce::Blockhash {
+                value: "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4".to_string(),
+            },
+            instructions: vec![IntentInstruction::StakeDelegate {
+                stake: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH".to_string(),
+                vote: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN".to_string(),
+                authority: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            }],
+        };
+
+        let result = build_transaction(intent);
+        assert!(result.is_ok(), "Failed to build stake delegate: {:?}", result);
+        verify_tx_structure(&result.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_build_stake_deactivate() {
+        let intent = TransactionIntent {
+            fee_payer: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            nonce: Nonce::Blockhash {
+                value: "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4".to_string(),
+            },
+            instructions: vec![IntentInstruction::StakeDeactivate {
+                stake: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH".to_string(),
+                authority: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            }],
+        };
+
+        let result = build_transaction(intent);
+        assert!(result.is_ok(), "Failed to build stake deactivate: {:?}", result);
+        verify_tx_structure(&result.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_build_stake_withdraw() {
+        let intent = TransactionIntent {
+            fee_payer: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            nonce: Nonce::Blockhash {
+                value: "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4".to_string(),
+            },
+            instructions: vec![IntentInstruction::StakeWithdraw {
+                stake: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH".to_string(),
+                recipient: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+                lamports: "1000000".to_string(),
+                authority: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            }],
+        };
+
+        let result = build_transaction(intent);
+        assert!(result.is_ok(), "Failed to build stake withdraw: {:?}", result);
+        verify_tx_structure(&result.unwrap(), 1);
     }
 }
