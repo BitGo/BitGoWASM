@@ -16,6 +16,7 @@ use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_stake_interface::instruction::StakeInstruction;
 use solana_stake_interface::state::{Authorized, Lockup, StakeAuthorize};
 use solana_system_interface::instruction::{self as system_ix, SystemInstruction};
+use spl_stake_pool::instruction::StakePoolInstruction;
 
 /// Well-known program IDs and sysvars
 mod program_ids {
@@ -65,6 +66,18 @@ mod program_ids {
 
     pub fn system_program() -> Pubkey {
         "11111111111111111111111111111111".parse().unwrap()
+    }
+
+    pub fn stake_pool_program() -> Pubkey {
+        "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"
+            .parse()
+            .unwrap()
+    }
+
+    pub fn token_program() -> Pubkey {
+        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            .parse()
+            .unwrap()
     }
 }
 
@@ -448,6 +461,176 @@ fn build_instruction(ix: IntentInstruction) -> Result<Instruction, WasmSolanaErr
                 &token_program,
             ))
         }
+
+        // ===== Jito Stake Pool =====
+        IntentInstruction::StakePoolDepositSol {
+            stake_pool,
+            withdraw_authority,
+            reserve_stake,
+            funding_account,
+            destination_pool_account,
+            manager_fee_account,
+            referral_pool_account,
+            pool_mint,
+            lamports,
+        } => {
+            let stake_pool_pubkey: Pubkey = stake_pool.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakePoolDepositSol.stakePool: {}", stake_pool))
+            })?;
+            let withdraw_authority_pubkey: Pubkey = withdraw_authority.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolDepositSol.withdrawAuthority: {}",
+                    withdraw_authority
+                ))
+            })?;
+            let reserve_stake_pubkey: Pubkey = reserve_stake.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolDepositSol.reserveStake: {}",
+                    reserve_stake
+                ))
+            })?;
+            let funding_account_pubkey: Pubkey = funding_account.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolDepositSol.fundingAccount: {}",
+                    funding_account
+                ))
+            })?;
+            let destination_pool_account_pubkey: Pubkey =
+                destination_pool_account.parse().map_err(|_| {
+                    WasmSolanaError::new(&format!(
+                        "Invalid stakePoolDepositSol.destinationPoolAccount: {}",
+                        destination_pool_account
+                    ))
+                })?;
+            let manager_fee_account_pubkey: Pubkey = manager_fee_account.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolDepositSol.managerFeeAccount: {}",
+                    manager_fee_account
+                ))
+            })?;
+            let referral_pool_account_pubkey: Pubkey =
+                referral_pool_account.parse().map_err(|_| {
+                    WasmSolanaError::new(&format!(
+                        "Invalid stakePoolDepositSol.referralPoolAccount: {}",
+                        referral_pool_account
+                    ))
+                })?;
+            let pool_mint_pubkey: Pubkey = pool_mint.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakePoolDepositSol.poolMint: {}", pool_mint))
+            })?;
+            let deposit_lamports: u64 = lamports.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid stakePoolDepositSol.lamports: {}", lamports))
+            })?;
+
+            Ok(build_stake_pool_deposit_sol(
+                &stake_pool_pubkey,
+                &withdraw_authority_pubkey,
+                &reserve_stake_pubkey,
+                &funding_account_pubkey,
+                &destination_pool_account_pubkey,
+                &manager_fee_account_pubkey,
+                &referral_pool_account_pubkey,
+                &pool_mint_pubkey,
+                deposit_lamports,
+            ))
+        }
+
+        IntentInstruction::StakePoolWithdrawStake {
+            stake_pool,
+            validator_list,
+            withdraw_authority,
+            validator_stake,
+            destination_stake,
+            destination_stake_authority,
+            source_transfer_authority,
+            source_pool_account,
+            manager_fee_account,
+            pool_mint,
+            pool_tokens,
+        } => {
+            let stake_pool_pubkey: Pubkey = stake_pool.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolWithdrawStake.stakePool: {}",
+                    stake_pool
+                ))
+            })?;
+            let validator_list_pubkey: Pubkey = validator_list.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolWithdrawStake.validatorList: {}",
+                    validator_list
+                ))
+            })?;
+            let withdraw_authority_pubkey: Pubkey = withdraw_authority.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolWithdrawStake.withdrawAuthority: {}",
+                    withdraw_authority
+                ))
+            })?;
+            let validator_stake_pubkey: Pubkey = validator_stake.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolWithdrawStake.validatorStake: {}",
+                    validator_stake
+                ))
+            })?;
+            let destination_stake_pubkey: Pubkey = destination_stake.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolWithdrawStake.destinationStake: {}",
+                    destination_stake
+                ))
+            })?;
+            let destination_stake_authority_pubkey: Pubkey =
+                destination_stake_authority.parse().map_err(|_| {
+                    WasmSolanaError::new(&format!(
+                        "Invalid stakePoolWithdrawStake.destinationStakeAuthority: {}",
+                        destination_stake_authority
+                    ))
+                })?;
+            let source_transfer_authority_pubkey: Pubkey =
+                source_transfer_authority.parse().map_err(|_| {
+                    WasmSolanaError::new(&format!(
+                        "Invalid stakePoolWithdrawStake.sourceTransferAuthority: {}",
+                        source_transfer_authority
+                    ))
+                })?;
+            let source_pool_account_pubkey: Pubkey = source_pool_account.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolWithdrawStake.sourcePoolAccount: {}",
+                    source_pool_account
+                ))
+            })?;
+            let manager_fee_account_pubkey: Pubkey = manager_fee_account.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolWithdrawStake.managerFeeAccount: {}",
+                    manager_fee_account
+                ))
+            })?;
+            let pool_mint_pubkey: Pubkey = pool_mint.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolWithdrawStake.poolMint: {}",
+                    pool_mint
+                ))
+            })?;
+            let withdraw_pool_tokens: u64 = pool_tokens.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid stakePoolWithdrawStake.poolTokens: {}",
+                    pool_tokens
+                ))
+            })?;
+
+            Ok(build_stake_pool_withdraw_stake(
+                &stake_pool_pubkey,
+                &validator_list_pubkey,
+                &withdraw_authority_pubkey,
+                &validator_stake_pubkey,
+                &destination_stake_pubkey,
+                &destination_stake_authority_pubkey,
+                &source_transfer_authority_pubkey,
+                &source_pool_account_pubkey,
+                &manager_fee_account_pubkey,
+                &pool_mint_pubkey,
+                withdraw_pool_tokens,
+            ))
+        }
     }
 }
 
@@ -651,6 +834,89 @@ fn get_associated_token_address(owner: &Pubkey, mint: &Pubkey, token_program: &P
     ];
     let (ata, _bump) = Pubkey::find_program_address(seeds, &program_ids::ata_program());
     ata
+}
+
+// ===== Jito Stake Pool Instruction Builders =====
+
+/// Build a DepositSol instruction for SPL Stake Pool (Jito).
+#[allow(clippy::too_many_arguments)]
+fn build_stake_pool_deposit_sol(
+    stake_pool: &Pubkey,
+    withdraw_authority: &Pubkey,
+    reserve_stake: &Pubkey,
+    funding_account: &Pubkey,
+    destination_pool_account: &Pubkey,
+    manager_fee_account: &Pubkey,
+    referral_pool_account: &Pubkey,
+    pool_mint: &Pubkey,
+    lamports: u64,
+) -> Instruction {
+    use borsh::BorshSerialize;
+
+    // DepositSol instruction data using spl-stake-pool
+    let instruction_data = StakePoolInstruction::DepositSol(lamports);
+    let mut data = Vec::new();
+    instruction_data.serialize(&mut data).unwrap();
+
+    Instruction::new_with_bytes(
+        program_ids::stake_pool_program(),
+        &data,
+        vec![
+            AccountMeta::new(*stake_pool, false),
+            AccountMeta::new_readonly(*withdraw_authority, false),
+            AccountMeta::new(*reserve_stake, false),
+            AccountMeta::new(*funding_account, true), // signer
+            AccountMeta::new(*destination_pool_account, false),
+            AccountMeta::new(*manager_fee_account, false),
+            AccountMeta::new(*referral_pool_account, false),
+            AccountMeta::new(*pool_mint, false),
+            AccountMeta::new_readonly(program_ids::system_program(), false),
+            AccountMeta::new_readonly(program_ids::token_program(), false),
+        ],
+    )
+}
+
+/// Build a WithdrawStake instruction for SPL Stake Pool (Jito).
+#[allow(clippy::too_many_arguments)]
+fn build_stake_pool_withdraw_stake(
+    stake_pool: &Pubkey,
+    validator_list: &Pubkey,
+    withdraw_authority: &Pubkey,
+    validator_stake: &Pubkey,
+    destination_stake: &Pubkey,
+    destination_stake_authority: &Pubkey,
+    source_transfer_authority: &Pubkey,
+    source_pool_account: &Pubkey,
+    manager_fee_account: &Pubkey,
+    pool_mint: &Pubkey,
+    pool_tokens: u64,
+) -> Instruction {
+    use borsh::BorshSerialize;
+
+    // WithdrawStake instruction data using spl-stake-pool
+    let instruction_data = StakePoolInstruction::WithdrawStake(pool_tokens);
+    let mut data = Vec::new();
+    instruction_data.serialize(&mut data).unwrap();
+
+    Instruction::new_with_bytes(
+        program_ids::stake_pool_program(),
+        &data,
+        vec![
+            AccountMeta::new(*stake_pool, false),
+            AccountMeta::new(*validator_list, false),
+            AccountMeta::new_readonly(*withdraw_authority, false),
+            AccountMeta::new(*validator_stake, false),
+            AccountMeta::new(*destination_stake, false),
+            AccountMeta::new_readonly(*destination_stake_authority, false),
+            AccountMeta::new_readonly(*source_transfer_authority, true), // signer
+            AccountMeta::new(*source_pool_account, false),
+            AccountMeta::new(*manager_fee_account, false),
+            AccountMeta::new(*pool_mint, false),
+            AccountMeta::new_readonly(program_ids::clock_sysvar(), false),
+            AccountMeta::new_readonly(program_ids::token_program(), false),
+            AccountMeta::new_readonly(program_ids::stake_program(), false),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -868,6 +1134,68 @@ mod tests {
 
         let result = build_transaction(intent);
         assert!(result.is_ok(), "Failed to build close ATA: {:?}", result);
+        verify_tx_structure(&result.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_build_stake_pool_deposit_sol() {
+        // Jito stake pool addresses (testnet-like)
+        let intent = TransactionIntent {
+            fee_payer: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            nonce: Nonce::Blockhash {
+                value: "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4".to_string(),
+            },
+            instructions: vec![IntentInstruction::StakePoolDepositSol {
+                stake_pool: "Jito4APyf642JPZPx3hGc6WWJ8zPKtRbRs4P815Awbb".to_string(),
+                withdraw_authority: "6iQKfEyhr3bZMotVkW6beNZz5CPAkiwvgV2CTje9pVSS".to_string(),
+                reserve_stake: "BgKUXdS4Wy6Vdgp1jwT2dz5ZgxPG94aPL77dQscSPGmc".to_string(),
+                funding_account: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+                destination_pool_account: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH".to_string(),
+                manager_fee_account: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN".to_string(),
+                referral_pool_account: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN".to_string(),
+                pool_mint: "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn".to_string(),
+                lamports: "1000000000".to_string(), // 1 SOL
+            }],
+        };
+
+        let result = build_transaction(intent);
+        assert!(
+            result.is_ok(),
+            "Failed to build stake pool deposit sol: {:?}",
+            result
+        );
+        verify_tx_structure(&result.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_build_stake_pool_withdraw_stake() {
+        // Jito stake pool addresses (testnet-like)
+        let intent = TransactionIntent {
+            fee_payer: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            nonce: Nonce::Blockhash {
+                value: "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4".to_string(),
+            },
+            instructions: vec![IntentInstruction::StakePoolWithdrawStake {
+                stake_pool: "Jito4APyf642JPZPx3hGc6WWJ8zPKtRbRs4P815Awbb".to_string(),
+                validator_list: "3R3nGZpQs2aZo5FDQvd2MUQ5R5E9g7NvHQaxpLPYA8r2".to_string(),
+                withdraw_authority: "6iQKfEyhr3bZMotVkW6beNZz5CPAkiwvgV2CTje9pVSS".to_string(),
+                validator_stake: "BgKUXdS4Wy6Vdgp1jwT2dz5ZgxPG94aPL77dQscSPGmc".to_string(),
+                destination_stake: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH".to_string(),
+                destination_stake_authority: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+                source_transfer_authority: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+                source_pool_account: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN".to_string(),
+                manager_fee_account: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN".to_string(),
+                pool_mint: "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn".to_string(),
+                pool_tokens: "1000000000".to_string(), // 1 JitoSOL
+            }],
+        };
+
+        let result = build_transaction(intent);
+        assert!(
+            result.is_ok(),
+            "Failed to build stake pool withdraw stake: {:?}",
+            result
+        );
         verify_tx_structure(&result.unwrap(), 1);
     }
 }
