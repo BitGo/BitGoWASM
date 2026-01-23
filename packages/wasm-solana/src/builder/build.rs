@@ -56,6 +56,16 @@ mod program_ids {
             .parse()
             .unwrap()
     }
+
+    pub fn ata_program() -> Pubkey {
+        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+            .parse()
+            .unwrap()
+    }
+
+    pub fn system_program() -> Pubkey {
+        "11111111111111111111111111111111".parse().unwrap()
+    }
 }
 
 /// Build a transaction from an intent structure.
@@ -344,6 +354,100 @@ fn build_instruction(ix: IntentInstruction) -> Result<Instruction, WasmSolanaErr
                 stake_authorize,
             ))
         }
+
+        // ===== SPL Token Program =====
+        IntentInstruction::TokenTransfer {
+            source,
+            destination,
+            mint,
+            amount,
+            decimals,
+            authority,
+            program_id,
+        } => {
+            let source_pubkey: Pubkey = source.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid tokenTransfer.source: {}", source))
+            })?;
+            let destination_pubkey: Pubkey = destination.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid tokenTransfer.destination: {}", destination))
+            })?;
+            let mint_pubkey: Pubkey = mint.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid tokenTransfer.mint: {}", mint))
+            })?;
+            let authority_pubkey: Pubkey = authority.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid tokenTransfer.authority: {}", authority))
+            })?;
+            let token_program: Pubkey = program_id.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid tokenTransfer.programId: {}", program_id))
+            })?;
+            let transfer_amount: u64 = amount.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid tokenTransfer.amount: {}", amount))
+            })?;
+            Ok(build_token_transfer_checked(
+                &source_pubkey,
+                &mint_pubkey,
+                &destination_pubkey,
+                &authority_pubkey,
+                transfer_amount,
+                decimals,
+                &token_program,
+            ))
+        }
+
+        IntentInstruction::CreateAssociatedTokenAccount {
+            payer,
+            owner,
+            mint,
+            token_program_id,
+        } => {
+            let payer_pubkey: Pubkey = payer.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid createAta.payer: {}", payer))
+            })?;
+            let owner_pubkey: Pubkey = owner.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid createAta.owner: {}", owner))
+            })?;
+            let mint_pubkey: Pubkey = mint.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid createAta.mint: {}", mint))
+            })?;
+            let token_program: Pubkey = token_program_id.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid createAta.tokenProgramId: {}",
+                    token_program_id
+                ))
+            })?;
+            Ok(build_create_ata(
+                &payer_pubkey,
+                &owner_pubkey,
+                &mint_pubkey,
+                &token_program,
+            ))
+        }
+
+        IntentInstruction::CloseAssociatedTokenAccount {
+            account,
+            destination,
+            authority,
+            program_id,
+        } => {
+            let account_pubkey: Pubkey = account.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid closeAta.account: {}", account))
+            })?;
+            let destination_pubkey: Pubkey = destination.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid closeAta.destination: {}", destination))
+            })?;
+            let authority_pubkey: Pubkey = authority.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid closeAta.authority: {}", authority))
+            })?;
+            let token_program: Pubkey = program_id.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid closeAta.programId: {}", program_id))
+            })?;
+            Ok(build_close_account(
+                &account_pubkey,
+                &destination_pubkey,
+                &authority_pubkey,
+                &token_program,
+            ))
+        }
     }
 }
 
@@ -461,6 +565,92 @@ fn build_stake_authorize(
             AccountMeta::new_readonly(*authority, true),
         ],
     )
+}
+
+// ===== SPL Token Instruction Builders =====
+
+/// Build a TransferChecked instruction for SPL Token.
+/// TransferChecked is safer than Transfer as it verifies decimals.
+fn build_token_transfer_checked(
+    source: &Pubkey,
+    mint: &Pubkey,
+    destination: &Pubkey,
+    authority: &Pubkey,
+    amount: u64,
+    decimals: u8,
+    token_program: &Pubkey,
+) -> Instruction {
+    // TransferChecked instruction data: [12, amount (8 bytes LE), decimals (1 byte)]
+    let mut data = vec![12u8]; // TransferChecked discriminator
+    data.extend_from_slice(&amount.to_le_bytes());
+    data.push(decimals);
+
+    Instruction::new_with_bytes(
+        *token_program,
+        &data,
+        vec![
+            AccountMeta::new(*source, false),      // source token account
+            AccountMeta::new_readonly(*mint, false), // mint
+            AccountMeta::new(*destination, false), // destination token account
+            AccountMeta::new_readonly(*authority, true), // owner/authority (signer)
+        ],
+    )
+}
+
+/// Build a CreateAssociatedTokenAccount instruction.
+fn build_create_ata(
+    payer: &Pubkey,
+    owner: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+) -> Instruction {
+    // Derive the ATA address
+    let ata = get_associated_token_address(owner, mint, token_program);
+
+    // ATA program create instruction has no data (or discriminator 0)
+    Instruction::new_with_bytes(
+        program_ids::ata_program(),
+        &[],
+        vec![
+            AccountMeta::new(*payer, true),              // payer (signer)
+            AccountMeta::new(ata, false),                // associated token account
+            AccountMeta::new_readonly(*owner, false),    // wallet owner
+            AccountMeta::new_readonly(*mint, false),     // token mint
+            AccountMeta::new_readonly(program_ids::system_program(), false), // system program
+            AccountMeta::new_readonly(*token_program, false), // token program
+        ],
+    )
+}
+
+/// Build a CloseAccount instruction for SPL Token.
+fn build_close_account(
+    account: &Pubkey,
+    destination: &Pubkey,
+    authority: &Pubkey,
+    token_program: &Pubkey,
+) -> Instruction {
+    // CloseAccount instruction data: [9] (discriminator only)
+    Instruction::new_with_bytes(
+        *token_program,
+        &[9u8], // CloseAccount discriminator
+        vec![
+            AccountMeta::new(*account, false),           // account to close
+            AccountMeta::new(*destination, false),       // destination for lamports
+            AccountMeta::new_readonly(*authority, true), // owner/authority (signer)
+        ],
+    )
+}
+
+/// Derive the Associated Token Account address.
+fn get_associated_token_address(owner: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
+    // ATA is a PDA with seeds: [owner, token_program, mint]
+    let seeds = &[
+        owner.as_ref(),
+        token_program.as_ref(),
+        mint.as_ref(),
+    ];
+    let (ata, _bump) = Pubkey::find_program_address(seeds, &program_ids::ata_program());
+    ata
 }
 
 #[cfg(test)]
@@ -615,6 +805,69 @@ mod tests {
 
         let result = build_transaction(intent);
         assert!(result.is_ok(), "Failed to build stake withdraw: {:?}", result);
+        verify_tx_structure(&result.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_build_token_transfer() {
+        let intent = TransactionIntent {
+            fee_payer: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            nonce: Nonce::Blockhash {
+                value: "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4".to_string(),
+            },
+            instructions: vec![IntentInstruction::TokenTransfer {
+                source: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH".to_string(),
+                destination: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN".to_string(),
+                mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(), // USDC mint
+                amount: "1000000".to_string(),
+                decimals: 6,
+                authority: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+                program_id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
+            }],
+        };
+
+        let result = build_transaction(intent);
+        assert!(result.is_ok(), "Failed to build token transfer: {:?}", result);
+        verify_tx_structure(&result.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_build_create_ata() {
+        let intent = TransactionIntent {
+            fee_payer: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            nonce: Nonce::Blockhash {
+                value: "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4".to_string(),
+            },
+            instructions: vec![IntentInstruction::CreateAssociatedTokenAccount {
+                payer: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+                owner: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH".to_string(),
+                mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(), // USDC mint
+                token_program_id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
+            }],
+        };
+
+        let result = build_transaction(intent);
+        assert!(result.is_ok(), "Failed to build create ATA: {:?}", result);
+        verify_tx_structure(&result.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_build_close_ata() {
+        let intent = TransactionIntent {
+            fee_payer: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            nonce: Nonce::Blockhash {
+                value: "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4".to_string(),
+            },
+            instructions: vec![IntentInstruction::CloseAssociatedTokenAccount {
+                account: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH".to_string(),
+                destination: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+                authority: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+                program_id: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
+            }],
+        };
+
+        let result = build_transaction(intent);
+        assert!(result.is_ok(), "Failed to build close ATA: {:?}", result);
         verify_tx_structure(&result.unwrap(), 1);
     }
 }
