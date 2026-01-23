@@ -114,6 +114,170 @@ export interface ComputeBudgetInstruction {
   unitPrice?: number;
 }
 
+// =============================================================================
+// Stake Program Instructions
+// =============================================================================
+
+/** Initialize a stake account instruction */
+export interface StakeInitializeInstruction {
+  type: "stakeInitialize";
+  /** Stake account address (base58) */
+  stake: string;
+  /** Authorized staker pubkey (base58) */
+  staker: string;
+  /** Authorized withdrawer pubkey (base58) */
+  withdrawer: string;
+}
+
+/** Delegate stake to a validator instruction */
+export interface StakeDelegateInstruction {
+  type: "stakeDelegate";
+  /** Stake account address (base58) */
+  stake: string;
+  /** Vote account (validator) to delegate to (base58) */
+  vote: string;
+  /** Stake authority (base58) */
+  authority: string;
+}
+
+/** Deactivate a stake account instruction */
+export interface StakeDeactivateInstruction {
+  type: "stakeDeactivate";
+  /** Stake account address (base58) */
+  stake: string;
+  /** Stake authority (base58) */
+  authority: string;
+}
+
+/** Withdraw from a stake account instruction */
+export interface StakeWithdrawInstruction {
+  type: "stakeWithdraw";
+  /** Stake account address (base58) */
+  stake: string;
+  /** Recipient address (base58) */
+  recipient: string;
+  /** Amount in lamports to withdraw (as string) */
+  lamports: string;
+  /** Withdraw authority (base58) */
+  authority: string;
+}
+
+/** Change stake account authorization instruction */
+export interface StakeAuthorizeInstruction {
+  type: "stakeAuthorize";
+  /** Stake account address (base58) */
+  stake: string;
+  /** New authority pubkey (base58) */
+  newAuthority: string;
+  /** Authorization type: "staker" or "withdrawer" */
+  authorizeType: "staker" | "withdrawer";
+  /** Current authority (base58) */
+  authority: string;
+}
+
+// =============================================================================
+// SPL Token Instructions
+// =============================================================================
+
+/** Transfer tokens instruction (uses TransferChecked) */
+export interface TokenTransferInstruction {
+  type: "tokenTransfer";
+  /** Source token account (base58) */
+  source: string;
+  /** Destination token account (base58) */
+  destination: string;
+  /** Token mint address (base58) */
+  mint: string;
+  /** Amount of tokens (as string, in smallest units) */
+  amount: string;
+  /** Number of decimals for the token */
+  decimals: number;
+  /** Owner/authority of the source account (base58) */
+  authority: string;
+  /** Token program ID (optional, defaults to SPL Token) */
+  programId?: string;
+}
+
+/** Create an Associated Token Account instruction */
+export interface CreateAssociatedTokenAccountInstruction {
+  type: "createAssociatedTokenAccount";
+  /** Payer for account creation (base58) */
+  payer: string;
+  /** Owner of the new ATA (base58) */
+  owner: string;
+  /** Token mint address (base58) */
+  mint: string;
+  /** Token program ID (optional, defaults to SPL Token) */
+  tokenProgramId?: string;
+}
+
+/** Close an Associated Token Account instruction */
+export interface CloseAssociatedTokenAccountInstruction {
+  type: "closeAssociatedTokenAccount";
+  /** Token account to close (base58) */
+  account: string;
+  /** Destination for remaining lamports (base58) */
+  destination: string;
+  /** Authority of the account (base58) */
+  authority: string;
+  /** Token program ID (optional, defaults to SPL Token) */
+  programId?: string;
+}
+
+// =============================================================================
+// Jito Stake Pool Instructions
+// =============================================================================
+
+/** Deposit SOL into a stake pool (Jito liquid staking) */
+export interface StakePoolDepositSolInstruction {
+  type: "stakePoolDepositSol";
+  /** Stake pool address (base58) */
+  stakePool: string;
+  /** Withdraw authority PDA (base58) */
+  withdrawAuthority: string;
+  /** Reserve stake account (base58) */
+  reserveStake: string;
+  /** Funding account (SOL source, signer) (base58) */
+  fundingAccount: string;
+  /** Destination for pool tokens (base58) */
+  destinationPoolAccount: string;
+  /** Manager fee account (base58) */
+  managerFeeAccount: string;
+  /** Referral pool account (base58) */
+  referralPoolAccount: string;
+  /** Pool mint address (base58) */
+  poolMint: string;
+  /** Amount in lamports to deposit (as string) */
+  lamports: string;
+}
+
+/** Withdraw stake from a stake pool (Jito liquid staking) */
+export interface StakePoolWithdrawStakeInstruction {
+  type: "stakePoolWithdrawStake";
+  /** Stake pool address (base58) */
+  stakePool: string;
+  /** Validator list account (base58) */
+  validatorList: string;
+  /** Withdraw authority PDA (base58) */
+  withdrawAuthority: string;
+  /** Validator stake account to split from (base58) */
+  validatorStake: string;
+  /** Destination stake account (uninitialized) (base58) */
+  destinationStake: string;
+  /** Authority for the destination stake account (base58) */
+  destinationStakeAuthority: string;
+  /** Source pool token account authority (signer) (base58) */
+  sourceTransferAuthority: string;
+  /** Source pool token account (base58) */
+  sourcePoolAccount: string;
+  /** Manager fee account (base58) */
+  managerFeeAccount: string;
+  /** Pool mint address (base58) */
+  poolMint: string;
+  /** Amount of pool tokens to burn (as string) */
+  poolTokens: string;
+}
+
 /** Union of all instruction types */
 export type Instruction =
   | TransferInstruction
@@ -123,7 +287,17 @@ export type Instruction =
   | AllocateInstruction
   | AssignInstruction
   | MemoInstruction
-  | ComputeBudgetInstruction;
+  | ComputeBudgetInstruction
+  | StakeInitializeInstruction
+  | StakeDelegateInstruction
+  | StakeDeactivateInstruction
+  | StakeWithdrawInstruction
+  | StakeAuthorizeInstruction
+  | TokenTransferInstruction
+  | CreateAssociatedTokenAccountInstruction
+  | CloseAssociatedTokenAccountInstruction
+  | StakePoolDepositSolInstruction
+  | StakePoolWithdrawStakeInstruction;
 
 // =============================================================================
 // TransactionIntent

@@ -62,4 +62,17 @@ export type {
   AssignInstruction,
   MemoInstruction,
   ComputeBudgetInstruction,
+  // Stake Program
+  StakeInitializeInstruction,
+  StakeDelegateInstruction,
+  StakeDeactivateInstruction,
+  StakeWithdrawInstruction,
+  StakeAuthorizeInstruction,
+  // SPL Token
+  TokenTransferInstruction,
+  CreateAssociatedTokenAccountInstruction,
+  CloseAssociatedTokenAccountInstruction,
+  // Jito Stake Pool
+  StakePoolDepositSolInstruction,
+  StakePoolWithdrawStakeInstruction,
 } from "./builder.js";

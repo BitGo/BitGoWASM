@@ -105,6 +105,14 @@ export interface StakingAuthorizeParams {
   custodianAddress?: string;
 }
 
+/** Stake initialize parameters (intermediate type) */
+export interface StakeInitializeParams {
+  type: "StakeInitialize";
+  stakingAddress: string;
+  staker: string;
+  withdrawer: string;
+}
+
 /** Set compute unit limit parameters */
 export interface SetComputeUnitLimitParams {
   type: "SetComputeUnitLimit";
