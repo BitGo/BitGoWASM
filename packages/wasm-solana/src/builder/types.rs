@@ -154,8 +154,52 @@ pub enum Instruction {
     },
 
     // ===== SPL Token Instructions =====
-    // TODO: Add SPL Token support
-    // TokenTransfer { ... }
-    // CreateAta { ... }
-    // CloseAta { ... }
+    /// Transfer tokens (uses TransferChecked for safety)
+    TokenTransfer {
+        /// Source token account
+        source: String,
+        /// Destination token account
+        destination: String,
+        /// Token mint address
+        mint: String,
+        /// Amount of tokens to transfer (as string, in smallest units)
+        amount: String,
+        /// Number of decimals for the token
+        decimals: u8,
+        /// Owner/authority of the source account
+        authority: String,
+        /// Token program ID (TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA or Token-2022)
+        #[serde(rename = "programId", default = "default_token_program")]
+        program_id: String,
+    },
+
+    /// Create an Associated Token Account
+    CreateAssociatedTokenAccount {
+        /// Payer for account creation
+        payer: String,
+        /// Owner of the new ATA
+        owner: String,
+        /// Token mint address
+        mint: String,
+        /// Token program ID (optional, defaults to Token Program)
+        #[serde(rename = "tokenProgramId", default = "default_token_program")]
+        token_program_id: String,
+    },
+
+    /// Close an Associated Token Account
+    CloseAssociatedTokenAccount {
+        /// Token account to close
+        account: String,
+        /// Destination for remaining lamports
+        destination: String,
+        /// Authority of the account
+        authority: String,
+        /// Token program ID (optional, defaults to Token Program)
+        #[serde(rename = "programId", default = "default_token_program")]
+        program_id: String,
+    },
+}
+
+fn default_token_program() -> String {
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string()
 }
