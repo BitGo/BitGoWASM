@@ -136,8 +136,8 @@ describe("buildTransaction", () => {
 
       const priorityFee = parsed.instructionsData[0];
       if (priorityFee.type === "SetPriorityFee") {
-        // Parser uses 'fee' as a number
-        assert.strictEqual(priorityFee.fee, 5000);
+        // Parser uses 'fee' as BigInt
+        assert.strictEqual(priorityFee.fee, BigInt(5000));
       }
     });
   });
@@ -272,6 +272,423 @@ describe("buildTransaction", () => {
       const txBytes2 = buildTransaction(intent);
 
       assert.deepStrictEqual(txBytes1, txBytes2);
+    });
+  });
+
+  // ===== Stake Program Tests =====
+  describe("stake program", () => {
+    // From BitGoJS test/resources/sol.ts
+    const VALIDATOR = "CyjoLt3kjqB57K7ewCBHmnHq3UgEj3ak6A7m6EsBsuhA"; // validator.pub
+
+    it("should build stake initialize instruction", () => {
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "stakeInitialize",
+            stake: STAKE_ACCOUNT,
+            staker: SENDER,
+            withdrawer: SENDER,
+          },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      assert.strictEqual(parsed.instructionsData.length, 1);
+      assert.strictEqual(parsed.instructionsData[0].type, "StakeInitialize");
+
+      const stakeInit = parsed.instructionsData[0];
+      if (stakeInit.type === "StakeInitialize") {
+        assert.strictEqual(stakeInit.stakingAddress, STAKE_ACCOUNT);
+        assert.strictEqual(stakeInit.staker, SENDER);
+        assert.strictEqual(stakeInit.withdrawer, SENDER);
+      }
+    });
+
+    it("should build stake delegate instruction", () => {
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "stakeDelegate",
+            stake: STAKE_ACCOUNT,
+            vote: VALIDATOR,
+            authority: SENDER,
+          },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      assert.strictEqual(parsed.instructionsData.length, 1);
+      assert.strictEqual(parsed.instructionsData[0].type, "StakingDelegate");
+
+      const stakeDelegate = parsed.instructionsData[0];
+      if (stakeDelegate.type === "StakingDelegate") {
+        assert.strictEqual(stakeDelegate.stakingAddress, STAKE_ACCOUNT);
+        assert.strictEqual(stakeDelegate.validator, VALIDATOR);
+        assert.strictEqual(stakeDelegate.fromAddress, SENDER);
+      }
+    });
+
+    it("should build stake deactivate instruction", () => {
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "stakeDeactivate",
+            stake: STAKE_ACCOUNT,
+            authority: SENDER,
+          },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      assert.strictEqual(parsed.instructionsData.length, 1);
+      assert.strictEqual(parsed.instructionsData[0].type, "StakingDeactivate");
+
+      const stakeDeactivate = parsed.instructionsData[0];
+      if (stakeDeactivate.type === "StakingDeactivate") {
+        assert.strictEqual(stakeDeactivate.stakingAddress, STAKE_ACCOUNT);
+        assert.strictEqual(stakeDeactivate.fromAddress, SENDER);
+      }
+    });
+
+    it("should build stake withdraw instruction", () => {
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "stakeWithdraw",
+            stake: STAKE_ACCOUNT,
+            recipient: RECIPIENT,
+            lamports: "300000",
+            authority: SENDER,
+          },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      assert.strictEqual(parsed.instructionsData.length, 1);
+      assert.strictEqual(parsed.instructionsData[0].type, "StakingWithdraw");
+
+      const stakeWithdraw = parsed.instructionsData[0];
+      if (stakeWithdraw.type === "StakingWithdraw") {
+        assert.strictEqual(stakeWithdraw.stakingAddress, STAKE_ACCOUNT);
+        assert.strictEqual(stakeWithdraw.fromAddress, SENDER);
+        assert.strictEqual(stakeWithdraw.amount, "300000");
+      }
+    });
+
+    it("should build full staking activate flow", () => {
+      // Typical staking activate: CreateAccount + StakeInitialize + StakeDelegate
+      // The parser combines these into a single StakingActivate instruction
+      const STAKE_PROGRAM = "Stake11111111111111111111111111111111111111";
+
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "createAccount",
+            from: SENDER,
+            newAccount: STAKE_ACCOUNT,
+            lamports: "300000",
+            space: 200, // Stake account size
+            owner: STAKE_PROGRAM,
+          },
+          {
+            type: "stakeInitialize",
+            stake: STAKE_ACCOUNT,
+            staker: SENDER,
+            withdrawer: SENDER,
+          },
+          {
+            type: "stakeDelegate",
+            stake: STAKE_ACCOUNT,
+            vote: VALIDATOR,
+            authority: SENDER,
+          },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      // Parser combines CreateAccount + StakeInitialize + StakeDelegate into StakingActivate
+      assert.strictEqual(parsed.instructionsData.length, 1);
+      assert.strictEqual(parsed.instructionsData[0].type, "StakingActivate");
+
+      const stakingActivate = parsed.instructionsData[0];
+      if (stakingActivate.type === "StakingActivate") {
+        assert.strictEqual(stakingActivate.stakingAddress, STAKE_ACCOUNT);
+        assert.strictEqual(stakingActivate.validator, VALIDATOR);
+        assert.strictEqual(stakingActivate.amount, "300000");
+        assert.strictEqual(stakingActivate.stakingType, "NATIVE");
+      }
+    });
+  });
+
+  // ===== SPL Token Tests =====
+  describe("spl token", () => {
+    // From BitGoJS test/resources/sol.ts
+    const MINT_USDC = "F4uLeXJoFz3hw13MposuwaQbMcZbCjqvEGPPeRRB1Byf"; // tokenTransfers.mintUSDC
+    const SOURCE_ATA = "2fyhC1YbqaYszkUQw2YGNRVkr2abr69UwFXVCjz4Q5f5"; // tokenTransfers.sourceUSDC
+    const DEST_ATA = "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH";
+
+    it("should build token transfer instruction", () => {
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "tokenTransfer",
+            source: SOURCE_ATA,
+            destination: DEST_ATA,
+            mint: MINT_USDC,
+            amount: "300000",
+            decimals: 9,
+            authority: SENDER,
+          },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      assert.strictEqual(parsed.instructionsData.length, 1);
+      assert.strictEqual(parsed.instructionsData[0].type, "TokenTransfer");
+
+      const tokenTransfer = parsed.instructionsData[0];
+      if (tokenTransfer.type === "TokenTransfer") {
+        assert.strictEqual(tokenTransfer.sourceAddress, SOURCE_ATA);
+        assert.strictEqual(tokenTransfer.toAddress, DEST_ATA);
+        assert.strictEqual(tokenTransfer.amount, "300000");
+        assert.strictEqual(tokenTransfer.tokenAddress, MINT_USDC);
+        assert.strictEqual(tokenTransfer.decimalPlaces, 9);
+      }
+    });
+
+    it("should build create associated token account instruction", () => {
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "createAssociatedTokenAccount",
+            payer: SENDER,
+            owner: RECIPIENT,
+            mint: MINT_USDC,
+          },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      assert.strictEqual(parsed.instructionsData.length, 1);
+      assert.strictEqual(parsed.instructionsData[0].type, "CreateAssociatedTokenAccount");
+
+      const createAta = parsed.instructionsData[0];
+      if (createAta.type === "CreateAssociatedTokenAccount") {
+        assert.strictEqual(createAta.payerAddress, SENDER);
+        assert.strictEqual(createAta.ownerAddress, RECIPIENT);
+        assert.strictEqual(createAta.mintAddress, MINT_USDC);
+      }
+    });
+
+    it("should build close associated token account instruction", () => {
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "closeAssociatedTokenAccount",
+            account: SOURCE_ATA,
+            destination: SENDER,
+            authority: SENDER,
+          },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      assert.strictEqual(parsed.instructionsData.length, 1);
+      assert.strictEqual(parsed.instructionsData[0].type, "CloseAssociatedTokenAccount");
+
+      const closeAta = parsed.instructionsData[0];
+      if (closeAta.type === "CloseAssociatedTokenAccount") {
+        assert.strictEqual(closeAta.accountAddress, SOURCE_ATA);
+        assert.strictEqual(closeAta.destinationAddress, SENDER);
+        assert.strictEqual(closeAta.authorityAddress, SENDER);
+      }
+    });
+
+    it("should build token transfer with create ATA", () => {
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "createAssociatedTokenAccount",
+            payer: SENDER,
+            owner: RECIPIENT,
+            mint: MINT_USDC,
+          },
+          {
+            type: "tokenTransfer",
+            source: SOURCE_ATA,
+            destination: DEST_ATA,
+            mint: MINT_USDC,
+            amount: "300000",
+            decimals: 9,
+            authority: SENDER,
+          },
+          { type: "memo", message: "test memo" },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      assert.strictEqual(parsed.instructionsData.length, 3);
+      assert.strictEqual(parsed.instructionsData[0].type, "CreateAssociatedTokenAccount");
+      assert.strictEqual(parsed.instructionsData[1].type, "TokenTransfer");
+      assert.strictEqual(parsed.instructionsData[2].type, "Memo");
+    });
+  });
+
+  // ===== Jito Stake Pool Tests =====
+  describe("jito stake pool", () => {
+    // From BitGoJS Jito constants
+    const JITO_STAKE_POOL = "Jito4APyf642JPZPx3hGc6WWJ8zPKtRbRs4P815Awbb";
+    const JITO_WITHDRAW_AUTHORITY = "6iQKfEyhr3bZMotVkW6beNZz5CPAkiwvgV2CTje9pVSS";
+    const JITO_RESERVE_STAKE = "BgKUXdS4Wy6Vdgp1jwT2dz5ZgxPG94aPL77dQscSPGmc";
+    const JITO_POOL_MINT = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"; // JitoSOL
+    const MANAGER_FEE_ACCOUNT = "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN";
+    const VALIDATOR_LIST = "3R3nGZpQs2aZo5FDQvd2MUQ5R5E9g7NvHQaxpLPYA8r2";
+    const VALIDATOR_STAKE = "BgKUXdS4Wy6Vdgp1jwT2dz5ZgxPG94aPL77dQscSPGmc";
+    const DEST_STAKE = "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH";
+    const SOURCE_POOL_ACCOUNT = "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN";
+
+    it("should build stake pool deposit sol instruction", () => {
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "stakePoolDepositSol",
+            stakePool: JITO_STAKE_POOL,
+            withdrawAuthority: JITO_WITHDRAW_AUTHORITY,
+            reserveStake: JITO_RESERVE_STAKE,
+            fundingAccount: SENDER,
+            destinationPoolAccount: SOURCE_POOL_ACCOUNT,
+            managerFeeAccount: MANAGER_FEE_ACCOUNT,
+            referralPoolAccount: MANAGER_FEE_ACCOUNT,
+            poolMint: JITO_POOL_MINT,
+            lamports: "300000",
+          },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      assert.strictEqual(parsed.instructionsData.length, 1);
+      assert.strictEqual(parsed.instructionsData[0].type, "StakePoolDepositSol");
+
+      const depositSol = parsed.instructionsData[0];
+      if (depositSol.type === "StakePoolDepositSol") {
+        assert.strictEqual(depositSol.stakePool, JITO_STAKE_POOL);
+        assert.strictEqual(depositSol.fundingAccount, SENDER);
+        assert.strictEqual(depositSol.poolMint, JITO_POOL_MINT);
+        assert.strictEqual(depositSol.lamports, "300000");
+      }
+    });
+
+    it("should build stake pool withdraw stake instruction", () => {
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "stakePoolWithdrawStake",
+            stakePool: JITO_STAKE_POOL,
+            validatorList: VALIDATOR_LIST,
+            withdrawAuthority: JITO_WITHDRAW_AUTHORITY,
+            validatorStake: VALIDATOR_STAKE,
+            destinationStake: DEST_STAKE,
+            destinationStakeAuthority: SENDER,
+            sourceTransferAuthority: SENDER,
+            sourcePoolAccount: SOURCE_POOL_ACCOUNT,
+            managerFeeAccount: MANAGER_FEE_ACCOUNT,
+            poolMint: JITO_POOL_MINT,
+            poolTokens: "300000",
+          },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      assert.strictEqual(parsed.instructionsData.length, 1);
+      assert.strictEqual(parsed.instructionsData[0].type, "StakePoolWithdrawStake");
+
+      const withdrawStake = parsed.instructionsData[0];
+      if (withdrawStake.type === "StakePoolWithdrawStake") {
+        assert.strictEqual(withdrawStake.stakePool, JITO_STAKE_POOL);
+        assert.strictEqual(withdrawStake.destinationStake, DEST_STAKE);
+        assert.strictEqual(withdrawStake.sourceTransferAuthority, SENDER);
+        assert.strictEqual(withdrawStake.poolMint, JITO_POOL_MINT);
+        assert.strictEqual(withdrawStake.poolTokens, "300000");
+      }
+    });
+
+    it("should build jito deposit with create ATA", () => {
+      // Typical Jito deposit flow: Create ATA for JitoSOL + DepositSol
+      const intent: TransactionIntent = {
+        feePayer: SENDER,
+        nonce: { type: "blockhash", value: BLOCKHASH },
+        instructions: [
+          {
+            type: "createAssociatedTokenAccount",
+            payer: SENDER,
+            owner: SENDER,
+            mint: JITO_POOL_MINT,
+          },
+          {
+            type: "stakePoolDepositSol",
+            stakePool: JITO_STAKE_POOL,
+            withdrawAuthority: JITO_WITHDRAW_AUTHORITY,
+            reserveStake: JITO_RESERVE_STAKE,
+            fundingAccount: SENDER,
+            destinationPoolAccount: SOURCE_POOL_ACCOUNT,
+            managerFeeAccount: MANAGER_FEE_ACCOUNT,
+            referralPoolAccount: MANAGER_FEE_ACCOUNT,
+            poolMint: JITO_POOL_MINT,
+            lamports: "1000000000", // 1 SOL
+          },
+        ],
+      };
+
+      const txBytes = buildTransaction(intent);
+      const parsed = parseTransaction(txBytes);
+
+      assert.strictEqual(parsed.instructionsData.length, 2);
+      assert.strictEqual(parsed.instructionsData[0].type, "CreateAssociatedTokenAccount");
+      assert.strictEqual(parsed.instructionsData[1].type, "StakePoolDepositSol");
     });
   });
 });

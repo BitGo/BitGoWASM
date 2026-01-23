@@ -87,6 +87,14 @@ export interface StakingAuthorizeParams {
   authorizeType: "Staker" | "Withdrawer";
 }
 
+/** Stake initialize parameters (intermediate type) */
+export interface StakeInitializeParams {
+  type: "StakeInitialize";
+  stakingAddress: string;
+  staker: string;
+  withdrawer: string;
+}
+
 /** Set compute unit limit parameters */
 export interface SetComputeUnitLimitParams {
   type: "SetComputeUnitLimit";
@@ -107,6 +115,8 @@ export interface TokenTransferParams {
   amount: string;
   sourceAddress: string;
   tokenAddress?: string;
+  programId: string;
+  decimalPlaces?: number;
 }
 
 /** Create associated token account parameters */
@@ -116,6 +126,7 @@ export interface CreateAtaParams {
   ataAddress: string;
   ownerAddress: string;
   payerAddress: string;
+  programId: string;
 }
 
 /** Close associated token account parameters */
@@ -188,6 +199,7 @@ export type InstructionParams =
   | StakingWithdrawParams
   | StakingDelegateParams
   | StakingAuthorizeParams
+  | StakeInitializeParams
   | SetComputeUnitLimitParams
   | SetPriorityFeeParams
   | TokenTransferParams
