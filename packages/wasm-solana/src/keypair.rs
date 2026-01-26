@@ -20,27 +20,15 @@ pub trait KeypairExt {
 impl KeypairExt for Keypair {
     /// Create a keypair from a 32-byte secret key (Ed25519 seed).
     fn from_secret_key_bytes(secret_key: &[u8]) -> Result<Keypair, WasmSolanaError> {
-        if secret_key.len() != 32 {
-            return Err(WasmSolanaError::new(&format!(
+        let bytes: [u8; 32] = secret_key.try_into().map_err(|_| {
+            WasmSolanaError::new(&format!(
                 "Secret key must be 32 bytes, got {}",
                 secret_key.len()
-            )));
-        }
+            ))
+        })?;
 
-        // Generate public key from secret to create full 64-byte format
-        use ed25519_dalek::SigningKey;
-        let bytes: [u8; 32] = secret_key
-            .try_into()
-            .map_err(|_| WasmSolanaError::new("Failed to convert secret key to array"))?;
-        let signing_key = SigningKey::from_bytes(&bytes);
-        let pubkey_bytes = signing_key.verifying_key().to_bytes();
-
-        let mut full_secret = [0u8; 64];
-        full_secret[..32].copy_from_slice(secret_key);
-        full_secret[32..].copy_from_slice(&pubkey_bytes);
-
-        Keypair::try_from(full_secret.as_slice())
-            .map_err(|e| WasmSolanaError::new(&format!("Invalid keypair: {}", e)))
+        // Use official solana-keypair method that handles 32-byte seeds
+        Ok(Keypair::new_from_array(bytes))
     }
 
     /// Create a keypair from a 64-byte Solana secret key (secret + public concatenated).
