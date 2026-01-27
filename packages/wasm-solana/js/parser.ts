@@ -255,6 +255,9 @@ export interface ParsedTransaction {
 
   /** All account keys (base58 strings) */
   accountKeys: string[];
+
+  /** All signatures (base58 strings). Non-empty signatures indicate signed transaction. */
+  signatures: string[];
 }
 
 // =============================================================================

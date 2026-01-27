@@ -25,6 +25,20 @@ describe("parseTransaction", () => {
     assert.ok(parsed.accountKeys.length > 0);
   });
 
+  it("should include signatures as base58 strings", () => {
+    const parsed = parseTransaction(TEST_TX_BYTES);
+
+    // Should have signatures array
+    assert.ok(Array.isArray(parsed.signatures));
+    assert.strictEqual(parsed.signatures.length, parsed.numSignatures);
+
+    // Each signature should be a non-empty string (base58 encoded)
+    for (const sig of parsed.signatures) {
+      assert.strictEqual(typeof sig, "string");
+      assert.ok(sig.length > 0);
+    }
+  });
+
   it("should decode SOL transfer instruction correctly", () => {
     const parsed = parseTransaction(TEST_TX_BYTES);
 
