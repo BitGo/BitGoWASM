@@ -35,6 +35,9 @@ pub struct ParsedTransaction {
 
     /// All account keys (base58 strings).
     pub account_keys: Vec<String>,
+
+    /// All signatures (base58 strings). Non-empty signatures indicate signed transaction.
+    pub signatures: Vec<String>,
 }
 
 /// Durable nonce information for nonce-based transactions.
@@ -64,7 +67,8 @@ impl TryIntoJsValue for ParsedTransaction {
             "nonce" => self.nonce,
             "durableNonce" => self.durable_nonce,
             "instructionsData" => self.instructions_data,
-            "accountKeys" => self.account_keys
+            "accountKeys" => self.account_keys,
+            "signatures" => self.signatures
         )
     }
 }
@@ -139,6 +143,9 @@ pub fn parse_transaction(bytes: &[u8]) -> Result<ParsedTransaction, String> {
     // (which is the nonce value from the nonce account)
     let nonce = message.recent_blockhash.to_string();
 
+    // Extract signatures as base58 strings
+    let signatures: Vec<String> = tx.signatures.iter().map(|s| s.to_string()).collect();
+
     Ok(ParsedTransaction {
         fee_payer,
         num_signatures: message.header.num_required_signatures,
@@ -146,6 +153,7 @@ pub fn parse_transaction(bytes: &[u8]) -> Result<ParsedTransaction, String> {
         durable_nonce,
         instructions_data,
         account_keys,
+        signatures,
     })
 }
 
@@ -167,6 +175,11 @@ mod tests {
         assert!(!parsed.fee_payer.is_empty());
         assert!(!parsed.nonce.is_empty());
         assert_eq!(parsed.instructions_data.len(), 1);
+
+        // Check signatures are returned
+        assert_eq!(parsed.signatures.len(), 1);
+        // Unsigned transactions have all-zero signatures (base58 encoded)
+        assert!(!parsed.signatures[0].is_empty());
 
         // Check the instruction is a Transfer
         match &parsed.instructions_data[0] {
