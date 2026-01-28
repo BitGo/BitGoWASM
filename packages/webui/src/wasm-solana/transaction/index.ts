@@ -323,6 +323,75 @@ class SolanaTransactionParser extends BaseComponent {
           color: var(--bg);
         }
 
+        .signatures-section {
+          margin-bottom: 2rem;
+        }
+
+        .signatures-section h2 {
+          font-size: 1rem;
+          margin-bottom: 1rem;
+          color: var(--muted, #8b949e);
+        }
+
+        .signatures-list {
+          padding: 1rem;
+          background: var(--surface, #161b22);
+          border: 1px solid var(--border, #30363d);
+          border-radius: 6px;
+        }
+
+        .signature-item {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          padding: 0.375rem 0;
+          font-size: 0.8125rem;
+        }
+
+        .signature-item:not(:last-child) {
+          border-bottom: 1px solid var(--border, #30363d);
+        }
+
+        .signature-index {
+          font-size: 0.75rem;
+          padding: 0.125rem 0.5rem;
+          background: var(--border, #30363d);
+          border-radius: 4px;
+          color: var(--muted, #8b949e);
+          min-width: 2rem;
+          text-align: center;
+        }
+
+        .signature-value {
+          font-family: var(--mono);
+          word-break: break-all;
+          color: var(--fg, #c9d1d9);
+          font-size: 0.75rem;
+        }
+
+        .signature-item.unsigned .signature-value {
+          color: var(--muted, #8b949e);
+          font-style: italic;
+        }
+
+        .signature-badge {
+          font-size: 0.625rem;
+          padding: 0.125rem 0.375rem;
+          border-radius: 3px;
+          text-transform: uppercase;
+          font-weight: 500;
+        }
+
+        .signature-badge.signed {
+          background: var(--green);
+          color: var(--bg);
+        }
+
+        .signature-badge.unsigned {
+          background: var(--muted);
+          color: var(--bg);
+        }
+
         @media (max-width: 768px) {
           .tx-info-grid,
           .instruction-params {
@@ -379,6 +448,7 @@ class SolanaTransactionParser extends BaseComponent {
         ),
         h("div", { id: "error-message" }),
         h("div", { id: "tx-info" }),
+        h("div", { id: "signatures" }),
         h("div", { id: "account-keys" }),
         h(
           "div",
@@ -431,14 +501,16 @@ class SolanaTransactionParser extends BaseComponent {
   private parse(txData: string): void {
     const errorEl = this.$("#error-message");
     const txInfoEl = this.$("#tx-info");
+    const signaturesEl = this.$("#signatures");
     const accountKeysEl = this.$("#account-keys");
     const resultsEl = this.$("#results");
 
-    if (!errorEl || !txInfoEl || !accountKeysEl || !resultsEl) return;
+    if (!errorEl || !txInfoEl || !signaturesEl || !accountKeysEl || !resultsEl) return;
 
     // Clear previous state
     errorEl.innerHTML = "";
     txInfoEl.innerHTML = "";
+    signaturesEl.innerHTML = "";
     accountKeysEl.innerHTML = "";
 
     try {
@@ -448,6 +520,9 @@ class SolanaTransactionParser extends BaseComponent {
 
       // Render transaction info
       txInfoEl.replaceChildren(this.renderTxInfo(parsed));
+
+      // Render signatures
+      signaturesEl.replaceChildren(this.renderSignatures(parsed));
 
       // Render account keys
       accountKeysEl.replaceChildren(this.renderAccountKeys(parsed));
@@ -497,6 +572,35 @@ class SolanaTransactionParser extends BaseComponent {
     }
 
     return h("div", { class: "tx-info" }, h("div", { class: "tx-info-grid" }, ...children));
+  }
+
+  private renderSignatures(parsed: ParsedTransaction): HTMLElement {
+    // All-zero signature in base58 (64 zero bytes)
+    const UNSIGNED_SIGNATURE = "1111111111111111111111111111111111111111111111111111111111111111";
+
+    return h(
+      "section",
+      { class: "signatures-section" },
+      h("h2", {}, `Signatures (${parsed.signatures.length})`),
+      h(
+        "div",
+        { class: "signatures-list" },
+        ...parsed.signatures.map((sig, idx) => {
+          const isSigned = sig !== UNSIGNED_SIGNATURE;
+          return h(
+            "div",
+            { class: `signature-item${isSigned ? "" : " unsigned"}` },
+            h("span", { class: "signature-index" }, String(idx)),
+            h("span", { class: "signature-value" }, isSigned ? sig : "(not signed)"),
+            h(
+              "span",
+              { class: `signature-badge ${isSigned ? "signed" : "unsigned"}` },
+              isSigned ? "Signed" : "Pending",
+            ),
+          );
+        }),
+      ),
+    );
   }
 
   private renderAccountKeys(parsed: ParsedTransaction): HTMLElement {
@@ -575,11 +679,13 @@ class SolanaTransactionParser extends BaseComponent {
   private showEmpty(): void {
     const errorEl = this.$("#error-message");
     const txInfoEl = this.$("#tx-info");
+    const signaturesEl = this.$("#signatures");
     const accountKeysEl = this.$("#account-keys");
     const resultsEl = this.$("#results");
 
     if (errorEl) errorEl.innerHTML = "";
     if (txInfoEl) txInfoEl.innerHTML = "";
+    if (signaturesEl) signaturesEl.innerHTML = "";
     if (accountKeysEl) accountKeysEl.innerHTML = "";
     if (resultsEl) {
       resultsEl.replaceChildren(
