@@ -159,6 +159,27 @@ impl FixedScriptWalletNamespace {
         Ok(network.output_script_support().supports_script_type(st))
     }
 
+    /// Create an OP_RETURN output script with optional data
+    ///
+    /// # Arguments
+    /// * `data` - Optional data bytes to include in the OP_RETURN script
+    ///
+    /// # Returns
+    /// The OP_RETURN script as bytes
+    #[wasm_bindgen]
+    pub fn create_op_return_script(data: Option<Vec<u8>>) -> Result<Vec<u8>, WasmUtxoError> {
+        use miniscript::bitcoin::opcodes::all::OP_RETURN;
+        use miniscript::bitcoin::script::{Builder, PushBytesBuf};
+
+        let mut builder = Builder::new().push_opcode(OP_RETURN);
+        if let Some(data) = data {
+            let push_bytes = PushBytesBuf::try_from(data)
+                .map_err(|e| WasmUtxoError::new(&format!("Data too large for OP_RETURN: {}", e)))?;
+            builder = builder.push_slice(push_bytes);
+        }
+        Ok(builder.into_script().to_bytes())
+    }
+
     /// Get all chain code metadata for building TypeScript lookup tables
     ///
     /// Returns an array of [chainCode, scriptType, scope] tuples where:

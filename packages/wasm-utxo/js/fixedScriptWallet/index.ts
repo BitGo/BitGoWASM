@@ -5,8 +5,14 @@ export { RootWalletKeys, type WalletKeysArg, type IWalletKeys } from "./RootWall
 export { ReplayProtection, type ReplayProtectionArg } from "./ReplayProtection.js";
 export { outputScript, address } from "./address.js";
 export { Dimensions } from "./Dimensions.js";
-export { type OutputScriptType, type InputScriptType, type ScriptType } from "./scriptType.js";
-export { ChainCode, chainCodes, type Scope } from "./chains.js";
+export {
+  outputScriptTypes,
+  inputScriptTypes,
+  type OutputScriptType,
+  type InputScriptType,
+  type ScriptType,
+} from "./scriptType.js";
+export { ChainCode, chainCodes, assertChainCode, type Scope } from "./chains.js";
 
 // Bitcoin-like PSBT (for all non-Zcash networks)
 export {
@@ -60,4 +66,24 @@ import type { ScriptType } from "./scriptType.js";
  */
 export function supportsScriptType(coin: CoinName, scriptType: ScriptType): boolean {
   return FixedScriptWalletNamespace.supports_script_type(coin, scriptType);
+}
+
+/**
+ * Create an OP_RETURN output script with optional data
+ *
+ * @param data - Optional data bytes to include in the OP_RETURN script
+ * @returns The OP_RETURN script as a Uint8Array
+ *
+ * @example
+ * ```typescript
+ * // Empty OP_RETURN
+ * const script = createOpReturnScript();
+ *
+ * // OP_RETURN with data
+ * const data = new Uint8Array([1, 2, 3, 4]);
+ * const script = createOpReturnScript(data);
+ * ```
+ */
+export function createOpReturnScript(data?: Uint8Array): Uint8Array {
+  return FixedScriptWalletNamespace.create_op_return_script(data);
 }
