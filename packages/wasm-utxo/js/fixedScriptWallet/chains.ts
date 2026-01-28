@@ -21,10 +21,13 @@ const chainCodeSet = new Set<number>(chainCodes);
 const chainToMeta = new Map<ChainCode, { scope: Scope; scriptType: OutputScriptType }>();
 const scriptTypeToChain = new Map<OutputScriptType, { internal: ChainCode; external: ChainCode }>();
 
-// Initialize from WASM (called once at load time)
-function assertChainCode(n: number): ChainCode {
+/**
+ * Assert that a number is a valid chain code.
+ * @throws Error if the number is not a valid chain code
+ */
+export function assertChainCode(n: number): ChainCode {
   if (!chainCodeSet.has(n)) {
-    throw new Error(`Invalid chain code from WASM: ${n}`);
+    throw new Error(`Invalid chain code: ${n}`);
   }
   return n as ChainCode;
 }

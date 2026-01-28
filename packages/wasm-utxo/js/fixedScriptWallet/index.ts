@@ -5,8 +5,14 @@ export { RootWalletKeys, type WalletKeysArg, type IWalletKeys } from "./RootWall
 export { ReplayProtection, type ReplayProtectionArg } from "./ReplayProtection.js";
 export { outputScript, address } from "./address.js";
 export { Dimensions } from "./Dimensions.js";
-export { type OutputScriptType, type InputScriptType, type ScriptType } from "./scriptType.js";
-export { ChainCode, chainCodes, type Scope } from "./chains.js";
+export {
+  outputScriptTypes,
+  inputScriptTypes,
+  type OutputScriptType,
+  type InputScriptType,
+  type ScriptType,
+} from "./scriptType.js";
+export { ChainCode, chainCodes, assertChainCode, type Scope } from "./chains.js";
 
 // Bitcoin-like PSBT (for all non-Zcash networks)
 export {
