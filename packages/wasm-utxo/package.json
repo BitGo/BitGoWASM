@@ -35,6 +35,7 @@
   "scripts": {
     "test": "npm run test:mocha && npm run test:wasm-pack && npm run test:imports",
     "test:mocha": "mocha --recursive test",
+    "test:benchmark": "mocha test/benchmark/signing.ts --timeout 600000",
     "test:wasm-pack": "npm run test:wasm-pack-node && npm run test:wasm-pack-chrome",
     "test:wasm-pack-node": "./scripts/wasm-pack-test.sh --node",
     "test:wasm-pack-chrome": "./scripts/wasm-pack-test.sh --headless --chrome",

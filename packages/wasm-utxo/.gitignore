@@ -8,3 +8,5 @@ js/*.js
 js/*.d.ts
 js/wasm
 .vscode
+.cursor
+test/benchmark/results/
