@@ -1457,6 +1457,34 @@ impl BitGoPsbt {
             .map_err(|e| e.to_string())
     }
 
+    /// Sign a MuSig2 input using an externally-provided SighashCache (for efficiency).
+    ///
+    /// This method is the same as `sign_with_first_round` but accepts an external
+    /// SighashCache and prevouts to avoid recomputing sha_prevouts, sha_amounts, etc.
+    /// when signing multiple MuSig2 inputs in a single pass.
+    ///
+    /// # Arguments
+    /// * `input_index` - The index of the MuSig2 input
+    /// * `first_round` - The FirstRound from generate_nonce_first_round()
+    /// * `xpriv` - The user's extended private key
+    /// * `sighash_cache` - External SighashCache (reused across inputs)
+    /// * `prevouts` - External prevouts slice (reused across inputs)
+    ///
+    /// # Returns
+    /// Ok(()) if the signature was successfully created and added to the PSBT
+    pub fn sign_with_first_round_and_cache<T: std::borrow::Borrow<crate::bitcoin::Transaction>>(
+        &mut self,
+        input_index: usize,
+        first_round: musig2::FirstRound,
+        xpriv: &miniscript::bitcoin::bip32::Xpriv,
+        sighash_cache: &mut crate::bitcoin::sighash::SighashCache<T>,
+        prevouts: &[crate::bitcoin::TxOut],
+    ) -> Result<(), String> {
+        let mut ctx = self.musig2_context(input_index)?;
+        ctx.sign_with_first_round_and_cache(first_round, xpriv, sighash_cache, prevouts)
+            .map_err(|e| e.to_string())
+    }
+
     /// Sign a single input with a raw private key
     ///
     /// This method signs a specific input using the provided private key. It automatically
@@ -1726,6 +1754,136 @@ impl BitGoPsbt {
         }
     }
 
+    /// Sign all replay protection inputs with the provided private key.
+    ///
+    /// This iterates through all inputs looking for P2SH-P2PK (replay protection) inputs
+    /// that match the provided public key and signs them.
+    ///
+    /// # Arguments
+    /// - `privkey`: The private key to sign with
+    ///
+    /// # Returns
+    /// - `Ok(Vec<usize>)` with indices of inputs that were signed
+    /// - `Err(String)` if signing fails
+    pub fn sign_all_replay_protection_inputs(
+        &mut self,
+        privkey: &secp256k1::SecretKey,
+    ) -> Result<Vec<usize>, String> {
+        let secp = secp256k1::Secp256k1::new();
+
+        // Derive public key from private key
+        let public_key = miniscript::bitcoin::PublicKey::from_slice(
+            &secp256k1::PublicKey::from_secret_key(&secp, privkey).serialize(),
+        )
+        .map_err(|e| format!("Failed to derive public key: {}", e))?;
+
+        let mut signed_indices = Vec::new();
+        let num_inputs = self.psbt().inputs.len();
+
+        for input_index in 0..num_inputs {
+            // Check if this is a replay protection input (P2SH-P2PK) matching our key
+            let should_sign = {
+                let psbt = self.psbt();
+                if let Some(redeem_script) = &psbt.inputs[input_index].redeem_script {
+                    if let Ok(redeem_pubkey) =
+                        Self::extract_pubkey_from_p2pk_redeem_script(redeem_script)
+                    {
+                        // Only sign if the pubkey matches
+                        public_key == redeem_pubkey
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+
+            if should_sign {
+                // Use the existing sign_with_privkey which handles RP inputs specially
+                self.sign_with_privkey(input_index, privkey)?;
+                signed_indices.push(input_index);
+            }
+        }
+
+        Ok(signed_indices)
+    }
+
+    /// Sign a single input with a raw private key, using save/restore for regular inputs.
+    ///
+    /// For replay protection inputs (P2SH-P2PK), this uses direct signing which is
+    /// already single-input. For regular inputs, this clones the PSBT, signs all,
+    /// then copies only the target input's signatures back.
+    ///
+    /// **Important:** This is NOT faster than signing all inputs for regular (non-RP) inputs.
+    /// The underlying miniscript library signs all inputs regardless. This method
+    /// just prevents signatures from being added to other inputs.
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to sign
+    /// - `privkey`: The private key to sign with
+    ///
+    /// # Returns
+    /// - `Ok(())` if the input was signed
+    /// - `Err(String)` if signing fails
+    pub fn sign_single_input_with_privkey(
+        &mut self,
+        input_index: usize,
+        privkey: &secp256k1::SecretKey,
+    ) -> Result<(), String> {
+        let psbt = self.psbt();
+        if input_index >= psbt.inputs.len() {
+            return Err(format!(
+                "Input index {} out of bounds (total inputs: {})",
+                input_index,
+                psbt.inputs.len()
+            ));
+        }
+
+        // Check if this is a MuSig2 input
+        if p2tr_musig2_input::Musig2Input::is_musig2_input(&psbt.inputs[input_index]) {
+            return Err(
+                "MuSig2 inputs cannot be signed with raw privkey. Use sign_with_first_round instead."
+                    .to_string(),
+            );
+        }
+
+        // Check if this is a replay protection input (P2SH-P2PK)
+        // RP signing is already truly single-input, so no save/restore needed
+        if let Some(redeem_script) = &psbt.inputs[input_index].redeem_script {
+            if Self::extract_pubkey_from_p2pk_redeem_script(redeem_script).is_ok() {
+                // This is a replay protection input - use direct signing
+                return self.sign_with_privkey(input_index, privkey);
+            }
+        }
+
+        // For regular inputs, use save/restore pattern
+        let mut cloned = self.clone();
+
+        // Sign on the clone (this signs all matching inputs)
+        cloned.sign_with_privkey(input_index, privkey)?;
+
+        // Copy only the target input's signatures from the clone to self
+        let cloned_input = &cloned.psbt().inputs[input_index];
+        let target_input = &mut self.psbt_mut().inputs[input_index];
+
+        // Copy partial_sigs (ECDSA signatures)
+        for (pubkey, sig) in &cloned_input.partial_sigs {
+            target_input.partial_sigs.insert(*pubkey, *sig);
+        }
+
+        // Copy tap_script_sigs (Taproot script path signatures)
+        for (key, sig) in &cloned_input.tap_script_sigs {
+            target_input.tap_script_sigs.insert(key.clone(), *sig);
+        }
+
+        // Copy tap_key_sig (Taproot key path signature)
+        if cloned_input.tap_key_sig.is_some() {
+            target_input.tap_key_sig = cloned_input.tap_key_sig;
+        }
+
+        Ok(())
+    }
+
     /// Sign the PSBT with the provided key.
     /// Wraps the underlying PSBT's sign method from miniscript::psbt::PsbtExt.
     ///
@@ -1799,6 +1957,150 @@ impl BitGoPsbt {
                     .sign_zcash(k, secp, branch_id, version_group_id, expiry_height)
             }
         }
+    }
+
+    /// Sign all non-MuSig2 inputs with the provided xpriv in a single pass.
+    ///
+    /// This is more efficient than calling `sign_with_privkey` for each input individually
+    /// because miniscript's `sign` method already signs all matching inputs at once.
+    ///
+    /// **Note:** MuSig2 inputs are skipped by this method because they require FirstRound
+    /// state from nonce generation. Use dedicated MuSig2 signing methods for those inputs.
+    ///
+    /// # Arguments
+    /// - `xpriv`: The extended private key to sign with
+    ///
+    /// # Returns
+    /// - `Ok(SigningKeysMap)` mapping input indices to the public keys that signed them
+    /// - `Err(String)` if signing fails
+    pub fn sign_all_with_xpriv(
+        &mut self,
+        xpriv: &miniscript::bitcoin::bip32::Xpriv,
+    ) -> Result<miniscript::bitcoin::psbt::SigningKeysMap, String> {
+        let secp = secp256k1::Secp256k1::new();
+
+        // Sign all inputs - miniscript handles this efficiently
+        match self.sign(xpriv, &secp) {
+            Ok(signing_keys) => Ok(signing_keys),
+            Err((partial_success, errors)) => {
+                // Filter out errors for MuSig2 inputs (they're expected to fail)
+                // and errors for inputs that don't match the key
+                let real_errors: Vec<_> = errors
+                    .iter()
+                    .filter(|(input_index, error)| {
+                        // Don't report errors for MuSig2 inputs
+                        let is_musig2 = self
+                            .psbt()
+                            .inputs
+                            .get(**input_index)
+                            .map(|input| p2tr_musig2_input::Musig2Input::is_musig2_input(input))
+                            .unwrap_or(false);
+
+                        // Don't report "key not found" errors - those are normal for inputs
+                        // that belong to a different key
+                        let is_key_not_found =
+                            matches!(error, miniscript::bitcoin::psbt::SignError::KeyNotFound);
+
+                        !is_musig2 && !is_key_not_found
+                    })
+                    .collect();
+
+                if real_errors.is_empty() {
+                    // All errors were expected (MuSig2 or key not found)
+                    Ok(partial_success)
+                } else {
+                    Err(format!(
+                        "Failed to sign {} input(s): {:?}",
+                        real_errors.len(),
+                        real_errors
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Sign a single input with the provided xpriv, using save/restore to avoid
+    /// signing other inputs.
+    ///
+    /// For MuSig2 inputs, this delegates to `sign_with_first_round` which is already
+    /// single-input. For ECDSA inputs, this clones the PSBT, signs all inputs on the
+    /// clone, then copies only the target input's signatures back.
+    ///
+    /// **Important:** This is NOT faster than `sign_all_with_xpriv` for ECDSA inputs.
+    /// The underlying miniscript library signs all inputs regardless. This method
+    /// just prevents signatures from being added to other inputs.
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to sign
+    /// - `xpriv`: The extended private key to sign with
+    ///
+    /// # Returns
+    /// - `Ok(())` if the input was signed
+    /// - `Err(String)` if signing fails
+    pub fn sign_single_input_with_xpriv(
+        &mut self,
+        input_index: usize,
+        xpriv: &miniscript::bitcoin::bip32::Xpriv,
+    ) -> Result<(), String> {
+        let psbt = self.psbt();
+        if input_index >= psbt.inputs.len() {
+            return Err(format!(
+                "Input index {} out of bounds (total inputs: {})",
+                input_index,
+                psbt.inputs.len()
+            ));
+        }
+
+        // Check if this is a MuSig2 input - those have true single-input signing
+        if p2tr_musig2_input::Musig2Input::is_musig2_input(&psbt.inputs[input_index]) {
+            // MuSig2 signing is handled separately via sign_with_first_round
+            return Err(
+                "MuSig2 inputs require FirstRound state. Use sign_with_first_round instead."
+                    .to_string(),
+            );
+        }
+
+        // For ECDSA inputs, we need to use save/restore pattern
+        // Clone the PSBT, sign all, then copy only the target input's signatures
+        let mut cloned = self.clone();
+        let secp = secp256k1::Secp256k1::new();
+
+        // Sign on the clone (this signs all matching inputs)
+        let result = cloned.sign(xpriv, &secp);
+
+        // Check if the target input was signed
+        let was_signed = match &result {
+            Ok(signing_keys) => signing_keys.contains_key(&input_index),
+            Err((partial_success, _)) => partial_success.contains_key(&input_index),
+        };
+
+        if !was_signed {
+            return Err(format!(
+                "Input {} was not signed (key may not match derivation path)",
+                input_index
+            ));
+        }
+
+        // Copy only the target input's signatures from the clone to self
+        let cloned_input = &cloned.psbt().inputs[input_index];
+        let target_input = &mut self.psbt_mut().inputs[input_index];
+
+        // Copy partial_sigs (ECDSA signatures)
+        for (pubkey, sig) in &cloned_input.partial_sigs {
+            target_input.partial_sigs.insert(*pubkey, *sig);
+        }
+
+        // Copy tap_script_sigs (Taproot script path signatures)
+        for (key, sig) in &cloned_input.tap_script_sigs {
+            target_input.tap_script_sigs.insert(key.clone(), *sig);
+        }
+
+        // Copy tap_key_sig (Taproot key path signature)
+        if cloned_input.tap_key_sig.is_some() {
+            target_input.tap_key_sig = cloned_input.tap_key_sig;
+        }
+
+        Ok(())
     }
 
     /// Parse inputs with wallet keys and replay protection

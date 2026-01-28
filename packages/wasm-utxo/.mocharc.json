@@ -1,5 +1,6 @@
 {
   "extensions": ["ts", "tsx", "js", "jsx"],
   "spec": ["test/**/*.ts"],
+  "ignore": ["test/benchmark/**"],
   "node-option": ["import=tsx/esm", "experimental-wasm-modules"]
 }

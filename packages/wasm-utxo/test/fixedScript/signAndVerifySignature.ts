@@ -178,76 +178,39 @@ function verifyAllInputSignatures(
   });
 }
 
-function signInputAndVerify(
-  bitgoPsbt: BitGoPsbt,
-  index: number,
-  key: BIP32 | ECPair,
-  keyName: string,
-  inputType: string,
-): void {
-  bitgoPsbt.sign(index, key);
-  assert.strictEqual(
-    bitgoPsbt.verifySignature(index, key),
-    true,
-    `Input ${index} signature mismatch key=${keyName} type=${inputType}`,
-  );
-}
-
 /**
  * Sign all inputs in a PSBT according to the signature stage
+ *
+ * This uses the new API:
+ * - sign(key) to sign all wallet inputs at once (ECDSA + MuSig2)
+ *
+ * Note: sign(key) only returns indices of inputs that were newly signed. Inputs
+ * that already have a signature with the same key are skipped but still valid.
+ *
  * @param bitgoPsbt - The PSBT to sign
- * @param rootWalletKeys - Wallet keys for parsing the transaction
  * @param xprivs - The xprivs to use for signing
  * @param replayProtectionKey - The ECPair for signing replay protection (p2shP2pk) inputs
  */
 function signAllInputs(
   bitgoPsbt: BitGoPsbt,
-  rootWalletKeys: RootWalletKeys,
   xprivs: RootWalletXprivs,
   replayProtectionKey: ECPair,
 ): void {
-  // Parse transaction to get input types
-  const parsed = bitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-    publicKeys: [replayProtectionKey],
-  });
-
-  // Generate MuSig2 nonces for user and backup keys (MuSig2 uses 2-of-2 with user+backup)
+  // Generate MuSig2 nonces for user and bitgo keys
+  // Note: We only generate for user + bitgo because the fixture uses keypath signing (user+bitgo)
+  // Script path inputs (user+backup) would need separate nonce generation
   bitgoPsbt.generateMusig2Nonces(xprivs.user);
   bitgoPsbt.generateMusig2Nonces(xprivs.bitgo);
 
-  // First pass: sign with user key (skip p2shP2pk inputs)
-  parsed.inputs.forEach((input, index) => {
-    switch (input.scriptType) {
-      case "p2shP2pk":
-        break;
-      default:
-        signInputAndVerify(bitgoPsbt, index, xprivs.user, "user", input.scriptType);
-        break;
-    }
-  });
+  // Sign all wallet inputs (ECDSA + MuSig2) with user key
+  // The new API handles both ECDSA and MuSig2 in one call
+  bitgoPsbt.sign(xprivs.user);
 
-  // Second pass: sign with appropriate second key
-  parsed.inputs.forEach((input, index) => {
-    switch (input.scriptType) {
-      case "p2shP2pk":
-        signInputAndVerify(
-          bitgoPsbt,
-          index,
-          replayProtectionKey,
-          "replayProtection",
-          input.scriptType,
-        );
-        break;
-      case "p2trMusig2ScriptPath":
-        // MuSig2 script path inputs use backup key for second signature
-        signInputAndVerify(bitgoPsbt, index, xprivs.backup, "backup", input.scriptType);
-        break;
-      default:
-        // Regular multisig uses bitgo key
-        signInputAndVerify(bitgoPsbt, index, xprivs.bitgo, "bitgo", input.scriptType);
-        break;
-    }
-  });
+  // Sign all wallet inputs with bitgo key (ECDSA + MuSig2 keypath)
+  bitgoPsbt.sign(xprivs.bitgo);
+
+  // Sign all replay protection inputs with raw privkey
+  bitgoPsbt.sign(replayProtectionKey);
 }
 
 /**
@@ -275,7 +238,7 @@ function runTestsForFixture(
 
   // Sign inputs (if not already fully signed)
   if (signatureStage !== "unsigned") {
-    signAllInputs(bitgoPsbt, rootWalletKeys, xprivs, replayProtectionKey);
+    signAllInputs(bitgoPsbt, xprivs, replayProtectionKey);
   }
 }
 

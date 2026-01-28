@@ -1,7 +1,7 @@
 import { BitGoPsbt as WasmBitGoPsbt } from "../wasm/wasm_utxo.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
 import { type ReplayProtectionArg, ReplayProtection } from "./ReplayProtection.js";
-import { type BIP32Arg, BIP32 } from "../bip32.js";
+import { type BIP32Arg, BIP32, isBIP32Arg } from "../bip32.js";
 import { type ECPairArg, ECPair } from "../ecpair.js";
 import type { UtxolibName } from "../utxolibCompat.js";
 import type { CoinName } from "../coinName.js";
@@ -515,16 +515,97 @@ export class BitGoPsbt {
   }
 
   /**
-   * Sign a single input with a private key
+   * Sign all matching inputs with a private key.
+   *
+   * This method signs all inputs that match the provided key in a single efficient pass.
+   * It accepts either:
+   * - An xpriv (BIP32Arg: base58 string, BIP32 instance, or WasmBIP32) for wallet inputs
+   * - A raw privkey (ECPairArg: Buffer, ECPair instance, or WasmECPair) for replay protection inputs
+   *
+   * **Note:** MuSig2 inputs are skipped by this method when using xpriv because they require
+   * FirstRound state. After calling this method, sign MuSig2 inputs individually using
+   * `signInput()` after calling `generateMusig2Nonces()`.
+   *
+   * @param key - Either an xpriv (BIP32Arg) or a raw privkey (ECPairArg)
+   * @returns Array of input indices that were signed
+   * @throws Error if signing fails
+   *
+   * @example
+   * ```typescript
+   * // Sign all wallet inputs with user's xpriv
+   * const signedIndices = psbt.sign(userXpriv);
+   * console.log(`Signed inputs: ${signedIndices.join(", ")}`);
+   *
+   * // Sign all replay protection inputs with raw privkey
+   * const rpSignedIndices = psbt.sign(replayProtectionPrivkey);
+   * ```
+   */
+  sign(key: BIP32Arg | ECPairArg): number[];
+
+  /**
+   * Sign a single input with a private key.
+   *
+   * @deprecated Use `sign(key)` to sign all matching inputs (more efficient), or use
+   * `signInput(inputIndex, key)` for explicit single-input signing.
+   *
+   * **Note:** This method is NOT more efficient than `sign(key)` for non-MuSig2 inputs.
+   * The underlying miniscript library signs all inputs regardless. This overload exists
+   * for backward compatibility only.
+   *
+   * @param inputIndex - The index of the input to sign (0-based)
+   * @param key - Either an xpriv (BIP32Arg) or a raw privkey (ECPairArg)
+   * @throws Error if signing fails, or if generateMusig2Nonces() was not called first for MuSig2 inputs
+   */
+  sign(inputIndex: number, key: BIP32Arg | ECPairArg): void;
+
+  sign(
+    inputIndexOrKey: number | BIP32Arg | ECPairArg,
+    key?: BIP32Arg | ECPairArg,
+  ): number[] | void {
+    // Detect which overload was called
+    if (typeof inputIndexOrKey === "number") {
+      // Called as sign(inputIndex, key) - deprecated single-input signing
+      if (key === undefined) {
+        throw new Error("Key is required when signing a single input");
+      }
+      this.signInput(inputIndexOrKey, key);
+      return;
+    }
+
+    // Called as sign(key) - sign all matching inputs
+    const keyArg = inputIndexOrKey;
+
+    if (isBIP32Arg(keyArg)) {
+      // It's a BIP32Arg - sign all wallet inputs (ECDSA + MuSig2)
+      const wasmKey = BIP32.from(keyArg);
+      // Sign all non-MuSig2 wallet inputs
+      const walletSigned = this._wasm.sign_all_wallet_inputs(wasmKey.wasm) as number[];
+      // Sign all MuSig2 keypath inputs (more efficient - reuses SighashCache)
+      const musig2Signed = this._wasm.sign_all_musig2_inputs(wasmKey.wasm) as number[];
+      return [...walletSigned, ...musig2Signed];
+    } else {
+      // It's an ECPairArg - sign all replay protection inputs
+      const wasmKey = ECPair.from(keyArg as ECPairArg);
+      return this._wasm.sign_replay_protection_inputs(wasmKey.wasm) as number[];
+    }
+  }
+
+  /**
+   * Sign a single input with a private key.
    *
    * This method signs a specific input using the provided key. It accepts either:
-   * - An xpriv (BIP32Arg: base58 string, BIP32 instance, or WasmBIP32) for wallet inputs - derives the key and signs
-   * - A raw privkey (ECPairArg: Buffer, ECPair instance, or WasmECPair) for replay protection inputs - signs directly
+   * - An xpriv (BIP32Arg: base58 string, BIP32 instance, or WasmBIP32) for wallet inputs
+   * - A raw privkey (ECPairArg: Buffer, ECPair instance, or WasmECPair) for replay protection inputs
    *
-   * This method automatically detects and handles different input types:
-   * - For regular inputs: uses standard PSBT signing
-   * - For MuSig2 inputs: uses the FirstRound state stored by generateMusig2Nonces()
-   * - For replay protection inputs: signs with legacy P2SH sighash
+   * **Important:** This method is NOT faster than `sign(key)` for non-MuSig2 inputs.
+   * The underlying miniscript library signs all inputs regardless. This method uses a
+   * save/restore pattern to ensure only the target input receives the signature.
+   *
+   * Use this method only when you need precise control over which inputs are signed,
+   * for example:
+   * - Signing MuSig2 inputs (after calling generateMusig2Nonces())
+   * - Mixed transactions where different inputs need different keys
+   * - Testing or debugging signing behavior
    *
    * @param inputIndex - The index of the input to sign (0-based)
    * @param key - Either an xpriv (BIP32Arg) or a raw privkey (ECPairArg)
@@ -532,43 +613,28 @@ export class BitGoPsbt {
    *
    * @example
    * ```typescript
-   * // Parse transaction to identify input types
-   * const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, replayProtection);
+   * // Sign a specific MuSig2 input after nonce generation
+   * psbt.generateMusig2Nonces(userXpriv);
+   * psbt.signInput(musig2InputIndex, userXpriv);
    *
-   * // Sign regular wallet inputs with xpriv
-   * for (let i = 0; i < parsed.inputs.length; i++) {
-   *   const input = parsed.inputs[i];
-   *   if (input.scriptId !== null && input.scriptType !== "p2shP2pk") {
-   *     psbt.sign(i, userXpriv);
-   *   }
-   * }
-   *
-   * // Sign replay protection inputs with raw privkey
-   * const userPrivkey = bip32.fromBase58(userXpriv).privateKey!;
-   * for (let i = 0; i < parsed.inputs.length; i++) {
-   *   const input = parsed.inputs[i];
-   *   if (input.scriptType === "p2shP2pk") {
-   *     psbt.sign(i, userPrivkey);
-   *   }
-   * }
+   * // Sign a specific replay protection input
+   * psbt.signInput(rpInputIndex, replayProtectionPrivkey);
    * ```
    */
-  sign(inputIndex: number, key: BIP32Arg | ECPairArg): void {
-    // Detect key type
-    // If string or has 'derive' method → BIP32Arg
-    // Otherwise → ECPairArg
-    if (
-      typeof key === "string" ||
-      (typeof key === "object" &&
-        key !== null &&
-        "derive" in key &&
-        typeof key.derive === "function")
-    ) {
+  signInput(inputIndex: number, key: BIP32Arg | ECPairArg): void {
+    if (isBIP32Arg(key)) {
       // It's a BIP32Arg
-      const wasmKey = BIP32.from(key as BIP32Arg);
-      this._wasm.sign_with_xpriv(inputIndex, wasmKey.wasm);
+      const wasmKey = BIP32.from(key);
+      // Route to the appropriate method based on input type
+      if (this._wasm.is_musig2_input(inputIndex)) {
+        // MuSig2 keypath: true single-input signing (efficient)
+        this._wasm.sign_musig2_input(inputIndex, wasmKey.wasm);
+      } else {
+        // ECDSA/Schnorr script path: save/restore pattern (not faster than bulk)
+        this._wasm.sign_wallet_input(inputIndex, wasmKey.wasm);
+      }
     } else {
-      // It's an ECPairArg
+      // It's an ECPairArg - for replay protection inputs
       const wasmKey = ECPair.from(key as ECPairArg);
       this._wasm.sign_with_privkey(inputIndex, wasmKey.wasm);
     }
