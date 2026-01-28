@@ -53,10 +53,7 @@ const SCRIPT_TYPES: ScriptTypeConfig[] = [
   },
 ];
 
-const INPUT_COUNTS = [200, 500, 1000];
-
-// Fixed test wallet keys (deterministic for reproducibility)
-const TEST_SEED = Buffer.alloc(32, 0x42);
+const INPUT_COUNTS = [10, 200, 500, 1000];
 
 function createTestWalletKeys(): { keys: RootWalletKeys; xprivs: Triple<BIP32> } {
   // Create three deterministic keys from seeds
@@ -135,17 +132,17 @@ type BenchmarkResult = {
   scriptType: string;
   inputCount: number;
   bulkSignMs: number;
-  perInputSignMs: number;
+  perInputSignMs: number | null; // null if skipped (only run for 10 inputs)
   bulkSignPerInputMs: number;
-  perInputSignPerInputMs: number;
+  perInputSignPerInputMs: number | null;
 };
 
-async function benchmarkBulkSign(
+function benchmarkBulkSign(
   psbt: BitGoPsbt,
-  walletKeys: RootWalletKeys,
+  _walletKeys: RootWalletKeys,
   xprivs: Triple<BIP32>,
   scriptType: ScriptTypeConfig,
-): Promise<number> {
+): number {
   // Clone PSBT for this benchmark
   const testPsbt = BitGoPsbt.fromBytes(psbt.serialize(), "bitcoin");
 
@@ -157,41 +154,22 @@ async function benchmarkBulkSign(
 
   const start = performance.now();
 
-  // Sign with user key
+  // Sign with user key - the new API handles both ECDSA and MuSig2 in one call
   testPsbt.sign(xprivs[0]);
-
-  // For MuSig2 keypath, we need to sign individual inputs after bulk
-  if (scriptType.isMuSig2KeyPath) {
-    const parsed = testPsbt.parseTransactionWithWalletKeys(walletKeys, { publicKeys: [] });
-    for (let i = 0; i < parsed.inputs.length; i++) {
-      if (parsed.inputs[i].scriptType === "p2trMusig2KeyPath") {
-        testPsbt.signInput(i, xprivs[0]);
-      }
-    }
-  }
 
   // Sign with bitgo key (second signer for 2-of-3)
   testPsbt.sign(xprivs[2]);
-
-  if (scriptType.isMuSig2KeyPath) {
-    const parsed = testPsbt.parseTransactionWithWalletKeys(walletKeys, { publicKeys: [] });
-    for (let i = 0; i < parsed.inputs.length; i++) {
-      if (parsed.inputs[i].scriptType === "p2trMusig2KeyPath") {
-        testPsbt.signInput(i, xprivs[2]);
-      }
-    }
-  }
 
   const end = performance.now();
   return end - start;
 }
 
-async function benchmarkPerInputSign(
+function benchmarkPerInputSign(
   psbt: BitGoPsbt,
   walletKeys: RootWalletKeys,
   xprivs: Triple<BIP32>,
   scriptType: ScriptTypeConfig,
-): Promise<number> {
+): number {
   // Clone PSBT for this benchmark
   const testPsbt = BitGoPsbt.fromBytes(psbt.serialize(), "bitcoin");
 
@@ -219,20 +197,21 @@ async function benchmarkPerInputSign(
   return end - start;
 }
 
-async function runBenchmark(
+function runBenchmark(
   scriptType: ScriptTypeConfig,
   inputCount: number,
   walletKeys: RootWalletKeys,
   xprivs: Triple<BIP32>,
-): Promise<BenchmarkResult> {
+): BenchmarkResult {
   // Create PSBT
   const psbt = createPsbtWithInputs(inputCount, scriptType, walletKeys);
 
   // Run bulk sign benchmark
-  const bulkSignMs = await benchmarkBulkSign(psbt, walletKeys, xprivs, scriptType);
+  const bulkSignMs = benchmarkBulkSign(psbt, walletKeys, xprivs, scriptType);
 
-  // Run per-input sign benchmark
-  const perInputSignMs = await benchmarkPerInputSign(psbt, walletKeys, xprivs, scriptType);
+  // Run per-input sign benchmark only for 10 inputs (too slow for larger counts)
+  const perInputSignMs =
+    inputCount === 10 ? benchmarkPerInputSign(psbt, walletKeys, xprivs, scriptType) : null;
 
   return {
     scriptType: scriptType.name,
@@ -240,7 +219,7 @@ async function runBenchmark(
     bulkSignMs,
     perInputSignMs,
     bulkSignPerInputMs: bulkSignMs / inputCount,
-    perInputSignPerInputMs: perInputSignMs / inputCount,
+    perInputSignPerInputMs: perInputSignMs !== null ? perInputSignMs / inputCount : null,
   };
 }
 
@@ -271,9 +250,18 @@ function formatResults(results: BenchmarkResult[]): string {
     );
 
     for (const r of scriptResults) {
-      const ratio = (r.perInputSignMs / r.bulkSignMs).toFixed(2);
+      const perInputStr =
+        r.perInputSignMs !== null ? r.perInputSignMs.toFixed(1).padStart(14) : "-".padStart(14);
+      const perInputPerInputStr =
+        r.perInputSignPerInputMs !== null
+          ? r.perInputSignPerInputMs.toFixed(3).padStart(19)
+          : "-".padStart(19);
+      const ratioStr =
+        r.perInputSignMs !== null
+          ? (r.perInputSignMs / r.bulkSignMs).toFixed(2).padStart(5) + "x"
+          : "-".padStart(6);
       lines.push(
-        `| ${r.inputCount.toString().padStart(6)} | ${r.bulkSignMs.toFixed(1).padStart(9)} | ${r.perInputSignMs.toFixed(1).padStart(14)} | ${r.bulkSignPerInputMs.toFixed(3).padStart(15)} | ${r.perInputSignPerInputMs.toFixed(3).padStart(19)} | ${ratio.padStart(5)}x |`,
+        `| ${r.inputCount.toString().padStart(6)} | ${r.bulkSignMs.toFixed(1).padStart(9)} | ${perInputStr} | ${r.bulkSignPerInputMs.toFixed(3).padStart(15)} | ${perInputPerInputStr} | ${ratioStr} |`,
       );
     }
   }
@@ -305,17 +293,21 @@ describe("Signing Benchmark", function () {
   for (const scriptType of SCRIPT_TYPES) {
     describe(`${scriptType.name}`, function () {
       for (const inputCount of INPUT_COUNTS) {
-        it(`should benchmark ${inputCount} inputs`, async function () {
+        it(`should benchmark ${inputCount} inputs`, function () {
           console.log(`\nBenchmarking ${scriptType.name} with ${inputCount} inputs...`);
 
-          const result = await runBenchmark(scriptType, inputCount, walletKeys, xprivs);
+          const result = runBenchmark(scriptType, inputCount, walletKeys, xprivs);
           allResults.push(result);
 
           console.log(`  Bulk sign: ${result.bulkSignMs.toFixed(1)}ms`);
-          console.log(`  Per-input sign: ${result.perInputSignMs.toFixed(1)}ms`);
-          console.log(
-            `  Ratio (per-input/bulk): ${(result.perInputSignMs / result.bulkSignMs).toFixed(2)}x`,
-          );
+          if (result.perInputSignMs !== null) {
+            console.log(`  Per-input sign: ${result.perInputSignMs.toFixed(1)}ms`);
+            console.log(
+              `  Ratio (per-input/bulk): ${(result.perInputSignMs / result.bulkSignMs).toFixed(2)}x`,
+            );
+          } else {
+            console.log(`  Per-input sign: skipped (only run for 10 inputs)`);
+          }
         });
       }
     });

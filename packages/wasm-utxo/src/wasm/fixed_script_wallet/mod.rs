@@ -1020,6 +1020,400 @@ impl BitGoPsbt {
             .map_err(|e| WasmUtxoError::new(&format!("Failed to sign input: {}", e)))
     }
 
+    /// Sign all non-MuSig2 inputs with an extended private key (xpriv) in a single pass.
+    ///
+    /// This is more efficient than calling `sign_with_xpriv` for each input individually.
+    /// The underlying miniscript library's `sign` method signs all matching inputs at once.
+    ///
+    /// **Note:** MuSig2 inputs are skipped by this method because they require FirstRound
+    /// state from nonce generation. After calling this method, sign MuSig2 inputs
+    /// individually using `sign_with_xpriv`.
+    ///
+    /// # Arguments
+    /// - `xpriv`: The extended private key as a WasmBIP32 instance
+    ///
+    /// # Returns
+    /// - `Ok(JsValue)` with an array of input indices that were signed
+    /// - `Err(WasmUtxoError)` if signing fails
+    pub fn sign_all_with_xpriv(&mut self, xpriv: &WasmBIP32) -> Result<JsValue, WasmUtxoError> {
+        // Extract Xpriv from WasmBIP32
+        let xpriv = xpriv.to_xpriv()?;
+
+        // Call the Rust implementation
+        let signing_keys = self
+            .psbt
+            .sign_all_with_xpriv(&xpriv)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to sign: {}", e)))?;
+
+        // Convert to JsValue - array of input indices that were signed
+        let result = js_sys::Array::new();
+        for input_index in signing_keys.keys() {
+            result.push(&JsValue::from(*input_index as u32));
+        }
+
+        Ok(JsValue::from(result))
+    }
+
+    /// Sign all replay protection inputs with a raw private key.
+    ///
+    /// This iterates through all inputs looking for P2SH-P2PK (replay protection) inputs
+    /// that match the provided public key and signs them.
+    ///
+    /// # Arguments
+    /// - `ecpair`: The ECPair containing the private key
+    ///
+    /// # Returns
+    /// - `Ok(JsValue)` with an array of input indices that were signed
+    /// - `Err(WasmUtxoError)` if signing fails
+    pub fn sign_all_replay_protection_inputs(
+        &mut self,
+        ecpair: &WasmECPair,
+    ) -> Result<JsValue, WasmUtxoError> {
+        // Extract private key from WasmECPair
+        let privkey = ecpair.get_private_key()?;
+
+        // Call the Rust implementation
+        let signed_indices = self
+            .psbt
+            .sign_all_replay_protection_inputs(&privkey)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to sign: {}", e)))?;
+
+        // Convert to JsValue array
+        let result = js_sys::Array::new();
+        for index in signed_indices {
+            result.push(&JsValue::from(index as u32));
+        }
+
+        Ok(JsValue::from(result))
+    }
+
+    /// Sign a single input with an extended private key, using save/restore for ECDSA inputs.
+    ///
+    /// For MuSig2 inputs, this returns an error (use sign_with_xpriv which handles FirstRound).
+    /// For ECDSA inputs, this clones the PSBT, signs all, then copies only the target
+    /// input's signatures back.
+    ///
+    /// **Important:** This is NOT faster than `sign_all_with_xpriv` for ECDSA inputs.
+    /// The underlying miniscript library signs all inputs regardless. This method
+    /// just prevents signatures from being added to other inputs.
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to sign (0-based)
+    /// - `xpriv`: The extended private key as a WasmBIP32 instance
+    ///
+    /// # Returns
+    /// - `Ok(())` if the input was signed
+    /// - `Err(WasmUtxoError)` if signing fails
+    pub fn sign_single_input_with_xpriv(
+        &mut self,
+        input_index: usize,
+        xpriv: &WasmBIP32,
+    ) -> Result<(), WasmUtxoError> {
+        // Extract Xpriv from WasmBIP32
+        let xpriv = xpriv.to_xpriv()?;
+
+        // Call the Rust implementation
+        self.psbt
+            .sign_single_input_with_xpriv(input_index, &xpriv)
+            .map_err(|e| {
+                WasmUtxoError::new(&format!("Failed to sign input {}: {}", input_index, e))
+            })
+    }
+
+    /// Sign a single input with a raw private key, using save/restore for regular inputs.
+    ///
+    /// For replay protection inputs (P2SH-P2PK), this uses direct signing which is
+    /// already single-input. For regular inputs, this clones the PSBT, signs all,
+    /// then copies only the target input's signatures back.
+    ///
+    /// **Important:** This is NOT faster than signing all inputs for regular (non-RP) inputs.
+    /// The underlying miniscript library signs all inputs regardless.
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to sign (0-based)
+    /// - `ecpair`: The ECPair containing the private key
+    ///
+    /// # Returns
+    /// - `Ok(())` if the input was signed
+    /// - `Err(WasmUtxoError)` if signing fails
+    pub fn sign_single_input_with_privkey(
+        &mut self,
+        input_index: usize,
+        ecpair: &WasmECPair,
+    ) -> Result<(), WasmUtxoError> {
+        // Extract private key from WasmECPair
+        let privkey = ecpair.get_private_key()?;
+
+        // Call the Rust implementation
+        self.psbt
+            .sign_single_input_with_privkey(input_index, &privkey)
+            .map_err(|e| {
+                WasmUtxoError::new(&format!("Failed to sign input {}: {}", input_index, e))
+            })
+    }
+
+    // ==================== NEW CLEAN SIGNING API ====================
+
+    /// Check if an input is a MuSig2 keypath input.
+    ///
+    /// MuSig2 inputs require special handling: nonces must be generated first with
+    /// `generate_musig2_nonces()`, then signed with `sign_musig2_input()`.
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to check (0-based)
+    ///
+    /// # Returns
+    /// - `true` if the input is a MuSig2 keypath input
+    /// - `false` otherwise (or if input_index is out of bounds)
+    pub fn is_musig2_input(&self, input_index: usize) -> bool {
+        let psbt = self.psbt.psbt();
+        if input_index >= psbt.inputs.len() {
+            return false;
+        }
+        crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::Musig2Input::is_musig2_input(
+            &psbt.inputs[input_index],
+        )
+    }
+
+    /// Sign all non-MuSig2 wallet inputs in a single efficient pass.
+    ///
+    /// This signs all ECDSA (P2SH, P2SH-P2WSH, P2WSH) and Taproot script path (P2TR)
+    /// inputs that match the provided xpriv. MuSig2 keypath inputs are skipped.
+    ///
+    /// This is the most efficient way to sign wallet inputs. After calling this,
+    /// sign any MuSig2 inputs using `sign_all_musig2_inputs()` or `sign_musig2_input()`.
+    ///
+    /// # Arguments
+    /// - `xpriv`: The extended private key as a WasmBIP32 instance
+    ///
+    /// # Returns
+    /// - `Ok(JsValue)` with an array of input indices that were signed
+    /// - `Err(WasmUtxoError)` if signing fails
+    pub fn sign_all_wallet_inputs(&mut self, xpriv: &WasmBIP32) -> Result<JsValue, WasmUtxoError> {
+        let xpriv = xpriv.to_xpriv()?;
+
+        let signing_keys = self
+            .psbt
+            .sign_all_with_xpriv(&xpriv)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to sign: {}", e)))?;
+
+        let result = js_sys::Array::new();
+        for input_index in signing_keys.keys() {
+            result.push(&JsValue::from(*input_index as u32));
+        }
+
+        Ok(JsValue::from(result))
+    }
+
+    /// Sign a single non-MuSig2 wallet input using save/restore pattern.
+    ///
+    /// For MuSig2 inputs, returns an error (use `sign_musig2_input` instead).
+    /// For ECDSA inputs, this uses a save/restore pattern: clones the PSBT,
+    /// signs all inputs on the clone, then copies only the target input's
+    /// signatures back.
+    ///
+    /// **Important:** This is NOT faster than `sign_all_wallet_inputs()` for ECDSA inputs.
+    /// The underlying library signs all inputs regardless. This method just ensures
+    /// that only the specified input gets signatures added to the PSBT.
+    /// Use `sign_all_wallet_inputs()` when signing multiple inputs with the same key.
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to sign (0-based)
+    /// - `xpriv`: The extended private key as a WasmBIP32 instance
+    ///
+    /// # Returns
+    /// - `Ok(())` if the input was signed
+    /// - `Err(WasmUtxoError)` if signing fails or input is MuSig2
+    pub fn sign_wallet_input(
+        &mut self,
+        input_index: usize,
+        xpriv: &WasmBIP32,
+    ) -> Result<(), WasmUtxoError> {
+        let xpriv = xpriv.to_xpriv()?;
+
+        self.psbt
+            .sign_single_input_with_xpriv(input_index, &xpriv)
+            .map_err(|e| {
+                WasmUtxoError::new(&format!("Failed to sign input {}: {}", input_index, e))
+            })
+    }
+
+    /// Sign a single MuSig2 keypath input.
+    ///
+    /// This uses the FirstRound state generated by `generate_musig2_nonces()`.
+    /// Each FirstRound can only be used once (nonce reuse is a security risk).
+    ///
+    /// For non-MuSig2 inputs, returns an error (use `sign_wallet_input` instead).
+    ///
+    /// # Arguments
+    /// - `input_index`: The index of the input to sign (0-based)
+    /// - `xpriv`: The extended private key as a WasmBIP32 instance
+    ///
+    /// # Returns
+    /// - `Ok(())` if signing was successful
+    /// - `Err(WasmUtxoError)` if signing fails, no FirstRound exists, or not a MuSig2 input
+    pub fn sign_musig2_input(
+        &mut self,
+        input_index: usize,
+        xpriv: &WasmBIP32,
+    ) -> Result<(), WasmUtxoError> {
+        let xpriv = xpriv.to_xpriv()?;
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+
+        let psbt = self.psbt.psbt();
+        if input_index >= psbt.inputs.len() {
+            return Err(WasmUtxoError::new(&format!(
+                "Input index {} out of bounds (total inputs: {})",
+                input_index,
+                psbt.inputs.len()
+            )));
+        }
+
+        if !crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::Musig2Input::is_musig2_input(
+            &psbt.inputs[input_index],
+        ) {
+            return Err(WasmUtxoError::new(&format!(
+                "Input {} is not a MuSig2 input. Use sign_wallet_input instead.",
+                input_index
+            )));
+        }
+
+        let xpub = miniscript::bitcoin::bip32::Xpub::from_priv(&secp, &xpriv);
+        let xpub_str = xpub.to_string();
+
+        let first_round = self.first_rounds.remove(&(input_index, xpub_str.clone()))
+            .ok_or_else(|| WasmUtxoError::new(&format!(
+                "No FirstRound found for input {} and xpub {}. You must call generate_musig2_nonces() first.",
+                input_index, xpub_str
+            )))?;
+
+        self.psbt
+            .sign_with_first_round(input_index, first_round, &xpriv)
+            .map_err(|e| {
+                WasmUtxoError::new(&format!(
+                    "Failed to sign MuSig2 input {}: {}",
+                    input_index, e
+                ))
+            })?;
+
+        Ok(())
+    }
+
+    /// Sign all MuSig2 keypath inputs in a single pass with optimized sighash computation.
+    ///
+    /// This is more efficient than calling `sign_musig2_input()` for each input because
+    /// it reuses the SighashCache across all inputs, avoiding redundant computation of
+    /// sha_prevouts, sha_amounts, sha_scriptpubkeys, sha_sequences, and sha_outputs.
+    ///
+    /// Each MuSig2 input requires a FirstRound from `generate_musig2_nonces()`.
+    /// FirstRounds that have already been consumed (signed) are skipped.
+    ///
+    /// # Arguments
+    /// - `xpriv`: The extended private key as a WasmBIP32 instance
+    ///
+    /// # Returns
+    /// - `Ok(JsValue)` with an array of input indices that were signed
+    /// - `Err(WasmUtxoError)` if signing fails
+    pub fn sign_all_musig2_inputs(&mut self, xpriv: &WasmBIP32) -> Result<JsValue, WasmUtxoError> {
+        let xpriv = xpriv.to_xpriv()?;
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+        let xpub = miniscript::bitcoin::bip32::Xpub::from_priv(&secp, &xpriv);
+        let xpub_str = xpub.to_string();
+
+        // Find all MuSig2 inputs that have a FirstRound for this xpub
+        let psbt = self.psbt.psbt();
+        let musig2_indices: Vec<usize> = (0..psbt.inputs.len())
+            .filter(|&i| {
+                crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::Musig2Input::is_musig2_input(
+                    &psbt.inputs[i],
+                ) && self.first_rounds.contains_key(&(i, xpub_str.clone()))
+            })
+            .collect();
+
+        if musig2_indices.is_empty() {
+            return Ok(JsValue::from(js_sys::Array::new()));
+        }
+
+        // Collect prevouts once (shared across all inputs)
+        let prevouts = crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::collect_prevouts(
+            self.psbt.psbt(),
+        )
+        .map_err(|e| WasmUtxoError::new(&format!("Failed to collect prevouts: {}", e)))?;
+
+        // Clone the unsigned transaction for the SighashCache
+        // (needed to avoid borrow conflicts with psbt mutation)
+        let unsigned_tx = self.psbt.psbt().unsigned_tx.clone();
+
+        // Create SighashCache once (caches sha_prevouts, sha_amounts, etc.)
+        let mut sighash_cache = miniscript::bitcoin::sighash::SighashCache::new(&unsigned_tx);
+
+        let mut signed_indices = Vec::new();
+
+        for input_index in musig2_indices {
+            // Remove the FirstRound (it can only be used once)
+            let first_round = match self.first_rounds.remove(&(input_index, xpub_str.clone())) {
+                Some(fr) => fr,
+                None => continue, // Already consumed
+            };
+
+            // Sign with the shared sighash cache
+            match self.psbt.sign_with_first_round_and_cache(
+                input_index,
+                first_round,
+                &xpriv,
+                &mut sighash_cache,
+                &prevouts,
+            ) {
+                Ok(()) => signed_indices.push(input_index),
+                Err(e) => {
+                    return Err(WasmUtxoError::new(&format!(
+                        "Failed to sign MuSig2 input {}: {}",
+                        input_index, e
+                    )));
+                }
+            }
+        }
+
+        let result = js_sys::Array::new();
+        for index in signed_indices {
+            result.push(&JsValue::from(index as u32));
+        }
+
+        Ok(JsValue::from(result))
+    }
+
+    /// Sign all replay protection inputs with a raw private key.
+    ///
+    /// This iterates through all inputs looking for P2SH-P2PK (replay protection) inputs
+    /// that match the provided public key and signs them.
+    ///
+    /// # Arguments
+    /// - `ecpair`: The ECPair containing the private key
+    ///
+    /// # Returns
+    /// - `Ok(JsValue)` with an array of input indices that were signed
+    /// - `Err(WasmUtxoError)` if signing fails
+    pub fn sign_replay_protection_inputs(
+        &mut self,
+        ecpair: &WasmECPair,
+    ) -> Result<JsValue, WasmUtxoError> {
+        let privkey = ecpair.get_private_key()?;
+
+        let signed_indices = self
+            .psbt
+            .sign_all_replay_protection_inputs(&privkey)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to sign: {}", e)))?;
+
+        let result = js_sys::Array::new();
+        for index in signed_indices {
+            result.push(&JsValue::from(index as u32));
+        }
+
+        Ok(JsValue::from(result))
+    }
+
+    // ==================== END NEW API ====================
+
     /// Combine/merge data from another PSBT into this one
     ///
     /// This method copies MuSig2 nonces and signatures (proprietary key-value pairs) from the

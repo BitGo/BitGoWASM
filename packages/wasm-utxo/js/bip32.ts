@@ -224,3 +224,21 @@ export class BIP32 implements BIP32Interface {
     return this._wasm;
   }
 }
+
+/**
+ * Type guard to check if a value is a BIP32Arg
+ *
+ * @param key - The value to check
+ * @returns true if the value is a BIP32Arg (string, BIP32, WasmBIP32, or BIP32Interface)
+ */
+export function isBIP32Arg(key: unknown): key is BIP32Arg {
+  return (
+    typeof key === "string" ||
+    key instanceof BIP32 ||
+    key instanceof WasmBIP32 ||
+    (typeof key === "object" &&
+      key !== null &&
+      "derive" in key &&
+      typeof (key as BIP32Interface).derive === "function")
+  );
+}

@@ -735,11 +735,72 @@ impl<'a> Musig2Context<'a> {
     /// Ok(()) if the signature was successfully created and set
     pub fn sign_with_first_round(
         &mut self,
-        mut first_round: musig2::FirstRound,
+        first_round: musig2::FirstRound,
         xpriv: &Xpriv,
     ) -> Result<(), Musig2Error> {
-        use crate::bitcoin::bip32::Xpub;
         use crate::bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+
+        // Compute sighash message (needed for finalize)
+        let prevouts = collect_prevouts(self.psbt)?;
+        let mut sighash_cache = SighashCache::new(&self.psbt.unsigned_tx);
+        let sighash = sighash_cache
+            .taproot_key_spend_signature_hash(
+                self.input_index,
+                &Prevouts::All(&prevouts),
+                TapSighashType::Default,
+            )
+            .map_err(|e| {
+                Musig2Error::SignatureAggregation(format!("Failed to compute sighash: {}", e))
+            })?;
+
+        self.sign_with_first_round_impl(first_round, xpriv, sighash.to_byte_array())
+    }
+
+    /// Sign a MuSig2 input using an externally-provided SighashCache (for efficiency).
+    ///
+    /// This method is the same as `sign_with_first_round` but accepts an external
+    /// SighashCache and prevouts to avoid recomputing sha_prevouts, sha_amounts, etc.
+    /// when signing multiple MuSig2 inputs.
+    ///
+    /// # Arguments
+    /// * `first_round` - The FirstRound from generate_nonce_first_round()
+    /// * `xpriv` - The signer's extended private key
+    /// * `sighash_cache` - External SighashCache (reused across inputs)
+    /// * `prevouts` - External prevouts slice (reused across inputs)
+    ///
+    /// # Returns
+    /// Ok(()) if the signature was successfully created and set
+    pub fn sign_with_first_round_and_cache<T: std::borrow::Borrow<crate::bitcoin::Transaction>>(
+        &mut self,
+        first_round: musig2::FirstRound,
+        xpriv: &Xpriv,
+        sighash_cache: &mut crate::bitcoin::sighash::SighashCache<T>,
+        prevouts: &[crate::bitcoin::TxOut],
+    ) -> Result<(), Musig2Error> {
+        use crate::bitcoin::sighash::{Prevouts, TapSighashType};
+
+        // Compute sighash using the shared cache
+        let sighash = sighash_cache
+            .taproot_key_spend_signature_hash(
+                self.input_index,
+                &Prevouts::All(prevouts),
+                TapSighashType::Default,
+            )
+            .map_err(|e| {
+                Musig2Error::SignatureAggregation(format!("Failed to compute sighash: {}", e))
+            })?;
+
+        self.sign_with_first_round_impl(first_round, xpriv, sighash.to_byte_array())
+    }
+
+    /// Internal implementation of MuSig2 signing given a pre-computed sighash message.
+    fn sign_with_first_round_impl(
+        &mut self,
+        mut first_round: musig2::FirstRound,
+        xpriv: &Xpriv,
+        message: [u8; 32],
+    ) -> Result<(), Musig2Error> {
+        use crate::bitcoin::bip32::Xpub;
 
         // Derive the signer's key for this input
         let tap_key_origins = &self.psbt.inputs[self.input_index].tap_key_origins;
@@ -754,7 +815,6 @@ impl<'a> Musig2Context<'a> {
         let signer_index = self.musig2_input.get_signer_index(&signer_pub_key)?;
 
         // Receive nonces from all other participants
-        // We need to map each nonce to its correct signer index
         for nonce_data in &self.musig2_input.nonces {
             let nonce_signer_index = self
                 .musig2_input
@@ -773,27 +833,13 @@ impl<'a> Musig2Context<'a> {
             }
         }
 
-        // Compute sighash message (needed for finalize)
-        let prevouts = collect_prevouts(self.psbt)?;
-        let mut sighash_cache = SighashCache::new(&self.psbt.unsigned_tx);
-        let sighash = sighash_cache
-            .taproot_key_spend_signature_hash(
-                self.input_index,
-                &Prevouts::All(&prevouts),
-                TapSighashType::Default,
-            )
-            .map_err(|e| {
-                Musig2Error::SignatureAggregation(format!("Failed to compute sighash: {}", e))
-            })?;
-        let message = sighash.to_byte_array();
-
         // Convert secret key to scalar
         let secret_scalar =
             musig2::secp::Scalar::try_from(&derived_xpriv.private_key.secret_bytes()[..]).map_err(
                 |e| Musig2Error::SignatureAggregation(format!("Failed to parse secret key: {}", e)),
             )?;
 
-        // Finalize FirstRound with seckey and message → SecondRound (signature created during finalization)
+        // Finalize FirstRound with seckey and message → SecondRound
         let second_round = first_round.finalize(secret_scalar, message).map_err(|e| {
             Musig2Error::SignatureAggregation(format!("Failed to finalize FirstRound: {}", e))
         })?;
