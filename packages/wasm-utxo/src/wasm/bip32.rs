@@ -210,6 +210,18 @@ impl WasmBIP32 {
         Ok(WasmBIP32(BIP32Key::Private(xpriv)))
     }
 
+    /// Create a BIP32 master key from a string by hashing it with SHA256.
+    /// This is useful for deterministic test key generation.
+    #[wasm_bindgen]
+    pub fn from_seed_sha256(
+        seed_string: &str,
+        network: Option<String>,
+    ) -> Result<WasmBIP32, WasmUtxoError> {
+        use crate::bitcoin::hashes::{sha256, Hash};
+        let hash = sha256::Hash::hash(seed_string.as_bytes());
+        Self::from_seed(&hash[..], network)
+    }
+
     /// Get the chain code as a Uint8Array
     #[wasm_bindgen(getter)]
     pub fn chain_code(&self) -> js_sys::Uint8Array {

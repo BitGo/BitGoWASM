@@ -1,4 +1,3 @@
-import * as crypto from "crypto";
 import { BIP32 } from "../bip32.js";
 import { RootWalletKeys } from "../fixedScriptWallet/RootWalletKeys.js";
 import type { Triple } from "../triple.js";
@@ -17,7 +16,7 @@ import type { Triple } from "../triple.js";
  * ```
  */
 export function getKey(seed: string): BIP32 {
-  return BIP32.fromSeed(crypto.createHash("sha256").update(seed).digest());
+  return BIP32.fromSeedSha256(seed);
 }
 
 /**

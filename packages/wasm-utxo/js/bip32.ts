@@ -98,6 +98,18 @@ export class BIP32 implements BIP32Interface {
   }
 
   /**
+   * Create a BIP32 master key from a string by hashing it with SHA256.
+   * Useful for deterministic test key generation.
+   * @param seedString - The seed string to hash
+   * @param network - Optional network string
+   * @returns A BIP32 instance
+   */
+  static fromSeedSha256(seedString: string, network?: string | null): BIP32 {
+    const wasm = WasmBIP32.from_seed_sha256(seedString, network);
+    return new BIP32(wasm);
+  }
+
+  /**
    * Get the chain code as a Uint8Array
    */
   get chainCode(): Uint8Array {
