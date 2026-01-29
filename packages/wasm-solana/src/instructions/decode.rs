@@ -337,14 +337,25 @@ fn decode_token_instruction(ctx: InstructionContext) -> ParsedInstruction {
 
 fn decode_ata_instruction(ctx: InstructionContext) -> ParsedInstruction {
     // ATA program: Create instruction has no data (discriminator 0 or empty)
-    // Accounts: [0] payer, [1] ata, [2] owner, [3] mint, [4] system, [5] token
-    if ctx.accounts.len() >= 4 {
+    // Accounts: [0] payer, [1] ata, [2] owner, [3] mint, [4] system, [5] token program
+    // Note: We return the token program (index 5) as programId, not the ATA program,
+    // because BitGoJS uses programId to indicate which token program owns the ATA.
+    if ctx.accounts.len() >= 6 {
         ParsedInstruction::CreateAssociatedTokenAccount(CreateAtaParams {
             payer_address: ctx.accounts[0].clone(),
             ata_address: ctx.accounts[1].clone(),
             owner_address: ctx.accounts[2].clone(),
             mint_address: ctx.accounts[3].clone(),
-            program_id: ctx.program_id.to_string(),
+            program_id: ctx.accounts[5].clone(), // Token program, not ATA program
+        })
+    } else if ctx.accounts.len() >= 4 {
+        // Fallback for transactions without token program in accounts (older format)
+        ParsedInstruction::CreateAssociatedTokenAccount(CreateAtaParams {
+            payer_address: ctx.accounts[0].clone(),
+            ata_address: ctx.accounts[1].clone(),
+            owner_address: ctx.accounts[2].clone(),
+            mint_address: ctx.accounts[3].clone(),
+            program_id: TOKEN_PROGRAM_ID.to_string(), // Default to standard token program
         })
     } else {
         make_unknown(ctx)

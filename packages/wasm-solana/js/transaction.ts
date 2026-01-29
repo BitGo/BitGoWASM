@@ -89,6 +89,16 @@ export class Transaction {
   }
 
   /**
+   * Serialize the message portion of the transaction.
+   * Alias for signablePayload() - provides compatibility with @solana/web3.js API.
+   * Returns a Buffer for compatibility with code expecting .toString('base64').
+   * @returns The serialized message bytes as a Buffer
+   */
+  serializeMessage(): Buffer {
+    return Buffer.from(this.signablePayload());
+  }
+
+  /**
    * Serialize the transaction to bytes
    * @returns The serialized transaction bytes
    */
@@ -106,20 +116,80 @@ export class Transaction {
   }
 
   /**
-   * Get all signatures as byte arrays
+   * Get all signatures as byte arrays.
+   * Provides compatibility with @solana/web3.js Transaction.signatures API.
    * @returns Array of signature byte arrays
    */
-  signatures(): Uint8Array[] {
+  get signatures(): Uint8Array[] {
     return Array.from(this._wasm.signatures()) as Uint8Array[];
   }
 
   /**
-   * Get all instructions in the transaction
-   * @returns Array of instructions with programId, accounts, and data
+   * Get all signatures as byte arrays (method form).
+   * Alias for the `signatures` property getter.
+   * @returns Array of signature byte arrays
    */
-  instructions(): Instruction[] {
+  getSignatures(): Uint8Array[] {
+    return this.signatures;
+  }
+
+  /**
+   * Get all instructions in the transaction.
+   * Returns an array with programId, accounts, and data for each instruction.
+   *
+   * Note: This is a getter property to provide compatibility with code
+   * expecting @solana/web3.js Transaction.instructions API. If you need
+   * to call this as a method, use `getInstructions()` instead.
+   */
+  get instructions(): Instruction[] {
     const rawInstructions = this._wasm.instructions();
     return Array.from(rawInstructions) as Instruction[];
+  }
+
+  /**
+   * Get all instructions in the transaction (method form).
+   * Alias for the `instructions` property getter.
+   * @returns Array of instructions with programId, accounts, and data
+   */
+  getInstructions(): Instruction[] {
+    return this.instructions;
+  }
+
+  /**
+   * Add a signature for a given public key.
+   *
+   * The pubkey must be one of the required signers in the transaction.
+   * The signature must be exactly 64 bytes (Ed25519 signature).
+   *
+   * @param pubkey - The public key as a base58 string
+   * @param signature - The 64-byte signature as Uint8Array
+   * @throws Error if pubkey is not a signer or signature is invalid
+   *
+   * @example
+   * ```typescript
+   * // Add a pre-computed signature (e.g., from TSS)
+   * tx.addSignature(signerPubkey, signatureBytes);
+   *
+   * // Serialize and broadcast
+   * const signedTxBytes = tx.toBytes();
+   * ```
+   */
+  addSignature(pubkey: string, signature: Uint8Array): void {
+    this._wasm.add_signature(pubkey, signature);
+  }
+
+  /**
+   * Get the signer index for a public key.
+   *
+   * Returns the index in the signatures array where this pubkey's
+   * signature should be placed, or null if the pubkey is not a signer.
+   *
+   * @param pubkey - The public key as a base58 string
+   * @returns The signer index, or null if not a signer
+   */
+  signerIndex(pubkey: string): number | null {
+    const idx = this._wasm.signer_index(pubkey);
+    return idx ?? null;
   }
 
   /**
