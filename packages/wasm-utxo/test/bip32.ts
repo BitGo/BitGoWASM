@@ -1,4 +1,5 @@
 import * as assert from "assert";
+import * as crypto from "crypto";
 import { bip32 as utxolibBip32 } from "@bitgo/utxo-lib";
 import { BIP32 } from "../js/bip32.js";
 
@@ -134,6 +135,25 @@ describe("WasmBIP32", () => {
     }
 
     const key = bip32.BIP32.fromSeed(seed, "BitcoinTestnet3");
+    assert.strictEqual(key.depth, 0);
+    assert.strictEqual(key.isNeutered(), false);
+    assert.ok(key.toBase58().startsWith("tprv"));
+  });
+
+  it("should create from seed string using SHA256", () => {
+    const seedString = "test";
+    const key = bip32.BIP32.fromSeedSha256(seedString);
+    assert.strictEqual(key.depth, 0);
+    assert.strictEqual(key.isNeutered(), false);
+    assert.ok(key.privateKey instanceof Uint8Array);
+    // Should be deterministic
+    const key2 = bip32.BIP32.fromSeedSha256(seedString);
+    assert.strictEqual(key.toBase58(), key2.toBase58());
+  });
+
+  it("should create from seed string with network", () => {
+    const seedString = "test";
+    const key = bip32.BIP32.fromSeedSha256(seedString, "BitcoinTestnet3");
     assert.strictEqual(key.depth, 0);
     assert.strictEqual(key.isNeutered(), false);
     assert.ok(key.toBase58().startsWith("tprv"));
@@ -335,5 +355,27 @@ describe("WasmBIP32 parity with utxolib", () => {
     // The parent fingerprint should match the parent's fingerprint
     const wasmParentFp = new DataView(wasmKey.fingerprint.buffer).getUint32(0, false);
     assert.strictEqual(wasmChild.parentFingerprint, wasmParentFp);
+  });
+
+  it("should match utxolib when using fromSeedSha256", () => {
+    // Test various seed strings to ensure parity with manual SHA256 + fromSeed
+    const seedStrings = ["test", "user", "backup", "bitgo", "default.0", "default.1", "default.2"];
+
+    for (const seedString of seedStrings) {
+      // Manual approach: hash with SHA256, then create from seed
+      const hash = crypto.createHash("sha256").update(seedString).digest();
+      const utxolibKey = utxolibBip32.fromSeed(hash);
+
+      // WASM approach: fromSeedSha256 does hashing internally
+      const wasmKey = bip32.BIP32.fromSeedSha256(seedString);
+
+      assert.strictEqual(
+        wasmKey.toBase58(),
+        utxolibKey.toBase58(),
+        `Failed for seed string: ${seedString}`,
+      );
+      assert.ok(bufferEqual(wasmKey.publicKey, utxolibKey.publicKey));
+      assert.ok(bufferEqual(wasmKey.chainCode, utxolibKey.chainCode));
+    }
   });
 });
