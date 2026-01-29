@@ -14,19 +14,36 @@ pub const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpP
 pub const ATA_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 pub const STAKE_POOL_PROGRAM_ID: &str = "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy";
 
+/// Sysvar Recent Blockhashes address.
+/// Required for NonceAdvance instruction to verify the nonce account's stored blockhash.
+///
+/// Note: We hardcode this because solana_sdk::sysvar::recent_blockhashes::ID
+/// is not available in the WASM-compatible subset of solana-sdk.
+/// The value matches: https://github.com/solana-labs/solana/blob/v1.18.26/sdk/program/src/sysvar/recent_blockhashes.rs
+pub const SYSVAR_RECENT_BLOCKHASHES: &str = "SysvarRecentB1ockHashes11111111111111111111";
+
 /// A parsed instruction with type discriminant and params.
+///
+/// Note: Some variants like `CreateNonceAccount` and `StakingActivate` are defined
+/// for API completeness but never constructed in Rust. Instruction combining
+/// (e.g., CreateAccount + NonceInitialize → CreateNonceAccount) is handled by
+/// TypeScript in mapWasmInstructionsToBitGoJS for flexibility.
 #[derive(Debug, Clone)]
 pub enum ParsedInstruction {
     // System Program instructions
     Transfer(TransferParams),
     CreateAccount(CreateAccountParams),
     NonceAdvance(NonceAdvanceParams),
+    /// Combined type for CreateAccount + NonceInitialize (constructed in TypeScript)
+    #[allow(dead_code)]
     CreateNonceAccount(CreateNonceAccountParams),
     /// Intermediate type for SystemInstruction::InitializeNonceAccount
     /// Will be combined with CreateAccount to form CreateNonceAccount
     NonceInitialize(NonceInitializeParams),
 
     // Stake Program instructions
+    /// Combined type for CreateAccount + StakeInitialize + Delegate (constructed in TypeScript)
+    #[allow(dead_code)]
     StakingActivate(StakingActivateParams),
     StakingDeactivate(StakingDeactivateParams),
     StakingWithdraw(StakingWithdrawParams),

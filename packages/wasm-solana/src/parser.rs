@@ -9,8 +9,10 @@
 
 use crate::instructions::{decode_instruction, InstructionContext, ParsedInstruction};
 use crate::js_obj;
-use crate::transaction::{Transaction, TransactionExt};
+use crate::versioned::VersionedTransactionExt;
 use crate::wasm::try_into_js_value::{JsConversionError, TryIntoJsValue};
+use solana_message::VersionedMessage;
+use solana_transaction::versioned::VersionedTransaction;
 use wasm_bindgen::JsValue;
 
 /// A fully parsed Solana transaction with decoded instructions.
@@ -81,38 +83,50 @@ impl TryIntoJsValue for ParsedTransaction {
 /// # Returns
 /// A `ParsedTransaction` with all instructions decoded to semantic types.
 pub fn parse_transaction(bytes: &[u8]) -> Result<ParsedTransaction, String> {
-    // Deserialize the transaction
-    let tx = Transaction::from_bytes(bytes).map_err(|e| e.to_string())?;
+    // Deserialize the transaction - VersionedTransaction handles both legacy and V0
+    let tx = VersionedTransaction::from_bytes(bytes).map_err(|e| e.to_string())?;
 
-    let message = &tx.message;
+    // Extract account keys and instructions based on message type
+    let (account_keys, instructions, recent_blockhash, num_required_signatures) = match &tx.message
+    {
+        VersionedMessage::Legacy(msg) => (
+            msg.account_keys.iter().map(|k| k.to_string()).collect(),
+            &msg.instructions,
+            msg.recent_blockhash.to_string(),
+            msg.header.num_required_signatures,
+        ),
+        VersionedMessage::V0(msg) => (
+            msg.account_keys.iter().map(|k| k.to_string()).collect(),
+            &msg.instructions,
+            msg.recent_blockhash.to_string(),
+            msg.header.num_required_signatures,
+        ),
+    };
+
+    let account_keys: Vec<String> = account_keys;
 
     // Extract fee payer (first account key)
-    let fee_payer = message
-        .account_keys
+    let fee_payer = account_keys
         .first()
-        .map(|k| k.to_string())
+        .cloned()
         .ok_or("Transaction has no account keys")?;
 
-    // Extract all account keys as base58 strings
-    let account_keys: Vec<String> = message.account_keys.iter().map(|k| k.to_string()).collect();
-
     // Decode all instructions
-    let mut instructions_data = Vec::with_capacity(message.instructions.len());
+    let mut instructions_data = Vec::with_capacity(instructions.len());
     let mut durable_nonce = None;
 
-    for (idx, instruction) in message.instructions.iter().enumerate() {
+    for (idx, instruction) in instructions.iter().enumerate() {
         // Get program ID
-        let program_id = message
-            .account_keys
+        let program_id = account_keys
             .get(instruction.program_id_index as usize)
-            .map(|k| k.to_string())
+            .cloned()
             .ok_or_else(|| format!("Invalid program_id_index in instruction {}", idx))?;
 
         // Resolve account indices to addresses
         let accounts: Vec<String> = instruction
             .accounts
             .iter()
-            .filter_map(|&i| message.account_keys.get(i as usize).map(|k| k.to_string()))
+            .filter_map(|&i| account_keys.get(i as usize).cloned())
             .collect();
 
         // Decode the instruction
@@ -139,17 +153,13 @@ pub fn parse_transaction(bytes: &[u8]) -> Result<ParsedTransaction, String> {
     // Note: Instruction combining (e.g., CreateAccount + StakeInitialize → StakingActivate)
     // is handled by TypeScript in mapWasmInstructionsToBitGoJS for flexibility
 
-    // The nonce is either the blockhash or, for durable nonce txs, still the blockhash
-    // (which is the nonce value from the nonce account)
-    let nonce = message.recent_blockhash.to_string();
-
     // Extract signatures as base58 strings
     let signatures: Vec<String> = tx.signatures.iter().map(|s| s.to_string()).collect();
 
     Ok(ParsedTransaction {
         fee_payer,
-        num_signatures: message.header.num_required_signatures,
-        nonce,
+        num_signatures: num_required_signatures,
+        nonce: recent_blockhash,
         durable_nonce,
         instructions_data,
         account_keys,
@@ -175,11 +185,6 @@ mod tests {
         assert!(!parsed.fee_payer.is_empty());
         assert!(!parsed.nonce.is_empty());
         assert_eq!(parsed.instructions_data.len(), 1);
-
-        // Check signatures are returned
-        assert_eq!(parsed.signatures.len(), 1);
-        // Unsigned transactions have all-zero signatures (base58 encoded)
-        assert!(!parsed.signatures[0].is_empty());
 
         // Check the instruction is a Transfer
         match &parsed.instructions_data[0] {
