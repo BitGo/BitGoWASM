@@ -1,7 +1,7 @@
 use crate::error::WasmUtxoError;
 use js_sys::Array;
 use miniscript::bitcoin::hashes::{hash160, ripemd160};
-use miniscript::bitcoin::psbt::{SigningKeys, SigningKeysMap};
+use miniscript::bitcoin::psbt::{Input, SigningKeys, SigningKeysMap};
 use miniscript::bitcoin::{PublicKey, XOnlyPublicKey};
 use miniscript::descriptor::{DescriptorType, ShInner, SortedMultiVec, TapTree, Tr, WshInner};
 use miniscript::{
@@ -402,4 +402,56 @@ impl TryIntoJsValue for crate::inscriptions::InscriptionRevealData {
             "tapLeafScript" => self.tap_leaf_script.clone()
         )
     }
+}
+
+/// A partial signature with its associated public key
+#[derive(Clone)]
+pub struct PartialSignature {
+    pub pubkey: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
+impl TryIntoJsValue for PartialSignature {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "pubkey" => self.pubkey.clone(),
+            "signature" => self.signature.clone()
+        )
+    }
+}
+
+/// Collect all partial signatures from a PSBT input
+///
+/// This helper function extracts ECDSA, Taproot script path, and Taproot key path
+/// signatures from a PSBT input and returns them as a vector of PartialSignature structs.
+pub fn collect_partial_signatures(input: &Input) -> Vec<PartialSignature> {
+    let mut signatures = Vec::new();
+
+    // Add ECDSA partial signatures
+    for (pubkey, sig) in &input.partial_sigs {
+        signatures.push(PartialSignature {
+            pubkey: pubkey.to_bytes(),
+            signature: sig.signature.serialize_der().to_vec(),
+        });
+    }
+
+    // Add taproot script path signatures
+    for ((xonly_pubkey, _leaf_hash), sig) in &input.tap_script_sigs {
+        signatures.push(PartialSignature {
+            pubkey: xonly_pubkey.serialize().to_vec(),
+            signature: sig.signature.serialize().to_vec(),
+        });
+    }
+
+    // Add taproot key path signature if present
+    if let Some(sig) = &input.tap_key_sig {
+        if let Some(tap_internal_key) = &input.tap_internal_key {
+            signatures.push(PartialSignature {
+                pubkey: tap_internal_key.serialize().to_vec(),
+                signature: sig.signature.serialize().to_vec(),
+            });
+        }
+    }
+
+    signatures
 }
