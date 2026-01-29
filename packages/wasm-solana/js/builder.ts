@@ -6,6 +6,8 @@
  */
 
 import { BuilderNamespace } from "./wasm/wasm_solana.js";
+import { Transaction } from "./transaction.js";
+import { VersionedTransaction } from "./versioned.js";
 
 // =============================================================================
 // Nonce Types
@@ -463,14 +465,14 @@ export interface TransactionIntent {
 /**
  * Build a Solana transaction from a high-level intent.
  *
- * This function takes a declarative TransactionIntent and produces serialized
- * transaction bytes that can be signed and submitted to the network.
+ * This function takes a declarative TransactionIntent and produces a Transaction
+ * object that can be inspected, signed, and serialized.
  *
- * The returned transaction is unsigned - signatures should be added before
- * broadcasting.
+ * The returned transaction is unsigned - signatures should be added via
+ * `addSignature()` before serializing with `toBytes()` and broadcasting.
  *
  * @param intent - The transaction intent describing what to build
- * @returns Serialized unsigned transaction bytes (Uint8Array)
+ * @returns A Transaction object that can be inspected, signed, and serialized
  * @throws Error if the intent cannot be built (e.g., invalid addresses)
  *
  * @example
@@ -478,33 +480,43 @@ export interface TransactionIntent {
  * import { buildTransaction } from '@bitgo/wasm-solana';
  *
  * // Build a simple SOL transfer
- * const txBytes = buildTransaction({
+ * const tx = buildTransaction({
  *   feePayer: sender,
  *   nonce: { type: 'blockhash', value: blockhash },
  *   instructions: [
- *     { type: 'transfer', from: sender, to: recipient, lamports: '1000000' }
+ *     { type: 'transfer', from: sender, to: recipient, lamports: 1000000n }
  *   ]
  * });
  *
- * // The returned bytes can be signed and broadcast
+ * // Inspect the transaction
+ * console.log(tx.feePayer);
+ * console.log(tx.recentBlockhash);
+ *
+ * // Get the signable payload for signing
+ * const payload = tx.signablePayload();
+ *
+ * // Add signature and serialize
+ * tx.addSignature(signerPubkey, signature);
+ * const txBytes = tx.toBytes();
  * ```
  *
  * @example
  * ```typescript
  * // Build with durable nonce and priority fee
- * const txBytes = buildTransaction({
+ * const tx = buildTransaction({
  *   feePayer: sender,
  *   nonce: { type: 'durable', address: nonceAccount, authority: sender, value: nonceValue },
  *   instructions: [
  *     { type: 'computeBudget', unitLimit: 200000, unitPrice: 5000 },
- *     { type: 'transfer', from: sender, to: recipient, lamports: '1000000' },
+ *     { type: 'transfer', from: sender, to: recipient, lamports: 1000000n },
  *     { type: 'memo', message: 'BitGo transfer' }
  *   ]
  * });
  * ```
  */
-export function buildTransaction(intent: TransactionIntent): Uint8Array {
-  return BuilderNamespace.build_transaction(intent);
+export function buildTransaction(intent: TransactionIntent): Transaction {
+  const wasm = BuilderNamespace.build_transaction(intent);
+  return Transaction.fromWasm(wasm);
 }
 
 // =============================================================================
@@ -560,17 +572,17 @@ export interface RawVersionedTransactionData {
  *
  * This function is used for the `fromVersionedTransactionData()` path where we already
  * have pre-compiled versioned data (indexes + ALT refs). No instruction compilation
- * is needed - we just serialize the raw structure to bytes.
+ * is needed - we just serialize the raw structure.
  *
  * @param data - Raw versioned transaction data
- * @returns Serialized unsigned versioned transaction bytes (Uint8Array)
+ * @returns A VersionedTransaction object that can be inspected, signed, and serialized
  * @throws Error if the data is invalid
  *
  * @example
  * ```typescript
  * import { buildFromVersionedData } from '@bitgo/wasm-solana';
  *
- * const txBytes = buildFromVersionedData({
+ * const tx = buildFromVersionedData({
  *   staticAccountKeys: ['pubkey1', 'pubkey2', ...],
  *   addressLookupTables: [
  *     { accountKey: 'altPubkey', writableIndexes: [0, 1], readonlyIndexes: [2] }
@@ -585,8 +597,14 @@ export interface RawVersionedTransactionData {
  *   },
  *   recentBlockhash: 'blockhash'
  * });
+ *
+ * // Inspect, sign, and serialize
+ * console.log(tx.feePayer);
+ * tx.addSignature(signerPubkey, signature);
+ * const txBytes = tx.toBytes();
  * ```
  */
-export function buildFromVersionedData(data: RawVersionedTransactionData): Uint8Array {
-  return BuilderNamespace.build_from_versioned_data(data);
+export function buildFromVersionedData(data: RawVersionedTransactionData): VersionedTransaction {
+  const wasm = BuilderNamespace.build_from_versioned_data(data);
+  return VersionedTransaction.fromWasm(wasm);
 }

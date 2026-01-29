@@ -91,6 +91,14 @@ export class VersionedTransaction {
   }
 
   /**
+   * Create a VersionedTransaction from a WasmVersionedTransaction instance.
+   * @internal Used by builder functions
+   */
+  static fromWasm(wasm: WasmVersionedTransaction): VersionedTransaction {
+    return new VersionedTransaction(wasm);
+  }
+
+  /**
    * Create a versioned transaction from raw MessageV0 data.
    *
    * This is used for the `fromVersionedTransactionData()` path where we have
@@ -120,10 +128,9 @@ export class VersionedTransaction {
    * ```
    */
   static fromVersionedData(data: RawVersionedTransactionData): VersionedTransaction {
-    // Build the transaction bytes using WASM
-    const bytes = BuilderNamespace.build_from_versioned_data(data);
-    // Parse the bytes to create a VersionedTransaction
-    return VersionedTransaction.fromBytes(bytes);
+    // Build the transaction using WASM and wrap in TypeScript class
+    const wasm = BuilderNamespace.build_from_versioned_data(data);
+    return VersionedTransaction.fromWasm(wasm);
   }
 
   /**

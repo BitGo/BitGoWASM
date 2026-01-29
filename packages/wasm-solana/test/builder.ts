@@ -25,7 +25,8 @@ describe("buildTransaction", () => {
         instructions: [{ type: "transfer", from: SENDER, to: RECIPIENT, lamports: 1000000n }],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       assert.ok(txBytes instanceof Uint8Array);
       assert.ok(txBytes.length > 0);
 
@@ -51,7 +52,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       const transfer = parsed.instructionsData[0];
@@ -76,7 +78,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 2);
@@ -102,7 +105,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 2);
@@ -125,7 +129,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 2);
@@ -158,7 +163,8 @@ describe("buildTransaction", () => {
         instructions: [{ type: "transfer", from: SENDER, to: RECIPIENT, lamports: 1000000n }],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       // Should have 2 instructions: NonceAdvance + Transfer
@@ -197,7 +203,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
@@ -258,10 +265,11 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes1 = buildTransaction(intent);
-      const txBytes2 = buildTransaction(intent);
+      const tx1 = buildTransaction(intent);
+      const tx2 = buildTransaction(intent);
 
-      assert.deepStrictEqual(txBytes1, txBytes2);
+      // Compare serialized bytes since Transaction objects have different wasm pointers
+      assert.deepStrictEqual(tx1.toBytes(), tx2.toBytes());
     });
   });
 
@@ -284,7 +292,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
@@ -312,7 +321,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
@@ -339,7 +349,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
@@ -367,7 +378,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
@@ -413,7 +425,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       // Parser returns individual instructions; combining is done in BitGoJS wasmInstructionCombiner
@@ -463,7 +476,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
@@ -493,7 +507,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
@@ -521,7 +536,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
@@ -559,7 +575,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 3);
@@ -602,7 +619,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
@@ -639,7 +657,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
@@ -682,7 +701,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       const parsed = parseTransaction(txBytes);
 
       assert.strictEqual(parsed.instructionsData.length, 2);
