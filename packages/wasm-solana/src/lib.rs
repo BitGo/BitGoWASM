@@ -23,12 +23,14 @@
 //! let pubkey = Pubkey::from_base58("FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH").unwrap();
 //! ```
 
+pub mod builder;
 mod error;
 mod instructions;
 pub mod keypair;
 mod parser;
 pub mod pubkey;
 pub mod transaction;
+pub mod versioned;
 pub mod wasm;
 
 // Re-export core types at crate root
@@ -36,6 +38,12 @@ pub use error::WasmSolanaError;
 pub use keypair::{Keypair, KeypairExt};
 pub use pubkey::{Pubkey, PubkeyExt};
 pub use transaction::{Transaction, TransactionExt};
+pub use versioned::{
+    detect_transaction_version, AddressLookupTableData, TxVersion, VersionedTransactionExt,
+};
 
 // Re-export WASM types
-pub use wasm::{ParserNamespace, WasmKeypair, WasmPubkey, WasmTransaction};
+pub use wasm::{
+    is_versioned_transaction, BuilderNamespace, ParserNamespace, WasmKeypair, WasmPubkey,
+    WasmTransaction, WasmVersionedTransaction,
+};
