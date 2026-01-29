@@ -2578,11 +2578,14 @@ impl BitGoPsbt {
 
                 // Check for Taproot script path signatures first
                 if !input.tap_script_sigs.is_empty() {
+                    use miniscript::bitcoin::sighash::SighashCache;
+                    let mut cache = SighashCache::new(&psbt.unsigned_tx);
                     return psbt_wallet_input::verify_taproot_script_signature(
                         secp,
                         psbt,
                         input_index,
                         public_key,
+                        &mut cache,
                     );
                 }
 
@@ -2603,11 +2606,14 @@ impl BitGoPsbt {
 
                 // Check for Taproot script path signatures first
                 if !input.tap_script_sigs.is_empty() {
+                    use miniscript::bitcoin::sighash::SighashCache;
+                    let mut cache = SighashCache::new(&psbt.unsigned_tx);
                     return psbt_wallet_input::verify_taproot_script_signature(
                         secp,
                         psbt,
                         input_index,
                         public_key,
+                        &mut cache,
                     );
                 }
 
