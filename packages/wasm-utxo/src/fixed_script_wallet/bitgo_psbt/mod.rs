@@ -16,7 +16,7 @@ pub mod zcash_psbt;
 use crate::Network;
 pub use dash_psbt::DashBitGoPsbt;
 use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey, Txid};
-pub use propkv::{BitGoKeyValue, ProprietaryKeySubtype, BITGO};
+pub use propkv::{BitGoKeyValue, ProprietaryKeySubtype, WasmUtxoVersionInfo, BITGO};
 pub use sighash::validate_sighash_type;
 pub use zcash_psbt::{
     decode_zcash_transaction_meta, ZcashBitGoPsbt, ZcashTransactionMeta,
