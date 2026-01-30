@@ -1489,4 +1489,28 @@ impl BitGoPsbt {
             .extract_tx()
             .map_err(|e| WasmUtxoError::new(&e))
     }
+
+    /// Extract a half-signed transaction in legacy format for p2ms-based script types.
+    ///
+    /// This method extracts a transaction where each input has exactly one signature,
+    /// formatted in the legacy style used by utxo-lib and bitcoinjs-lib. The legacy
+    /// format places signatures in the correct position (0, 1, or 2) based on which
+    /// key signed, with empty placeholders for unsigned positions.
+    ///
+    /// # Requirements
+    /// - All inputs must be p2ms-based (p2sh, p2shP2wsh, or p2wsh)
+    /// - Each input must have exactly 1 partial signature
+    ///
+    /// # Returns
+    /// - `Ok(Vec<u8>)` containing the serialized half-signed transaction bytes
+    /// - `Err(WasmUtxoError)` if validation fails or extraction fails
+    ///
+    /// # Errors
+    /// - Returns error if any input is not a p2ms type (Taproot, replay protection, etc.)
+    /// - Returns error if any input has 0 or more than 1 partial signature
+    pub fn extract_half_signed_legacy_tx(&self) -> Result<Vec<u8>, WasmUtxoError> {
+        self.psbt
+            .extract_half_signed_legacy_tx()
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
 }

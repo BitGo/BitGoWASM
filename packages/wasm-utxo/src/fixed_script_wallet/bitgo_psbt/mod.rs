@@ -4,6 +4,7 @@
 //! bitcoin-like networks, including those with non-standard transaction formats.
 
 pub mod dash_psbt;
+mod legacy_txformat;
 pub mod p2tr_musig2_input;
 #[cfg(test)]
 mod p2tr_musig2_input_utxolib;
@@ -1142,6 +1143,52 @@ impl BitGoPsbt {
                     .extract_tx()
                     .map_err(|e| format!("Failed to extract transaction: {}", e))?;
                 Ok(serialize(&tx))
+            }
+        }
+    }
+
+    /// Extract a half-signed transaction in legacy format for p2ms-based script types.
+    ///
+    /// This method extracts a transaction where each input has exactly one signature,
+    /// formatted in the legacy style by utxo-lib and bitcoinjs-lib. The legacy
+    /// format places signatures in the correct position (0, 1, or 2) based on which
+    /// key signed, with empty placeholders for unsigned positions.
+    ///
+    /// # Requirements
+    /// - All inputs must be p2ms-based (p2sh, p2shP2wsh, or p2wsh)
+    /// - Each input must have exactly 1 partial signature
+    ///
+    /// # Returns
+    /// * `Ok(Vec<u8>)` - The serialized half-signed transaction bytes (network-native format)
+    /// * `Err(String)` - If validation fails or extraction fails
+    ///
+    /// # Errors
+    /// - Returns error if any input is not a p2ms type (Taproot, replay protection, etc.)
+    /// - Returns error if any input has 0 or more than 1 partial signature
+    pub fn extract_half_signed_legacy_tx(&self) -> Result<Vec<u8>, String> {
+        use miniscript::bitcoin::consensus::serialize;
+
+        match self {
+            BitGoPsbt::BitcoinLike(_, _) | BitGoPsbt::Dash(_, _) => {
+                let tx = legacy_txformat::build_half_signed_legacy_tx(self.psbt())?;
+                Ok(serialize(&tx))
+            }
+            BitGoPsbt::Zcash(zcash_psbt, _) => {
+                let tx = legacy_txformat::build_half_signed_legacy_tx(&zcash_psbt.psbt)?;
+
+                // Serialize with Zcash-specific fields
+                let parts = crate::zcash::transaction::ZcashTransactionParts {
+                    transaction: tx,
+                    is_overwintered: true,
+                    version_group_id: Some(
+                        zcash_psbt
+                            .version_group_id
+                            .unwrap_or(zcash_psbt::ZCASH_SAPLING_VERSION_GROUP_ID),
+                    ),
+                    expiry_height: Some(zcash_psbt.expiry_height.unwrap_or(0)),
+                    sapling_fields: zcash_psbt.sapling_fields.clone(),
+                };
+                crate::zcash::transaction::encode_zcash_transaction_parts(&parts)
             }
         }
     }
@@ -3608,6 +3655,188 @@ mod tests {
             "Extracted transaction should match"
         );
     });
+
+    /// Test extract_half_signed_legacy_tx for p2ms-based script types
+    fn test_extract_half_signed_legacy_tx_for_script_type(
+        network: Network,
+        format: fixtures::TxFormat,
+        script_type: fixtures::ScriptType,
+    ) -> Result<(), String> {
+        use miniscript::bitcoin::consensus::deserialize;
+        use miniscript::bitcoin::Transaction;
+
+        // Skip non-p2ms script types (they're expected to fail)
+        let is_p2ms = matches!(
+            script_type,
+            fixtures::ScriptType::P2sh
+                | fixtures::ScriptType::P2shP2wsh
+                | fixtures::ScriptType::P2wsh
+        );
+        if !is_p2ms {
+            return Ok(());
+        }
+
+        // Check if the script type is supported by the network
+        let output_script_support = network.output_script_support();
+        if !script_type.is_supported_by(&output_script_support) {
+            return Ok(());
+        }
+
+        // Load halfsigned fixture
+        let fixture = fixtures::load_psbt_fixture_with_format(
+            network.to_utxolib_name(),
+            fixtures::SignatureState::Halfsigned,
+            format,
+        )
+        .map_err(|e| format!("Failed to load halfsigned fixture: {}", e))?;
+
+        let bitgo_psbt = fixture
+            .to_bitgo_psbt(network)
+            .map_err(|e| format!("Failed to convert to BitGo PSBT: {}", e))?;
+
+        // Find inputs with the specified script type
+        let psbt = bitgo_psbt.psbt();
+        let has_matching_input = psbt.inputs.iter().any(|input| {
+            // Check if this input matches the script type we're testing
+            if let Some(ref witness_script) = input.witness_script {
+                // p2wsh or p2shP2wsh
+                if input.redeem_script.is_some() {
+                    matches!(script_type, fixtures::ScriptType::P2shP2wsh)
+                } else {
+                    matches!(script_type, fixtures::ScriptType::P2wsh)
+                }
+            } else if input.redeem_script.is_some() {
+                // p2sh only
+                matches!(script_type, fixtures::ScriptType::P2sh)
+            } else {
+                false
+            }
+        });
+
+        if !has_matching_input {
+            // No inputs of this script type in the fixture
+            return Ok(());
+        }
+
+        // Check if all inputs are p2ms types (the method only works with p2ms inputs)
+        // Also verify the script is actually a 2-of-3 multisig (not P2PK or other)
+        let all_p2ms = psbt.inputs.iter().all(|input| {
+            use crate::fixed_script_wallet::wallet_scripts::parse_multisig_script_2_of_3;
+
+            let multisig_script = if let Some(ref ws) = input.witness_script {
+                ws.clone()
+            } else if let Some(ref rs) = input.redeem_script {
+                rs.clone()
+            } else {
+                return false;
+            };
+
+            // Check it's actually a 2-of-3 multisig script (not P2PK or other)
+            parse_multisig_script_2_of_3(&multisig_script).is_ok()
+        });
+
+        if !all_p2ms {
+            // Fixture has non-p2ms inputs (e.g., P2SH-P2PK replay protection), skip this test
+            return Ok(());
+        }
+
+        // Check all inputs have exactly 1 signature
+        let all_have_one_sig = psbt
+            .inputs
+            .iter()
+            .all(|input| input.partial_sigs.len() == 1);
+
+        if !all_have_one_sig {
+            // Not all inputs are properly half-signed
+            return Ok(());
+        }
+
+        // Try to extract half-signed legacy tx
+        let result = bitgo_psbt.extract_half_signed_legacy_tx();
+
+        match result {
+            Ok(tx_bytes) => {
+                // Verify the transaction can be deserialized
+                let tx: Transaction = deserialize(&tx_bytes)
+                    .map_err(|e| format!("Failed to deserialize extracted tx: {}", e))?;
+
+                // Verify each input has appropriate script data
+                for (i, input) in tx.input.iter().enumerate() {
+                    let psbt_input = &psbt.inputs[i];
+
+                    if psbt_input.witness_script.is_some() {
+                        // p2wsh or p2shP2wsh: should have witness data
+                        assert!(
+                            !input.witness.is_empty(),
+                            "Input {} should have witness data",
+                            i
+                        );
+                    } else {
+                        // p2sh: should have non-empty script_sig
+                        assert!(
+                            !input.script_sig.is_empty(),
+                            "Input {} should have script_sig",
+                            i
+                        );
+                    }
+                }
+
+                Ok(())
+            }
+            Err(e) => {
+                // Expected error for certain cases (mixed inputs, etc.)
+                Err(format!("extract_half_signed_legacy_tx failed: {}", e))
+            }
+        }
+    }
+
+    crate::test_psbt_fixtures!(
+        test_extract_half_signed_legacy_tx_p2sh,
+        network,
+        format,
+        {
+            test_extract_half_signed_legacy_tx_for_script_type(
+                network,
+                format,
+                fixtures::ScriptType::P2sh,
+            )
+            .unwrap();
+        },
+        // Skip Zcash as it may have different half-signed fixture format
+        ignore: [Zcash]
+    );
+
+    crate::test_psbt_fixtures!(
+        test_extract_half_signed_legacy_tx_p2shp2wsh,
+        network,
+        format,
+        {
+            test_extract_half_signed_legacy_tx_for_script_type(
+                network,
+                format,
+                fixtures::ScriptType::P2shP2wsh,
+            )
+            .unwrap();
+        },
+        // Skip networks without segwit
+        ignore: [BitcoinCash, Ecash, BitcoinGold, Dogecoin, Zcash]
+    );
+
+    crate::test_psbt_fixtures!(
+        test_extract_half_signed_legacy_tx_p2wsh,
+        network,
+        format,
+        {
+            test_extract_half_signed_legacy_tx_for_script_type(
+                network,
+                format,
+                fixtures::ScriptType::P2wsh,
+            )
+            .unwrap();
+        },
+        // Skip networks without segwit
+        ignore: [BitcoinCash, Ecash, BitcoinGold, Dogecoin, Zcash]
+    );
 
     #[test]
     fn test_add_paygo_attestation() {
