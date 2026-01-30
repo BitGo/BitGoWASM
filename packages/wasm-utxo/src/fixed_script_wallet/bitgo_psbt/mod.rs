@@ -2632,16 +2632,42 @@ impl BitGoPsbt {
     ) -> Result<bool, String> {
         match self {
             BitGoPsbt::BitcoinLike(psbt, network) => {
+                use miniscript::bitcoin::sighash::SighashCache;
+
                 let input = &psbt.inputs[input_index];
+                let mut cache = SighashCache::new(&psbt.unsigned_tx);
 
                 // Check for Taproot script path signatures first
                 if !input.tap_script_sigs.is_empty() {
-                    return psbt_wallet_input::verify_taproot_script_signature(
+                    match psbt_wallet_input::verify_taproot_script_signature(
                         secp,
                         psbt,
                         input_index,
                         public_key,
-                    );
+                        &mut cache,
+                    ) {
+                        Ok(true) => return Ok(true),
+                        Ok(false) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                // Check for Taproot key path signature
+                if input.tap_key_sig.is_some() {
+                    let pk = miniscript::bitcoin::PublicKey::from_slice(&public_key.to_bytes())
+                        .map_err(|e| format!("Failed to convert public key: {}", e))?;
+                    let (x_only_key, _) = pk.inner.x_only_public_key();
+                    match psbt_wallet_input::verify_taproot_key_signature(
+                        secp,
+                        psbt,
+                        input_index,
+                        x_only_key,
+                        &mut cache,
+                    ) {
+                        Ok(true) => return Ok(true),
+                        Ok(false) => {}
+                        Err(e) => return Err(e),
+                    }
                 }
 
                 let fork_id = sighash::get_sighash_fork_id(*network);
@@ -2656,17 +2682,43 @@ impl BitGoPsbt {
                 )
             }
             BitGoPsbt::Dash(dash_psbt, network) => {
+                use miniscript::bitcoin::sighash::SighashCache;
+
                 let psbt = &dash_psbt.psbt;
                 let input = &psbt.inputs[input_index];
+                let mut cache = SighashCache::new(&psbt.unsigned_tx);
 
                 // Check for Taproot script path signatures first
                 if !input.tap_script_sigs.is_empty() {
-                    return psbt_wallet_input::verify_taproot_script_signature(
+                    match psbt_wallet_input::verify_taproot_script_signature(
                         secp,
                         psbt,
                         input_index,
                         public_key,
-                    );
+                        &mut cache,
+                    ) {
+                        Ok(true) => return Ok(true),
+                        Ok(false) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                // Check for Taproot key path signature
+                if input.tap_key_sig.is_some() {
+                    let pk = miniscript::bitcoin::PublicKey::from_slice(&public_key.to_bytes())
+                        .map_err(|e| format!("Failed to convert public key: {}", e))?;
+                    let (x_only_key, _) = pk.inner.x_only_public_key();
+                    match psbt_wallet_input::verify_taproot_key_signature(
+                        secp,
+                        psbt,
+                        input_index,
+                        x_only_key,
+                        &mut cache,
+                    ) {
+                        Ok(true) => return Ok(true),
+                        Ok(false) => {}
+                        Err(e) => return Err(e),
+                    }
                 }
 
                 let fork_id = sighash::get_sighash_fork_id(*network);

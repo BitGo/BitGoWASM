@@ -1,5 +1,7 @@
 use crate::error::WasmUtxoError;
+use crate::wasm::bip32::WasmBIP32;
 use crate::wasm::descriptor::WrapDescriptorEnum;
+use crate::wasm::ecpair::WasmECPair;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use crate::wasm::WrapDescriptor;
 use miniscript::bitcoin::bip32::Fingerprint;
@@ -260,6 +262,159 @@ impl WrapPsbt {
             .and_then(|r| r.try_to_js_value())
     }
 
+    /// Sign all inputs with a WasmBIP32 key
+    ///
+    /// This method signs all inputs that match the BIP32 derivation paths in the PSBT.
+    /// Returns a map of input indices to the public keys that were signed.
+    ///
+    /// # Arguments
+    /// * `key` - The WasmBIP32 key to sign with
+    ///
+    /// # Returns
+    /// A SigningKeysMap converted to JsValue (object mapping input indices to signing keys)
+    #[wasm_bindgen(js_name = signAll)]
+    pub fn sign_all(&mut self, key: &WasmBIP32) -> Result<JsValue, WasmUtxoError> {
+        let xpriv = key.to_xpriv()?;
+        self.0
+            .sign(&xpriv, &Secp256k1::new())
+            .map_err(|(_, errors)| {
+                WasmUtxoError::new(&format!("{} errors: {:?}", errors.len(), errors))
+            })
+            .and_then(|r| r.try_to_js_value())
+    }
+
+    /// Sign all inputs with a WasmECPair key
+    ///
+    /// This method signs all inputs using the private key from the ECPair.
+    /// Returns a map of input indices to the public keys that were signed.
+    ///
+    /// # Arguments
+    /// * `key` - The WasmECPair key to sign with
+    ///
+    /// # Returns
+    /// A SigningKeysMap converted to JsValue (object mapping input indices to signing keys)
+    #[wasm_bindgen(js_name = signAllWithEcpair)]
+    pub fn sign_all_with_ecpair(&mut self, key: &WasmECPair) -> Result<JsValue, WasmUtxoError> {
+        let privkey = key.get_private_key()?;
+        let secp = Secp256k1::new();
+        let private_key = PrivateKey::new(privkey, miniscript::bitcoin::network::Network::Bitcoin);
+        self.0
+            .sign(&SingleKeySigner::from_privkey(private_key, &secp), &secp)
+            .map_err(|(_r, errors)| {
+                WasmUtxoError::new(&format!("{} errors: {:?}", errors.len(), errors))
+            })
+            .and_then(|r| r.try_to_js_value())
+    }
+
+    /// Verify a signature at a specific input using a WasmBIP32 key
+    ///
+    /// This method verifies if a valid signature exists for the given BIP32 key at the specified input.
+    /// It handles both ECDSA (legacy/SegWit) and Schnorr (Taproot) signatures.
+    ///
+    /// Note: This method checks if the key's public key matches any signature in the input.
+    /// For proper BIP32 verification, the key should be derived to the correct path first.
+    ///
+    /// # Arguments
+    /// * `input_index` - The index of the input to check
+    /// * `key` - The WasmBIP32 key to verify against
+    ///
+    /// # Returns
+    /// `true` if a valid signature exists for the key, `false` otherwise
+    #[wasm_bindgen(js_name = verifySignatureWithKey)]
+    pub fn verify_signature_with_key(
+        &self,
+        input_index: usize,
+        key: &WasmBIP32,
+    ) -> Result<bool, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input;
+        use miniscript::bitcoin::{sighash::SighashCache, CompressedPublicKey, PublicKey};
+
+        let input = self.0.inputs.get(input_index).ok_or_else(|| {
+            WasmUtxoError::new(&format!("Input index {} out of bounds", input_index))
+        })?;
+
+        let secp = Secp256k1::verification_only();
+        let xpub = key.to_xpub()?;
+
+        // Get the public key from Xpub (compressed format)
+        let compressed_pubkey = xpub.to_pub();
+        let compressed_public_key = CompressedPublicKey::from_slice(&compressed_pubkey.to_bytes())
+            .map_err(|e| {
+                WasmUtxoError::new(&format!(
+                    "Failed to convert to compressed public key: {}",
+                    e
+                ))
+            })?;
+        let public_key = PublicKey::from_slice(&compressed_public_key.to_bytes())
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to convert public key: {}", e)))?;
+
+        // Try ECDSA signature verification first (for legacy/SegWit)
+        // Use standard Bitcoin (no fork_id) for WASM PSBT
+        match psbt_wallet_input::verify_ecdsa_signature(
+            &secp,
+            &self.0,
+            input_index,
+            compressed_public_key,
+            None, // fork_id: None for standard Bitcoin
+        ) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {} // Continue to try Taproot
+            Err(e) => {
+                return Err(WasmUtxoError::new(&format!(
+                    "ECDSA verification error: {}",
+                    e
+                )))
+            }
+        }
+
+        // Try Schnorr signature verification (for Taproot)
+        let (x_only_key, _parity) = public_key.inner.x_only_public_key();
+
+        // Create cache once for reuse across taproot verifications
+        let mut cache = SighashCache::new(&self.0.unsigned_tx);
+
+        // Check taproot script path signatures
+        if !input.tap_script_sigs.is_empty() {
+            match psbt_wallet_input::verify_taproot_script_signature(
+                &secp,
+                &self.0,
+                input_index,
+                compressed_public_key,
+                &mut cache,
+            ) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {} // Continue to try key path
+                Err(e) => {
+                    return Err(WasmUtxoError::new(&format!(
+                        "Taproot script verification error: {}",
+                        e
+                    )))
+                }
+            }
+        }
+
+        // Check taproot key path signature
+        match psbt_wallet_input::verify_taproot_key_signature(
+            &secp,
+            &self.0,
+            input_index,
+            x_only_key,
+            &mut cache,
+        ) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {} // No signature found
+            Err(e) => {
+                return Err(WasmUtxoError::new(&format!(
+                    "Taproot key verification error: {}",
+                    e
+                )))
+            }
+        }
+
+        // No matching signature found
+        Ok(false)
+    }
+
     #[wasm_bindgen(js_name = finalize)]
     pub fn finalize_mut(&mut self) -> Result<(), WasmUtxoError> {
         self.0
@@ -267,6 +422,161 @@ impl WrapPsbt {
             .map_err(|vec_err| {
                 WasmUtxoError::new(&format!("{} errors: {:?}", vec_err.len(), vec_err))
             })
+    }
+
+    /// Get the number of inputs in the PSBT
+    #[wasm_bindgen(js_name = inputCount)]
+    pub fn input_count(&self) -> usize {
+        self.0.inputs.len()
+    }
+
+    /// Get the number of outputs in the PSBT
+    #[wasm_bindgen(js_name = outputCount)]
+    pub fn output_count(&self) -> usize {
+        self.0.outputs.len()
+    }
+
+    /// Get partial signatures for an input
+    /// Returns array of { pubkey: Uint8Array, signature: Uint8Array }
+    #[wasm_bindgen(js_name = getPartialSignatures)]
+    pub fn get_partial_signatures(&self, input_index: usize) -> Result<JsValue, WasmUtxoError> {
+        use crate::wasm::try_into_js_value::{collect_partial_signatures, TryIntoJsValue};
+
+        let input = self.0.inputs.get(input_index).ok_or_else(|| {
+            WasmUtxoError::new(&format!("Input index {} out of bounds", input_index))
+        })?;
+
+        let signatures = collect_partial_signatures(input);
+        signatures.try_to_js_value()
+    }
+
+    /// Check if an input has any partial signatures
+    #[wasm_bindgen(js_name = hasPartialSignatures)]
+    pub fn has_partial_signatures(&self, input_index: usize) -> Result<bool, JsError> {
+        let input =
+            self.0.inputs.get(input_index).ok_or_else(|| {
+                JsError::new(&format!("Input index {} out of bounds", input_index))
+            })?;
+
+        Ok(!input.partial_sigs.is_empty()
+            || !input.tap_script_sigs.is_empty()
+            || input.tap_key_sig.is_some())
+    }
+
+    /// Get the unsigned transaction ID as a hex string
+    #[wasm_bindgen(js_name = unsignedTxId)]
+    pub fn unsigned_tx_id(&self) -> String {
+        self.0.unsigned_tx.compute_txid().to_string()
+    }
+
+    /// Get the transaction lock time
+    #[wasm_bindgen(js_name = lockTime)]
+    pub fn lock_time(&self) -> u32 {
+        self.0.unsigned_tx.lock_time.to_consensus_u32()
+    }
+
+    /// Get the transaction version
+    #[wasm_bindgen(js_name = version)]
+    pub fn version(&self) -> i32 {
+        self.0.unsigned_tx.version.0
+    }
+
+    /// Validate a signature at a specific input against a pubkey
+    /// Returns true if the signature is valid
+    ///
+    /// This method handles both ECDSA (legacy/SegWit) and Schnorr (Taproot) signatures.
+    /// The pubkey should be provided as bytes (33 bytes for compressed ECDSA, 32 bytes for x-only Schnorr).
+    #[wasm_bindgen(js_name = validateSignatureAtInput)]
+    pub fn validate_signature_at_input(
+        &self,
+        input_index: usize,
+        pubkey: Vec<u8>,
+    ) -> Result<bool, JsError> {
+        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input;
+        use miniscript::bitcoin::{sighash::SighashCache, CompressedPublicKey, XOnlyPublicKey};
+
+        let input =
+            self.0.inputs.get(input_index).ok_or_else(|| {
+                JsError::new(&format!("Input index {} out of bounds", input_index))
+            })?;
+
+        let secp = Secp256k1::verification_only();
+
+        // Try ECDSA signature verification first (for legacy/SegWit)
+        if pubkey.len() == 33 {
+            let compressed_public_key = CompressedPublicKey::from_slice(&pubkey)
+                .map_err(|e| JsError::new(&format!("Invalid public key: {}", e)))?;
+
+            // Use standard Bitcoin (no fork_id) for WASM PSBT
+            match psbt_wallet_input::verify_ecdsa_signature(
+                &secp,
+                &self.0,
+                input_index,
+                compressed_public_key,
+                None, // fork_id: None for standard Bitcoin
+            ) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {} // Continue to try Taproot if pubkey length allows
+                Err(e) => return Err(JsError::new(&format!("ECDSA verification error: {}", e))),
+            }
+        }
+
+        // Try Schnorr signature verification (for Taproot)
+        if pubkey.len() == 32 {
+            let x_only_key = XOnlyPublicKey::from_slice(&pubkey)
+                .map_err(|e| JsError::new(&format!("Invalid x-only public key: {}", e)))?;
+
+            // Create cache once for reuse across taproot verifications
+            let mut cache = SighashCache::new(&self.0.unsigned_tx);
+
+            // Check taproot script path signatures
+            // Convert x_only_key to CompressedPublicKey for the helper function
+            // We need to prepend 0x02 (even parity) to create a compressed public key
+            let mut compressed_key_bytes = vec![0x02u8];
+            compressed_key_bytes.extend_from_slice(&x_only_key.serialize());
+            let compressed_public_key = CompressedPublicKey::from_slice(&compressed_key_bytes)
+                .map_err(|e| JsError::new(&format!("Failed to convert x-only key: {}", e)))?;
+
+            if !input.tap_script_sigs.is_empty() {
+                match psbt_wallet_input::verify_taproot_script_signature(
+                    &secp,
+                    &self.0,
+                    input_index,
+                    compressed_public_key,
+                    &mut cache,
+                ) {
+                    Ok(true) => return Ok(true),
+                    Ok(false) => {} // Continue to try key path
+                    Err(e) => {
+                        return Err(JsError::new(&format!(
+                            "Taproot script verification error: {}",
+                            e
+                        )))
+                    }
+                }
+            }
+
+            // Check taproot key path signature
+            match psbt_wallet_input::verify_taproot_key_signature(
+                &secp,
+                &self.0,
+                input_index,
+                x_only_key,
+                &mut cache,
+            ) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {} // No signature found
+                Err(e) => {
+                    return Err(JsError::new(&format!(
+                        "Taproot key verification error: {}",
+                        e
+                    )))
+                }
+            }
+        }
+
+        // No matching signature found
+        Ok(false)
     }
 }
 

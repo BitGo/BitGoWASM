@@ -60,8 +60,31 @@ declare module "./wasm/wasm_utxo.js" {
   }
 
   interface WrapPsbt {
+    // Signing methods (legacy - kept for backwards compatibility)
     signWithXprv(this: WrapPsbt, xprv: string): SignPsbtResult;
     signWithPrv(this: WrapPsbt, prv: Uint8Array): SignPsbtResult;
+
+    // Signing methods (new - using WasmBIP32/WasmECPair)
+    signAll(this: WrapPsbt, key: WasmBIP32): SignPsbtResult;
+    signAllWithEcpair(this: WrapPsbt, key: WasmECPair): SignPsbtResult;
+
+    // Introspection methods
+    inputCount(): number;
+    outputCount(): number;
+    getPartialSignatures(inputIndex: number): Array<{
+      pubkey: Uint8Array;
+      signature: Uint8Array;
+    }>;
+    hasPartialSignatures(inputIndex: number): boolean;
+
+    // Validation methods
+    validateSignatureAtInput(inputIndex: number, pubkey: Uint8Array): boolean;
+    verifySignatureWithKey(inputIndex: number, key: WasmBIP32): boolean;
+
+    // Metadata methods
+    unsignedTxId(): string;
+    lockTime(): number;
+    version(): number;
   }
 }
 

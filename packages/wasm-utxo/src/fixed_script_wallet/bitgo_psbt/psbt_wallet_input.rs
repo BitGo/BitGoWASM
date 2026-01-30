@@ -131,20 +131,23 @@ pub fn derive_pubkey_from_input<C: secp256k1::Verification>(
 /// - `psbt`: The PSBT containing the transaction and inputs
 /// - `input_index`: The index of the input to verify
 /// - `public_key`: The compressed public key to verify the signature for
+/// - `cache`: Mutable reference to a SighashCache for computing sighash (can be reused for bulk verification)
 ///
 /// # Returns
 /// - `Ok(true)` if a valid Schnorr signature exists for the public key
 /// - `Ok(false)` if no signature exists or verification fails
 /// - `Err(String)` if required data is missing or computation fails
-pub fn verify_taproot_script_signature<C: secp256k1::Verification>(
+pub fn verify_taproot_script_signature<
+    C: secp256k1::Verification,
+    T: std::borrow::Borrow<miniscript::bitcoin::Transaction>,
+>(
     secp: &secp256k1::Secp256k1<C>,
     psbt: &miniscript::bitcoin::psbt::Psbt,
     input_index: usize,
     public_key: miniscript::bitcoin::CompressedPublicKey,
+    cache: &mut miniscript::bitcoin::sighash::SighashCache<T>,
 ) -> Result<bool, String> {
-    use miniscript::bitcoin::{
-        hashes::Hash, sighash::Prevouts, sighash::SighashCache, TapLeafHash, XOnlyPublicKey,
-    };
+    use miniscript::bitcoin::{hashes::Hash, sighash::Prevouts, TapLeafHash, XOnlyPublicKey};
 
     let input = &psbt.inputs[input_index];
 
@@ -160,11 +163,8 @@ pub fn verify_taproot_script_signature<C: secp256k1::Verification>(
     for ((sig_pubkey, leaf_hash), signature) in &input.tap_script_sigs {
         if sig_pubkey == &x_only_key {
             // Found a signature for this public key, now verify it
-            let mut cache = SighashCache::new(&psbt.unsigned_tx);
-
             // Compute taproot script spend sighash
-            let prevouts = super::p2tr_musig2_input::collect_prevouts(psbt)
-                .map_err(|e| format!("Failed to collect prevouts: {}", e))?;
+            let prevouts = collect_prevouts(psbt)?;
 
             // Find the script for this leaf hash
             // tap_scripts is keyed by ControlBlock, so we need to find the matching entry
@@ -204,6 +204,97 @@ pub fn verify_taproot_script_signature<C: secp256k1::Verification>(
 
     // No valid signature found for this public key in tap_script_sigs
     Ok(false)
+}
+
+/// Collect all prevouts (funding outputs) from PSBT inputs
+///
+/// This helper extracts the TxOut for each input from either witness_utxo or non_witness_utxo.
+/// Required for computing sighashes in taproot transactions.
+///
+/// # Arguments
+/// - `psbt`: The PSBT containing the inputs
+///
+/// # Returns
+/// - `Ok(Vec<TxOut>)` with all prevouts
+/// - `Err(String)` if any input is missing UTXO data
+pub fn collect_prevouts(
+    psbt: &miniscript::bitcoin::psbt::Psbt,
+) -> Result<Vec<miniscript::bitcoin::TxOut>, String> {
+    let tx = &psbt.unsigned_tx;
+    psbt.inputs
+        .iter()
+        .enumerate()
+        .map(|(i, input)| {
+            if let Some(witness_utxo) = &input.witness_utxo {
+                Ok(witness_utxo.clone())
+            } else if let Some(non_witness_utxo) = &input.non_witness_utxo {
+                let output_index = tx.input[i].previous_output.vout as usize;
+                non_witness_utxo
+                    .output
+                    .get(output_index)
+                    .cloned()
+                    .ok_or_else(|| format!("Output index {} out of bounds", output_index))
+            } else {
+                Err(format!("Missing UTXO data for input {}", i))
+            }
+        })
+        .collect()
+}
+
+/// Verifies a Taproot key path signature for a given x-only public key in a PSBT input
+///
+/// # Arguments
+/// - `secp`: Secp256k1 context for signature verification
+/// - `psbt`: The PSBT containing the transaction and inputs
+/// - `input_index`: The index of the input to verify
+/// - `x_only_key`: The x-only public key to verify the signature for
+/// - `cache`: Mutable reference to a SighashCache for computing sighash (can be reused for bulk verification)
+///
+/// # Returns
+/// - `Ok(true)` if a valid Schnorr signature exists for the public key
+/// - `Ok(false)` if no signature exists or verification fails
+/// - `Err(String)` if required data is missing or computation fails
+pub fn verify_taproot_key_signature<
+    C: secp256k1::Verification,
+    T: std::borrow::Borrow<miniscript::bitcoin::Transaction>,
+>(
+    secp: &secp256k1::Secp256k1<C>,
+    psbt: &miniscript::bitcoin::psbt::Psbt,
+    input_index: usize,
+    x_only_key: miniscript::bitcoin::XOnlyPublicKey,
+    cache: &mut miniscript::bitcoin::sighash::SighashCache<T>,
+) -> Result<bool, String> {
+    use miniscript::bitcoin::{hashes::Hash, sighash::Prevouts};
+
+    let input = &psbt.inputs[input_index];
+
+    // Check if there's a taproot key path signature
+    let sig = match &input.tap_key_sig {
+        Some(sig) => sig,
+        None => return Ok(false),
+    };
+
+    // Verify that the tap_internal_key matches the provided x_only_key
+    match &input.tap_internal_key {
+        Some(tap_internal_key) if tap_internal_key == &x_only_key => {}
+        Some(_) => return Ok(false), // Key mismatch
+        None => return Ok(false),    // No tap_internal_key
+    }
+
+    // Collect prevouts for taproot sighash
+    let prevouts = collect_prevouts(psbt)?;
+
+    // Compute taproot key spend sighash
+    let sighash = cache
+        .taproot_key_spend_signature_hash(input_index, &Prevouts::All(&prevouts), sig.sighash_type)
+        .map_err(|e| format!("Failed to compute taproot sighash: {}", e))?;
+
+    // Verify Schnorr signature
+    let message = secp256k1::Message::from_digest(sighash.to_byte_array());
+    match secp.verify_schnorr(&sig.signature, &message, &x_only_key) {
+        Ok(()) => Ok(true),
+        Err(_) => Ok(false),
+    }
 }
 
 /// Verifies an ECDSA signature for a given public key in a PSBT input (legacy/SegWit)
