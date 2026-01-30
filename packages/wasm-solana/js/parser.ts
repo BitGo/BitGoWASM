@@ -8,6 +8,13 @@
  */
 
 import { ParserNamespace } from "./wasm/wasm_solana.js";
+import type { Transaction } from "./transaction.js";
+import type { VersionedTransaction } from "./versioned.js";
+
+/**
+ * Input type for parseTransaction - accepts bytes or Transaction objects.
+ */
+export type TransactionInput = Uint8Array | Transaction | VersionedTransaction;
 
 // =============================================================================
 // Instruction Types - matching BitGoJS InstructionParams
@@ -273,10 +280,10 @@ export interface ParsedTransaction {
 // =============================================================================
 
 /**
- * Parse a serialized Solana transaction into structured data.
+ * Parse a Solana transaction into structured data.
  *
  * This is the main entry point for transaction parsing. It deserializes the
- * transaction bytes and decodes all instructions into semantic types.
+ * transaction and decodes all instructions into semantic types.
  *
  * All monetary amounts (amount, fee, lamports, poolTokens) are returned as bigint
  * directly from WASM - no post-processing needed.
@@ -285,16 +292,21 @@ export interface ParsedTransaction {
  * Consumers (like BitGoJS) may choose to filter NonceAdvance from instructionsData
  * since that info is also available in durableNonce.
  *
- * @param bytes - The raw transaction bytes (wire format)
+ * @param input - Raw transaction bytes, Transaction, or VersionedTransaction
  * @returns A ParsedTransaction with all instructions decoded
  * @throws Error if the transaction cannot be parsed
  *
  * @example
  * ```typescript
- * import { parseTransaction } from '@bitgo/wasm-solana';
+ * import { parseTransaction, buildTransaction, Transaction } from '@bitgo/wasm-solana';
  *
+ * // From bytes
  * const txBytes = Buffer.from(base64EncodedTx, 'base64');
  * const parsed = parseTransaction(txBytes);
+ *
+ * // Directly from a Transaction object (no roundtrip through bytes)
+ * const tx = buildTransaction(intent);
+ * const parsed = parseTransaction(tx);
  *
  * console.log(parsed.feePayer);
  * for (const instr of parsed.instructionsData) {
@@ -304,6 +316,8 @@ export interface ParsedTransaction {
  * }
  * ```
  */
-export function parseTransaction(bytes: Uint8Array): ParsedTransaction {
+export function parseTransaction(input: TransactionInput): ParsedTransaction {
+  // If input is a Transaction or VersionedTransaction, extract bytes
+  const bytes = input instanceof Uint8Array ? input : input.toBytes();
   return ParserNamespace.parse_transaction(bytes) as ParsedTransaction;
 }

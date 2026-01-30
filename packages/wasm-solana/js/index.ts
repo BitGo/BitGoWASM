@@ -45,6 +45,7 @@ export {
 // Type exports
 export type { AccountMeta, Instruction } from "./transaction.js";
 export type {
+  TransactionInput,
   ParsedTransaction,
   DurableNonce,
   InstructionParams,
