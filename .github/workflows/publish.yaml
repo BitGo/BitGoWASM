@@ -1,4 +1,4 @@
-name: Publish @bitgo/wasm-utxo
+name: Publish @bitgo/wasm packages
 on:
   push:
     branches:
@@ -30,11 +30,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download build artifacts
+      - name: Download wasm-utxo build artifacts
         uses: actions/download-artifact@v4
         with:
           name: wasm-utxo-build
           path: packages/wasm-utxo/
+
+      - name: Download wasm-solana build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-solana-build
+          path: packages/wasm-solana/
 
       - name: Setup Node
         uses: actions/setup-node@v4

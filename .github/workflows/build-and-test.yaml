@@ -208,7 +208,7 @@ jobs:
         run: npm test
         working-directory: packages/webui
 
-      - name: Upload final build artifacts
+      - name: Upload wasm-utxo build artifacts
         if: inputs.upload-artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -216,6 +216,15 @@ jobs:
           path: |
             packages/wasm-utxo/pkg/
             packages/wasm-utxo/dist/
+          retention-days: 1
+
+      - name: Upload wasm-solana build artifacts
+        if: inputs.upload-artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-solana-build
+          path: |
+            packages/wasm-solana/dist/
           retention-days: 1
 
   # This job provides a stable "test / Test" status check for branch protection.
