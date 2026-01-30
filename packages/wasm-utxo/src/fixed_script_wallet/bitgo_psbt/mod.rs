@@ -17,7 +17,7 @@ pub mod zcash_psbt;
 use crate::Network;
 pub use dash_psbt::DashBitGoPsbt;
 use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey, Txid};
-pub use propkv::{BitGoKeyValue, ProprietaryKeySubtype, BITGO};
+pub use propkv::{BitGoKeyValue, ProprietaryKeySubtype, WasmUtxoVersionInfo, BITGO};
 pub use sighash::validate_sighash_type;
 pub use zcash_psbt::{
     decode_zcash_transaction_meta, ZcashBitGoPsbt, ZcashTransactionMeta,
@@ -1223,6 +1223,17 @@ impl BitGoPsbt {
             BitGoPsbt::Dash(ref mut dash_psbt, _network) => &mut dash_psbt.psbt,
             BitGoPsbt::Zcash(ref mut zcash_psbt, _network) => &mut zcash_psbt.psbt,
         }
+    }
+
+    /// Set version information in the PSBT's proprietary fields
+    ///
+    /// This embeds the wasm-utxo version and git hash into the PSBT's global
+    /// proprietary fields, allowing identification of which library version
+    /// processed the PSBT.
+    pub fn set_version_info(&mut self) {
+        let version_info = WasmUtxoVersionInfo::from_build_info();
+        let (key, value) = version_info.to_proprietary_kv();
+        self.psbt_mut().proprietary.insert(key, value);
     }
 
     pub fn finalize_input<C: secp256k1::Verification>(
@@ -4654,5 +4665,34 @@ mod tests {
         let decoded = deserialize::<miniscript::bitcoin::Transaction>(&extracted_bytes)
             .expect("decode extracted tx");
         assert_eq!(decoded.compute_txid(), extracted_tx.compute_txid());
+    }
+
+    #[test]
+    fn test_set_version_info() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use miniscript::bitcoin::psbt::raw::ProprietaryKey;
+
+        let wallet_keys =
+            crate::fixed_script_wallet::RootWalletKeys::new(get_test_wallet_keys("doge_1e19"));
+
+        let mut psbt = BitGoPsbt::new(Network::Bitcoin, &wallet_keys, Some(2), Some(0));
+
+        // Set version info
+        psbt.set_version_info();
+
+        // Verify it was set in the proprietary fields
+        let version_key = ProprietaryKey {
+            prefix: BITGO.to_vec(),
+            subtype: ProprietaryKeySubtype::WasmUtxoVersion as u8,
+            key: vec![],
+        };
+
+        assert!(psbt.psbt().proprietary.contains_key(&version_key));
+
+        // Verify the value is correctly formatted
+        let value = psbt.psbt().proprietary.get(&version_key).unwrap();
+        let version_info = WasmUtxoVersionInfo::from_bytes(value).unwrap();
+        assert!(!version_info.version.is_empty());
+        assert!(!version_info.git_hash.is_empty());
     }
 }
