@@ -25,12 +25,12 @@ describe("buildTransaction", () => {
         instructions: [{ type: "transfer", from: SENDER, to: RECIPIENT, lamports: 1000000n }],
       };
 
-      const txBytes = buildTransaction(intent);
+      const tx = buildTransaction(intent);
+      const txBytes = tx.toBytes();
       assert.ok(txBytes instanceof Uint8Array);
       assert.ok(txBytes.length > 0);
 
-      // Parse it back to verify structure
-      const parsed = parseTransaction(txBytes);
+      const parsed = parseTransaction(tx);
       assert.strictEqual(parsed.feePayer, SENDER);
       assert.strictEqual(parsed.nonce, BLOCKHASH);
       assert.strictEqual(parsed.instructionsData.length, 1);
@@ -51,8 +51,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       const transfer = parsed.instructionsData[0];
       assert.strictEqual(transfer.type, "Transfer");
@@ -76,8 +76,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 2);
       assert.strictEqual(parsed.instructionsData[0].type, "Transfer");
@@ -102,8 +102,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 2);
       assert.strictEqual(parsed.instructionsData[0].type, "SetComputeUnitLimit");
@@ -125,8 +125,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 2);
       assert.strictEqual(parsed.instructionsData[0].type, "SetPriorityFee");
@@ -158,8 +158,8 @@ describe("buildTransaction", () => {
         instructions: [{ type: "transfer", from: SENDER, to: RECIPIENT, lamports: 1000000n }],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       // Should have 2 instructions: NonceAdvance + Transfer
       assert.strictEqual(parsed.instructionsData.length, 2);
@@ -197,8 +197,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
       assert.strictEqual(parsed.instructionsData[0].type, "CreateAccount");
@@ -258,10 +258,11 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes1 = buildTransaction(intent);
-      const txBytes2 = buildTransaction(intent);
+      const tx1 = buildTransaction(intent);
+      const tx2 = buildTransaction(intent);
 
-      assert.deepStrictEqual(txBytes1, txBytes2);
+      // Compare serialized bytes since Transaction objects have different wasm pointers
+      assert.deepStrictEqual(tx1.toBytes(), tx2.toBytes());
     });
   });
 
@@ -284,8 +285,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
       assert.strictEqual(parsed.instructionsData[0].type, "StakeInitialize");
@@ -312,8 +313,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
       assert.strictEqual(parsed.instructionsData[0].type, "StakingDelegate");
@@ -339,8 +340,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
       assert.strictEqual(parsed.instructionsData[0].type, "StakingDeactivate");
@@ -367,8 +368,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
       assert.strictEqual(parsed.instructionsData[0].type, "StakingWithdraw");
@@ -413,8 +414,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       // Parser returns individual instructions; combining is done in BitGoJS wasmInstructionCombiner
       assert.strictEqual(parsed.instructionsData.length, 3);
@@ -463,8 +464,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
       assert.strictEqual(parsed.instructionsData[0].type, "TokenTransfer");
@@ -493,8 +494,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
       assert.strictEqual(parsed.instructionsData[0].type, "CreateAssociatedTokenAccount");
@@ -521,8 +522,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
       assert.strictEqual(parsed.instructionsData[0].type, "CloseAssociatedTokenAccount");
@@ -559,8 +560,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 3);
       assert.strictEqual(parsed.instructionsData[0].type, "CreateAssociatedTokenAccount");
@@ -602,8 +603,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
       assert.strictEqual(parsed.instructionsData[0].type, "StakePoolDepositSol");
@@ -639,8 +640,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 1);
       assert.strictEqual(parsed.instructionsData[0].type, "StakePoolWithdrawStake");
@@ -682,8 +683,8 @@ describe("buildTransaction", () => {
         ],
       };
 
-      const txBytes = buildTransaction(intent);
-      const parsed = parseTransaction(txBytes);
+      const tx = buildTransaction(intent);
+      const parsed = parseTransaction(tx);
 
       assert.strictEqual(parsed.instructionsData.length, 2);
       assert.strictEqual(parsed.instructionsData[0].type, "CreateAssociatedTokenAccount");

@@ -58,6 +58,14 @@ export class Transaction {
   }
 
   /**
+   * Create a Transaction from a WasmTransaction instance.
+   * @internal Used by builder functions
+   */
+  static fromWasm(wasm: WasmTransaction): Transaction {
+    return new Transaction(wasm);
+  }
+
+  /**
    * Get the fee payer address as a base58 string
    * Returns null if there are no account keys (shouldn't happen for valid transactions)
    */
