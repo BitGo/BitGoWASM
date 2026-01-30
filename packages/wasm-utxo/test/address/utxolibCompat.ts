@@ -5,66 +5,13 @@ import { dirname } from "node:path";
 
 import * as utxolib from "@bitgo/utxo-lib";
 import assert from "node:assert";
-import {
-  utxolibCompat,
-  address as addressNs,
-  type CoinName,
-  AddressFormat,
-} from "../../js/index.js";
+import { utxolibCompat, address as addressNs, AddressFormat } from "../../js/index.js";
+import { getCoinNameForNetwork } from "../networks.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 type Fixture = [type: string, script: string, address: string];
-
-function getCoinNameForNetwork(name: string): CoinName {
-  switch (name) {
-    case "bitcoin":
-      return "btc";
-    case "testnet":
-      return "tbtc";
-    case "bitcoinTestnet4":
-      return "tbtc4";
-    case "bitcoinPublicSignet":
-      return "tbtcsig";
-    case "bitcoinBitGoSignet":
-      return "tbtcbgsig";
-    case "bitcoincash":
-      return "bch";
-    case "bitcoincashTestnet":
-      return "tbch";
-    case "ecash":
-      return "bcha";
-    case "ecashTest":
-      return "tbcha";
-    case "bitcoingold":
-      return "btg";
-    case "bitcoingoldTestnet":
-      return "tbtg";
-    case "bitcoinsv":
-      return "bsv";
-    case "bitcoinsvTestnet":
-      return "tbsv";
-    case "dash":
-      return "dash";
-    case "dashTest":
-      return "tdash";
-    case "dogecoin":
-      return "doge";
-    case "dogecoinTest":
-      return "tdoge";
-    case "litecoin":
-      return "ltc";
-    case "litecoinTest":
-      return "tltc";
-    case "zcash":
-      return "zec";
-    case "zcashTest":
-      return "tzec";
-    default:
-      throw new Error(`Unknown network: ${name}`);
-  }
-}
 
 async function getFixtures(name: string, addressFormat?: AddressFormat): Promise<Fixture[]> {
   if (name === "bitcoinBitGoSignet") {
@@ -97,7 +44,7 @@ function runTest(network: utxolib.Network, addressFormat?: AddressFormat) {
     });
 
     it("should convert using coin name", function () {
-      const coinName = getCoinNameForNetwork(name);
+      const coinName = getCoinNameForNetwork(network);
 
       for (const fixture of fixtures) {
         const [, script, addressRef] = fixture;
