@@ -1,10 +1,11 @@
 //! WASM binding for transaction building.
 //!
 //! Exposes transaction building functions:
-//! - `buildTransaction` - Creates transactions from a high-level intent structure
-//! - `buildFromVersionedData` - Creates versioned transactions from raw MessageV0 data
+//! - `buildTransaction` - Creates a Transaction from a high-level intent structure
+//! - `buildFromVersionedData` - Creates a VersionedTransaction from raw MessageV0 data
 
 use crate::builder;
+use crate::wasm::transaction::{WasmTransaction, WasmVersionedTransaction};
 use wasm_bindgen::prelude::*;
 
 /// Namespace for transaction building operations.
@@ -46,22 +47,26 @@ impl BuilderNamespace {
     ///
     /// # Returns
     ///
-    /// Serialized unsigned transaction bytes (Uint8Array).
+    /// A `Transaction` object that can be inspected, signed, and serialized.
     /// The transaction will have empty signature placeholders that can be
-    /// filled in later by signing.
+    /// filled in later by signing via `addSignature()`.
     ///
     /// @param intent - The transaction intent as a JSON object
-    /// @returns Serialized transaction bytes
+    /// @returns Transaction object
     #[wasm_bindgen]
-    pub fn build_transaction(intent: JsValue) -> Result<Vec<u8>, JsValue> {
+    pub fn build_transaction(intent: JsValue) -> Result<WasmTransaction, JsValue> {
         // Deserialize the intent from JavaScript
         let intent: builder::TransactionIntent =
             serde_wasm_bindgen::from_value(intent).map_err(|e| {
                 JsValue::from_str(&format!("Failed to parse transaction intent: {}", e))
             })?;
 
-        // Build the transaction
-        builder::build_transaction(intent).map_err(|e| JsValue::from_str(&e.to_string()))
+        // Build the transaction bytes
+        let bytes =
+            builder::build_transaction(intent).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Wrap in WasmTransaction for rich API access
+        WasmTransaction::from_bytes(&bytes).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Build a versioned transaction directly from raw MessageV0 data.
@@ -91,9 +96,9 @@ impl BuilderNamespace {
     /// ```
     ///
     /// @param data - Raw versioned transaction data as a JSON object
-    /// @returns Serialized versioned transaction bytes (unsigned)
+    /// @returns VersionedTransaction object
     #[wasm_bindgen]
-    pub fn build_from_versioned_data(data: JsValue) -> Result<Vec<u8>, JsValue> {
+    pub fn build_from_versioned_data(data: JsValue) -> Result<WasmVersionedTransaction, JsValue> {
         // Deserialize the raw versioned data from JavaScript
         let data: builder::RawVersionedTransactionData = serde_wasm_bindgen::from_value(data)
             .map_err(|e| {
@@ -103,7 +108,11 @@ impl BuilderNamespace {
                 ))
             })?;
 
-        // Build the versioned transaction
-        builder::build_from_raw_versioned_data(&data).map_err(|e| JsValue::from_str(&e.to_string()))
+        // Build the versioned transaction bytes
+        let bytes = builder::build_from_raw_versioned_data(&data)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Wrap in WasmVersionedTransaction for rich API access
+        WasmVersionedTransaction::from_bytes(&bytes).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 }
