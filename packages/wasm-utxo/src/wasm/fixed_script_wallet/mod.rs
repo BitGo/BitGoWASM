@@ -585,6 +585,19 @@ impl BitGoPsbt {
         self.psbt.network().to_string()
     }
 
+    /// Get the network type for transaction extraction
+    ///
+    /// Returns "bitcoin", "dash", or "zcash" to indicate which transaction
+    /// wrapper class should be used in TypeScript.
+    pub fn get_network_type(&self) -> String {
+        use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt as InnerBitGoPsbt;
+        match &self.psbt {
+            InnerBitGoPsbt::BitcoinLike(_, _) => "bitcoin".to_string(),
+            InnerBitGoPsbt::Dash(_, _) => "dash".to_string(),
+            InnerBitGoPsbt::Zcash(_, _) => "zcash".to_string(),
+        }
+    }
+
     /// Get the transaction version
     pub fn version(&self) -> i32 {
         self.psbt.psbt().unsigned_tx.version.0
@@ -1488,6 +1501,53 @@ impl BitGoPsbt {
             .clone()
             .extract_tx()
             .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// Extract the final transaction as a WasmTransaction (for BitcoinLike networks)
+    ///
+    /// This avoids re-parsing bytes by returning the transaction directly.
+    /// Only valid for Bitcoin-like networks (not Dash or Zcash).
+    pub fn extract_bitcoin_transaction(
+        &self,
+    ) -> Result<crate::wasm::transaction::WasmTransaction, WasmUtxoError> {
+        let tx = self
+            .psbt
+            .clone()
+            .extract_bitcoin_tx()
+            .map_err(|e| WasmUtxoError::new(&e))?;
+        Ok(crate::wasm::transaction::WasmTransaction::from_tx(tx))
+    }
+
+    /// Extract the final transaction as a WasmDashTransaction (for Dash networks)
+    ///
+    /// This avoids re-parsing bytes by returning the transaction directly.
+    /// Only valid for Dash networks.
+    pub fn extract_dash_transaction(
+        &self,
+    ) -> Result<crate::wasm::dash_transaction::WasmDashTransaction, WasmUtxoError> {
+        let parts = self
+            .psbt
+            .clone()
+            .extract_dash_tx()
+            .map_err(|e| WasmUtxoError::new(&e))?;
+        Ok(crate::wasm::dash_transaction::WasmDashTransaction::from_parts(parts))
+    }
+
+    /// Extract the final transaction as a WasmZcashTransaction (for Zcash networks)
+    ///
+    /// This avoids re-parsing bytes by returning the transaction directly.
+    /// Only valid for Zcash networks.
+    pub fn extract_zcash_transaction(
+        &self,
+    ) -> Result<crate::wasm::transaction::WasmZcashTransaction, WasmUtxoError> {
+        let parts = self
+            .psbt
+            .clone()
+            .extract_zcash_tx()
+            .map_err(|e| WasmUtxoError::new(&e))?;
+        Ok(crate::wasm::transaction::WasmZcashTransaction::from_parts(
+            parts,
+        ))
     }
 
     /// Extract a half-signed transaction in legacy format for p2ms-based script types.

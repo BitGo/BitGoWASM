@@ -67,7 +67,7 @@ describe("finalize and extract transaction", function () {
 
         // Verify it can be extracted (which confirms finalization worked)
         const extractedTx = deserialized.extractTransaction();
-        const extractedTxHex = Buffer.from(extractedTx).toString("hex");
+        const extractedTxHex = Buffer.from(extractedTx.toBytes()).toString("hex");
         const expectedTxHex = getExtractedTransactionHex(fullsignedFixture);
 
         assert.strictEqual(
@@ -86,7 +86,7 @@ describe("finalize and extract transaction", function () {
 
         // Extract transaction
         const extractedTx = psbt.extractTransaction();
-        const extractedTxHex = Buffer.from(extractedTx).toString("hex");
+        const extractedTxHex = Buffer.from(extractedTx.toBytes()).toString("hex");
 
         // Get expected transaction hex from fixture
         const expectedTxHex = getExtractedTransactionHex(fullsignedFixture);
@@ -96,6 +96,23 @@ describe("finalize and extract transaction", function () {
           expectedTxHex,
           "Extracted transaction should match expected transaction",
         );
+      });
+
+      it("should have extracted transaction with valid getId()", function () {
+        const psbt = fixedScriptWallet.BitGoPsbt.fromBytes(fullsignedPsbtBuffer, networkName);
+
+        psbt.finalizeAllInputs();
+        const extractedTx = psbt.extractTransaction();
+
+        // Verify getId() returns a valid 64-character hex txid
+        const txid = extractedTx.getId();
+        assert.strictEqual(txid.length, 64, "txid should be 64 characters");
+        assert.match(txid, /^[0-9a-f]{64}$/, "txid should be lowercase hex");
+
+        // Verify txid matches utxolib calculation
+        const expectedTxHex = getExtractedTransactionHex(fullsignedFixture);
+        const utxolibTx = utxolib.bitgo.createTransactionFromHex(expectedTxHex, network);
+        assert.strictEqual(txid, utxolibTx.getId(), "txid should match utxolib calculation");
       });
     });
   });

@@ -1,6 +1,7 @@
 import { BitGoPsbt as WasmBitGoPsbt } from "../wasm/wasm_utxo.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
 import { BitGoPsbt, type CreateEmptyOptions } from "./BitGoPsbt.js";
+import { ZcashTransaction } from "../transaction.js";
 
 /** Zcash network names */
 export type ZcashNetworkName = "zcash" | "zcashTest" | "zec" | "tzec";
@@ -159,5 +160,15 @@ export class ZcashBitGoPsbt extends BitGoPsbt {
    */
   get expiryHeight(): number {
     return this.wasm.expiry_height();
+  }
+
+  /**
+   * Extract the final Zcash transaction from a finalized PSBT
+   *
+   * @returns The extracted Zcash transaction instance
+   * @throws Error if the PSBT is not fully finalized or extraction fails
+   */
+  override extractTransaction(): ZcashTransaction {
+    return ZcashTransaction.fromWasm(this.wasm.extract_zcash_transaction());
   }
 }

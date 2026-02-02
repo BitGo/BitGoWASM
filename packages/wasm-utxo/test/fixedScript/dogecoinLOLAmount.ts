@@ -51,6 +51,6 @@ describe("Dogecoin large output limit amount (LOL amounts) (1-in/1-out)", functi
 
     psbt.finalizeAllInputs();
     const extractedTx = psbt.extractTransaction();
-    assert.ok(extractedTx.length > 0, "expected extracted tx bytes");
+    assert.ok(extractedTx.toBytes().length > 0, "expected extracted tx bytes");
   });
 });
