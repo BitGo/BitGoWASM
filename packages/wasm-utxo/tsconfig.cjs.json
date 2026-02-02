@@ -5,6 +5,5 @@
     "moduleResolution": "node",
     "rootDir": ".",
     "outDir": "./dist/cjs"
-  },
-  "exclude": ["test/**/*"]
+  }
 }

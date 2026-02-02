@@ -404,6 +404,49 @@ impl TryIntoJsValue for crate::inscriptions::InscriptionRevealData {
     }
 }
 
+// ============================================================================
+// PSBT Introspection Types TryIntoJsValue implementations
+// ============================================================================
+
+impl TryIntoJsValue for crate::wasm::psbt::Bip32Derivation {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "pubkey" => self.pubkey.clone(),
+            "path" => self.path.clone()
+        )
+    }
+}
+
+impl TryIntoJsValue for crate::wasm::psbt::WitnessUtxo {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "script" => self.script.clone(),
+            "value" => self.value
+        )
+    }
+}
+
+impl TryIntoJsValue for crate::wasm::psbt::PsbtInputData {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "witnessUtxo" => self.witness_utxo.clone(),
+            "bip32Derivation" => self.bip32_derivation.clone(),
+            "tapBip32Derivation" => self.tap_bip32_derivation.clone()
+        )
+    }
+}
+
+impl TryIntoJsValue for crate::wasm::psbt::PsbtOutputData {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "script" => self.script.clone(),
+            "value" => self.value,
+            "bip32Derivation" => self.bip32_derivation.clone(),
+            "tapBip32Derivation" => self.tap_bip32_derivation.clone()
+        )
+    }
+}
+
 /// A partial signature with its associated public key
 #[derive(Clone)]
 pub struct PartialSignature {

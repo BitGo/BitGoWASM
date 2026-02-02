@@ -12,6 +12,7 @@ export * as bip322 from "./bip322/index.js";
 export * as inscriptions from "./inscriptions.js";
 export * as utxolibCompat from "./utxolibCompat.js";
 export * as fixedScriptWallet from "./fixedScriptWallet/index.js";
+export * as descriptorWallet from "./descriptorWallet/index.js";
 export * as bip32 from "./bip32.js";
 export * as ecpair from "./ecpair.js";
 export * as testutils from "./testutils/index.js";
@@ -59,6 +60,33 @@ declare module "./wasm/wasm_utxo.js" {
     function fromBitcoinScript(script: Uint8Array, ctx: ScriptContext): WrapMiniscript;
   }
 
+  /** BIP32 derivation data from a PSBT */
+  interface PsbtBip32Derivation {
+    pubkey: Uint8Array;
+    path: string;
+  }
+
+  /** Witness UTXO data from a PSBT input */
+  interface PsbtWitnessUtxo {
+    script: Uint8Array;
+    value: bigint;
+  }
+
+  /** Raw PSBT input data returned by getInputs() */
+  interface PsbtInputData {
+    witnessUtxo: PsbtWitnessUtxo | null;
+    bip32Derivation: PsbtBip32Derivation[];
+    tapBip32Derivation: PsbtBip32Derivation[];
+  }
+
+  /** Raw PSBT output data returned by getOutputs() */
+  interface PsbtOutputData {
+    script: Uint8Array;
+    value: bigint;
+    bip32Derivation: PsbtBip32Derivation[];
+    tapBip32Derivation: PsbtBip32Derivation[];
+  }
+
   interface WrapPsbt {
     // Signing methods (legacy - kept for backwards compatibility)
     signWithXprv(this: WrapPsbt, xprv: string): SignPsbtResult;
@@ -71,6 +99,8 @@ declare module "./wasm/wasm_utxo.js" {
     // Introspection methods
     inputCount(): number;
     outputCount(): number;
+    getInputs(): PsbtInputData[];
+    getOutputs(): PsbtOutputData[];
     getPartialSignatures(inputIndex: number): Array<{
       pubkey: Uint8Array;
       signature: Uint8Array;

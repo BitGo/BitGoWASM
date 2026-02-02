@@ -79,6 +79,103 @@ impl psbt::GetKey for SingleKeySigner {
     }
 }
 
+// ============================================================================
+// PSBT Introspection Types
+// ============================================================================
+
+/// BIP32 derivation information
+#[derive(Debug, Clone)]
+pub struct Bip32Derivation {
+    pub pubkey: Vec<u8>,
+    pub path: String,
+}
+
+/// Witness UTXO information
+#[derive(Debug, Clone)]
+pub struct WitnessUtxo {
+    pub script: Vec<u8>,
+    pub value: u64,
+}
+
+/// Raw PSBT input data for introspection
+#[derive(Debug, Clone)]
+pub struct PsbtInputData {
+    pub witness_utxo: Option<WitnessUtxo>,
+    pub bip32_derivation: Vec<Bip32Derivation>,
+    pub tap_bip32_derivation: Vec<Bip32Derivation>,
+}
+
+impl From<&psbt::Input> for PsbtInputData {
+    fn from(input: &psbt::Input) -> Self {
+        let witness_utxo = input.witness_utxo.as_ref().map(|utxo| WitnessUtxo {
+            script: utxo.script_pubkey.to_bytes(),
+            value: utxo.value.to_sat(),
+        });
+
+        let bip32_derivation: Vec<Bip32Derivation> = input
+            .bip32_derivation
+            .iter()
+            .map(|(pubkey, (_, path))| Bip32Derivation {
+                pubkey: pubkey.serialize().to_vec(),
+                path: path.to_string(),
+            })
+            .collect();
+
+        let tap_bip32_derivation: Vec<Bip32Derivation> = input
+            .tap_key_origins
+            .iter()
+            .map(|(xonly_pubkey, (_, (_, path)))| Bip32Derivation {
+                pubkey: xonly_pubkey.serialize().to_vec(),
+                path: path.to_string(),
+            })
+            .collect();
+
+        PsbtInputData {
+            witness_utxo,
+            bip32_derivation,
+            tap_bip32_derivation,
+        }
+    }
+}
+
+/// Raw PSBT output data for introspection
+#[derive(Debug, Clone)]
+pub struct PsbtOutputData {
+    pub script: Vec<u8>,
+    pub value: u64,
+    pub bip32_derivation: Vec<Bip32Derivation>,
+    pub tap_bip32_derivation: Vec<Bip32Derivation>,
+}
+
+impl PsbtOutputData {
+    pub fn from(tx_out: &TxOut, psbt_out: &psbt::Output) -> Self {
+        let bip32_derivation: Vec<Bip32Derivation> = psbt_out
+            .bip32_derivation
+            .iter()
+            .map(|(pubkey, (_, path))| Bip32Derivation {
+                pubkey: pubkey.serialize().to_vec(),
+                path: path.to_string(),
+            })
+            .collect();
+
+        let tap_bip32_derivation: Vec<Bip32Derivation> = psbt_out
+            .tap_key_origins
+            .iter()
+            .map(|(xonly_pubkey, (_, (_, path)))| Bip32Derivation {
+                pubkey: xonly_pubkey.serialize().to_vec(),
+                path: path.to_string(),
+            })
+            .collect();
+
+        PsbtOutputData {
+            script: tx_out.script_pubkey.to_bytes(),
+            value: tx_out.value.to_sat(),
+            bip32_derivation,
+            tap_bip32_derivation,
+        }
+    }
+}
+
 #[wasm_bindgen]
 pub struct WrapPsbt(Psbt);
 
@@ -434,6 +531,33 @@ impl WrapPsbt {
     #[wasm_bindgen(js_name = outputCount)]
     pub fn output_count(&self) -> usize {
         self.0.outputs.len()
+    }
+
+    /// Get all PSBT inputs as an array of PsbtInputData
+    ///
+    /// Returns an array with witness_utxo, bip32_derivation, and tap_bip32_derivation
+    /// for each input. This is useful for introspecting the PSBT structure.
+    #[wasm_bindgen(js_name = getInputs)]
+    pub fn get_inputs(&self) -> Result<JsValue, WasmUtxoError> {
+        let inputs: Vec<PsbtInputData> = self.0.inputs.iter().map(PsbtInputData::from).collect();
+        inputs.try_to_js_value()
+    }
+
+    /// Get all PSBT outputs as an array of PsbtOutputData
+    ///
+    /// Returns an array with script, value, bip32_derivation, and tap_bip32_derivation
+    /// for each output. This is useful for introspecting the PSBT structure.
+    #[wasm_bindgen(js_name = getOutputs)]
+    pub fn get_outputs(&self) -> Result<JsValue, WasmUtxoError> {
+        let outputs: Vec<PsbtOutputData> = self
+            .0
+            .unsigned_tx
+            .output
+            .iter()
+            .zip(self.0.outputs.iter())
+            .map(|(tx_out, psbt_out)| PsbtOutputData::from(tx_out, psbt_out))
+            .collect();
+        outputs.try_to_js_value()
     }
 
     /// Get partial signatures for an input
