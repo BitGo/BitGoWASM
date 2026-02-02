@@ -19,7 +19,7 @@ describe("descriptorWallet/address", () => {
       const descriptor = Descriptor.fromStringDetectType(definiteDescriptor);
       const script = createScriptPubKeyFromDescriptor(descriptor, undefined);
 
-      assert.ok(Buffer.isBuffer(script));
+      assert.ok(script instanceof Uint8Array);
       // P2WPKH scripts are 22 bytes (OP_0 + 20 byte hash)
       assert.strictEqual(script.length, 22);
       assert.strictEqual(script[0], 0x00); // OP_0
@@ -30,7 +30,7 @@ describe("descriptorWallet/address", () => {
       const descriptor = Descriptor.fromStringDetectType(derivableDescriptor);
       const script = createScriptPubKeyFromDescriptor(descriptor, 0);
 
-      assert.ok(Buffer.isBuffer(script));
+      assert.ok(script instanceof Uint8Array);
       assert.strictEqual(script.length, 22);
     });
 

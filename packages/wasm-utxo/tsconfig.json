@@ -11,8 +11,9 @@
     "rootDir": ".",
     "outDir": "./dist/esm",
     "noUnusedLocals": true,
-    "noUnusedParameters": true
+    "noUnusedParameters": true,
+    "types": []
   },
-  "include": ["./js/**/*.ts", "test/**/*.ts"],
+  "include": ["./js/**/*.ts"],
   "exclude": ["node_modules", "./js/wasm/**/*"]
 }
