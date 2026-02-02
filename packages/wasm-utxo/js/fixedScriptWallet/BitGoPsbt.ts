@@ -51,6 +51,16 @@ export type CreateEmptyOptions = {
   lockTime?: number;
 };
 
+/**
+ * Version information embedded in PSBTs by wasm-utxo
+ */
+export type WasmUtxoVersionInfo = {
+  /** The semantic version of wasm-utxo (e.g., "0.0.2") */
+  version: string;
+  /** The git commit hash at build time */
+  gitHash: string;
+};
+
 export type AddInputOptions = {
   /** Previous transaction ID (hex string) */
   txid: string;
@@ -407,6 +417,50 @@ export class BitGoPsbt {
    */
   get lockTime(): number {
     return this._wasm.lock_time();
+  }
+
+  /**
+   * Set wasm-utxo version information in the PSBT's proprietary fields
+   *
+   * This embeds the wasm-utxo version and git hash into the PSBT's global
+   * proprietary fields, allowing identification of which library version
+   * processed the PSBT. The version info is automatically embedded during
+   * serialization by default, but this method can be called explicitly
+   * if needed.
+   *
+   * @example
+   * ```typescript
+   * psbt.setVersionInfo();
+   * const info = psbt.getVersionInfo();
+   * console.log(`Built with wasm-utxo ${info?.version} (${info?.gitHash})`);
+   * ```
+   */
+  setVersionInfo(): void {
+    this._wasm.set_version_info();
+  }
+
+  /**
+   * Get wasm-utxo version information from the PSBT's proprietary fields
+   *
+   * Returns the version and git hash that was embedded in the PSBT by
+   * wasm-utxo during processing. Returns undefined if no version info
+   * is present (e.g., PSBT was created by another library).
+   *
+   * @returns Version info object with `version` and `gitHash`, or undefined
+   *
+   * @example
+   * ```typescript
+   * const info = psbt.getVersionInfo();
+   * if (info) {
+   *   console.log(`PSBT created by wasm-utxo ${info.version}`);
+   * } else {
+   *   console.log("PSBT was not processed by wasm-utxo");
+   * }
+   * ```
+   */
+  getVersionInfo(): WasmUtxoVersionInfo | undefined {
+    const info = this._wasm.get_version_info();
+    return info === undefined ? undefined : (info as WasmUtxoVersionInfo);
   }
 
   /**

@@ -615,6 +615,31 @@ impl BitGoPsbt {
         }
     }
 
+    /// Set wasm-utxo version information in the PSBT's proprietary fields
+    ///
+    /// This embeds the wasm-utxo version and git hash into the PSBT's global
+    /// proprietary fields, allowing identification of which library version
+    /// processed the PSBT.
+    pub fn set_version_info(&mut self) {
+        self.psbt.set_version_info();
+    }
+
+    /// Get wasm-utxo version information from the PSBT's proprietary fields
+    ///
+    /// Returns an object with `version` and `gitHash` fields, or undefined
+    /// if no version info is present in the PSBT.
+    pub fn get_version_info(&self) -> JsValue {
+        match self.psbt.get_version_info() {
+            Some(info) => {
+                let obj = js_sys::Object::new();
+                js_sys::Reflect::set(&obj, &"version".into(), &info.version.into()).unwrap();
+                js_sys::Reflect::set(&obj, &"gitHash".into(), &info.git_hash.into()).unwrap();
+                obj.into()
+            }
+            None => JsValue::UNDEFINED,
+        }
+    }
+
     /// Parse transaction with wallet keys to identify wallet inputs/outputs
     pub fn parse_transaction_with_wallet_keys(
         &self,
