@@ -1236,6 +1236,23 @@ impl BitGoPsbt {
         self.psbt_mut().proprietary.insert(key, value);
     }
 
+    /// Get version information from the PSBT's proprietary fields
+    ///
+    /// Returns the wasm-utxo version and git hash that was embedded in the PSBT,
+    /// or None if no version info is present.
+    pub fn get_version_info(&self) -> Option<WasmUtxoVersionInfo> {
+        use miniscript::bitcoin::psbt::raw::ProprietaryKey;
+        let key = ProprietaryKey {
+            prefix: BITGO.to_vec(),
+            subtype: ProprietaryKeySubtype::WasmUtxoVersion as u8,
+            key: vec![],
+        };
+        self.psbt()
+            .proprietary
+            .get(&key)
+            .and_then(|value| WasmUtxoVersionInfo::from_bytes(value).ok())
+    }
+
     pub fn finalize_input<C: secp256k1::Verification>(
         &mut self,
         secp: &secp256k1::Secp256k1<C>,
