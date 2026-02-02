@@ -6,6 +6,12 @@ import { type ECPairArg, ECPair } from "../ecpair.js";
 import type { UtxolibName } from "../utxolibCompat.js";
 import type { CoinName } from "../coinName.js";
 import type { InputScriptType } from "./scriptType.js";
+import {
+  Transaction,
+  DashTransaction,
+  ZcashTransaction,
+  type ITransaction,
+} from "../transaction.js";
 
 export type { InputScriptType };
 
@@ -755,11 +761,19 @@ export class BitGoPsbt {
   /**
    * Extract the final transaction from a finalized PSBT
    *
-   * @returns The serialized transaction bytes
+   * @returns The extracted transaction instance
    * @throws Error if the PSBT is not fully finalized or extraction fails
    */
-  extractTransaction(): Uint8Array {
-    return this._wasm.extract_transaction();
+  extractTransaction(): ITransaction {
+    const networkType = this._wasm.get_network_type();
+
+    if (networkType === "dash") {
+      return DashTransaction.fromWasm(this._wasm.extract_dash_transaction());
+    }
+    if (networkType === "zcash") {
+      return ZcashTransaction.fromWasm(this._wasm.extract_zcash_transaction());
+    }
+    return Transaction.fromWasm(this._wasm.extract_bitcoin_transaction());
   }
 
   /**

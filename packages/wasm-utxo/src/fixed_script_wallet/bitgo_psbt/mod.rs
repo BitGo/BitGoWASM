@@ -1147,6 +1147,61 @@ impl BitGoPsbt {
         }
     }
 
+    /// Extract the Bitcoin transaction directly (for BitcoinLike networks only)
+    ///
+    /// # Returns
+    /// * `Ok(Transaction)` - The extracted transaction
+    /// * `Err(String)` - If not BitcoinLike or extraction fails
+    pub fn extract_bitcoin_tx(self) -> Result<miniscript::bitcoin::Transaction, String> {
+        match self {
+            BitGoPsbt::BitcoinLike(psbt, _) => psbt
+                .extract_tx()
+                .map_err(|e| format!("Failed to extract transaction: {}", e)),
+            _ => Err("extract_bitcoin_tx only supported for BitcoinLike networks".to_string()),
+        }
+    }
+
+    /// Extract the Dash transaction parts directly
+    ///
+    /// # Returns
+    /// * `Ok(DashTransactionParts)` - The extracted transaction parts
+    /// * `Err(String)` - If not Dash or extraction fails
+    pub fn extract_dash_tx(self) -> Result<crate::dash::transaction::DashTransactionParts, String> {
+        use miniscript::bitcoin::consensus::serialize;
+        match self {
+            BitGoPsbt::Dash(dash_psbt, _) => {
+                let tx = dash_psbt
+                    .psbt
+                    .extract_tx()
+                    .map_err(|e| format!("Failed to extract transaction: {}", e))?;
+                let tx_bytes = serialize(&tx);
+                crate::dash::transaction::decode_dash_transaction_parts(&tx_bytes)
+                    .map_err(|e| format!("Failed to decode Dash transaction: {}", e))
+            }
+            _ => Err("extract_dash_tx only supported for Dash networks".to_string()),
+        }
+    }
+
+    /// Extract the Zcash transaction parts directly
+    ///
+    /// # Returns
+    /// * `Ok(ZcashTransactionParts)` - The extracted transaction parts
+    /// * `Err(String)` - If not Zcash or extraction fails
+    pub fn extract_zcash_tx(
+        self,
+    ) -> Result<crate::zcash::transaction::ZcashTransactionParts, String> {
+        match self {
+            BitGoPsbt::Zcash(zcash_psbt, _) => {
+                let bytes = zcash_psbt
+                    .extract_tx()
+                    .map_err(|e| format!("Failed to extract transaction: {}", e))?;
+                crate::zcash::transaction::decode_zcash_transaction_parts(&bytes)
+                    .map_err(|e| format!("Failed to decode Zcash transaction: {}", e))
+            }
+            _ => Err("extract_zcash_tx only supported for Zcash networks".to_string()),
+        }
+    }
+
     /// Extract a half-signed transaction in legacy format for p2ms-based script types.
     ///
     /// This method extracts a transaction where each input has exactly one signature,

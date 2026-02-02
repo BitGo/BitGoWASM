@@ -345,6 +345,29 @@ describe("PSBT reconstruction", function () {
           "PSBTs should serialize to identical bytes",
         );
       });
+
+      it("should extract transaction with valid getId() after finalization", function () {
+        // Load fullsigned fixture for this network
+        const fullsignedFixture = loadPsbtFixture(networkName, "fullsigned");
+        const psbt = fixedScriptWallet.BitGoPsbt.fromBytes(
+          getPsbtBuffer(fullsignedFixture),
+          networkName,
+        );
+
+        // Finalize and extract
+        psbt.finalizeAllInputs();
+        const extractedTx = psbt.extractTransaction();
+
+        // Verify getId() returns a valid 64-character hex txid
+        const txid = extractedTx.getId();
+        assert.strictEqual(txid.length, 64, "txid should be 64 characters");
+        assert.match(txid, /^[0-9a-f]{64}$/, "txid should be lowercase hex");
+
+        // Verify unsignedTxid() also returns valid format
+        const unsignedTxid = psbt.unsignedTxid();
+        assert.strictEqual(unsignedTxid.length, 64, "unsignedTxid should be 64 characters");
+        assert.match(unsignedTxid, /^[0-9a-f]{64}$/, "unsignedTxid should be lowercase hex");
+      });
     });
   });
 });
