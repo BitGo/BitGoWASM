@@ -15,7 +15,7 @@ use crate::utxolib_compat::UtxolibNetwork;
 use crate::wasm::bip32::WasmBIP32;
 use crate::wasm::ecpair::WasmECPair;
 use crate::wasm::replay_protection::WasmReplayProtection;
-use crate::wasm::try_from_js_value::TryFromJsValue;
+use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use crate::wasm::wallet_keys::WasmRootWalletKeys;
 
@@ -243,6 +243,32 @@ impl FixedScriptWalletNamespace {
         let wallet_keys = crate::fixed_script_wallet::bitgo_psbt::to_wallet_keys(&psbt.psbt, xpubs)
             .map_err(|e| WasmUtxoError::new(&e))?;
         Ok(WasmRootWalletKeys::from_inner(wallet_keys))
+    }
+
+    /// Returns an object mapping BitGo proprietary key subtype names to their `u8` values.
+    /// Values are loaded directly from the Rust enum at build time — no duplication in TypeScript.
+    #[wasm_bindgen]
+    pub fn get_bitgo_key_subtypes() -> JsValue {
+        use crate::fixed_script_wallet::bitgo_psbt::ProprietaryKeySubtype as S;
+        let obj = js_sys::Object::new();
+        for (name, val) in [
+            ("ZecConsensusBranchId", S::ZecConsensusBranchId as u8),
+            (
+                "Musig2ParticipantPubKeys",
+                S::Musig2ParticipantPubKeys as u8,
+            ),
+            ("Musig2PubNonce", S::Musig2PubNonce as u8),
+            ("Musig2PartialSig", S::Musig2PartialSig as u8),
+            (
+                "PayGoAddressAttestationProof",
+                S::PayGoAddressAttestationProof as u8,
+            ),
+            ("Bip322Message", S::Bip322Message as u8),
+            ("WasmUtxoSignedWith", S::WasmUtxoSignedWith as u8),
+        ] {
+            js_sys::Reflect::set(&obj, &name.into(), &JsValue::from_f64(val as f64)).unwrap();
+        }
+        obj.into()
     }
 }
 
@@ -796,6 +822,100 @@ impl BitGoPsbt {
 
     pub fn get_global_xpubs(&self) -> JsValue {
         crate::wasm::psbt::get_global_xpubs_from_psbt(self.psbt.psbt())
+    }
+
+    /// Set an arbitrary KV pair on the PSBT global map.
+    /// `key` must be `{ type: "unknown", keyType: number, data?: Uint8Array }` or
+    /// `{ type: "proprietary", prefix: Uint8Array, subtype: number, key?: Uint8Array }` or
+    /// `{ type: "bitgo", subtype: number, key?: Uint8Array }`.
+    pub fn set_kv(&mut self, key: JsValue, value: Vec<u8>) -> Result<(), WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::set_global_unknown_kv(&mut self.psbt, k, value),
+            PsbtKvKey::Proprietary(k) => {
+                PsbtAccess::set_global_proprietary_kv(&mut self.psbt, k, value)
+            }
+        }
+        Ok(())
+    }
+
+    /// Get a KV value from the PSBT global map. Returns `undefined` if not present.
+    pub fn get_kv(&self, key: JsValue) -> Result<Option<Vec<u8>>, WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        Ok(match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::get_global_unknown_kv(&self.psbt, &k),
+            PsbtKvKey::Proprietary(k) => PsbtAccess::get_global_proprietary_kv(&self.psbt, &k),
+        })
+    }
+
+    /// Set an arbitrary KV pair on a specific PSBT input.
+    pub fn set_input_kv(
+        &mut self,
+        index: usize,
+        key: JsValue,
+        value: Vec<u8>,
+    ) -> Result<(), WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => {
+                PsbtAccess::set_input_unknown_kv(&mut self.psbt, index, k, value)
+            }
+            PsbtKvKey::Proprietary(k) => {
+                PsbtAccess::set_input_proprietary_kv(&mut self.psbt, index, k, value)
+            }
+        }
+        .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// Get a KV value from a specific PSBT input. Returns `undefined` if not present.
+    pub fn get_input_kv(
+        &self,
+        index: usize,
+        key: JsValue,
+    ) -> Result<Option<Vec<u8>>, WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::get_input_unknown_kv(&self.psbt, index, &k),
+            PsbtKvKey::Proprietary(k) => {
+                PsbtAccess::get_input_proprietary_kv(&self.psbt, index, &k)
+            }
+        }
+        .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// Set an arbitrary KV pair on a specific PSBT output.
+    pub fn set_output_kv(
+        &mut self,
+        index: usize,
+        key: JsValue,
+        value: Vec<u8>,
+    ) -> Result<(), WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => {
+                PsbtAccess::set_output_unknown_kv(&mut self.psbt, index, k, value)
+            }
+            PsbtKvKey::Proprietary(k) => {
+                PsbtAccess::set_output_proprietary_kv(&mut self.psbt, index, k, value)
+            }
+        }
+        .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// Get a KV value from a specific PSBT output. Returns `undefined` if not present.
+    pub fn get_output_kv(
+        &self,
+        index: usize,
+        key: JsValue,
+    ) -> Result<Option<Vec<u8>>, WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::get_output_unknown_kv(&self.psbt, index, &k),
+            PsbtKvKey::Proprietary(k) => {
+                PsbtAccess::get_output_proprietary_kv(&self.psbt, index, &k)
+            }
+        }
+        .map_err(|e| WasmUtxoError::new(&e))
     }
 
     /// Parse transaction with wallet keys to identify wallet inputs/outputs

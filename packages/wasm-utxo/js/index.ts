@@ -1,4 +1,5 @@
 import * as wasm from "./wasm/wasm_utxo.js";
+import { WasmUtxoNamespace } from "./wasm/wasm_utxo.js";
 
 // we need to access the wasm module here, otherwise webpack gets all weird
 // and forgets to include it in the bundle
@@ -20,6 +21,11 @@ export * as ecpair from "./ecpair.js";
 export { ECPair } from "./ecpair.js";
 export { BIP32 } from "./bip32.js";
 export { Dimensions } from "./fixedScriptWallet/Dimensions.js";
+
+export type WasmUtxoVersionInfo = { version: string; gitHash: string };
+export function getWasmUtxoVersion(): WasmUtxoVersionInfo {
+  return WasmUtxoNamespace.get_wasm_utxo_version() as WasmUtxoVersionInfo;
+}
 
 export { type CoinName, getMainnet, isMainnet, isTestnet, isCoinName } from "./coinName.js";
 export type { Triple } from "./triple.js";

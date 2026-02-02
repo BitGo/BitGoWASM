@@ -777,6 +777,87 @@ impl WrapPsbt {
         // No matching signature found
         Ok(false)
     }
+
+    pub fn set_kv(&mut self, key: JsValue, value: Vec<u8>) -> Result<(), WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::set_global_unknown_kv(self, k, value),
+            PsbtKvKey::Proprietary(k) => PsbtAccess::set_global_proprietary_kv(self, k, value),
+        }
+        Ok(())
+    }
+
+    pub fn get_kv(&self, key: JsValue) -> Result<Option<Vec<u8>>, WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
+        Ok(match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::get_global_unknown_kv(self, &k),
+            PsbtKvKey::Proprietary(k) => PsbtAccess::get_global_proprietary_kv(self, &k),
+        })
+    }
+
+    pub fn set_input_kv(
+        &mut self,
+        index: usize,
+        key: JsValue,
+        value: Vec<u8>,
+    ) -> Result<(), WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::set_input_unknown_kv(self, index, k, value),
+            PsbtKvKey::Proprietary(k) => {
+                PsbtAccess::set_input_proprietary_kv(self, index, k, value)
+            }
+        }
+        .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    pub fn get_input_kv(
+        &self,
+        index: usize,
+        key: JsValue,
+    ) -> Result<Option<Vec<u8>>, WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::get_input_unknown_kv(self, index, &k),
+            PsbtKvKey::Proprietary(k) => PsbtAccess::get_input_proprietary_kv(self, index, &k),
+        }
+        .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    pub fn set_output_kv(
+        &mut self,
+        index: usize,
+        key: JsValue,
+        value: Vec<u8>,
+    ) -> Result<(), WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::set_output_unknown_kv(self, index, k, value),
+            PsbtKvKey::Proprietary(k) => {
+                PsbtAccess::set_output_proprietary_kv(self, index, k, value)
+            }
+        }
+        .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    pub fn get_output_kv(
+        &self,
+        index: usize,
+        key: JsValue,
+    ) -> Result<Option<Vec<u8>>, WasmUtxoError> {
+        use crate::psbt_ops::PsbtAccess;
+        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::get_output_unknown_kv(self, index, &k),
+            PsbtKvKey::Proprietary(k) => PsbtAccess::get_output_proprietary_kv(self, index, &k),
+        }
+        .map_err(|e| WasmUtxoError::new(&e))
+    }
 }
 
 impl crate::psbt_ops::PsbtAccess for WrapPsbt {

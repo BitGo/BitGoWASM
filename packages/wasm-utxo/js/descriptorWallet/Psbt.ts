@@ -8,6 +8,7 @@ import {
   type PsbtOutputDataWithAddress,
 } from "../wasm/wasm_utxo.js";
 import type { IPsbt } from "../psbt.js";
+import type { PsbtKvKey } from "../fixedScriptWallet/BitGoKeySubtype.js";
 import type { CoinName } from "../coinName.js";
 import type { BIP32 } from "../bip32.js";
 import { Transaction } from "../transaction.js";
@@ -127,6 +128,30 @@ export class Psbt implements IPsbt {
 
   removeOutput(index: number): void {
     this._wasm.remove_output(index);
+  }
+
+  setKV(key: PsbtKvKey, value: Uint8Array): void {
+    this._wasm.set_kv(key, value);
+  }
+
+  getKV(key: PsbtKvKey): Uint8Array | undefined {
+    return this._wasm.get_kv(key) ?? undefined;
+  }
+
+  setInputKV(index: number, key: PsbtKvKey, value: Uint8Array): void {
+    this._wasm.set_input_kv(index, key, value);
+  }
+
+  getInputKV(index: number, key: PsbtKvKey): Uint8Array | undefined {
+    return this._wasm.get_input_kv(index, key) ?? undefined;
+  }
+
+  setOutputKV(index: number, key: PsbtKvKey, value: Uint8Array): void {
+    this._wasm.set_output_kv(index, key, value);
+  }
+
+  getOutputKV(index: number, key: PsbtKvKey): Uint8Array | undefined {
+    return this._wasm.get_output_kv(index, key) ?? undefined;
   }
 
   // -- Descriptor updates --

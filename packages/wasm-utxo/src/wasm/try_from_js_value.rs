@@ -2,6 +2,7 @@ use std::ops::Deref;
 
 use crate::address::utxolib_compat::{CashAddr, UtxolibNetwork};
 use crate::error::WasmUtxoError;
+use miniscript::bitcoin::psbt::raw;
 use wasm_bindgen::JsValue;
 
 // =============================================================================
@@ -172,6 +173,40 @@ impl TryFromJsValue for crate::inscriptions::TapLeafScript {
             script: get_field(value, "script")?,
             control_block: get_field(value, "controlBlock")?,
         })
+    }
+}
+
+// =============================================================================
+// PsbtKvKey: composable PSBT key for set_kv / get_kv WASM methods
+// =============================================================================
+
+/// A PSBT key that can represent either an unknown or proprietary record.
+/// The `bitgo` variant is a convenience alias for proprietary with prefix `b"BITGO"`.
+pub(crate) enum PsbtKvKey {
+    Unknown(raw::Key),
+    Proprietary(raw::ProprietaryKey),
+}
+
+impl TryFromJsValue for PsbtKvKey {
+    fn try_from_js_value(value: &JsValue) -> Result<Self, WasmUtxoError> {
+        let typ: String = get_field(value, "type")?;
+        match typ.as_str() {
+            "unknown" => Ok(PsbtKvKey::Unknown(raw::Key {
+                type_value: get_field(value, "keyType")?,
+                key: get_field::<Option<Vec<u8>>>(value, "data")?.unwrap_or_default(),
+            })),
+            "proprietary" => Ok(PsbtKvKey::Proprietary(raw::ProprietaryKey {
+                prefix: get_field(value, "prefix")?,
+                subtype: get_field(value, "subtype")?,
+                key: get_field::<Option<Vec<u8>>>(value, "key")?.unwrap_or_default(),
+            })),
+            "bitgo" => Ok(PsbtKvKey::Proprietary(raw::ProprietaryKey {
+                prefix: b"BITGO".to_vec(),
+                subtype: get_field(value, "subtype")?,
+                key: get_field::<Option<Vec<u8>>>(value, "key")?.unwrap_or_default(),
+            })),
+            _ => Err(WasmUtxoError::new(&format!("Unknown PSBT key type: {typ}"))),
+        }
     }
 }
 

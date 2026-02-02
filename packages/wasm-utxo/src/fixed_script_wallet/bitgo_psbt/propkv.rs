@@ -42,7 +42,7 @@ pub enum ProprietaryKeySubtype {
     Musig2PartialSig = 0x03,
     PayGoAddressAttestationProof = 0x04,
     Bip322Message = 0x05,
-    WasmUtxoVersion = 0x06,
+    WasmUtxoSignedWith = 0x06,
 }
 
 impl ProprietaryKeySubtype {
@@ -54,7 +54,7 @@ impl ProprietaryKeySubtype {
             0x03 => Some(ProprietaryKeySubtype::Musig2PartialSig),
             0x04 => Some(ProprietaryKeySubtype::PayGoAddressAttestationProof),
             0x05 => Some(ProprietaryKeySubtype::Bip322Message),
-            0x06 => Some(ProprietaryKeySubtype::WasmUtxoVersion),
+            0x06 => Some(ProprietaryKeySubtype::WasmUtxoSignedWith),
             _ => None,
         }
     }
@@ -187,25 +187,14 @@ impl WasmUtxoVersionInfo {
         Ok(Self { version, git_hash })
     }
 
-    /// Convert to proprietary key-value pair for PSBT global fields
-    pub fn to_proprietary_kv(&self) -> (ProprietaryKey, Vec<u8>) {
-        let key = ProprietaryKey {
-            prefix: BITGO.to_vec(),
-            subtype: ProprietaryKeySubtype::WasmUtxoVersion as u8,
-            key: vec![], // Empty key data - only one version per PSBT
-        };
-        (key, self.to_bytes())
-    }
-
-    /// Create from proprietary key-value pair
-    pub fn from_proprietary_kv(key: &ProprietaryKey, value: &[u8]) -> Result<Self, String> {
-        if key.prefix.as_slice() != BITGO {
-            return Err("Not a BITGO proprietary key".to_string());
-        }
-        if key.subtype != ProprietaryKeySubtype::WasmUtxoVersion as u8 {
-            return Err("Not a WasmUtxoVersion proprietary key".to_string());
-        }
-        Self::from_bytes(value)
+    /// Build a (ProprietaryKey, value) pair for per-input "signed-with" storage
+    pub fn build_key_value() -> (ProprietaryKey, Vec<u8>) {
+        BitGoKeyValue::new(
+            ProprietaryKeySubtype::WasmUtxoSignedWith,
+            vec![],
+            WasmUtxoVersionInfo::from_build_info().to_bytes(),
+        )
+        .to_key_value()
     }
 }
 
@@ -333,17 +322,15 @@ mod tests {
     }
 
     #[test]
-    fn test_version_info_proprietary_kv() {
-        let version_info =
-            WasmUtxoVersionInfo::new("0.0.2".to_string(), "abc123def456".to_string());
-
-        let (key, value) = version_info.to_proprietary_kv();
+    fn test_version_info_build_key_value() {
+        let (key, value) = WasmUtxoVersionInfo::build_key_value();
         assert_eq!(key.prefix, b"BITGO");
-        assert_eq!(key.subtype, ProprietaryKeySubtype::WasmUtxoVersion as u8);
+        assert_eq!(key.subtype, ProprietaryKeySubtype::WasmUtxoSignedWith as u8);
         let empty_vec: Vec<u8> = vec![];
         assert_eq!(key.key, empty_vec);
 
-        let deserialized = WasmUtxoVersionInfo::from_proprietary_kv(&key, &value).unwrap();
-        assert_eq!(deserialized, version_info);
+        // The value should round-trip through from_bytes
+        let info = WasmUtxoVersionInfo::from_bytes(&value).unwrap();
+        assert_eq!(info, WasmUtxoVersionInfo::from_build_info());
     }
 }

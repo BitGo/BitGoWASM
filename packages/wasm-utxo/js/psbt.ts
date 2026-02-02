@@ -1,6 +1,7 @@
 import type { PsbtInputData, PsbtOutputData, PsbtOutputDataWithAddress } from "./wasm/wasm_utxo.js";
 import type { BIP32 } from "./bip32.js";
 import type { ITransactionCommon } from "./transaction.js";
+import type { PsbtKvKey } from "./fixedScriptWallet/BitGoKeySubtype.js";
 
 /** Common interface for PSBT types */
 export interface IPsbt extends ITransactionCommon<PsbtInputData, PsbtOutputData> {
@@ -17,6 +18,12 @@ export interface IPsbt extends ITransactionCommon<PsbtInputData, PsbtOutputData>
   addOutputAtIndex(index: number, script: Uint8Array, value: bigint): number;
   removeInput(index: number): void;
   removeOutput(index: number): void;
+  setKV(key: PsbtKvKey, value: Uint8Array): void;
+  getKV(key: PsbtKvKey): Uint8Array | undefined;
+  setInputKV(index: number, key: PsbtKvKey, value: Uint8Array): void;
+  getInputKV(index: number, key: PsbtKvKey): Uint8Array | undefined;
+  setOutputKV(index: number, key: PsbtKvKey, value: Uint8Array): void;
+  getOutputKV(index: number, key: PsbtKvKey): Uint8Array | undefined;
 }
 
 /** Extended PSBT with address resolution (no coin parameter needed) */
