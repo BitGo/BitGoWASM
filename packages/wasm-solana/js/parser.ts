@@ -5,6 +5,7 @@
  * matching BitGoJS's TxData format.
  *
  * All monetary amounts (amount, fee, lamports, poolTokens) are returned as bigint.
+ * Accepts both raw bytes and Transaction objects for convenience.
  */
 
 import { ParserNamespace } from "./wasm/wasm_solana.js";
