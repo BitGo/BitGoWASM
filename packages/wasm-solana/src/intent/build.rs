@@ -1,0 +1,829 @@
+//! Intent-based transaction building implementation.
+//!
+//! Builds transactions directly from BitGo intents without an intermediate
+//! instruction abstraction.
+
+use crate::error::WasmSolanaError;
+use crate::keypair::{Keypair, KeypairExt};
+
+use super::types::*;
+
+// Solana SDK types
+use solana_sdk::hash::Hash;
+use solana_sdk::instruction::Instruction;
+use solana_sdk::message::Message;
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::transaction::Transaction;
+
+// Instruction builders from existing crates
+use solana_stake_interface::instruction as stake_ix;
+use solana_stake_interface::state::{Authorized, Lockup};
+use solana_system_interface::instruction as system_ix;
+
+// Constants
+const STAKE_ACCOUNT_SPACE: u64 = 200;
+const STAKE_ACCOUNT_RENT: u64 = 2282880; // ~0.00228288 SOL
+
+/// Build a transaction from a BitGo intent.
+///
+/// # Arguments
+/// * `intent_json` - The full intent as JSON (serde_json::Value)
+/// * `params` - Build parameters (feePayer, nonce)
+///
+/// # Returns
+/// * `IntentBuildResult` with transaction and generated keypairs
+pub fn build_from_intent(
+    intent_json: &serde_json::Value,
+    params: &BuildParams,
+) -> Result<IntentBuildResult, WasmSolanaError> {
+    // Extract intent type
+    let intent_type = intent_json
+        .get("intentType")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| WasmSolanaError::new("Missing intentType in intent"))?;
+
+    // Build based on intent type
+    let (instructions, generated_keypairs) = match intent_type {
+        "payment" | "goUnstake" => build_payment(intent_json, params)?,
+        "stake" => build_stake(intent_json, params)?,
+        "unstake" => build_unstake(intent_json, params)?,
+        "claim" => build_claim(intent_json, params)?,
+        "deactivate" => build_deactivate(intent_json, params)?,
+        "delegate" => build_delegate(intent_json, params)?,
+        "enableToken" => build_enable_token(intent_json, params)?,
+        "closeAssociatedTokenAccount" => build_close_ata(intent_json, params)?,
+        "consolidate" => build_consolidate(intent_json, params)?,
+        _ => {
+            return Err(WasmSolanaError::new(&format!(
+                "Unsupported intent type: {}",
+                intent_type
+            )))
+        }
+    };
+
+    // Add memo if present
+    let mut all_instructions = instructions;
+    if let Some(memo) = intent_json.get("memo").and_then(|v| v.as_str()) {
+        if !memo.is_empty() {
+            all_instructions.push(build_memo(memo));
+        }
+    }
+
+    // Build the transaction
+    let transaction = build_transaction_from_instructions(all_instructions, params)?;
+
+    Ok(IntentBuildResult {
+        transaction,
+        generated_keypairs,
+    })
+}
+
+/// Build a Transaction from instructions and params.
+fn build_transaction_from_instructions(
+    mut instructions: Vec<Instruction>,
+    params: &BuildParams,
+) -> Result<Transaction, WasmSolanaError> {
+    let fee_payer: Pubkey = params
+        .fee_payer
+        .parse()
+        .map_err(|_| WasmSolanaError::new(&format!("Invalid feePayer: {}", params.fee_payer)))?;
+
+    // Handle nonce
+    let blockhash_str = match &params.nonce {
+        Nonce::Blockhash { value } => value.clone(),
+        Nonce::Durable {
+            address,
+            authority,
+            value,
+        } => {
+            // Prepend nonce advance instruction
+            let nonce_pubkey: Pubkey = address.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid nonce.address: {}", address))
+            })?;
+            let authority_pubkey: Pubkey = authority.parse().map_err(|_| {
+                WasmSolanaError::new(&format!("Invalid nonce.authority: {}", authority))
+            })?;
+            instructions.insert(
+                0,
+                system_ix::advance_nonce_account(&nonce_pubkey, &authority_pubkey),
+            );
+            value.clone()
+        }
+    };
+
+    let blockhash: Hash = blockhash_str
+        .parse()
+        .map_err(|_| WasmSolanaError::new(&format!("Invalid blockhash: {}", blockhash_str)))?;
+
+    // Create message and transaction
+    let message = Message::new_with_blockhash(&instructions, Some(&fee_payer), &blockhash);
+    let tx = Transaction::new_unsigned(message);
+
+    Ok(tx)
+}
+
+// =============================================================================
+// Intent Builders
+// =============================================================================
+
+fn build_payment(
+    intent_json: &serde_json::Value,
+    params: &BuildParams,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    let intent: PaymentIntent = serde_json::from_value(intent_json.clone())
+        .map_err(|e| WasmSolanaError::new(&format!("Failed to parse payment intent: {}", e)))?;
+
+    let fee_payer: Pubkey = params
+        .fee_payer
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid feePayer"))?;
+
+    let mut instructions = Vec::new();
+
+    for recipient in intent.recipients {
+        let address = recipient
+            .address
+            .as_ref()
+            .map(|a| &a.address)
+            .ok_or_else(|| WasmSolanaError::new("Recipient missing address"))?;
+        let amount = recipient
+            .amount
+            .as_ref()
+            .map(|a| &a.value)
+            .ok_or_else(|| WasmSolanaError::new("Recipient missing amount"))?;
+
+        let to_pubkey: Pubkey = address.parse().map_err(|_| {
+            WasmSolanaError::new(&format!("Invalid recipient address: {}", address))
+        })?;
+        let lamports: u64 = *amount;
+
+        instructions.push(system_ix::transfer(&fee_payer, &to_pubkey, lamports));
+    }
+
+    Ok((instructions, vec![]))
+}
+
+fn build_stake(
+    intent_json: &serde_json::Value,
+    params: &BuildParams,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    let intent: StakeIntent = serde_json::from_value(intent_json.clone())
+        .map_err(|e| WasmSolanaError::new(&format!("Failed to parse stake intent: {}", e)))?;
+
+    let fee_payer: Pubkey = params
+        .fee_payer
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid feePayer"))?;
+
+    let amount: u64 = intent.amount.as_ref().map(|a| a.value).unwrap_or(0);
+
+    // Check if Jito staking
+    if intent.staking_type.as_deref() == Some("JITO") {
+        if let Some(config) = &intent.stake_pool_config {
+            return build_jito_stake(config, &fee_payer, amount);
+        }
+    }
+
+    // Native staking: generate stake account keypair
+    let stake_keypair = Keypair::new();
+    let stake_address = stake_keypair.address();
+    let stake_pubkey: Pubkey = stake_address
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Failed to generate stake address"))?;
+
+    let validator_pubkey: Pubkey = intent
+        .validator_address
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid validatorAddress"))?;
+
+    let instructions = vec![
+        // Create account
+        system_ix::create_account(
+            &fee_payer,
+            &stake_pubkey,
+            amount + STAKE_ACCOUNT_RENT,
+            STAKE_ACCOUNT_SPACE,
+            &solana_stake_interface::program::ID,
+        ),
+        // Initialize stake
+        stake_ix::initialize(
+            &stake_pubkey,
+            &Authorized {
+                staker: fee_payer,
+                withdrawer: fee_payer,
+            },
+            &Lockup::default(),
+        ),
+        // Delegate
+        stake_ix::delegate_stake(&stake_pubkey, &fee_payer, &validator_pubkey),
+    ];
+
+    let generated = vec![GeneratedKeypair {
+        purpose: "stakeAccount".to_string(),
+        address: stake_address,
+        secret_key: solana_sdk::bs58::encode(stake_keypair.secret_key_bytes()).into_string(),
+    }];
+
+    Ok((instructions, generated))
+}
+
+fn build_jito_stake(
+    config: &StakePoolConfig,
+    fee_payer: &Pubkey,
+    amount: u64,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    use borsh::BorshSerialize;
+    use spl_stake_pool::instruction::StakePoolInstruction;
+
+    let stake_pool: Pubkey = config.stake_pool_address.parse().map_err(|_| {
+        WasmSolanaError::new(&format!(
+            "Invalid stakePoolAddress: {}",
+            config.stake_pool_address
+        ))
+    })?;
+    let withdraw_authority: Pubkey = config.withdraw_authority.parse().map_err(|_| {
+        WasmSolanaError::new(&format!(
+            "Invalid withdrawAuthority: {}",
+            config.withdraw_authority
+        ))
+    })?;
+    let reserve_stake: Pubkey = config.reserve_stake.parse().map_err(|_| {
+        WasmSolanaError::new(&format!("Invalid reserveStake: {}", config.reserve_stake))
+    })?;
+    let destination_pool_account: Pubkey =
+        config.destination_pool_account.parse().map_err(|_| {
+            WasmSolanaError::new(&format!(
+                "Invalid destinationPoolAccount: {}",
+                config.destination_pool_account
+            ))
+        })?;
+    let manager_fee_account: Pubkey = config.manager_fee_account.parse().map_err(|_| {
+        WasmSolanaError::new(&format!(
+            "Invalid managerFeeAccount: {}",
+            config.manager_fee_account
+        ))
+    })?;
+    let referral_pool_account: Pubkey = config
+        .referral_pool_account
+        .as_ref()
+        .unwrap_or(&config.destination_pool_account)
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid referralPoolAccount"))?;
+    let pool_mint: Pubkey = config
+        .pool_mint
+        .parse()
+        .map_err(|_| WasmSolanaError::new(&format!("Invalid poolMint: {}", config.pool_mint)))?;
+
+    // Build instruction data
+    let instruction_data = StakePoolInstruction::DepositSol(amount);
+    let mut data = Vec::new();
+    instruction_data.serialize(&mut data).unwrap();
+
+    let stake_pool_program: Pubkey = "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"
+        .parse()
+        .unwrap();
+    let system_program: Pubkey = "11111111111111111111111111111111".parse().unwrap();
+    let token_program: Pubkey = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        .parse()
+        .unwrap();
+
+    use solana_sdk::instruction::AccountMeta;
+    let instruction = Instruction::new_with_bytes(
+        stake_pool_program,
+        &data,
+        vec![
+            AccountMeta::new(stake_pool, false),
+            AccountMeta::new_readonly(withdraw_authority, false),
+            AccountMeta::new(reserve_stake, false),
+            AccountMeta::new(*fee_payer, true),
+            AccountMeta::new(destination_pool_account, false),
+            AccountMeta::new(manager_fee_account, false),
+            AccountMeta::new(referral_pool_account, false),
+            AccountMeta::new(pool_mint, false),
+            AccountMeta::new_readonly(system_program, false),
+            AccountMeta::new_readonly(token_program, false),
+        ],
+    );
+
+    Ok((vec![instruction], vec![]))
+}
+
+fn build_unstake(
+    intent_json: &serde_json::Value,
+    params: &BuildParams,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    let intent: UnstakeIntent = serde_json::from_value(intent_json.clone())
+        .map_err(|e| WasmSolanaError::new(&format!("Failed to parse unstake intent: {}", e)))?;
+
+    let fee_payer: Pubkey = params
+        .fee_payer
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid feePayer"))?;
+
+    let stake_pubkey: Pubkey = intent
+        .staking_address
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid stakingAddress"))?;
+
+    // Check if Jito unstaking
+    if intent.staking_type.as_deref() == Some("JITO") {
+        if let Some(config) = &intent.stake_pool_config {
+            let amount: u64 = intent.amount.as_ref().map(|a| a.value).unwrap_or(0);
+            return build_jito_unstake(config, &fee_payer, &intent.validator_address, amount);
+        }
+    }
+
+    // Check if partial unstake
+    let amount = intent.amount.as_ref().map(|a| a.value);
+    let remaining = intent.remaining_staking_amount.as_ref().map(|a| a.value);
+
+    if let (Some(amt_val), Some(rem_val)) = (amount, remaining) {
+        if amt_val > 0 && rem_val > 0 {
+            return build_partial_unstake(&stake_pubkey, &fee_payer, amt_val);
+        }
+    }
+
+    // Simple deactivate
+    let instructions = vec![stake_ix::deactivate_stake(&stake_pubkey, &fee_payer)];
+
+    Ok((instructions, vec![]))
+}
+
+fn build_partial_unstake(
+    stake_pubkey: &Pubkey,
+    fee_payer: &Pubkey,
+    amount: u64,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    use solana_stake_interface::instruction::StakeInstruction;
+
+    // Generate new stake account for the split
+    let unstake_keypair = Keypair::new();
+    let unstake_address = unstake_keypair.address();
+    let unstake_pubkey: Pubkey = unstake_address
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Failed to generate unstake address"))?;
+
+    let instructions = vec![
+        // Transfer rent to new account
+        system_ix::transfer(fee_payer, &unstake_pubkey, STAKE_ACCOUNT_RENT),
+        // Allocate space
+        system_ix::allocate(&unstake_pubkey, STAKE_ACCOUNT_SPACE),
+        // Assign to stake program
+        system_ix::assign(&unstake_pubkey, &solana_stake_interface::program::ID),
+        // Split stake
+        Instruction::new_with_bincode(
+            solana_stake_interface::program::ID,
+            &StakeInstruction::Split(amount),
+            vec![
+                solana_sdk::instruction::AccountMeta::new(*stake_pubkey, false),
+                solana_sdk::instruction::AccountMeta::new(unstake_pubkey, false),
+                solana_sdk::instruction::AccountMeta::new_readonly(*fee_payer, true),
+            ],
+        ),
+        // Deactivate split portion
+        stake_ix::deactivate_stake(&unstake_pubkey, fee_payer),
+    ];
+
+    let generated = vec![GeneratedKeypair {
+        purpose: "unstakeAccount".to_string(),
+        address: unstake_address,
+        secret_key: solana_sdk::bs58::encode(unstake_keypair.secret_key_bytes()).into_string(),
+    }];
+
+    Ok((instructions, generated))
+}
+
+fn build_jito_unstake(
+    config: &StakePoolConfig,
+    fee_payer: &Pubkey,
+    validator_address: &Option<String>,
+    amount: u64,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    use borsh::BorshSerialize;
+    use spl_stake_pool::instruction::StakePoolInstruction;
+
+    // Generate destination stake account
+    let unstake_keypair = Keypair::new();
+    let unstake_address = unstake_keypair.address();
+    let unstake_pubkey: Pubkey = unstake_address.parse().unwrap();
+
+    // Generate transfer authority
+    let transfer_authority_keypair = Keypair::new();
+    let transfer_authority_address = transfer_authority_keypair.address();
+    let transfer_authority_pubkey: Pubkey = transfer_authority_address.parse().unwrap();
+
+    // Parse config addresses
+    let stake_pool: Pubkey = config.stake_pool_address.parse().map_err(|_| {
+        WasmSolanaError::new(&format!(
+            "Invalid stakePoolAddress: {}",
+            config.stake_pool_address
+        ))
+    })?;
+    let validator_list: Pubkey = config
+        .validator_list
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing validatorList"))?
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid validatorList"))?;
+    let withdraw_authority: Pubkey = config
+        .withdraw_authority
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid withdrawAuthority"))?;
+    let validator_stake: Pubkey = validator_address
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing validatorAddress"))?
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid validatorAddress"))?;
+    let source_pool_account: Pubkey = config
+        .source_pool_account
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing sourcePoolAccount"))?
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid sourcePoolAccount"))?;
+    let manager_fee_account: Pubkey = config
+        .manager_fee_account
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid managerFeeAccount"))?;
+    let pool_mint: Pubkey = config
+        .pool_mint
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid poolMint"))?;
+
+    // Build instruction data
+    let instruction_data = StakePoolInstruction::WithdrawStake(amount);
+    let mut data = Vec::new();
+    instruction_data.serialize(&mut data).unwrap();
+
+    let stake_pool_program: Pubkey = "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"
+        .parse()
+        .unwrap();
+    let clock_sysvar: Pubkey = solana_sdk::sysvar::clock::ID;
+    let token_program: Pubkey = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        .parse()
+        .unwrap();
+
+    use solana_sdk::instruction::AccountMeta;
+    let instruction = Instruction::new_with_bytes(
+        stake_pool_program,
+        &data,
+        vec![
+            AccountMeta::new(stake_pool, false),
+            AccountMeta::new(validator_list, false),
+            AccountMeta::new_readonly(withdraw_authority, false),
+            AccountMeta::new(validator_stake, false),
+            AccountMeta::new(unstake_pubkey, false),
+            AccountMeta::new_readonly(*fee_payer, false),
+            AccountMeta::new_readonly(transfer_authority_pubkey, true),
+            AccountMeta::new(source_pool_account, false),
+            AccountMeta::new(manager_fee_account, false),
+            AccountMeta::new(pool_mint, false),
+            AccountMeta::new_readonly(clock_sysvar, false),
+            AccountMeta::new_readonly(token_program, false),
+            AccountMeta::new_readonly(solana_stake_interface::program::ID, false),
+        ],
+    );
+
+    let generated = vec![
+        GeneratedKeypair {
+            purpose: "unstakeAccount".to_string(),
+            address: unstake_address,
+            secret_key: solana_sdk::bs58::encode(unstake_keypair.secret_key_bytes()).into_string(),
+        },
+        GeneratedKeypair {
+            purpose: "transferAuthority".to_string(),
+            address: transfer_authority_address,
+            secret_key: solana_sdk::bs58::encode(transfer_authority_keypair.secret_key_bytes())
+                .into_string(),
+        },
+    ];
+
+    Ok((vec![instruction], generated))
+}
+
+fn build_claim(
+    intent_json: &serde_json::Value,
+    params: &BuildParams,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    let intent: ClaimIntent = serde_json::from_value(intent_json.clone())
+        .map_err(|e| WasmSolanaError::new(&format!("Failed to parse claim intent: {}", e)))?;
+
+    let fee_payer: Pubkey = params
+        .fee_payer
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid feePayer"))?;
+
+    let stake_pubkey: Pubkey = intent
+        .staking_address
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid stakingAddress"))?;
+
+    let amount: u64 = intent.amount.as_ref().map(|a| a.value).unwrap_or(0);
+
+    let instructions = vec![stake_ix::withdraw(
+        &stake_pubkey,
+        &fee_payer,
+        &fee_payer,
+        amount,
+        None,
+    )];
+
+    Ok((instructions, vec![]))
+}
+
+fn build_deactivate(
+    intent_json: &serde_json::Value,
+    params: &BuildParams,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    let intent: DeactivateIntent = serde_json::from_value(intent_json.clone())
+        .map_err(|e| WasmSolanaError::new(&format!("Failed to parse deactivate intent: {}", e)))?;
+
+    let fee_payer: Pubkey = params
+        .fee_payer
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid feePayer"))?;
+
+    // Get addresses - either single or multiple
+    let addresses: Vec<String> = intent
+        .staking_addresses
+        .unwrap_or_else(|| intent.staking_address.into_iter().collect());
+
+    let mut instructions = Vec::new();
+    for addr in addresses {
+        let stake_pubkey: Pubkey = addr
+            .parse()
+            .map_err(|_| WasmSolanaError::new(&format!("Invalid stakingAddress: {}", addr)))?;
+        instructions.push(stake_ix::deactivate_stake(&stake_pubkey, &fee_payer));
+    }
+
+    Ok((instructions, vec![]))
+}
+
+fn build_delegate(
+    intent_json: &serde_json::Value,
+    params: &BuildParams,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    let intent: DelegateIntent = serde_json::from_value(intent_json.clone())
+        .map_err(|e| WasmSolanaError::new(&format!("Failed to parse delegate intent: {}", e)))?;
+
+    let fee_payer: Pubkey = params
+        .fee_payer
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid feePayer"))?;
+
+    let validator_pubkey: Pubkey = intent
+        .validator_address
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid validatorAddress"))?;
+
+    // Get addresses - either single or multiple
+    let addresses: Vec<String> = intent
+        .staking_addresses
+        .unwrap_or_else(|| intent.staking_address.into_iter().collect());
+
+    let mut instructions = Vec::new();
+    for addr in addresses {
+        let stake_pubkey: Pubkey = addr
+            .parse()
+            .map_err(|_| WasmSolanaError::new(&format!("Invalid stakingAddress: {}", addr)))?;
+        instructions.push(stake_ix::delegate_stake(
+            &stake_pubkey,
+            &fee_payer,
+            &validator_pubkey,
+        ));
+    }
+
+    Ok((instructions, vec![]))
+}
+
+fn build_enable_token(
+    intent_json: &serde_json::Value,
+    params: &BuildParams,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    let intent: EnableTokenIntent = serde_json::from_value(intent_json.clone())
+        .map_err(|e| WasmSolanaError::new(&format!("Failed to parse enableToken intent: {}", e)))?;
+
+    let fee_payer: Pubkey = params
+        .fee_payer
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid feePayer"))?;
+
+    let owner: Pubkey = intent
+        .recipient_address
+        .as_ref()
+        .map(|a| a.parse())
+        .transpose()
+        .map_err(|_| WasmSolanaError::new("Invalid recipientAddress"))?
+        .unwrap_or(fee_payer);
+
+    let mint: Pubkey = intent
+        .token_address
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing tokenAddress"))?
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid tokenAddress"))?;
+
+    let token_program: Pubkey = intent
+        .token_program_id
+        .as_ref()
+        .map(|p| p.parse())
+        .transpose()
+        .map_err(|_| WasmSolanaError::new("Invalid tokenProgramId"))?
+        .unwrap_or_else(|| {
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                .parse()
+                .unwrap()
+        });
+
+    // Derive ATA address
+    let ata_program: Pubkey = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        .parse()
+        .unwrap();
+    let seeds = &[owner.as_ref(), token_program.as_ref(), mint.as_ref()];
+    let (ata, _bump) = Pubkey::find_program_address(seeds, &ata_program);
+
+    let system_program: Pubkey = "11111111111111111111111111111111".parse().unwrap();
+
+    use solana_sdk::instruction::AccountMeta;
+    let instruction = Instruction::new_with_bytes(
+        ata_program,
+        &[],
+        vec![
+            AccountMeta::new(fee_payer, true),
+            AccountMeta::new(ata, false),
+            AccountMeta::new_readonly(owner, false),
+            AccountMeta::new_readonly(mint, false),
+            AccountMeta::new_readonly(system_program, false),
+            AccountMeta::new_readonly(token_program, false),
+        ],
+    );
+
+    Ok((vec![instruction], vec![]))
+}
+
+fn build_close_ata(
+    intent_json: &serde_json::Value,
+    params: &BuildParams,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    let intent: CloseAtaIntent = serde_json::from_value(intent_json.clone()).map_err(|e| {
+        WasmSolanaError::new(&format!(
+            "Failed to parse closeAssociatedTokenAccount intent: {}",
+            e
+        ))
+    })?;
+
+    let fee_payer: Pubkey = params
+        .fee_payer
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid feePayer"))?;
+
+    let account: Pubkey = intent
+        .token_account_address
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing tokenAccountAddress"))?
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid tokenAccountAddress"))?;
+
+    let token_program: Pubkey = intent
+        .token_program_id
+        .as_ref()
+        .map(|p| p.parse())
+        .transpose()
+        .map_err(|_| WasmSolanaError::new("Invalid tokenProgramId"))?
+        .unwrap_or_else(|| {
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                .parse()
+                .unwrap()
+        });
+
+    // CloseAccount instruction
+    use spl_token::instruction::TokenInstruction;
+    let data = TokenInstruction::CloseAccount.pack();
+
+    use solana_sdk::instruction::AccountMeta;
+    let instruction = Instruction::new_with_bytes(
+        token_program,
+        &data,
+        vec![
+            AccountMeta::new(account, false),
+            AccountMeta::new(fee_payer, false),
+            AccountMeta::new_readonly(fee_payer, true),
+        ],
+    );
+
+    Ok((vec![instruction], vec![]))
+}
+
+fn build_consolidate(
+    intent_json: &serde_json::Value,
+    _params: &BuildParams,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    let intent: ConsolidateIntent = serde_json::from_value(intent_json.clone())
+        .map_err(|e| WasmSolanaError::new(&format!("Failed to parse consolidate intent: {}", e)))?;
+
+    // The sender is the child address being consolidated (receiveAddress in the intent)
+    let sender: Pubkey = intent
+        .receive_address
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid receiveAddress (sender)"))?;
+
+    let mut instructions = Vec::new();
+
+    for recipient in intent.recipients {
+        let address = recipient
+            .address
+            .as_ref()
+            .map(|a| &a.address)
+            .ok_or_else(|| WasmSolanaError::new("Recipient missing address"))?;
+        let amount = recipient
+            .amount
+            .as_ref()
+            .map(|a| &a.value)
+            .ok_or_else(|| WasmSolanaError::new("Recipient missing amount"))?;
+
+        let to_pubkey: Pubkey = address.parse().map_err(|_| {
+            WasmSolanaError::new(&format!("Invalid recipient address: {}", address))
+        })?;
+        let lamports: u64 = *amount;
+
+        // Transfer from sender (child address), not fee_payer
+        instructions.push(system_ix::transfer(&sender, &to_pubkey, lamports));
+    }
+
+    Ok((instructions, vec![]))
+}
+
+/// Build a memo instruction.
+fn build_memo(message: &str) -> Instruction {
+    let memo_program: Pubkey = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+        .parse()
+        .unwrap();
+    Instruction::new_with_bytes(memo_program, message.as_bytes(), vec![])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_params() -> BuildParams {
+        BuildParams {
+            fee_payer: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            nonce: Nonce::Blockhash {
+                value: "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn test_build_payment_intent() {
+        let intent = serde_json::json!({
+            "intentType": "payment",
+            "recipients": [{
+                "address": { "address": "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH" },
+                "amount": { "value": "1000000" }
+            }]
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_ok(), "Failed: {:?}", result);
+        let result = result.unwrap();
+        assert!(result.generated_keypairs.is_empty());
+    }
+
+    #[test]
+    fn test_build_stake_intent() {
+        let intent = serde_json::json!({
+            "intentType": "stake",
+            "validatorAddress": "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN",
+            "amount": { "value": "1000000000" }
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_ok(), "Failed: {:?}", result);
+        let result = result.unwrap();
+        assert_eq!(result.generated_keypairs.len(), 1);
+        assert_eq!(result.generated_keypairs[0].purpose, "stakeAccount");
+    }
+
+    #[test]
+    fn test_build_deactivate_intent() {
+        let intent = serde_json::json!({
+            "intentType": "deactivate",
+            "stakingAddress": "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH"
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_ok(), "Failed: {:?}", result);
+    }
+
+    #[test]
+    fn test_build_claim_intent() {
+        let intent = serde_json::json!({
+            "intentType": "claim",
+            "stakingAddress": "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH",
+            "amount": { "value": "1000000000" }
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_ok(), "Failed: {:?}", result);
+    }
+}

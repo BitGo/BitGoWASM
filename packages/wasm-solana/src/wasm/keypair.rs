@@ -15,6 +15,14 @@ pub struct WasmKeypair {
 
 #[wasm_bindgen]
 impl WasmKeypair {
+    /// Generate a new random keypair.
+    #[wasm_bindgen]
+    pub fn generate() -> WasmKeypair {
+        WasmKeypair {
+            inner: Keypair::new(),
+        }
+    }
+
     /// Create a keypair from a 32-byte secret key.
     #[wasm_bindgen]
     pub fn from_secret_key(secret_key: &[u8]) -> Result<WasmKeypair, WasmSolanaError> {

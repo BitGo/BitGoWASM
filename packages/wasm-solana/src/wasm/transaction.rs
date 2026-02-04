@@ -176,6 +176,12 @@ impl WasmTransaction {
     pub fn inner(&self) -> &Transaction {
         &self.inner
     }
+
+    /// Create a WasmTransaction from an existing Transaction.
+    /// Used internally by builders to avoid serialize/deserialize round-trip.
+    pub(crate) fn from_inner(inner: Transaction) -> Self {
+        WasmTransaction { inner }
+    }
 }
 
 // ============================================================================

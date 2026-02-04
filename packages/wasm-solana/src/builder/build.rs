@@ -798,7 +798,7 @@ fn build_instruction(ix: IntentInstruction) -> Result<Instruction, WasmSolanaErr
                 "hex" => hex::decode(&data).map_err(|e| {
                     WasmSolanaError::new(&format!("Invalid hex data in custom instruction: {}", e))
                 })?,
-                "base64" | _ => {
+                _ => {
                     use base64::Engine;
                     base64::engine::general_purpose::STANDARD
                         .decode(&data)

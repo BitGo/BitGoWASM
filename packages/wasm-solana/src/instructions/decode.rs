@@ -79,7 +79,7 @@ fn decode_system_instruction(ctx: InstructionContext) -> ParsedInstruction {
             // This is part of CreateNonceAccount flow - parsed as intermediate NonceInitialize
             // Will be combined with CreateAccount in post-processing
             // Accounts: [0] nonce, [1] recent_blockhashes_sysvar, [2] rent_sysvar
-            if ctx.accounts.len() >= 1 {
+            if !ctx.accounts.is_empty() {
                 ParsedInstruction::NonceInitialize(NonceInitializeParams {
                     nonce_address: ctx.accounts[0].clone(),
                     auth_address: authority.to_string(),
@@ -141,7 +141,7 @@ fn decode_stake_instruction(ctx: InstructionContext) -> ParsedInstruction {
             // This is part of StakingActivate flow - parsed as intermediate StakeInitialize
             // Will be combined with CreateAccount + DelegateStake in post-processing
             // Accounts: [0] stake, [1] rent_sysvar
-            if ctx.accounts.len() >= 1 {
+            if !ctx.accounts.is_empty() {
                 ParsedInstruction::StakeInitialize(StakeInitializeParams {
                     staking_address: ctx.accounts[0].clone(),
                     staker: authorized.staker.to_string(),

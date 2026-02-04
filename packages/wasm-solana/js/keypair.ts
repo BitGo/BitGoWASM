@@ -10,6 +10,15 @@ export class Keypair {
   private constructor(private _wasm: WasmKeypair) {}
 
   /**
+   * Generate a new random keypair
+   * @returns A new Keypair instance with randomly generated keys
+   */
+  static generate(): Keypair {
+    const wasm = WasmKeypair.generate();
+    return new Keypair(wasm);
+  }
+
+  /**
    * Create a keypair from a 32-byte secret key
    * @param secretKey - The 32-byte Ed25519 secret key
    * @returns A Keypair instance
