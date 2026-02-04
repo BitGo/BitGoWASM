@@ -169,6 +169,16 @@ export class VersionedTransaction {
   }
 
   /**
+   * Get the transaction ID (first signature as base58).
+   *
+   * For Solana, the transaction ID is the first signature.
+   * Returns "UNSIGNED" if the transaction has no valid signatures.
+   */
+  get id(): string {
+    return this.inner.id;
+  }
+
+  /**
    * Get the signable message payload.
    */
   signablePayload(): Uint8Array {
@@ -197,6 +207,14 @@ export class VersionedTransaction {
    */
   toBase64(): string {
     return Buffer.from(this.toBytes()).toString("base64");
+  }
+
+  /**
+   * Serialize to network broadcast format.
+   * @returns The transaction as bytes ready for broadcast
+   */
+  toBroadcastFormat(): Uint8Array {
+    return this.toBytes();
   }
 
   /**

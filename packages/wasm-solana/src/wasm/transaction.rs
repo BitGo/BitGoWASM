@@ -9,6 +9,7 @@ use crate::error::WasmSolanaError;
 use crate::transaction::{Transaction, TransactionExt};
 use crate::versioned::{detect_transaction_version, TxVersion, VersionedTransactionExt};
 use solana_message::VersionedMessage;
+use solana_sdk::bs58;
 use solana_transaction::versioned::VersionedTransaction;
 use wasm_bindgen::prelude::*;
 
@@ -54,6 +55,24 @@ impl WasmTransaction {
     #[wasm_bindgen(getter)]
     pub fn num_signatures(&self) -> usize {
         self.inner.num_signatures()
+    }
+
+    /// Get the transaction ID (first signature as base58).
+    ///
+    /// For Solana, the transaction ID is the first signature.
+    /// Returns "UNSIGNED" if the first signature is all zeros (unsigned transaction).
+    #[wasm_bindgen(getter)]
+    pub fn id(&self) -> String {
+        if let Some(sig) = self.inner.signatures.first() {
+            let bytes: &[u8] = sig.as_ref();
+            // Check if signature is all zeros (unsigned)
+            if bytes.iter().all(|&b| b == 0) {
+                return "UNSIGNED".to_string();
+            }
+            bs58::encode(bytes).into_string()
+        } else {
+            "UNSIGNED".to_string()
+        }
     }
 
     /// Get the signable message payload (what gets signed).
@@ -240,6 +259,24 @@ impl WasmVersionedTransaction {
     #[wasm_bindgen(getter)]
     pub fn num_signatures(&self) -> usize {
         self.inner.num_signatures()
+    }
+
+    /// Get the transaction ID (first signature as base58).
+    ///
+    /// For Solana, the transaction ID is the first signature.
+    /// Returns "UNSIGNED" if the first signature is all zeros (unsigned transaction).
+    #[wasm_bindgen(getter)]
+    pub fn id(&self) -> String {
+        if let Some(sig) = self.inner.signatures.first() {
+            let bytes: &[u8] = sig.as_ref();
+            // Check if signature is all zeros (unsigned)
+            if bytes.iter().all(|&b| b == 0) {
+                return "UNSIGNED".to_string();
+            }
+            bs58::encode(bytes).into_string()
+        } else {
+            "UNSIGNED".to_string()
+        }
     }
 
     /// Get the signable message payload.
