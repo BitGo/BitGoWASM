@@ -210,6 +210,14 @@ export class VersionedTransaction {
   }
 
   /**
+   * Serialize to network broadcast format.
+   * @returns The transaction as bytes ready for broadcast
+   */
+  toBroadcastFormat(): Uint8Array {
+    return this.toBytes();
+  }
+
+  /**
    * Get static account keys (accounts stored directly in the message).
    * For versioned transactions, additional accounts may be referenced via ALTs.
    */

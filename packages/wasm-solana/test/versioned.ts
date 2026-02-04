@@ -95,13 +95,15 @@ describe("VersionedTransaction", () => {
 
   describe("id getter", () => {
     it("should return UNSIGNED for unsigned transaction", () => {
-      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
+      const bytes = Buffer.from(LEGACY_TX_BASE64, "base64");
+      const tx = VersionedTransaction.fromBytes(bytes);
       // The test transaction has an all-zeros signature (unsigned)
       assert.strictEqual(tx.id, "UNSIGNED");
     });
 
     it("should return base58 signature after signing", () => {
-      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
+      const bytes = Buffer.from(LEGACY_TX_BASE64, "base64");
+      const tx = VersionedTransaction.fromBytes(bytes);
       const feePayer = tx.feePayer;
 
       // Add a non-zero signature

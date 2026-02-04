@@ -132,6 +132,14 @@ export class Transaction {
   }
 
   /**
+   * Serialize to network broadcast format.
+   * @returns The transaction as bytes ready for broadcast
+   */
+  toBroadcastFormat(): Uint8Array {
+    return this.toBytes();
+  }
+
+  /**
    * Get all account keys as Pubkey instances
    * @returns Array of account public keys
    */
