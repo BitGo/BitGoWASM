@@ -4,9 +4,7 @@ use crate::bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv, Xpub};
 use crate::bitcoin::secp256k1::Secp256k1;
 use crate::bitcoin::{PrivateKey, PublicKey};
 use crate::error::WasmUtxoError;
-use crate::wasm::try_from_js_value::{
-    get_buffer_field, get_field, get_nested_field, get_optional_buffer_field,
-};
+use crate::wasm::try_from_js_value::{get_field, get_nested_field, Bytes};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsValue;
 
@@ -165,13 +163,12 @@ impl WasmBIP32 {
         let depth: u8 = get_field(bip32_key, "depth")?;
         let parent_fingerprint: u32 = get_field(bip32_key, "parentFingerprint")?;
         let index: u32 = get_field(bip32_key, "index")?;
-        let chain_code_bytes: [u8; 32] = get_buffer_field(bip32_key, "chainCode")?;
+        let chain_code: Bytes<32> = get_field(bip32_key, "chainCode")?;
 
         // Check if private key exists
-        let private_key_bytes: Option<[u8; 32]> =
-            get_optional_buffer_field(bip32_key, "privateKey")?;
+        let private_key: Option<Bytes<32>> = get_field(bip32_key, "privateKey")?;
 
-        if let Some(priv_key) = private_key_bytes {
+        if let Some(priv_key) = private_key {
             // Build xprv serialization (78 bytes total)
             let version: u32 = get_nested_field(bip32_key, "network.bip32.private")?;
             let mut data = Vec::with_capacity(78);
@@ -179,9 +176,9 @@ impl WasmBIP32 {
             data.push(depth); // 1 byte: depth
             data.extend_from_slice(&parent_fingerprint.to_be_bytes()); // 4 bytes: parent fingerprint
             data.extend_from_slice(&index.to_be_bytes()); // 4 bytes: index
-            data.extend_from_slice(&chain_code_bytes); // 32 bytes: chain code
+            data.extend_from_slice(chain_code.as_ref()); // 32 bytes: chain code
             data.push(0x00); // 1 byte: padding for private key
-            data.extend_from_slice(&priv_key); // 32 bytes: private key
+            data.extend_from_slice(priv_key.as_ref()); // 32 bytes: private key
 
             let xpriv = Xpriv::decode(&data)
                 .map_err(|e| WasmUtxoError::new(&format!("Failed to decode xprv: {}", e)))?;
@@ -189,15 +186,15 @@ impl WasmBIP32 {
         } else {
             // Build xpub serialization (78 bytes total)
             let version: u32 = get_nested_field(bip32_key, "network.bip32.public")?;
-            let public_key_bytes: [u8; 33] = get_buffer_field(bip32_key, "publicKey")?;
+            let public_key: Bytes<33> = get_field(bip32_key, "publicKey")?;
 
             let mut data = Vec::with_capacity(78);
             data.extend_from_slice(&version.to_be_bytes()); // 4 bytes: version
             data.push(depth); // 1 byte: depth
             data.extend_from_slice(&parent_fingerprint.to_be_bytes()); // 4 bytes: parent fingerprint
             data.extend_from_slice(&index.to_be_bytes()); // 4 bytes: index
-            data.extend_from_slice(&chain_code_bytes); // 32 bytes: chain code
-            data.extend_from_slice(&public_key_bytes); // 33 bytes: public key
+            data.extend_from_slice(chain_code.as_ref()); // 32 bytes: chain code
+            data.extend_from_slice(public_key.as_ref()); // 33 bytes: public key
 
             let xpub = Xpub::decode(&data)
                 .map_err(|e| WasmUtxoError::new(&format!("Failed to decode xpub: {}", e)))?;
