@@ -6,5 +6,5 @@
     "rootDir": ".",
     "outDir": "./dist/cjs"
   },
-  "exclude": ["test/**/*"]
+  "exclude": ["node_modules", "./js/wasm/**/*", "test/**/*"]
 }

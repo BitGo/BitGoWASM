@@ -22,6 +22,29 @@ export type { AddressLookupTableData } from "./versioned.js";
 // Top-level function exports
 export { parseTransaction } from "./parser.js";
 export { buildTransaction, buildFromVersionedData } from "./builder.js";
+export { buildFromIntent } from "./intentBuilder.js";
+
+// Intent builder type exports
+export type {
+  BaseIntent,
+  PaymentIntent,
+  StakeIntent,
+  UnstakeIntent,
+  ClaimIntent,
+  DeactivateIntent,
+  DelegateIntent,
+  EnableTokenIntent,
+  CloseAtaIntent,
+  ConsolidateIntent,
+  SolanaIntent,
+  StakePoolConfig,
+  BuildFromIntentParams,
+  BuildFromIntentResult,
+  GeneratedKeypair,
+  NonceSource,
+  BlockhashNonce,
+  DurableNonce,
+} from "./intentBuilder.js";
 
 // Program ID constants (from WASM)
 export {
@@ -47,7 +70,7 @@ export type { AccountMeta, Instruction } from "./transaction.js";
 export type {
   TransactionInput,
   ParsedTransaction,
-  DurableNonce,
+  DurableNonce as ParsedDurableNonce,
   InstructionParams,
   TransferParams,
   CreateAccountParams,
@@ -74,7 +97,7 @@ export type {
 // Builder type exports (prefixed to avoid conflict with parser/transaction types)
 export type {
   TransactionIntent,
-  NonceSource,
+  NonceSource as BuilderNonceSource,
   BlockhashNonceSource,
   DurableNonceSource,
   AddressLookupTable as BuilderAddressLookupTable,

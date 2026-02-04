@@ -1,8 +1,15 @@
 import * as assert from "assert";
-import { Keypair } from "../js/keypair.js";
+import { Keypair } from "../dist/cjs/js/keypair.js";
 
 describe("Keypair", () => {
   const testSecretKey = new Uint8Array(32).fill(1);
+
+  it("should generate a random keypair", () => {
+    const keypair = Keypair.generate();
+    assert.strictEqual(keypair.publicKey.length, 32);
+    assert.strictEqual(keypair.secretKey.length, 32);
+    assert.ok(keypair.getAddress().length > 30, "Address should be base58");
+  });
 
   it("should create keypair from secret key", () => {
     const keypair = Keypair.fromSecretKey(testSecretKey);
