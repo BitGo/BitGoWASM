@@ -4,7 +4,9 @@ use crate::bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv, Xpub};
 use crate::bitcoin::secp256k1::Secp256k1;
 use crate::bitcoin::{PrivateKey, PublicKey};
 use crate::error::WasmUtxoError;
-use crate::wasm::try_from_js_value::{get_buffer_field, get_field, get_nested_field};
+use crate::wasm::try_from_js_value::{
+    get_buffer_field, get_field, get_nested_field, get_optional_buffer_field,
+};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsValue;
 
@@ -156,30 +158,51 @@ impl WasmBIP32 {
     }
 
     /// Create a BIP32 key from BIP32 properties
-    /// Extracts properties from a JavaScript object and constructs an xpub
+    /// Extracts properties from a JavaScript object and constructs an xpub or xprv
     #[wasm_bindgen]
     pub fn from_bip32_properties(bip32_key: &JsValue) -> Result<WasmBIP32, WasmUtxoError> {
-        // Extract properties using helper functions
-        let version: u32 = get_nested_field(bip32_key, "network.bip32.public")?;
+        // Extract common properties
         let depth: u8 = get_field(bip32_key, "depth")?;
         let parent_fingerprint: u32 = get_field(bip32_key, "parentFingerprint")?;
         let index: u32 = get_field(bip32_key, "index")?;
         let chain_code_bytes: [u8; 32] = get_buffer_field(bip32_key, "chainCode")?;
-        let public_key_bytes: [u8; 33] = get_buffer_field(bip32_key, "publicKey")?;
 
-        // Build BIP32 serialization (78 bytes total)
-        let mut data = Vec::with_capacity(78);
-        data.extend_from_slice(&version.to_be_bytes()); // 4 bytes: version
-        data.push(depth); // 1 byte: depth
-        data.extend_from_slice(&parent_fingerprint.to_be_bytes()); // 4 bytes: parent fingerprint
-        data.extend_from_slice(&index.to_be_bytes()); // 4 bytes: index
-        data.extend_from_slice(&chain_code_bytes); // 32 bytes: chain code
-        data.extend_from_slice(&public_key_bytes); // 33 bytes: public key
+        // Check if private key exists
+        let private_key_bytes: Option<[u8; 32]> =
+            get_optional_buffer_field(bip32_key, "privateKey")?;
 
-        // Use the Xpub::decode method which properly handles network detection and constructs the Xpub
-        let xpub = Xpub::decode(&data)
-            .map_err(|e| WasmUtxoError::new(&format!("Failed to decode xpub: {}", e)))?;
-        Ok(WasmBIP32(BIP32Key::Public(xpub)))
+        if let Some(priv_key) = private_key_bytes {
+            // Build xprv serialization (78 bytes total)
+            let version: u32 = get_nested_field(bip32_key, "network.bip32.private")?;
+            let mut data = Vec::with_capacity(78);
+            data.extend_from_slice(&version.to_be_bytes()); // 4 bytes: version
+            data.push(depth); // 1 byte: depth
+            data.extend_from_slice(&parent_fingerprint.to_be_bytes()); // 4 bytes: parent fingerprint
+            data.extend_from_slice(&index.to_be_bytes()); // 4 bytes: index
+            data.extend_from_slice(&chain_code_bytes); // 32 bytes: chain code
+            data.push(0x00); // 1 byte: padding for private key
+            data.extend_from_slice(&priv_key); // 32 bytes: private key
+
+            let xpriv = Xpriv::decode(&data)
+                .map_err(|e| WasmUtxoError::new(&format!("Failed to decode xprv: {}", e)))?;
+            Ok(WasmBIP32(BIP32Key::Private(xpriv)))
+        } else {
+            // Build xpub serialization (78 bytes total)
+            let version: u32 = get_nested_field(bip32_key, "network.bip32.public")?;
+            let public_key_bytes: [u8; 33] = get_buffer_field(bip32_key, "publicKey")?;
+
+            let mut data = Vec::with_capacity(78);
+            data.extend_from_slice(&version.to_be_bytes()); // 4 bytes: version
+            data.push(depth); // 1 byte: depth
+            data.extend_from_slice(&parent_fingerprint.to_be_bytes()); // 4 bytes: parent fingerprint
+            data.extend_from_slice(&index.to_be_bytes()); // 4 bytes: index
+            data.extend_from_slice(&chain_code_bytes); // 32 bytes: chain code
+            data.extend_from_slice(&public_key_bytes); // 33 bytes: public key
+
+            let xpub = Xpub::decode(&data)
+                .map_err(|e| WasmUtxoError::new(&format!("Failed to decode xpub: {}", e)))?;
+            Ok(WasmBIP32(BIP32Key::Public(xpub)))
+        }
     }
 
     /// Create a BIP32 master key from a seed

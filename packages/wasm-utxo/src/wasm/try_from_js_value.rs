@@ -130,6 +130,33 @@ pub(crate) fn get_buffer_field_vec(obj: &JsValue, key: &str) -> Result<Vec<u8>, 
     Ok(bytes)
 }
 
+// Helper function to get an optional buffer field as a fixed-size byte array
+pub(crate) fn get_optional_buffer_field<const N: usize>(
+    obj: &JsValue,
+    key: &str,
+) -> Result<Option<[u8; N]>, WasmUtxoError> {
+    let field_value = js_sys::Reflect::get(obj, &JsValue::from_str(key))
+        .map_err(|_| WasmUtxoError::new(&format!("Failed to read {} from object", key)))?;
+
+    if field_value.is_undefined() || field_value.is_null() {
+        return Ok(None);
+    }
+
+    let buffer = js_sys::Uint8Array::new(&field_value);
+    if buffer.length() as usize != N {
+        return Err(WasmUtxoError::new(&format!(
+            "{} must be {} bytes, got {}",
+            key,
+            N,
+            buffer.length()
+        )));
+    }
+
+    let mut bytes = [0u8; N];
+    buffer.copy_to(&mut bytes);
+    Ok(Some(bytes))
+}
+
 impl TryFromJsValue for UtxolibNetwork {
     fn try_from_js_value(value: &JsValue) -> Result<Self, WasmUtxoError> {
         let pub_key_hash = get_field(value, "pubKeyHash")?;

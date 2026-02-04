@@ -378,4 +378,58 @@ describe("WasmBIP32 parity with utxolib", () => {
       assert.ok(bufferEqual(wasmKey.chainCode, utxolibKey.chainCode));
     }
   });
+
+  it("should create from utxolib BIP32 instance with private key", () => {
+    const xprv =
+      "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi";
+
+    const utxolibKey = utxolibBip32.fromBase58(xprv);
+    const wasmKey = bip32.BIP32.from(utxolibKey);
+
+    // Compare all properties
+    assert.strictEqual(wasmKey.toBase58(), utxolibKey.toBase58());
+    assert.strictEqual(wasmKey.depth, utxolibKey.depth);
+    assert.strictEqual(wasmKey.index, utxolibKey.index);
+    assert.strictEqual(wasmKey.parentFingerprint, utxolibKey.parentFingerprint);
+    assert.strictEqual(wasmKey.isNeutered(), false);
+    assert.ok(bufferEqual(wasmKey.chainCode, utxolibKey.chainCode));
+    assert.ok(bufferEqual(wasmKey.publicKey, utxolibKey.publicKey));
+    assert.ok(bufferEqual(wasmKey.identifier, utxolibKey.identifier));
+    assert.ok(bufferEqual(wasmKey.fingerprint, utxolibKey.fingerprint));
+    assert.ok(
+      wasmKey.privateKey &&
+        utxolibKey.privateKey &&
+        bufferEqual(wasmKey.privateKey, utxolibKey.privateKey),
+    );
+
+    // Verify derivation still works after conversion
+    const wasmChild = wasmKey.derivePath("m/44'/0'/0'");
+    const utxolibChild = utxolibKey.derivePath("m/44'/0'/0'");
+    assert.strictEqual(wasmChild.toBase58(), utxolibChild.toBase58());
+  });
+
+  it("should create from utxolib BIP32 instance without private key", () => {
+    const xpub =
+      "xpub6D4BDPcP2GT577Vvch3R8wDkScZWzQzMMUm3PWbmWvVJrZwQY4VUNgqFJPMM3No2dFDFGTsxxpG5uJh7n7epu4trkrX7x7DogT5Uv6fcLW5";
+
+    const utxolibKey = utxolibBip32.fromBase58(xpub);
+    const wasmKey = bip32.BIP32.from(utxolibKey);
+
+    // Compare all properties
+    assert.strictEqual(wasmKey.toBase58(), utxolibKey.toBase58());
+    assert.strictEqual(wasmKey.depth, utxolibKey.depth);
+    assert.strictEqual(wasmKey.index, utxolibKey.index);
+    assert.strictEqual(wasmKey.parentFingerprint, utxolibKey.parentFingerprint);
+    assert.strictEqual(wasmKey.isNeutered(), true);
+    assert.strictEqual(wasmKey.privateKey, undefined);
+    assert.ok(bufferEqual(wasmKey.chainCode, utxolibKey.chainCode));
+    assert.ok(bufferEqual(wasmKey.publicKey, utxolibKey.publicKey));
+    assert.ok(bufferEqual(wasmKey.identifier, utxolibKey.identifier));
+    assert.ok(bufferEqual(wasmKey.fingerprint, utxolibKey.fingerprint));
+
+    // Verify derivation still works after conversion
+    const wasmChild = wasmKey.derive(0).derive(0);
+    const utxolibChild = utxolibKey.derive(0).derive(0);
+    assert.strictEqual(wasmChild.toBase58(), utxolibChild.toBase58());
+  });
 });
