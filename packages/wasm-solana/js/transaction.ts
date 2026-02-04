@@ -88,6 +88,23 @@ export class Transaction {
   }
 
   /**
+   * Get the transaction ID (first signature as base58).
+   *
+   * For Solana, the transaction ID is the first signature.
+   * Returns "UNSIGNED" if the transaction has no valid signatures.
+   *
+   * @example
+   * ```typescript
+   * const tx = Transaction.fromBytes(txBytes);
+   * tx.addSignature(pubkey, signature);
+   * console.log(tx.id); // Base58 encoded signature
+   * ```
+   */
+  get id(): string {
+    return this._wasm.id;
+  }
+
+  /**
    * Get the signable message payload (what gets signed)
    * This is the serialized message that signers sign
    * @returns The message bytes

@@ -92,4 +92,27 @@ describe("VersionedTransaction", () => {
       assert.strictEqual(tx.feePayer, tx2.feePayer);
     });
   });
+
+  describe("id getter", () => {
+    it("should return UNSIGNED for unsigned transaction", () => {
+      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
+      // The test transaction has an all-zeros signature (unsigned)
+      assert.strictEqual(tx.id, "UNSIGNED");
+    });
+
+    it("should return base58 signature after signing", () => {
+      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
+      const feePayer = tx.feePayer;
+
+      // Add a non-zero signature
+      const signature = new Uint8Array(64);
+      for (let i = 0; i < 64; i++) signature[i] = i + 1;
+      tx.addSignature(feePayer, signature);
+
+      // ID should now be a base58-encoded string of the signature
+      const id = tx.id;
+      assert.notStrictEqual(id, "UNSIGNED");
+      assert.ok(id.length > 20); // base58 encoded 64 bytes should be ~80+ chars
+    });
+  });
 });
