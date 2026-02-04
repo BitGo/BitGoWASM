@@ -227,6 +227,7 @@ jobs:
         with:
           name: wasm-solana-build
           path: |
+            packages/wasm-solana/pkg/
             packages/wasm-solana/dist/
           retention-days: 1
 
