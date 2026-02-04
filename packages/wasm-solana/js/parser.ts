@@ -18,7 +18,7 @@ import type { VersionedTransaction } from "./versioned.js";
 export type TransactionInput = Uint8Array | Transaction | VersionedTransaction;
 
 // =============================================================================
-// Instruction Types - matching BitGoJS InstructionParams
+// Instruction Types - matching BitGoJS InstructionParams.
 // =============================================================================
 
 /** SOL transfer parameters */
