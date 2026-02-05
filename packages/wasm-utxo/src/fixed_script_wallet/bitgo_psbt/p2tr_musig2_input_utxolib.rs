@@ -9,8 +9,8 @@
 
 use super::{
     p2tr_musig2_input::{
-        collect_prevouts, derive_xpriv_for_input_tap, derive_xpub_for_input_tap, Musig2Context,
-        Musig2Error, Musig2Input, Musig2PubNonce,
+        collect_prevouts, derive_xpriv_for_input_tap, derive_xpub_for_input_tap,
+        get_tap_sighash_type, Musig2Context, Musig2Error, Musig2Input, Musig2PubNonce,
     },
     BitGoPsbt,
 };
@@ -71,7 +71,7 @@ pub fn generate_and_set_user_nonce(
     session_id: [u8; 32],
 ) -> Result<(musig2::SecNonce, musig2::PubNonce), Musig2Error> {
     use crate::bitcoin::bip32::Xpub;
-    use crate::bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+    use crate::bitcoin::sighash::{Prevouts, SighashCache};
 
     // Derive the signer's key for this input
     let tap_key_origins = &ctx.psbt.inputs[ctx.input_index].tap_key_origins;
@@ -81,15 +81,14 @@ pub fn generate_and_set_user_nonce(
     let derived_xpub = Xpub::from_priv(&secp, &derived_xpriv);
     let signer_pub_key = derived_xpub.to_pub();
 
+    // Get sighash type from PSBT input
+    let sighash_type = get_tap_sighash_type(&ctx.psbt.inputs[ctx.input_index]);
+
     // Compute sighash
     let prevouts = collect_prevouts(ctx.psbt)?;
     let mut sighash_cache = SighashCache::new(&ctx.psbt.unsigned_tx);
     let sighash = sighash_cache
-        .taproot_key_spend_signature_hash(
-            ctx.input_index,
-            &Prevouts::All(&prevouts),
-            TapSighashType::Default,
-        )
+        .taproot_key_spend_signature_hash(ctx.input_index, &Prevouts::All(&prevouts), sighash_type)
         .map_err(|e| {
             Musig2Error::SignatureAggregation(format!("Failed to compute sighash: {}", e))
         })?;
@@ -145,7 +144,7 @@ pub fn sign_and_set_partial_signature(
     sec_nonce: musig2::SecNonce,
 ) -> Result<(), Musig2Error> {
     use crate::bitcoin::bip32::Xpub;
-    use crate::bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+    use crate::bitcoin::sighash::{Prevouts, SighashCache};
     use crate::bitcoin::taproot::TapNodeHash;
     use musig2::AggNonce;
 
@@ -157,6 +156,9 @@ pub fn sign_and_set_partial_signature(
     let derived_xpub = Xpub::from_priv(&secp, &derived_xpriv);
     let signer_pub_key = derived_xpub.to_pub();
 
+    // Get sighash type from PSBT input
+    let sighash_type = get_tap_sighash_type(&ctx.psbt.inputs[ctx.input_index]);
+
     // Compute sighash
     let prevouts = collect_prevouts(ctx.psbt)?;
     let tap_merkle_root = ctx.psbt.inputs[ctx.input_index]
@@ -164,11 +166,7 @@ pub fn sign_and_set_partial_signature(
         .unwrap_or_else(|| TapNodeHash::from_byte_array([0u8; 32]));
     let mut sighash_cache = SighashCache::new(&ctx.psbt.unsigned_tx);
     let sighash = sighash_cache
-        .taproot_key_spend_signature_hash(
-            ctx.input_index,
-            &Prevouts::All(&prevouts),
-            TapSighashType::Default,
-        )
+        .taproot_key_spend_signature_hash(ctx.input_index, &Prevouts::All(&prevouts), sighash_type)
         .map_err(|e| {
             Musig2Error::SignatureAggregation(format!("Failed to compute sighash: {}", e))
         })?;
@@ -202,9 +200,9 @@ pub fn sign_and_set_partial_signature(
     let partial_sig =
         create_partial_signature(&key_agg_ctx, secret_scalar, sec_nonce, &agg_nonce, message)?;
 
-    // Set the partial signature in the PSBT
+    // Set the partial signature in the PSBT (with sighash byte appended if not Default)
     let tap_output_key = ctx.musig2_input.participants.tap_output_key;
-    ctx.set_partial_signature(signer_pub_key, tap_output_key, partial_sig)
+    ctx.set_partial_signature(signer_pub_key, tap_output_key, partial_sig, sighash_type)
 }
 
 /// Generate and set a deterministic nonce for testing
@@ -228,7 +226,7 @@ pub fn generate_and_set_deterministic_nonce(
     counterparty_nonce: &musig2::PubNonce,
 ) -> Result<musig2::PubNonce, String> {
     use crate::bitcoin::bip32::Xpub;
-    use crate::bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+    use crate::bitcoin::sighash::{Prevouts, SighashCache};
     use crate::bitcoin::taproot::TapNodeHash;
 
     // Derive the key for this input
@@ -247,15 +245,14 @@ pub fn generate_and_set_deterministic_nonce(
         .tap_merkle_root
         .unwrap_or_else(|| TapNodeHash::from_byte_array([0u8; 32]));
 
+    // Get sighash type from PSBT input
+    let sighash_type = get_tap_sighash_type(&ctx.psbt.inputs[ctx.input_index]);
+
     // Compute sighash
     let prevouts = collect_prevouts(ctx.psbt).map_err(|e| e.to_string())?;
     let mut sighash_cache = SighashCache::new(&ctx.psbt.unsigned_tx);
     let sighash = sighash_cache
-        .taproot_key_spend_signature_hash(
-            ctx.input_index,
-            &Prevouts::All(&prevouts),
-            TapSighashType::Default,
-        )
+        .taproot_key_spend_signature_hash(ctx.input_index, &Prevouts::All(&prevouts), sighash_type)
         .map_err(|e| format!("Failed to compute sighash: {}", e))?;
 
     // Generate deterministic nonce
