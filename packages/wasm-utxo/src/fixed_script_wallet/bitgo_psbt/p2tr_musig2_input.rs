@@ -22,6 +22,24 @@ use crate::fixed_script_wallet::test_utils::fixtures::XprvTriple;
 
 pub type TapKeyOrigins = std::collections::BTreeMap<XOnlyPublicKey, (Vec<TapLeafHash>, KeySource)>;
 
+/// Get the TapSighashType from a PSBT input
+///
+/// This function reads the sighash_type field from the PSBT input and converts it
+/// to a TapSighashType. If not set or invalid for taproot, returns Default.
+pub fn get_tap_sighash_type(input: &Input) -> crate::bitcoin::sighash::TapSighashType {
+    use crate::bitcoin::sighash::TapSighashType;
+
+    match input.sighash_type {
+        Some(psbt_sighash) => {
+            // PsbtSighashType::to_u32() returns the raw sighash value
+            // For taproot, valid values are 0x00-0x03 and 0x81-0x83
+            TapSighashType::from_consensus_u8(psbt_sighash.to_u32() as u8)
+                .unwrap_or(TapSighashType::Default)
+        }
+        None => TapSighashType::Default,
+    }
+}
+
 pub fn derive_xpriv_for_input_tap(
     xpriv: &Xpriv,
     tap_key_origins: &TapKeyOrigins,
@@ -413,6 +431,31 @@ impl Musig2PartialSig {
             got: format!("Parse error: {}", e).len(),
         })
     }
+
+    /// Get the sighash type from the partial signature
+    ///
+    /// Returns `TapSighashType::Default` if the signature is 32 bytes (no sighash byte),
+    /// or parses the sighash type from the 33rd byte if present.
+    pub fn sighash_type(&self) -> Result<crate::bitcoin::sighash::TapSighashType, Musig2Error> {
+        use crate::bitcoin::sighash::TapSighashType;
+
+        match self.partial_sig.len() {
+            32 => Ok(TapSighashType::Default),
+            33 => {
+                let sighash_byte = self.partial_sig[32];
+                TapSighashType::from_consensus_u8(sighash_byte).map_err(|_| {
+                    Musig2Error::InvalidValueLength {
+                        expected: "Valid sighash type byte".to_string(),
+                        got: sighash_byte as usize,
+                    }
+                })
+            }
+            len => Err(Musig2Error::InvalidValueLength {
+                expected: "32 or 33".to_string(),
+                got: len,
+            }),
+        }
+    }
 }
 
 /// Parse MuSig2 participants from PSBT input
@@ -588,20 +631,36 @@ impl<'a> Musig2Context<'a> {
 
     /// Set a partial signature in the PSBT proprietary fields
     ///
+    /// If `sighash_type` is not `TapSighashType::Default`, the sighash byte is appended
+    /// to the 32-byte partial signature, making it 33 bytes. This follows the BIP-341
+    /// convention where default sighash (0x00) is implied and not stored.
+    ///
     /// # Arguments
     /// * `participant_pub_key` - The public key of the participant providing the signature
     /// * `tap_output_key` - The taproot output key (x-only tweaked aggregated key)
     /// * `partial_sig` - The partial signature to set
+    /// * `sighash_type` - The sighash type used for signing
     pub fn set_partial_signature(
         &mut self,
         participant_pub_key: CompressedPublicKey,
         tap_output_key: crate::bitcoin::key::UntweakedPublicKey,
         partial_sig: musig2::PartialSignature,
+        sighash_type: crate::bitcoin::sighash::TapSighashType,
     ) -> Result<(), Musig2Error> {
+        use crate::bitcoin::sighash::TapSighashType;
+
+        // Serialize the partial signature (32 bytes)
+        let mut sig_bytes = partial_sig.serialize().to_vec();
+
+        // If sighash type is not Default, append the sighash byte
+        if sighash_type != TapSighashType::Default {
+            sig_bytes.push(sighash_type as u8);
+        }
+
         let musig2_partial_sig = Musig2PartialSig {
             participant_pub_key,
             tap_output_key,
-            partial_sig: partial_sig.serialize().to_vec(),
+            partial_sig: sig_bytes,
         };
 
         let (key, val) = musig2_partial_sig.to_key_value().to_key_value();
@@ -639,7 +698,7 @@ impl<'a> Musig2Context<'a> {
         session_id: [u8; 32],
     ) -> Result<(musig2::FirstRound, musig2::PubNonce), Musig2Error> {
         use crate::bitcoin::bip32::Xpub;
-        use crate::bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+        use crate::bitcoin::sighash::{Prevouts, SighashCache};
         use crate::bitcoin::taproot::TapNodeHash;
         use musig2::{KeyAggContext, SecNonceSpices};
 
@@ -673,6 +732,9 @@ impl<'a> Musig2Context<'a> {
                 Musig2Error::SignatureAggregation(format!("Failed to apply taproot tweak: {}", e))
             })?;
 
+        // Get sighash type from PSBT input
+        let sighash_type = get_tap_sighash_type(&self.psbt.inputs[self.input_index]);
+
         // Compute sighash for SecNonceSpices
         let prevouts = collect_prevouts(self.psbt)?;
         let mut sighash_cache = SighashCache::new(&self.psbt.unsigned_tx);
@@ -680,7 +742,7 @@ impl<'a> Musig2Context<'a> {
             .taproot_key_spend_signature_hash(
                 self.input_index,
                 &Prevouts::All(&prevouts),
-                TapSighashType::Default,
+                sighash_type,
             )
             .map_err(|e| {
                 Musig2Error::SignatureAggregation(format!("Failed to compute sighash: {}", e))
@@ -738,7 +800,10 @@ impl<'a> Musig2Context<'a> {
         first_round: musig2::FirstRound,
         xpriv: &Xpriv,
     ) -> Result<(), Musig2Error> {
-        use crate::bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+        use crate::bitcoin::sighash::{Prevouts, SighashCache};
+
+        // Get sighash type from PSBT input
+        let sighash_type = get_tap_sighash_type(&self.psbt.inputs[self.input_index]);
 
         // Compute sighash message (needed for finalize)
         let prevouts = collect_prevouts(self.psbt)?;
@@ -747,13 +812,13 @@ impl<'a> Musig2Context<'a> {
             .taproot_key_spend_signature_hash(
                 self.input_index,
                 &Prevouts::All(&prevouts),
-                TapSighashType::Default,
+                sighash_type,
             )
             .map_err(|e| {
                 Musig2Error::SignatureAggregation(format!("Failed to compute sighash: {}", e))
             })?;
 
-        self.sign_with_first_round_impl(first_round, xpriv, sighash.to_byte_array())
+        self.sign_with_first_round_impl(first_round, xpriv, sighash.to_byte_array(), sighash_type)
     }
 
     /// Sign a MuSig2 input using an externally-provided SighashCache (for efficiency).
@@ -777,20 +842,23 @@ impl<'a> Musig2Context<'a> {
         sighash_cache: &mut crate::bitcoin::sighash::SighashCache<T>,
         prevouts: &[crate::bitcoin::TxOut],
     ) -> Result<(), Musig2Error> {
-        use crate::bitcoin::sighash::{Prevouts, TapSighashType};
+        use crate::bitcoin::sighash::Prevouts;
+
+        // Get sighash type from PSBT input
+        let sighash_type = get_tap_sighash_type(&self.psbt.inputs[self.input_index]);
 
         // Compute sighash using the shared cache
         let sighash = sighash_cache
             .taproot_key_spend_signature_hash(
                 self.input_index,
                 &Prevouts::All(prevouts),
-                TapSighashType::Default,
+                sighash_type,
             )
             .map_err(|e| {
                 Musig2Error::SignatureAggregation(format!("Failed to compute sighash: {}", e))
             })?;
 
-        self.sign_with_first_round_impl(first_round, xpriv, sighash.to_byte_array())
+        self.sign_with_first_round_impl(first_round, xpriv, sighash.to_byte_array(), sighash_type)
     }
 
     /// Internal implementation of MuSig2 signing given a pre-computed sighash message.
@@ -799,6 +867,7 @@ impl<'a> Musig2Context<'a> {
         mut first_round: musig2::FirstRound,
         xpriv: &Xpriv,
         message: [u8; 32],
+        sighash_type: crate::bitcoin::sighash::TapSighashType,
     ) -> Result<(), Musig2Error> {
         use crate::bitcoin::bip32::Xpub;
 
@@ -847,9 +916,9 @@ impl<'a> Musig2Context<'a> {
         // Extract our partial signature from SecondRound
         let partial_sig: musig2::PartialSignature = second_round.our_signature();
 
-        // Set the partial signature in the PSBT
+        // Set the partial signature in the PSBT (with sighash byte appended if not Default)
         let tap_output_key = self.musig2_input.participants.tap_output_key;
-        self.set_partial_signature(signer_pub_key, tap_output_key, partial_sig)
+        self.set_partial_signature(signer_pub_key, tap_output_key, partial_sig, sighash_type)
     }
 }
 
@@ -971,9 +1040,10 @@ impl Musig2Input {
     ///
     /// This method:
     /// 1. Validates the input has sufficient nonces and signatures
-    /// 2. Computes the taproot sighash from the sighash cache
-    /// 3. Creates a MuSig2 signing session using the musig2 crate
-    /// 4. Aggregates the partial signatures using BIP-327
+    /// 2. Extracts sighash type from partial signatures (all must match)
+    /// 3. Computes the taproot sighash from the sighash cache
+    /// 4. Creates a MuSig2 signing session using the musig2 crate
+    /// 5. Aggregates the partial signatures using BIP-327
     ///
     /// # Arguments
     /// * `sighash_cache` - The sighash cache for computing transaction hashes
@@ -982,7 +1052,7 @@ impl Musig2Input {
     /// * `tap_merkle_root` - The taproot merkle root
     ///
     /// # Returns
-    /// The aggregated taproot signature
+    /// The aggregated taproot signature (with sighash byte appended if not Default)
     pub fn aggregate_signature<T: std::borrow::Borrow<crate::bitcoin::Transaction>>(
         &self,
         sighash_cache: &mut crate::bitcoin::sighash::SighashCache<T>,
@@ -990,7 +1060,7 @@ impl Musig2Input {
         input_index: usize,
         tap_merkle_root: &crate::bitcoin::taproot::TapNodeHash,
     ) -> Result<crate::bitcoin::taproot::Signature, Musig2Error> {
-        use crate::bitcoin::sighash::{Prevouts, TapSighashType};
+        use crate::bitcoin::sighash::Prevouts;
         use musig2::{AggNonce, BinaryEncoding, KeyAggContext};
 
         // Validate input
@@ -1007,13 +1077,24 @@ impl Musig2Input {
             )));
         }
 
+        // Extract sighash type from partial signatures (all must match)
+        let sighash_type = self.partial_sigs[0].sighash_type()?;
+        for sig in &self.partial_sigs[1..] {
+            let sig_sighash = sig.sighash_type()?;
+            if sig_sighash != sighash_type {
+                return Err(Musig2Error::SignatureAggregation(format!(
+                    "Sighash type mismatch: expected {:?}, got {:?}",
+                    sighash_type, sig_sighash
+                )));
+            }
+        }
+
         // Extract data
         let pub_nonces = self.get_pub_nonces();
         let parsed_keys = self.get_participant_pubkeys()?;
         let parsed_sigs = self.get_normalized_partial_sigs()?;
 
-        // Compute taproot key spend sighash
-        let sighash_type = TapSighashType::Default;
+        // Compute taproot key spend sighash using the extracted sighash type
         let sighash = sighash_cache
             .taproot_key_spend_signature_hash(input_index, &Prevouts::All(prevouts), sighash_type)
             .map_err(|e| {
@@ -1059,10 +1140,17 @@ impl Musig2Input {
             Musig2Error::SignatureAggregation(format!("Signature aggregation failed: {}", e))
         })?;
 
-        // Convert to taproot signature
+        // Convert to taproot signature with the appropriate sighash type
         let sig_bytes: [u8; 64] = final_sig.to_bytes();
-        crate::bitcoin::taproot::Signature::from_slice(&sig_bytes)
-            .map_err(|e| Musig2Error::SignatureAggregation(format!("Invalid signature: {}", e)))
+        let schnorr_sig = crate::bitcoin::secp256k1::schnorr::Signature::from_slice(&sig_bytes)
+            .map_err(|e| {
+                Musig2Error::SignatureAggregation(format!("Invalid schnorr signature: {}", e))
+            })?;
+
+        Ok(crate::bitcoin::taproot::Signature {
+            signature: schnorr_sig,
+            sighash_type,
+        })
     }
 }
 
@@ -1453,5 +1541,255 @@ mod tests {
         .expect("State-Machine API test failed");
 
         println!("✓ Both Functional and State-Machine APIs produced valid signatures");
+    }
+
+    #[test]
+    fn test_sighash_type_all_produces_33_byte_partial_sigs() {
+        use crate::bitcoin::sighash::TapSighashType;
+        use miniscript::bitcoin::psbt::PsbtSighashType;
+
+        // Load fixtures using PsbtStages to get wallet keys
+        let psbt_stages = fixtures::PsbtStages::load(crate::Network::Bitcoin, TxFormat::Psbt)
+            .expect("Failed to load PSBT stages");
+
+        // Find MuSig2 keypath input
+        let (input_index, _input_fixture) = psbt_stages
+            .unsigned
+            .find_input_with_script_type(ScriptType::P2trMusig2TaprootKeypath)
+            .expect("Failed to find taprootKeyPathSpend input");
+
+        // Get wallet keys from stages
+        let xpriv_triple = &psbt_stages.wallet_keys;
+
+        // Convert to BitGoPsbt and set sighash_type = SIGHASH_ALL
+        let mut bitgo_psbt = psbt_stages
+            .unsigned
+            .to_bitgo_psbt(crate::Network::Bitcoin)
+            .expect("Failed to convert to BitGoPsbt");
+
+        // Set sighash_type = SIGHASH_ALL (1) on the input
+        let psbt = bitgo_psbt.psbt_mut();
+        psbt.inputs[input_index].sighash_type = Some(PsbtSighashType::from(TapSighashType::All));
+
+        // Verify the sighash type is correctly read
+        let sighash_type = get_tap_sighash_type(&psbt.inputs[input_index]);
+        assert_eq!(
+            sighash_type,
+            TapSighashType::All,
+            "sighash_type should be SIGHASH_ALL"
+        );
+
+        // Generate random session IDs
+        let user_session_id: [u8; 32] = [1u8; 32];
+        let bitgo_session_id: [u8; 32] = [2u8; 32];
+
+        // Step 1: Generate user nonce
+        let mut user_ctx = Musig2Context::new(bitgo_psbt.psbt_mut(), input_index)
+            .expect("Failed to create user Musig2Context");
+        let (user_first_round, _user_pub_nonce) = user_ctx
+            .generate_nonce_first_round(xpriv_triple.user_key(), user_session_id)
+            .expect("Failed to generate user nonce");
+
+        // Step 2: Generate BitGo nonce
+        let mut bitgo_ctx = Musig2Context::new(bitgo_psbt.psbt_mut(), input_index)
+            .expect("Failed to create bitgo Musig2Context");
+        let (bitgo_first_round, _bitgo_pub_nonce) = bitgo_ctx
+            .generate_nonce_first_round(xpriv_triple.bitgo_key(), bitgo_session_id)
+            .expect("Failed to generate bitgo nonce");
+
+        // Step 3: Sign with user key
+        let mut user_sign_ctx = Musig2Context::new(bitgo_psbt.psbt_mut(), input_index)
+            .expect("Failed to create user sign Musig2Context");
+        user_sign_ctx
+            .sign_with_first_round(user_first_round, xpriv_triple.user_key())
+            .expect("Failed to sign with user key");
+
+        // Step 4: Sign with BitGo key
+        let mut bitgo_sign_ctx = Musig2Context::new(bitgo_psbt.psbt_mut(), input_index)
+            .expect("Failed to create bitgo sign Musig2Context");
+        bitgo_sign_ctx
+            .sign_with_first_round(bitgo_first_round, xpriv_triple.bitgo_key())
+            .expect("Failed to sign with bitgo key");
+
+        // Step 5: Verify partial signatures are 33 bytes (with sighash byte appended)
+        let musig2_input = Musig2Input::from_input(&bitgo_psbt.psbt().inputs[input_index])
+            .expect("Failed to parse signed Musig2 input");
+
+        for (i, partial_sig) in musig2_input.partial_sigs.iter().enumerate() {
+            assert_eq!(
+                partial_sig.partial_sig.len(),
+                33,
+                "Partial sig {} should be 33 bytes when sighash_type = SIGHASH_ALL",
+                i
+            );
+            assert_eq!(
+                partial_sig.partial_sig[32],
+                TapSighashType::All as u8,
+                "Last byte of partial sig {} should be SIGHASH_ALL (0x01)",
+                i
+            );
+
+            // Verify the sighash_type method returns the correct type
+            let sig_sighash_type = partial_sig
+                .sighash_type()
+                .expect("Failed to get sighash type");
+            assert_eq!(
+                sig_sighash_type,
+                TapSighashType::All,
+                "sighash_type() should return SIGHASH_ALL"
+            );
+        }
+
+        // Step 6: Finalize and verify the aggregated signature has sighash_type = All
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+        bitgo_psbt
+            .finalize_input(&secp, input_index)
+            .expect("Failed to finalize input");
+
+        // After finalization, the signature is in final_script_witness
+        let finalized_psbt = bitgo_psbt.psbt();
+        let final_witness = finalized_psbt.inputs[input_index]
+            .final_script_witness
+            .as_ref()
+            .expect("final_script_witness should be set after finalization");
+
+        // For taproot key path spend, witness should have exactly 1 element: the signature
+        assert_eq!(
+            final_witness.len(),
+            1,
+            "Taproot key path witness should have exactly 1 element"
+        );
+
+        // The signature should be 65 bytes (64 + sighash byte) for SIGHASH_ALL
+        let sig_bytes = &final_witness[0];
+        assert_eq!(
+            sig_bytes.len(),
+            65,
+            "Aggregated signature should be 65 bytes when sighash_type = SIGHASH_ALL"
+        );
+        assert_eq!(
+            sig_bytes[64],
+            TapSighashType::All as u8,
+            "Last byte should be SIGHASH_ALL (0x01)"
+        );
+
+        println!("✓ SIGHASH_ALL produces correct 33-byte partial sigs and 65-byte final sig");
+    }
+
+    #[test]
+    fn test_sighash_type_default_produces_32_byte_partial_sigs() {
+        use crate::bitcoin::sighash::TapSighashType;
+
+        // Load fixtures using PsbtStages to get wallet keys
+        let psbt_stages = fixtures::PsbtStages::load(crate::Network::Bitcoin, TxFormat::Psbt)
+            .expect("Failed to load PSBT stages");
+
+        // Find MuSig2 keypath input
+        let (input_index, _input_fixture) = psbt_stages
+            .unsigned
+            .find_input_with_script_type(ScriptType::P2trMusig2TaprootKeypath)
+            .expect("Failed to find taprootKeyPathSpend input");
+
+        // Get wallet keys from stages
+        let xpriv_triple = &psbt_stages.wallet_keys;
+
+        // Convert to BitGoPsbt (sighash_type defaults to None/Default)
+        let mut bitgo_psbt = psbt_stages
+            .unsigned
+            .to_bitgo_psbt(crate::Network::Bitcoin)
+            .expect("Failed to convert to BitGoPsbt");
+
+        // Verify the sighash type is correctly read as Default
+        let sighash_type = get_tap_sighash_type(&bitgo_psbt.psbt().inputs[input_index]);
+        assert_eq!(
+            sighash_type,
+            TapSighashType::Default,
+            "sighash_type should be SIGHASH_DEFAULT when not set"
+        );
+
+        // Generate random session IDs
+        let user_session_id: [u8; 32] = [1u8; 32];
+        let bitgo_session_id: [u8; 32] = [2u8; 32];
+
+        // Step 1: Generate user nonce
+        let mut user_ctx = Musig2Context::new(bitgo_psbt.psbt_mut(), input_index)
+            .expect("Failed to create user Musig2Context");
+        let (user_first_round, _user_pub_nonce) = user_ctx
+            .generate_nonce_first_round(xpriv_triple.user_key(), user_session_id)
+            .expect("Failed to generate user nonce");
+
+        // Step 2: Generate BitGo nonce
+        let mut bitgo_ctx = Musig2Context::new(bitgo_psbt.psbt_mut(), input_index)
+            .expect("Failed to create bitgo Musig2Context");
+        let (bitgo_first_round, _bitgo_pub_nonce) = bitgo_ctx
+            .generate_nonce_first_round(xpriv_triple.bitgo_key(), bitgo_session_id)
+            .expect("Failed to generate bitgo nonce");
+
+        // Step 3: Sign with user key
+        let mut user_sign_ctx = Musig2Context::new(bitgo_psbt.psbt_mut(), input_index)
+            .expect("Failed to create user sign Musig2Context");
+        user_sign_ctx
+            .sign_with_first_round(user_first_round, xpriv_triple.user_key())
+            .expect("Failed to sign with user key");
+
+        // Step 4: Sign with BitGo key
+        let mut bitgo_sign_ctx = Musig2Context::new(bitgo_psbt.psbt_mut(), input_index)
+            .expect("Failed to create bitgo sign Musig2Context");
+        bitgo_sign_ctx
+            .sign_with_first_round(bitgo_first_round, xpriv_triple.bitgo_key())
+            .expect("Failed to sign with bitgo key");
+
+        // Step 5: Verify partial signatures are 32 bytes (no sighash byte)
+        let musig2_input = Musig2Input::from_input(&bitgo_psbt.psbt().inputs[input_index])
+            .expect("Failed to parse signed Musig2 input");
+
+        for (i, partial_sig) in musig2_input.partial_sigs.iter().enumerate() {
+            assert_eq!(
+                partial_sig.partial_sig.len(),
+                32,
+                "Partial sig {} should be 32 bytes when sighash_type = SIGHASH_DEFAULT",
+                i
+            );
+
+            // Verify the sighash_type method returns Default
+            let sig_sighash_type = partial_sig
+                .sighash_type()
+                .expect("Failed to get sighash type");
+            assert_eq!(
+                sig_sighash_type,
+                TapSighashType::Default,
+                "sighash_type() should return SIGHASH_DEFAULT"
+            );
+        }
+
+        // Step 6: Finalize and verify the aggregated signature has sighash_type = Default
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+        bitgo_psbt
+            .finalize_input(&secp, input_index)
+            .expect("Failed to finalize input");
+
+        // After finalization, the signature is in final_script_witness
+        let finalized_psbt = bitgo_psbt.psbt();
+        let final_witness = finalized_psbt.inputs[input_index]
+            .final_script_witness
+            .as_ref()
+            .expect("final_script_witness should be set after finalization");
+
+        // For taproot key path spend, witness should have exactly 1 element: the signature
+        assert_eq!(
+            final_witness.len(),
+            1,
+            "Taproot key path witness should have exactly 1 element"
+        );
+
+        // The signature should be 64 bytes (no sighash byte) for SIGHASH_DEFAULT
+        let sig_bytes = &final_witness[0];
+        assert_eq!(
+            sig_bytes.len(),
+            64,
+            "Aggregated signature should be 64 bytes when sighash_type = SIGHASH_DEFAULT"
+        );
+
+        println!("✓ SIGHASH_DEFAULT produces correct 32-byte partial sigs and 64-byte final sig");
     }
 }
