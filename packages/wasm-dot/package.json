@@ -1,0 +1,62 @@
+{
+  "name": "@bitgo/wasm-dot",
+  "description": "WebAssembly wrapper for Polkadot/DOT cryptographic operations",
+  "version": "0.0.1",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BitGo/BitGoWASM"
+  },
+  "license": "MIT",
+  "files": [
+    "dist/esm/js/**/*",
+    "dist/cjs/js/**/*",
+    "dist/cjs/package.json"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/js/index.d.ts",
+        "default": "./dist/esm/js/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/js/index.d.ts",
+        "default": "./dist/cjs/js/index.js"
+      }
+    }
+  },
+  "main": "./dist/cjs/js/index.js",
+  "module": "./dist/esm/js/index.js",
+  "types": "./dist/esm/js/index.d.ts",
+  "sideEffects": [
+    "./dist/esm/js/wasm/wasm_dot.js",
+    "./dist/cjs/js/wasm/wasm_dot.js"
+  ],
+  "scripts": {
+    "test": "npm run test:mocha",
+    "test:mocha": "mocha --recursive test",
+    "build:wasm": "make js/wasm && make dist/esm/js/wasm && make dist/cjs/js/wasm",
+    "build:ts-esm": "tsc",
+    "build:ts-cjs": "tsc --project tsconfig.cjs.json",
+    "build:ts": "npm run build:ts-esm && npm run build:ts-cjs",
+    "build:package-json": "echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
+    "build": "npm run build:wasm && npm run build:ts && npm run build:package-json",
+    "check-fmt": "prettier --check . && cargo fmt -- --check",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^22.10.5",
+    "eslint": "^9.17.0",
+    "mocha": "^10.6.0",
+    "tsx": "4.20.6",
+    "typescript": "^5.5.3",
+    "typescript-eslint": "^8.18.2"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

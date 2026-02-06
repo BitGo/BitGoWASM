@@ -1,0 +1,12 @@
+target/
+node_modules/
+# we actually only track the .ts files
+dist/
+test/*.js
+test/*.d.ts
+js/*.js
+js/*.d.ts
+js/wasm
+.vscode
+pkg/
+Cargo.lock
