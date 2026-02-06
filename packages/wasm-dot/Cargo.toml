@@ -31,6 +31,7 @@ subxt-core = { version = "0.37", default-features = false }
 
 # Crypto
 blake2 = "0.10"
+bs58 = "0.5"
 
 # WASM random number generation support
 getrandom = { version = "0.2", features = ["js"] }
