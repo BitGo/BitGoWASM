@@ -1490,17 +1490,40 @@ impl BitGoPsbt {
     /// Extract the final transaction from a finalized PSBT
     ///
     /// This method should be called after all inputs have been finalized.
-    /// It extracts the fully signed transaction with network-appropriate serialization.
+    /// It extracts the fully signed transaction as a WASM transaction instance
+    /// appropriate for the network (WasmTransaction, WasmDashTransaction, or WasmZcashTransaction).
     ///
     /// # Returns
-    /// - `Ok(Vec<u8>)` containing the serialized transaction bytes
+    /// - `Ok(JsValue)` containing the WASM transaction instance
     /// - `Err(WasmUtxoError)` if the PSBT is not fully finalized or extraction fails
-    pub fn extract_transaction(&self) -> Result<Vec<u8>, WasmUtxoError> {
-        // Clone and use extract_tx() which handles all network-specific serialization
-        self.psbt
-            .clone()
-            .extract_tx()
-            .map_err(|e| WasmUtxoError::new(&e))
+    pub fn extract_transaction(&self) -> Result<JsValue, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt as InnerBitGoPsbt;
+        match &self.psbt {
+            InnerBitGoPsbt::BitcoinLike(..) => {
+                let tx = self
+                    .psbt
+                    .clone()
+                    .extract_bitcoin_tx()
+                    .map_err(|e| WasmUtxoError::new(&e))?;
+                Ok(crate::wasm::transaction::WasmTransaction::from_tx(tx).into())
+            }
+            InnerBitGoPsbt::Dash(..) => {
+                let parts = self
+                    .psbt
+                    .clone()
+                    .extract_dash_tx()
+                    .map_err(|e| WasmUtxoError::new(&e))?;
+                Ok(crate::wasm::dash_transaction::WasmDashTransaction::from_parts(parts).into())
+            }
+            InnerBitGoPsbt::Zcash(..) => {
+                let parts = self
+                    .psbt
+                    .clone()
+                    .extract_zcash_tx()
+                    .map_err(|e| WasmUtxoError::new(&e))?;
+                Ok(crate::wasm::transaction::WasmZcashTransaction::from_parts(parts).into())
+            }
+        }
     }
 
     /// Extract the final transaction as a WasmTransaction (for BitcoinLike networks)
