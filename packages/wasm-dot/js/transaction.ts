@@ -115,7 +115,7 @@ export class DotTransaction {
       material.specName,
       material.specVersion,
       material.txVersion,
-      material.metadataHex,
+      material.metadata,
     );
     const validityJs = new ValidityJs(validity.firstValid, validity.maxDuration);
     this.inner.setContext(materialJs, validityJs, referenceBlock);
@@ -178,7 +178,7 @@ function createParseContext(ctx: ParseContext): ParseContextJs {
     ctx.material.specName,
     ctx.material.specVersion,
     ctx.material.txVersion,
-    ctx.material.metadataHex,
+    ctx.material.metadata,
   );
   return new ParseContextJs(material, ctx.sender ?? null);
 }

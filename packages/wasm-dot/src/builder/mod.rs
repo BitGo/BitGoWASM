@@ -21,7 +21,7 @@ pub fn build_transaction(
     context: BuildContext,
 ) -> Result<Transaction, WasmDotError> {
     // Decode metadata once
-    let metadata = decode_metadata(&context.material.metadata_hex)?;
+    let metadata = decode_metadata(&context.material.metadata)?;
 
     // Build call data using metadata
     let call_data = encode_call(&intent, &metadata)?;

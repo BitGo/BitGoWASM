@@ -14,7 +14,7 @@ describe("buildTransaction", () => {
     specName: "westend",
     specVersion: 9420,
     txVersion: 16,
-    metadataHex: westendMetadataRpc,
+    metadata: westendMetadataRpc,
   };
 
   // Reference block (use genesis for testing)

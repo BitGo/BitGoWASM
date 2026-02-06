@@ -18,7 +18,7 @@ pub struct Material {
     pub tx_version: u32,
     /// Runtime metadata bytes (hex encoded)
     /// Required for encoding calls - handles runtime upgrades automatically
-    pub metadata_hex: String,
+    pub metadata: String,
 }
 
 /// Validity window for mortal transactions

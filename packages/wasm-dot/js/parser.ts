@@ -70,7 +70,7 @@ function createParseContext(ctx: ParseContext): ParseContextJs {
     ctx.material.specName,
     ctx.material.specVersion,
     ctx.material.txVersion,
-    ctx.material.metadataHex,
+    ctx.material.metadata,
   );
   return new ParseContextJs(material, ctx.sender ?? null);
 }
