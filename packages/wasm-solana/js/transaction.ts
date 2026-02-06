@@ -91,7 +91,7 @@ export class Transaction {
    * Get the transaction ID (first signature as base58).
    *
    * For Solana, the transaction ID is the first signature.
-   * Returns "UNSIGNED" if the transaction has no valid signatures.
+   * Returns `undefined` if the transaction is unsigned (no signatures or all-zeros signature).
    *
    * @example
    * ```typescript
@@ -100,7 +100,7 @@ export class Transaction {
    * console.log(tx.id); // Base58 encoded signature
    * ```
    */
-  get id(): string {
+  get id(): string | undefined {
     return this._wasm.id;
   }
 

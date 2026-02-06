@@ -60,18 +60,18 @@ impl WasmTransaction {
     /// Get the transaction ID (first signature as base58).
     ///
     /// For Solana, the transaction ID is the first signature.
-    /// Returns "UNSIGNED" if the first signature is all zeros (unsigned transaction).
+    /// Returns `undefined` if the transaction is unsigned (no signatures or all-zeros signature).
     #[wasm_bindgen(getter)]
-    pub fn id(&self) -> String {
+    pub fn id(&self) -> Option<String> {
         if let Some(sig) = self.inner.signatures.first() {
             let bytes: &[u8] = sig.as_ref();
             // Check if signature is all zeros (unsigned)
             if bytes.iter().all(|&b| b == 0) {
-                return "UNSIGNED".to_string();
+                return None;
             }
-            bs58::encode(bytes).into_string()
+            Some(bs58::encode(bytes).into_string())
         } else {
-            "UNSIGNED".to_string()
+            None
         }
     }
 
@@ -270,18 +270,18 @@ impl WasmVersionedTransaction {
     /// Get the transaction ID (first signature as base58).
     ///
     /// For Solana, the transaction ID is the first signature.
-    /// Returns "UNSIGNED" if the first signature is all zeros (unsigned transaction).
+    /// Returns `undefined` if the transaction is unsigned (no signatures or all-zeros signature).
     #[wasm_bindgen(getter)]
-    pub fn id(&self) -> String {
+    pub fn id(&self) -> Option<String> {
         if let Some(sig) = self.inner.signatures.first() {
             let bytes: &[u8] = sig.as_ref();
             // Check if signature is all zeros (unsigned)
             if bytes.iter().all(|&b| b == 0) {
-                return "UNSIGNED".to_string();
+                return None;
             }
-            bs58::encode(bytes).into_string()
+            Some(bs58::encode(bytes).into_string())
         } else {
-            "UNSIGNED".to_string()
+            None
         }
     }
 
