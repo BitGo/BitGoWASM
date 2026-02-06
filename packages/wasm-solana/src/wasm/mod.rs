@@ -1,4 +1,3 @@
-mod builder;
 mod constants;
 mod intent;
 mod keypair;
@@ -7,7 +6,6 @@ mod pubkey;
 mod transaction;
 pub mod try_into_js_value;
 
-pub use builder::BuilderNamespace;
 pub use intent::IntentNamespace;
 pub use keypair::WasmKeypair;
 pub use parser::ParserNamespace;

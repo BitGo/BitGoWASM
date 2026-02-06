@@ -23,7 +23,6 @@
 //! let pubkey = Pubkey::from_base58("FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH").unwrap();
 //! ```
 
-pub mod builder;
 mod error;
 mod instructions;
 pub mod intent;
@@ -45,6 +44,6 @@ pub use versioned::{
 
 // Re-export WASM types
 pub use wasm::{
-    is_versioned_transaction, BuilderNamespace, IntentNamespace, ParserNamespace, WasmKeypair,
-    WasmPubkey, WasmTransaction, WasmVersionedTransaction,
+    is_versioned_transaction, IntentNamespace, ParserNamespace, WasmKeypair, WasmPubkey,
+    WasmTransaction, WasmVersionedTransaction,
 };

@@ -6,12 +6,7 @@
  * transaction size by referencing accounts via lookup table indices.
  */
 
-import {
-  WasmVersionedTransaction,
-  is_versioned_transaction,
-  BuilderNamespace,
-} from "./wasm/wasm_solana.js";
-import type { RawVersionedTransactionData } from "./builder.js";
+import { WasmVersionedTransaction, is_versioned_transaction } from "./wasm/wasm_solana.js";
 
 /**
  * Address Lookup Table data extracted from versioned transactions.
@@ -96,41 +91,6 @@ export class VersionedTransaction {
    */
   static fromWasm(wasm: WasmVersionedTransaction): VersionedTransaction {
     return new VersionedTransaction(wasm);
-  }
-
-  /**
-   * Create a versioned transaction from raw MessageV0 data.
-   *
-   * This is used for the `fromVersionedTransactionData()` path where we have
-   * pre-compiled versioned data (indexes + ALT refs). No instruction compilation
-   * is needed - this just constructs the transaction from the raw structure.
-   *
-   * @param data - Raw versioned transaction data
-   * @returns A VersionedTransaction instance
-   *
-   * @example
-   * ```typescript
-   * const tx = VersionedTransaction.fromVersionedData({
-   *   staticAccountKeys: ['pubkey1', 'pubkey2', ...],
-   *   addressLookupTables: [
-   *     { accountKey: 'altPubkey', writableIndexes: [0, 1], readonlyIndexes: [2] }
-   *   ],
-   *   versionedInstructions: [
-   *     { programIdIndex: 0, accountKeyIndexes: [1, 2], data: 'base58EncodedData' }
-   *   ],
-   *   messageHeader: {
-   *     numRequiredSignatures: 1,
-   *     numReadonlySignedAccounts: 0,
-   *     numReadonlyUnsignedAccounts: 3
-   *   },
-   *   recentBlockhash: 'blockhash'
-   * });
-   * ```
-   */
-  static fromVersionedData(data: RawVersionedTransactionData): VersionedTransaction {
-    // Build the transaction using WASM and wrap in TypeScript class
-    const wasm = BuilderNamespace.build_from_versioned_data(data);
-    return VersionedTransaction.fromWasm(wasm);
   }
 
   /**

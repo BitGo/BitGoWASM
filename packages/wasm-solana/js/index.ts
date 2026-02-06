@@ -8,7 +8,6 @@ export * as keypair from "./keypair.js";
 export * as pubkey from "./pubkey.js";
 export * as transaction from "./transaction.js";
 export * as parser from "./parser.js";
-export * as builder from "./builder.js";
 
 // Top-level class exports for convenience
 export { Keypair } from "./keypair.js";
@@ -21,7 +20,6 @@ export type { AddressLookupTableData } from "./versioned.js";
 
 // Top-level function exports
 export { parseTransaction } from "./parser.js";
-export { buildTransaction, buildFromVersionedData } from "./builder.js";
 export { buildFromIntent } from "./intentBuilder.js";
 
 // Intent builder type exports
@@ -93,45 +91,3 @@ export type {
   StakePoolWithdrawStakeParams,
   UnknownInstructionParams,
 } from "./parser.js";
-
-// Builder type exports (prefixed to avoid conflict with parser/transaction types)
-export type {
-  TransactionIntent,
-  NonceSource as BuilderNonceSource,
-  BlockhashNonceSource,
-  DurableNonceSource,
-  AddressLookupTable as BuilderAddressLookupTable,
-  Instruction as BuilderInstruction,
-  TransferInstruction,
-  CreateAccountInstruction,
-  NonceAdvanceInstruction,
-  NonceInitializeInstruction,
-  AllocateInstruction,
-  AssignInstruction,
-  MemoInstruction,
-  ComputeBudgetInstruction,
-  // Stake Program
-  StakeInitializeInstruction,
-  StakeDelegateInstruction,
-  StakeDeactivateInstruction,
-  StakeWithdrawInstruction,
-  StakeAuthorizeInstruction,
-  StakeSplitInstruction,
-  // SPL Token
-  TokenTransferInstruction,
-  CreateAssociatedTokenAccountInstruction,
-  CloseAssociatedTokenAccountInstruction,
-  MintToInstruction,
-  BurnInstruction,
-  ApproveInstruction,
-  // Jito Stake Pool
-  StakePoolDepositSolInstruction,
-  StakePoolWithdrawStakeInstruction,
-  // Custom Instruction
-  CustomInstruction as BuilderCustomInstruction,
-  CustomAccountMeta,
-  // Raw Versioned Transaction Data (for fromVersionedTransactionData path)
-  RawVersionedTransactionData,
-  VersionedInstruction as BuilderVersionedInstruction,
-  MessageHeader,
-} from "./builder.js";
