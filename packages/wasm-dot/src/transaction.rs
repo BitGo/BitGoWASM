@@ -254,6 +254,21 @@ impl Transaction {
         });
         Ok(())
     }
+
+    /// Set nonce
+    pub fn set_nonce(&mut self, nonce: u32) {
+        self.nonce = nonce;
+    }
+
+    /// Set tip
+    pub fn set_tip(&mut self, tip: u128) {
+        self.tip = tip;
+    }
+
+    /// Set era
+    pub fn set_era(&mut self, era: Era) {
+        self.era = era;
+    }
 }
 
 /// Parse a raw extrinsic

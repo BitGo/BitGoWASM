@@ -2,13 +2,8 @@
  * TypeScript wrapper for WasmTransaction
  */
 
-import {
-  WasmTransaction,
-  MaterialJs,
-  ValidityJs,
-  ParseContextJs,
-} from './wasm/wasm_dot';
-import type { Material, Validity, ParseContext, Era } from './types';
+import { WasmTransaction, MaterialJs, ValidityJs, ParseContextJs } from "./wasm/wasm_dot";
+import type { Material, Validity, ParseContext, Era } from "./types";
 
 /**
  * DOT Transaction wrapper
@@ -119,7 +114,8 @@ export class DotTransaction {
       material.chainName,
       material.specName,
       material.specVersion,
-      material.txVersion
+      material.txVersion,
+      material.metadataHex,
     );
     const validityJs = new ValidityJs(validity.firstValid, validity.maxDuration);
     this.inner.setContext(materialJs, validityJs, referenceBlock);
@@ -181,7 +177,8 @@ function createParseContext(ctx: ParseContext): ParseContextJs {
     ctx.material.chainName,
     ctx.material.specName,
     ctx.material.specVersion,
-    ctx.material.txVersion
+    ctx.material.txVersion,
+    ctx.material.metadataHex,
   );
   return new ParseContextJs(material, ctx.sender ?? null);
 }

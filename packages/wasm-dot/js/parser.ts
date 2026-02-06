@@ -2,8 +2,8 @@
  * TypeScript wrapper for ParserNamespace
  */
 
-import { ParserNamespace, MaterialJs, ParseContextJs } from './wasm/wasm_dot';
-import type { ParseContext, ParsedTransaction, TransactionOutput } from './types';
+import { ParserNamespace, MaterialJs, ParseContextJs } from "./wasm/wasm_dot";
+import type { ParseContext, ParsedTransaction, TransactionOutput } from "./types";
 
 /**
  * DOT Transaction Parser
@@ -69,7 +69,8 @@ function createParseContext(ctx: ParseContext): ParseContextJs {
     ctx.material.chainName,
     ctx.material.specName,
     ctx.material.specVersion,
-    ctx.material.txVersion
+    ctx.material.txVersion,
+    ctx.material.metadataHex,
   );
   return new ParseContextJs(material, ctx.sender ?? null);
 }

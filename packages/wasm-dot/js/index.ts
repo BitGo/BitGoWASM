@@ -4,7 +4,7 @@
  * This module provides:
  * - Transaction parsing (decode extrinsics)
  * - Signature operations (add signatures to unsigned transactions)
- * - Transaction building from intents
+ * - Transaction building from intents (following wasm-solana pattern)
  */
 
 import {
@@ -14,11 +14,9 @@ import {
   MaterialJs,
   ValidityJs,
   ParseContextJs,
-  BuildContextJs,
-  MaterialBuilderJs,
-  ValidityBuilderJs,
-} from './wasm/wasm_dot';
+} from "./wasm/wasm_dot";
 
+// Export WASM classes for advanced usage
 export {
   WasmTransaction,
   ParserNamespace,
@@ -26,13 +24,10 @@ export {
   MaterialJs,
   ValidityJs,
   ParseContextJs,
-  BuildContextJs,
-  MaterialBuilderJs,
-  ValidityBuilderJs,
 };
 
 // Re-export types
-export * from './types';
-export * from './transaction';
-export * from './parser';
-export * from './builder';
+export * from "./types";
+export * from "./transaction";
+export * from "./parser";
+export * from "./builder";

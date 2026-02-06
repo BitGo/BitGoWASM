@@ -1,6 +1,14 @@
 /**
  * TypeScript type definitions for wasm-dot
+ *
+ * Follows wallet-platform pattern: buildTransaction(intent, context)
+ * - intent: what to do (transfer, stake, etc.) - single operation
+ * - context: how to build it (sender, nonce, material, validity)
  */
+
+// =============================================================================
+// Chain Metadata Types
+// =============================================================================
 
 /**
  * Chain material metadata required for transaction encoding/decoding
@@ -16,6 +24,8 @@ export interface Material {
   specVersion: number;
   /** Transaction format version */
   txVersion: number;
+  /** Runtime metadata bytes (hex encoded) - required for encoding calls */
+  metadataHex: string;
 }
 
 /**
@@ -38,8 +48,14 @@ export interface ParseContext {
   sender?: string;
 }
 
+// =============================================================================
+// Build Context (how to build the transaction)
+// =============================================================================
+
 /**
- * Context for building transactions
+ * Build context - contains all non-intent data needed to build a transaction
+ *
+ * Matches wallet-platform's material + nonce + validity pattern.
  */
 export interface BuildContext {
   /** Sender address (SS58 encoded) */
@@ -56,12 +72,111 @@ export interface BuildContext {
   referenceBlock: string;
 }
 
+// =============================================================================
+// Transaction Intent (what to do)
+// =============================================================================
+
+/**
+ * Transaction intent - a single operation to perform
+ *
+ * Discriminated union using the `type` field.
+ * For multiple operations, use the `batch` intent type.
+ */
+export type TransactionIntent =
+  | TransferIntent
+  | TransferAllIntent
+  | StakeIntent
+  | UnstakeIntent
+  | WithdrawUnbondedIntent
+  | ChillIntent
+  | AddProxyIntent
+  | RemoveProxyIntent
+  | BatchIntent;
+
+export interface TransferIntent {
+  type: "transfer";
+  /** Recipient address (SS58) */
+  to: string;
+  /** Amount in planck (as string or bigint) */
+  amount: string | bigint;
+  /** Use transferKeepAlive (default: true) */
+  keepAlive?: boolean;
+}
+
+export interface TransferAllIntent {
+  type: "transferAll";
+  /** Recipient address (SS58) */
+  to: string;
+  /** Keep account alive after transfer */
+  keepAlive?: boolean;
+}
+
+export interface StakeIntent {
+  type: "stake";
+  /** Amount to stake in planck (as string or bigint) */
+  amount: string | bigint;
+  /** Where to send staking rewards */
+  payee?: StakePayee;
+}
+
+export type StakePayee =
+  | { type: "staked" }
+  | { type: "stash" }
+  | { type: "controller" }
+  | { type: "account"; address: string };
+
+export interface UnstakeIntent {
+  type: "unstake";
+  /** Amount to unstake in planck (as string or bigint) */
+  amount: string | bigint;
+}
+
+export interface WithdrawUnbondedIntent {
+  type: "withdrawUnbonded";
+  /** Number of slashing spans (usually 0) */
+  slashingSpans?: number;
+}
+
+export interface ChillIntent {
+  type: "chill";
+}
+
+export interface AddProxyIntent {
+  type: "addProxy";
+  /** Delegate address (SS58) */
+  delegate: string;
+  /** Proxy type (Any, NonTransfer, Staking, etc.) */
+  proxyType: string;
+  /** Delay in blocks */
+  delay?: number;
+}
+
+export interface RemoveProxyIntent {
+  type: "removeProxy";
+  /** Delegate address (SS58) */
+  delegate: string;
+  /** Proxy type */
+  proxyType: string;
+  /** Delay in blocks */
+  delay?: number;
+}
+
+export interface BatchIntent {
+  type: "batch";
+  /** List of intents to execute */
+  calls: TransactionIntent[];
+  /** Use batchAll (atomic) instead of batch (default: true) */
+  atomic?: boolean;
+}
+
+// =============================================================================
+// Parsed Transaction Types
+// =============================================================================
+
 /**
  * Transaction era (mortal or immortal)
  */
-export type Era =
-  | { type: 'immortal' }
-  | { type: 'mortal'; period: number; phase: number };
+export type Era = { type: "immortal" } | { type: "mortal"; period: number; phase: number };
 
 /**
  * Parsed transaction method/call
@@ -123,96 +238,6 @@ export interface ParsedTransaction {
   type: string;
   /** Whether transaction is signed */
   isSigned: boolean;
-}
-
-/**
- * Transaction intent types
- */
-export type TransactionIntent =
-  | TransferIntent
-  | TransferAllIntent
-  | StakeIntent
-  | UnstakeIntent
-  | WithdrawUnbondedIntent
-  | ChillIntent
-  | AddProxyIntent
-  | RemoveProxyIntent
-  | BatchIntent;
-
-export interface TransferIntent {
-  type: 'transfer';
-  /** Recipient address (SS58) */
-  to: string;
-  /** Amount in planck (as string for BigInt) */
-  amount: string;
-  /** Use transferKeepAlive (default: true) */
-  keepAlive?: boolean;
-}
-
-export interface TransferAllIntent {
-  type: 'transferAll';
-  /** Recipient address (SS58) */
-  to: string;
-  /** Keep account alive after transfer */
-  keepAlive?: boolean;
-}
-
-export interface StakeIntent {
-  type: 'stake';
-  /** Amount to stake in planck (as string for BigInt) */
-  amount: string;
-  /** Where to send staking rewards */
-  payee?: StakePayee;
-}
-
-export type StakePayee =
-  | { type: 'staked' }
-  | { type: 'stash' }
-  | { type: 'controller' }
-  | { type: 'account'; address: string };
-
-export interface UnstakeIntent {
-  type: 'unstake';
-  /** Amount to unstake in planck (as string for BigInt) */
-  amount: string;
-}
-
-export interface WithdrawUnbondedIntent {
-  type: 'withdrawUnbonded';
-  /** Number of slashing spans (usually 0) */
-  slashingSpans?: number;
-}
-
-export interface ChillIntent {
-  type: 'chill';
-}
-
-export interface AddProxyIntent {
-  type: 'addProxy';
-  /** Delegate address (SS58) */
-  delegate: string;
-  /** Proxy type (Any, NonTransfer, Staking, etc.) */
-  proxyType: string;
-  /** Delay in blocks */
-  delay?: number;
-}
-
-export interface RemoveProxyIntent {
-  type: 'removeProxy';
-  /** Delegate address (SS58) */
-  delegate: string;
-  /** Proxy type */
-  proxyType: string;
-  /** Delay in blocks */
-  delay?: number;
-}
-
-export interface BatchIntent {
-  type: 'batch';
-  /** Calls to batch */
-  calls: TransactionIntent[];
-  /** Use batchAll (atomic) instead of batch */
-  atomic?: boolean;
 }
 
 /**

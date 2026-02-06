@@ -25,6 +25,10 @@ serde-wasm-bindgen = "0.6"
 # SCALE codec (Substrate/Polkadot serialization)
 parity-scale-codec = { version = "3.6", features = ["derive"] }
 
+# Subxt for client-side Substrate types (WASM compatible)
+# Note: We use subxt_core::ext::scale_value for dynamic call building
+subxt-core = { version = "0.37", default-features = false }
+
 # Crypto
 blake2 = "0.10"
 

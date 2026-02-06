@@ -16,8 +16,9 @@ pub struct Material {
     pub spec_version: u32,
     /// Transaction format version
     pub tx_version: u32,
-    // Note: metadata is NOT included here - it's too large for WASM
-    // We'll hardcode pallet indices for known operations
+    /// Runtime metadata bytes (hex encoded)
+    /// Required for encoding calls - handles runtime upgrades automatically
+    pub metadata_hex: String,
 }
 
 /// Validity window for mortal transactions
@@ -53,25 +54,6 @@ pub struct ParseContext {
     /// Sender address (if known, helps with decoding)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sender: Option<String>,
-}
-
-/// Context required for building DOT transactions
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BuildContext {
-    /// Sender address (SS58 encoded)
-    pub sender: String,
-    /// Account nonce
-    pub nonce: u32,
-    /// Optional tip amount (in planck)
-    #[serde(default)]
-    pub tip: u128,
-    /// Chain material metadata
-    pub material: Material,
-    /// Validity window
-    pub validity: Validity,
-    /// Reference block hash for mortality
-    pub reference_block: String,
 }
 
 /// Transaction era (mortal or immortal)

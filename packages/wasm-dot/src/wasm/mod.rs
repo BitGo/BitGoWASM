@@ -9,6 +9,6 @@ pub mod transaction;
 pub mod try_into_js_value;
 
 // Re-export WASM types
-pub use builder::{BuildContextJs, BuilderNamespace, MaterialBuilderJs, ValidityBuilderJs};
+pub use builder::BuilderNamespace;
 pub use parser::ParserNamespace;
 pub use transaction::{MaterialJs, ParseContextJs, ValidityJs, WasmTransaction};
