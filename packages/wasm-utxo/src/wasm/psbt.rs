@@ -521,6 +521,25 @@ impl WrapPsbt {
             })
     }
 
+    /// Extract the final transaction from a finalized PSBT
+    ///
+    /// This method should be called after all inputs have been finalized.
+    /// It extracts the fully signed transaction as a WasmTransaction instance.
+    ///
+    /// # Returns
+    /// - `Ok(WasmTransaction)` containing the extracted transaction
+    /// - `Err(WasmUtxoError)` if the PSBT is not fully finalized or extraction fails
+    #[wasm_bindgen(js_name = extractTransaction)]
+    pub fn extract_transaction(
+        &self,
+    ) -> Result<crate::wasm::transaction::WasmTransaction, WasmUtxoError> {
+        let tx =
+            self.0.clone().extract_tx().map_err(|e| {
+                WasmUtxoError::new(&format!("Failed to extract transaction: {}", e))
+            })?;
+        Ok(crate::wasm::transaction::WasmTransaction::from_tx(tx))
+    }
+
     /// Get the number of inputs in the PSBT
     #[wasm_bindgen(js_name = inputCount)]
     pub fn input_count(&self) -> usize {

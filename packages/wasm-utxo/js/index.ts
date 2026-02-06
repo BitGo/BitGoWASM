@@ -111,6 +111,9 @@ declare module "./wasm/wasm_utxo.js" {
     validateSignatureAtInput(inputIndex: number, pubkey: Uint8Array): boolean;
     verifySignatureWithKey(inputIndex: number, key: WasmBIP32): boolean;
 
+    // Extraction methods
+    extractTransaction(): WasmTransaction;
+
     // Metadata methods
     unsignedTxId(): string;
     lockTime(): number;
