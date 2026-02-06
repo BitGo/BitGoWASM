@@ -2,8 +2,7 @@
  * TypeScript wrapper for ParserNamespace
  */
 
-import { ParserNamespace, MaterialJs, ParseContextJs } from '../pkg/wasm_dot';
-import { ensureWasmInitialized } from './index';
+import { ParserNamespace, MaterialJs, ParseContextJs } from './wasm/wasm_dot';
 import type { ParseContext, ParsedTransaction, TransactionOutput } from './types';
 
 /**
@@ -20,7 +19,6 @@ export class DotParser {
    * @returns Parsed transaction data
    */
   static parseTransaction(bytes: Uint8Array, context?: ParseContext): ParsedTransaction {
-    ensureWasmInitialized();
     const ctx = context ? createParseContext(context) : undefined;
     return ParserNamespace.parseTransaction(bytes, ctx) as ParsedTransaction;
   }
@@ -33,7 +31,6 @@ export class DotParser {
    * @returns Parsed transaction data
    */
   static parseTransactionHex(hex: string, context?: ParseContext): ParsedTransaction {
-    ensureWasmInitialized();
     const ctx = context ? createParseContext(context) : undefined;
     return ParserNamespace.parseTransactionHex(hex, ctx) as ParsedTransaction;
   }
@@ -47,7 +44,6 @@ export class DotParser {
    * @returns Transaction type string
    */
   static getTransactionType(bytes: Uint8Array): string {
-    ensureWasmInitialized();
     return ParserNamespace.getTransactionType(bytes);
   }
 
@@ -59,7 +55,6 @@ export class DotParser {
    * @returns Array of transaction outputs
    */
   static getOutputs(bytes: Uint8Array, context?: ParseContext): TransactionOutput[] {
-    ensureWasmInitialized();
     const ctx = context ? createParseContext(context) : undefined;
     return ParserNamespace.getOutputs(bytes, ctx) as TransactionOutput[];
   }

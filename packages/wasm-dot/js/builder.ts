@@ -7,8 +7,7 @@ import {
   BuildContextJs,
   MaterialBuilderJs,
   ValidityBuilderJs,
-} from '../pkg/wasm_dot';
-import { ensureWasmInitialized } from './index';
+} from './wasm/wasm_dot';
 import { DotTransaction } from './transaction';
 import type { BuildContext, TransactionIntent } from './types';
 
@@ -36,10 +35,9 @@ export class DotBuilder {
    * ```
    */
   static buildTransaction(intent: TransactionIntent, context: BuildContext): DotTransaction {
-    ensureWasmInitialized();
     const ctx = createBuildContext(context);
     const inner = BuilderNamespace.buildTransaction(intent, ctx);
-    return new DotTransaction(inner as any);
+    return DotTransaction.fromInner(inner as any);
   }
 
   /**
@@ -59,10 +57,9 @@ export class DotBuilder {
     keepAlive: boolean,
     context: BuildContext
   ): DotTransaction {
-    ensureWasmInitialized();
     const ctx = createBuildContext(context);
     const inner = BuilderNamespace.buildTransfer(to, amount, keepAlive, ctx);
-    return new DotTransaction(inner as any);
+    return DotTransaction.fromInner(inner as any);
   }
 
   /**
@@ -74,10 +71,9 @@ export class DotBuilder {
    * @returns Transaction ready for signing
    */
   static buildStake(amount: string, payee: string, context: BuildContext): DotTransaction {
-    ensureWasmInitialized();
     const ctx = createBuildContext(context);
     const inner = BuilderNamespace.buildStake(amount, payee, ctx);
-    return new DotTransaction(inner as any);
+    return DotTransaction.fromInner(inner as any);
   }
 
   /**
@@ -88,10 +84,9 @@ export class DotBuilder {
    * @returns Transaction ready for signing
    */
   static buildUnstake(amount: string, context: BuildContext): DotTransaction {
-    ensureWasmInitialized();
     const ctx = createBuildContext(context);
     const inner = BuilderNamespace.buildUnstake(amount, ctx);
-    return new DotTransaction(inner as any);
+    return DotTransaction.fromInner(inner as any);
   }
 }
 

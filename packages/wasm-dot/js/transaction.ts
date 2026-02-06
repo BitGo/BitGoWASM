@@ -7,8 +7,7 @@ import {
   MaterialJs,
   ValidityJs,
   ParseContextJs,
-} from '../pkg/wasm_dot';
-import { ensureWasmInitialized } from './index';
+} from './wasm/wasm_dot';
 import type { Material, Validity, ParseContext, Era } from './types';
 
 /**
@@ -27,7 +26,6 @@ export class DotTransaction {
    * Create a transaction from raw bytes
    */
   static fromBytes(bytes: Uint8Array, context?: ParseContext): DotTransaction {
-    ensureWasmInitialized();
     const ctx = context ? createParseContext(context) : undefined;
     const inner = new WasmTransaction(bytes, ctx);
     return new DotTransaction(inner);
@@ -37,7 +35,6 @@ export class DotTransaction {
    * Create from hex string
    */
   static fromHex(hex: string, context?: ParseContext): DotTransaction {
-    ensureWasmInitialized();
     const ctx = context ? createParseContext(context) : undefined;
     const inner = WasmTransaction.fromHex(hex, ctx);
     return new DotTransaction(inner);
@@ -164,6 +161,14 @@ export class DotTransaction {
    */
   getInner(): WasmTransaction {
     return this.inner;
+  }
+
+  /**
+   * Create a DotTransaction from an inner WasmTransaction
+   * @internal
+   */
+  static fromInner(inner: WasmTransaction): DotTransaction {
+    return new DotTransaction(inner);
   }
 }
 
