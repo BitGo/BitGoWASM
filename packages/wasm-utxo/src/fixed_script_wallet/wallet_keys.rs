@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::str::FromStr;
 
@@ -24,10 +26,18 @@ pub fn derivation_path(prefix: &DerivationPath, chain: u32, index: u32) -> Deriv
         .child(ChildNumber::Normal { index })
 }
 
-#[derive(Debug, Clone)]
+/// Maximum number of (chain, index) pairs to cache
+const DERIVATION_CACHE_MAX_SIZE: usize = 128;
+
 pub struct RootWalletKeys {
     pub xpubs: XpubTriple,
     pub derivation_prefixes: [DerivationPath; 3],
+    /// Keys derived to prefix level (computed once in constructor)
+    prefix_derived: XpubTriple,
+    /// Keys derived to (chain, index) level (cached on-demand, bounded size)
+    derivation_cache: RefCell<HashMap<(u32, u32), XpubTriple>>,
+    /// Shared secp256k1 context (avoids repeated allocation)
+    secp: Secp256k1<crate::bitcoin::secp256k1::All>,
 }
 
 impl RootWalletKeys {
@@ -35,9 +45,26 @@ impl RootWalletKeys {
         xpubs: XpubTriple,
         derivation_prefixes: [DerivationPath; 3],
     ) -> Self {
+        let secp = Secp256k1::new();
+
+        // Pre-derive keys to prefix level (e.g., m/0/0)
+        let prefix_derived: XpubTriple = xpubs
+            .iter()
+            .zip(derivation_prefixes.iter())
+            .map(|(xpub, prefix)| {
+                xpub.derive_pub(&secp, prefix)
+                    .expect("valid prefix derivation")
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("3 keys");
+
         Self {
             xpubs,
             derivation_prefixes,
+            prefix_derived,
+            derivation_cache: RefCell::new(HashMap::new()),
+            secp,
         }
     }
 
@@ -69,25 +96,68 @@ impl RootWalletKeys {
         chain: u32,
         index: u32,
     ) -> Result<XpubTriple, WasmUtxoError> {
-        let paths: Vec<DerivationPath> = self
-            .derivation_prefixes
-            .iter()
-            .map(|p| derivation_path(p, chain, index))
-            .collect::<Vec<_>>();
+        let cache_key = (chain, index);
 
-        let ctx = Secp256k1::new();
+        // Check cache first
+        {
+            let cache = self.derivation_cache.borrow();
+            if let Some(cached) = cache.get(&cache_key) {
+                return Ok(cached.clone());
+            }
+        }
 
-        // zip xpubs and paths, and return a Result<XpubTriple, WasmUtxoError>
-        self.xpubs
+        // Derive from prefix to chain+index (2 levels)
+        let path = DerivationPath::from(vec![
+            ChildNumber::Normal { index: chain },
+            ChildNumber::Normal { index },
+        ]);
+        let derived: XpubTriple = self
+            .prefix_derived
             .iter()
-            .zip(paths.iter())
-            .map(|(x, p)| {
-                x.derive_pub(&ctx, p)
+            .map(|xpub| {
+                xpub.derive_pub(&self.secp, &path)
                     .map_err(|e| WasmUtxoError::new(&format!("Error deriving xpub: {}", e)))
             })
             .collect::<Result<Vec<_>, _>>()?
             .try_into()
-            .map_err(|_| WasmUtxoError::new("Expected exactly 3 derived xpubs"))
+            .map_err(|_| WasmUtxoError::new("Expected exactly 3 derived xpubs"))?;
+
+        // Cache the result (with bounded size)
+        {
+            let mut cache = self.derivation_cache.borrow_mut();
+            if cache.len() >= DERIVATION_CACHE_MAX_SIZE {
+                cache.clear();
+            }
+            cache.insert(cache_key, derived.clone());
+        }
+
+        Ok(derived)
+    }
+}
+
+impl Clone for RootWalletKeys {
+    fn clone(&self) -> Self {
+        Self {
+            xpubs: self.xpubs,
+            derivation_prefixes: self.derivation_prefixes.clone(),
+            prefix_derived: self.prefix_derived,
+            derivation_cache: RefCell::new(self.derivation_cache.borrow().clone()),
+            secp: Secp256k1::new(),
+        }
+    }
+}
+
+impl std::fmt::Debug for RootWalletKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RootWalletKeys")
+            .field("xpubs", &self.xpubs)
+            .field("derivation_prefixes", &self.derivation_prefixes)
+            .field("prefix_derived", &self.prefix_derived)
+            .field(
+                "derivation_cache_size",
+                &self.derivation_cache.borrow().len(),
+            )
+            .finish()
     }
 }
 
