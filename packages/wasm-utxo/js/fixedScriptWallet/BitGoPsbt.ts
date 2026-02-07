@@ -766,14 +766,16 @@ export class BitGoPsbt {
    */
   extractTransaction(): ITransaction {
     const networkType = this._wasm.get_network_type();
+    const wasm: unknown = this._wasm.extract_transaction();
 
-    if (networkType === "dash") {
-      return DashTransaction.fromWasm(this._wasm.extract_dash_transaction());
+    switch (networkType) {
+      case "dash":
+        return DashTransaction.fromWasm(wasm as Parameters<typeof DashTransaction.fromWasm>[0]);
+      case "zcash":
+        return ZcashTransaction.fromWasm(wasm as Parameters<typeof ZcashTransaction.fromWasm>[0]);
+      default:
+        return Transaction.fromWasm(wasm as Parameters<typeof Transaction.fromWasm>[0]);
     }
-    if (networkType === "zcash") {
-      return ZcashTransaction.fromWasm(this._wasm.extract_zcash_transaction());
-    }
-    return Transaction.fromWasm(this._wasm.extract_bitcoin_transaction());
   }
 
   /**

@@ -5,6 +5,7 @@ import { getKey } from "@bitgo/utxo-lib/dist/src/testutil";
 import { DescriptorNode, formatNode } from "../js/ast/index.js";
 import { mockPsbtDefault } from "./psbtFromDescriptor.util.js";
 import { Descriptor } from "../js/index.js";
+import { WasmTransaction } from "../js/wasm/wasm_utxo.js";
 import { toWrappedPsbt } from "./psbt.util.js";
 
 function toKeyWithPath(k: BIP32Interface, path = "*"): string {
@@ -154,3 +155,77 @@ describeSignDescriptor(
   ),
   { signECPair: [[toECPair(a)]] },
 );
+
+describe("WrapPsbt extractTransaction", function () {
+  function signFinalizeExtract(descriptor: Descriptor, signKeys: BIP32Interface[]) {
+    const psbt = mockPsbtDefault({
+      descriptorSelf: descriptor,
+      descriptorOther: Descriptor.fromString(
+        formatNode({ wpkh: toKeyWithPath(external) }),
+        "derivable",
+      ),
+    });
+    const wrappedPsbt = toWrappedPsbt(psbt);
+    for (const key of signKeys) {
+      wrappedPsbt.signWithXprv(key.toBase58());
+    }
+    wrappedPsbt.finalize();
+    return wrappedPsbt.extractTransaction();
+  }
+
+  it("should extract transaction from finalized Wsh2Of3 PSBT", function () {
+    const tx = signFinalizeExtract(
+      fromNodes(
+        { wsh: { multi: [2, toKeyWithPath(a), toKeyWithPath(b), toKeyWithPath(c)] } },
+        "derivable",
+      ),
+      [a, b],
+    );
+
+    assert.strictEqual(typeof tx.get_txid(), "string");
+    assert.strictEqual(tx.get_txid().length, 64);
+    assert.ok(tx.get_vsize() > 0);
+    assert.ok(tx.to_bytes().length > 0);
+  });
+
+  it("should extract transaction from finalized Tr PSBT", function () {
+    const tx = signFinalizeExtract(
+      fromNodes(
+        { tr: [toKeyWithPath(a), [{ pk: toKeyWithPath(b) }, { pk: toKeyWithPath(c) }]] },
+        "derivable",
+      ),
+      [a],
+    );
+
+    assert.strictEqual(typeof tx.get_txid(), "string");
+    assert.strictEqual(tx.get_txid().length, 64);
+    assert.ok(tx.get_vsize() > 0);
+    assert.ok(tx.to_bytes().length > 0);
+  });
+
+  it("should produce consistent txid across repeated calls", function () {
+    const tx = signFinalizeExtract(
+      fromNodes(
+        { wsh: { multi: [2, toKeyWithPath(a), toKeyWithPath(b), toKeyWithPath(c)] } },
+        "derivable",
+      ),
+      [a, b],
+    );
+
+    assert.strictEqual(tx.get_txid(), tx.get_txid());
+  });
+
+  it("should produce a transaction whose bytes round-trip to the same txid", function () {
+    const tx = signFinalizeExtract(
+      fromNodes(
+        { wsh: { multi: [2, toKeyWithPath(a), toKeyWithPath(b), toKeyWithPath(c)] } },
+        "derivable",
+      ),
+      [a, b],
+    );
+
+    const txBytes = tx.to_bytes();
+    const tx2 = WasmTransaction.from_bytes(txBytes);
+    assert.strictEqual(tx2.get_txid(), tx.get_txid());
+  });
+});
