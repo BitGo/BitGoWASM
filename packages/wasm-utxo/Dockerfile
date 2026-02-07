@@ -6,7 +6,7 @@ RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install wasm-pack
-RUN cargo install wasm-pack
+RUN cargo install wasm-pack --version 0.14.0
 
 # Install clang and binaryen (provides wasm-opt)
 RUN apt-get update && apt-get install -y clang binaryen
