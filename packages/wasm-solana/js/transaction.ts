@@ -116,11 +116,10 @@ export class Transaction {
   /**
    * Serialize the message portion of the transaction.
    * Alias for signablePayload() - provides compatibility with @solana/web3.js API.
-   * Returns a Buffer for compatibility with code expecting .toString('base64').
-   * @returns The serialized message bytes as a Buffer
+   * @returns The serialized message bytes
    */
-  serializeMessage(): Buffer {
-    return Buffer.from(this.signablePayload());
+  serializeMessage(): Uint8Array {
+    return this.signablePayload();
   }
 
   /**

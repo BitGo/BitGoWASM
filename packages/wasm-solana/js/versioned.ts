@@ -83,14 +83,6 @@ export class VersionedTransaction {
   }
 
   /**
-   * Deserialize a transaction from base64 string.
-   */
-  static fromBase64(base64: string): VersionedTransaction {
-    const bytes = Uint8Array.from(Buffer.from(base64, "base64"));
-    return VersionedTransaction.fromBytes(bytes);
-  }
-
-  /**
    * Create a VersionedTransaction from a WasmVersionedTransaction instance.
    * @internal Used by builder functions
    */
@@ -188,11 +180,10 @@ export class VersionedTransaction {
   /**
    * Serialize the message portion of the transaction.
    * Alias for signablePayload() - provides compatibility with @solana/web3.js API.
-   * Returns a Buffer for compatibility with code expecting .toString('base64').
-   * @returns The serialized message bytes as a Buffer
+   * @returns The serialized message bytes
    */
-  serializeMessage(): Buffer {
-    return Buffer.from(this.signablePayload());
+  serializeMessage(): Uint8Array {
+    return this.signablePayload();
   }
 
   /**
@@ -200,13 +191,6 @@ export class VersionedTransaction {
    */
   toBytes(): Uint8Array {
     return this.inner.to_bytes();
-  }
-
-  /**
-   * Serialize the transaction to base64.
-   */
-  toBase64(): string {
-    return Buffer.from(this.toBytes()).toString("base64");
   }
 
   /**

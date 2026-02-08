@@ -1,6 +1,16 @@
 import * as assert from "assert";
 import { VersionedTransaction, isVersionedTransaction } from "../js/versioned.js";
 
+/** Helper to decode base64 in tests (Buffer is allowed in tests) */
+function base64ToBytes(base64: string): Uint8Array {
+  return Uint8Array.from(Buffer.from(base64, "base64"));
+}
+
+/** Helper to encode bytes to base64 in tests */
+function bytesToBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64");
+}
+
 describe("VersionedTransaction", () => {
   // Legacy transaction (same as transaction.ts test)
   const LEGACY_TX_BASE64 =
@@ -15,7 +25,7 @@ describe("VersionedTransaction", () => {
 
   describe("legacy transaction parsing", () => {
     it("should parse legacy transaction as versioned", () => {
-      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
+      const tx = VersionedTransaction.fromBytes(base64ToBytes(LEGACY_TX_BASE64));
 
       assert.strictEqual(tx.isVersioned, false);
       assert.ok(tx.feePayer);
@@ -23,14 +33,14 @@ describe("VersionedTransaction", () => {
     });
 
     it("should have empty address lookup tables for legacy", () => {
-      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
+      const tx = VersionedTransaction.fromBytes(base64ToBytes(LEGACY_TX_BASE64));
       const alts = tx.addressLookupTables();
 
       assert.strictEqual(alts.length, 0);
     });
 
     it("should have static account keys", () => {
-      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
+      const tx = VersionedTransaction.fromBytes(base64ToBytes(LEGACY_TX_BASE64));
       const keys = tx.staticAccountKeys();
 
       assert.ok(Array.isArray(keys));
@@ -40,7 +50,7 @@ describe("VersionedTransaction", () => {
     });
 
     it("should get instructions", () => {
-      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
+      const tx = VersionedTransaction.fromBytes(base64ToBytes(LEGACY_TX_BASE64));
       const instructions = tx.instructions();
 
       assert.ok(Array.isArray(instructions));
@@ -53,7 +63,7 @@ describe("VersionedTransaction", () => {
     });
 
     it("should get signable payload", () => {
-      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
+      const tx = VersionedTransaction.fromBytes(base64ToBytes(LEGACY_TX_BASE64));
       const payload = tx.signablePayload();
 
       assert.ok(payload instanceof Uint8Array);
@@ -61,7 +71,7 @@ describe("VersionedTransaction", () => {
     });
 
     it("should roundtrip", () => {
-      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
+      const tx = VersionedTransaction.fromBytes(base64ToBytes(LEGACY_TX_BASE64));
       const bytes = tx.toBytes();
 
       const tx2 = VersionedTransaction.fromBytes(bytes);
@@ -71,7 +81,7 @@ describe("VersionedTransaction", () => {
     });
 
     it("should add signature", () => {
-      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
+      const tx = VersionedTransaction.fromBytes(base64ToBytes(LEGACY_TX_BASE64));
       const feePayer = tx.feePayer;
 
       const signature = new Uint8Array(64).fill(42);
@@ -85,10 +95,10 @@ describe("VersionedTransaction", () => {
 
   describe("base64 serialization", () => {
     it("should roundtrip base64", () => {
-      const tx = VersionedTransaction.fromBase64(LEGACY_TX_BASE64);
-      const base64 = tx.toBase64();
+      const tx = VersionedTransaction.fromBytes(base64ToBytes(LEGACY_TX_BASE64));
+      const base64 = bytesToBase64(tx.toBytes());
 
-      const tx2 = VersionedTransaction.fromBase64(base64);
+      const tx2 = VersionedTransaction.fromBytes(base64ToBytes(base64));
       assert.strictEqual(tx.feePayer, tx2.feePayer);
     });
   });
