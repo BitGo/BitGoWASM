@@ -259,6 +259,43 @@ describe("buildFromIntent", function () {
       );
       assert(createAta, "Should have CreateAssociatedTokenAccount instruction");
     });
+
+    it("should build enableToken with multiple tokens (tokenAddresses array)", function () {
+      const intent = {
+        intentType: "enableToken",
+        tokenAddresses: [
+          "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+          "SRMuApVNdxXokk5GT7XD5cUUgXMBCoAz2LHeuAoKWRt", // SRM
+          "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE", // ORCA
+        ],
+        tokenProgramIds: [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        ],
+        recipientAddress: feePayer,
+      };
+
+      const result = buildFromIntent(intent, {
+        feePayer,
+        nonce: { type: "blockhash", value: blockhash },
+      });
+
+      assert(result.transaction instanceof Transaction, "Should return Transaction object");
+      assert.equal(result.generatedKeypairs.length, 0, "Should not generate keypairs");
+
+      // Verify instructions
+      const parsed = parseTransaction(result.transaction.toBytes());
+
+      const createAtaInstructions = parsed.instructionsData.filter(
+        (i: any) => i.type === "CreateAssociatedTokenAccount",
+      );
+      assert.equal(
+        createAtaInstructions.length,
+        3,
+        "Should have 3 CreateAssociatedTokenAccount instructions",
+      );
+    });
   });
 
   describe("closeAssociatedTokenAccount intent", function () {

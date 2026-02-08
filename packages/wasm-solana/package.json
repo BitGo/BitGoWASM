@@ -9,9 +9,7 @@
   },
   "license": "MIT",
   "files": [
-    "dist/esm/js/**/*",
-    "dist/cjs/js/**/*",
-    "dist/cjs/package.json"
+    "dist"
   ],
   "exports": {
     ".": {
