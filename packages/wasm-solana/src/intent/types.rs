@@ -233,16 +233,25 @@ pub struct DelegateIntent {
 }
 
 /// Enable token intent (create ATA)
+/// Supports both single token (tokenAddress) and multiple tokens (tokenAddresses array)
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnableTokenIntent {
     pub intent_type: String,
     #[serde(default)]
     pub recipient_address: Option<String>,
+    /// Single token address (legacy format)
     #[serde(default)]
     pub token_address: Option<String>,
+    /// Multiple token addresses (array format from wallet-platform)
+    #[serde(default)]
+    pub token_addresses: Option<Vec<String>>,
+    /// Single token program ID (legacy format)
     #[serde(default)]
     pub token_program_id: Option<String>,
+    /// Multiple token program IDs (array format, parallel to token_addresses)
+    #[serde(default)]
+    pub token_program_ids: Option<Vec<String>>,
     #[serde(default)]
     pub memo: Option<String>,
 }

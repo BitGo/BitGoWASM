@@ -20,6 +20,14 @@ use solana_stake_interface::instruction as stake_ix;
 use solana_stake_interface::state::{Authorized, Lockup};
 use solana_system_interface::instruction as system_ix;
 
+// Well-known Solana program IDs
+// SPL Token Program: https://www.solana-program.com/docs/token
+const SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+// Associated Token Account Program: https://www.solana-program.com/docs/associated-token-account
+const SPL_ATA_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+// System Program
+const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
+
 // Constants
 const STAKE_ACCOUNT_SPACE: u64 = 200;
 const STAKE_ACCOUNT_RENT: u64 = 2282880; // ~0.00228288 SOL
@@ -615,49 +623,73 @@ fn build_enable_token(
         .map_err(|_| WasmSolanaError::new("Invalid recipientAddress"))?
         .unwrap_or(fee_payer);
 
-    let mint: Pubkey = intent
-        .token_address
-        .as_ref()
-        .ok_or_else(|| WasmSolanaError::new("Missing tokenAddress"))?
-        .parse()
-        .map_err(|_| WasmSolanaError::new("Invalid tokenAddress"))?;
+    // Build list of (mint, token_program) pairs from either array or single format
+    let default_program: Pubkey = SPL_TOKEN_PROGRAM_ID.parse().unwrap();
+    let token_pairs: Vec<(Pubkey, Pubkey)> = if let Some(ref addresses) = intent.token_addresses {
+        // Array format: tokenAddresses + tokenProgramIds
+        let program_ids = intent.token_program_ids.as_ref();
 
-    let token_program: Pubkey = intent
-        .token_program_id
-        .as_ref()
-        .map(|p| p.parse())
-        .transpose()
-        .map_err(|_| WasmSolanaError::new("Invalid tokenProgramId"))?
-        .unwrap_or_else(|| {
-            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-                .parse()
-                .unwrap()
-        });
+        addresses
+            .iter()
+            .enumerate()
+            .map(|(i, addr)| {
+                let mint: Pubkey = addr.parse().map_err(|_| {
+                    WasmSolanaError::new(&format!("Invalid tokenAddress at index {}", i))
+                })?;
+                let program: Pubkey = program_ids
+                    .and_then(|ids| ids.get(i))
+                    .map(|p| p.parse().unwrap_or(default_program))
+                    .unwrap_or(default_program);
+                Ok((mint, program))
+            })
+            .collect::<Result<Vec<_>, WasmSolanaError>>()?
+    } else if let Some(ref addr) = intent.token_address {
+        // Single format: tokenAddress + tokenProgramId
+        let mint: Pubkey = addr
+            .parse()
+            .map_err(|_| WasmSolanaError::new("Invalid tokenAddress"))?;
+        let token_program: Pubkey = intent
+            .token_program_id
+            .as_ref()
+            .map(|p| p.parse())
+            .transpose()
+            .map_err(|_| WasmSolanaError::new("Invalid tokenProgramId"))?
+            .unwrap_or(default_program);
+        vec![(mint, token_program)]
+    } else {
+        return Err(WasmSolanaError::new(
+            "Missing tokenAddress or tokenAddresses",
+        ));
+    };
 
-    // Derive ATA address
-    let ata_program: Pubkey = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-        .parse()
-        .unwrap();
-    let seeds = &[owner.as_ref(), token_program.as_ref(), mint.as_ref()];
-    let (ata, _bump) = Pubkey::find_program_address(seeds, &ata_program);
-
-    let system_program: Pubkey = "11111111111111111111111111111111".parse().unwrap();
+    let ata_program: Pubkey = SPL_ATA_PROGRAM_ID.parse().unwrap();
+    let system_program: Pubkey = SYSTEM_PROGRAM_ID.parse().unwrap();
 
     use solana_sdk::instruction::AccountMeta;
-    let instruction = Instruction::new_with_bytes(
-        ata_program,
-        &[],
-        vec![
-            AccountMeta::new(fee_payer, true),
-            AccountMeta::new(ata, false),
-            AccountMeta::new_readonly(owner, false),
-            AccountMeta::new_readonly(mint, false),
-            AccountMeta::new_readonly(system_program, false),
-            AccountMeta::new_readonly(token_program, false),
-        ],
-    );
 
-    Ok((vec![instruction], vec![]))
+    // Build one instruction per token
+    let instructions: Vec<Instruction> = token_pairs
+        .iter()
+        .map(|(mint, token_program)| {
+            let seeds = &[owner.as_ref(), token_program.as_ref(), mint.as_ref()];
+            let (ata, _bump) = Pubkey::find_program_address(seeds, &ata_program);
+
+            Instruction::new_with_bytes(
+                ata_program,
+                &[],
+                vec![
+                    AccountMeta::new(fee_payer, true),
+                    AccountMeta::new(ata, false),
+                    AccountMeta::new_readonly(owner, false),
+                    AccountMeta::new_readonly(*mint, false),
+                    AccountMeta::new_readonly(system_program, false),
+                    AccountMeta::new_readonly(*token_program, false),
+                ],
+            )
+        })
+        .collect();
+
+    Ok((instructions, vec![]))
 }
 
 fn build_close_ata(
@@ -683,17 +715,14 @@ fn build_close_ata(
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid tokenAccountAddress"))?;
 
+    let default_program: Pubkey = SPL_TOKEN_PROGRAM_ID.parse().unwrap();
     let token_program: Pubkey = intent
         .token_program_id
         .as_ref()
         .map(|p| p.parse())
         .transpose()
         .map_err(|_| WasmSolanaError::new("Invalid tokenProgramId"))?
-        .unwrap_or_else(|| {
-            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-                .parse()
-                .unwrap()
-        });
+        .unwrap_or(default_program);
 
     // CloseAccount instruction
     use spl_token::instruction::TokenInstruction;
