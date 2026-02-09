@@ -21,8 +21,8 @@ export type { AddressLookupTableData } from "./versioned.js";
 
 // Top-level function exports
 export { parseTransaction } from "./parser.js";
-export { buildTransaction, buildFromVersionedData } from "./builder.js";
-export { buildFromIntent } from "./intentBuilder.js";
+export { buildFromVersionedData } from "./builder.js";
+export { buildFromIntent, buildFromIntent as buildTransactionFromIntent } from "./intentBuilder.js";
 
 // Intent builder type exports
 export type {
@@ -94,43 +94,9 @@ export type {
   UnknownInstructionParams,
 } from "./parser.js";
 
-// Builder type exports (prefixed to avoid conflict with parser/transaction types)
+// Versioned transaction builder type exports
 export type {
-  TransactionIntent,
-  NonceSource as BuilderNonceSource,
-  BlockhashNonceSource,
-  DurableNonceSource,
   AddressLookupTable as BuilderAddressLookupTable,
-  Instruction as BuilderInstruction,
-  TransferInstruction,
-  CreateAccountInstruction,
-  NonceAdvanceInstruction,
-  NonceInitializeInstruction,
-  AllocateInstruction,
-  AssignInstruction,
-  MemoInstruction,
-  ComputeBudgetInstruction,
-  // Stake Program
-  StakeInitializeInstruction,
-  StakeDelegateInstruction,
-  StakeDeactivateInstruction,
-  StakeWithdrawInstruction,
-  StakeAuthorizeInstruction,
-  StakeSplitInstruction,
-  // SPL Token
-  TokenTransferInstruction,
-  CreateAssociatedTokenAccountInstruction,
-  CloseAssociatedTokenAccountInstruction,
-  MintToInstruction,
-  BurnInstruction,
-  ApproveInstruction,
-  // Jito Stake Pool
-  StakePoolDepositSolInstruction,
-  StakePoolWithdrawStakeInstruction,
-  // Custom Instruction
-  CustomInstruction as BuilderCustomInstruction,
-  CustomAccountMeta,
-  // Raw Versioned Transaction Data (for fromVersionedTransactionData path)
   RawVersionedTransactionData,
   VersionedInstruction as BuilderVersionedInstruction,
   MessageHeader,

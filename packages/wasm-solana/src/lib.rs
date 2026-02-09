@@ -23,7 +23,6 @@
 //! let pubkey = Pubkey::from_base58("FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH").unwrap();
 //! ```
 
-pub mod builder;
 mod error;
 mod instructions;
 pub mod intent;
@@ -32,6 +31,7 @@ mod parser;
 pub mod pubkey;
 pub mod transaction;
 pub mod versioned;
+pub mod versioned_builder;
 pub mod wasm;
 
 // Re-export core types at crate root
