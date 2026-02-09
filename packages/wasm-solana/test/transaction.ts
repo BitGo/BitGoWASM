@@ -127,10 +127,10 @@ describe("Transaction", () => {
   });
 
   describe("id getter", () => {
-    it("should return UNSIGNED for unsigned transaction", () => {
+    it("should return undefined for unsigned transaction", () => {
       const tx = Transaction.fromBytes(TEST_TX_BYTES);
       // The test transaction has an all-zeros signature (unsigned)
-      assert.strictEqual(tx.id, "UNSIGNED");
+      assert.strictEqual(tx.id, undefined);
     });
 
     it("should return base58 signature after signing", () => {
@@ -144,8 +144,8 @@ describe("Transaction", () => {
 
       // ID should now be a base58-encoded string of the signature
       const id = tx.id;
-      assert.notStrictEqual(id, "UNSIGNED");
-      assert.ok(id.length > 20); // base58 encoded 64 bytes should be ~80+ chars
+      assert.notStrictEqual(id, undefined);
+      assert.ok(id && id.length > 20); // base58 encoded 64 bytes should be ~80+ chars
     });
   });
 
