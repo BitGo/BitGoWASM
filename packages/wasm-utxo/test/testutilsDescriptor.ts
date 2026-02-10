@@ -1,6 +1,8 @@
 import * as assert from "node:assert";
 
-import { Descriptor, Psbt, testutils } from "../js/index.js";
+import { Descriptor, Psbt, address } from "../js/index.js";
+import * as dt from "../js/testutils/descriptor/index.js";
+import * as testutils from "../js/testutils/index.js";
 
 describe("testutils.descriptor", () => {
   describe("getDefaultXPubs", () => {
@@ -91,6 +93,67 @@ describe("testutils.descriptor.mockPsbt", () => {
         assert.strictEqual(psbt.inputCount(), 2);
         assert.strictEqual(psbt.outputCount(), 2);
       });
+    }
+  });
+});
+
+describe("Psbt.getOutputsWithAddress", () => {
+  it("returns outputs with address strings for btc", () => {
+    const psbt = dt.mockPsbtDefault();
+    const outputs = psbt.getOutputsWithAddress("btc");
+    assert.strictEqual(outputs.length, 2);
+    for (const output of outputs) {
+      assert.ok(typeof output.address === "string", "address should be a string");
+      assert.ok(output.address.length > 0, "address should not be empty");
+      assert.ok(output.script instanceof Uint8Array, "script should be Uint8Array");
+      assert.ok(typeof output.value === "bigint", "value should be bigint");
+      assert.ok(Array.isArray(output.bip32Derivation), "bip32Derivation should be array");
+      assert.ok(Array.isArray(output.tapBip32Derivation), "tapBip32Derivation should be array");
+    }
+  });
+
+  it("returns consistent addresses with address.fromOutputScriptWithCoin", () => {
+    const psbt = dt.mockPsbtDefault();
+    const outputsWithAddr = psbt.getOutputsWithAddress("btc");
+    const rawOutputs = psbt.getOutputs();
+    for (let i = 0; i < rawOutputs.length; i++) {
+      const expected = address.fromOutputScriptWithCoin(rawOutputs[i].script, "btc");
+      assert.strictEqual(outputsWithAddr[i].address, expected);
+    }
+  });
+
+  it("returns btc mainnet addresses starting with expected prefixes", () => {
+    const psbt = dt.mockPsbtDefaultWithDescriptorTemplate("Wsh2Of3");
+    const outputs = psbt.getOutputsWithAddress("btc");
+    for (const output of outputs) {
+      // p2wsh addresses start with bc1
+      assert.ok(output.address.startsWith("bc1"), `expected bc1 prefix, got ${output.address}`);
+    }
+  });
+
+  it("returns tbtc testnet addresses starting with expected prefixes", () => {
+    const psbt = dt.mockPsbtDefaultWithDescriptorTemplate("Wsh2Of3");
+    const outputs = psbt.getOutputsWithAddress("tbtc");
+    for (const output of outputs) {
+      // p2wsh testnet addresses start with tb1
+      assert.ok(output.address.startsWith("tb1"), `expected tb1 prefix, got ${output.address}`);
+    }
+  });
+
+  it("works for all wsh/tr templates", () => {
+    for (const t of [
+      "Wsh2Of3",
+      "Wsh2Of2",
+      "Wsh2Of3CltvDrop",
+      "Tr2Of3-NoKeyPath",
+      "Tr1Of3-NoKeyPath-Tree",
+    ] as dt.DescriptorTemplate[]) {
+      const psbt = dt.mockPsbtDefaultWithDescriptorTemplate(t, dt.getPsbtParams(t));
+      const outputs = psbt.getOutputsWithAddress("btc");
+      assert.strictEqual(outputs.length, 2, `${t}: expected 2 outputs`);
+      for (const output of outputs) {
+        assert.ok(output.address.length > 0, `${t}: address should not be empty`);
+      }
     }
   });
 });

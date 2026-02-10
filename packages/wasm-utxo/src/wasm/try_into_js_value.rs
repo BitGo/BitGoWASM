@@ -447,6 +447,18 @@ impl TryIntoJsValue for crate::wasm::psbt::PsbtOutputData {
     }
 }
 
+impl TryIntoJsValue for crate::wasm::psbt::PsbtOutputDataWithAddress {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "script" => self.script.clone(),
+            "value" => self.value,
+            "address" => self.address.clone(),
+            "bip32Derivation" => self.bip32_derivation.clone(),
+            "tapBip32Derivation" => self.tap_bip32_derivation.clone()
+        )
+    }
+}
+
 /// A partial signature with its associated public key
 #[derive(Clone)]
 pub struct PartialSignature {

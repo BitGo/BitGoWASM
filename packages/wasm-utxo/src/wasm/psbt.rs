@@ -1,3 +1,4 @@
+use crate::address::networks::{from_output_script_with_network_and_format, AddressFormat};
 use crate::error::WasmUtxoError;
 use crate::wasm::bip32::WasmBIP32;
 use crate::wasm::descriptor::WrapDescriptorEnum;
@@ -11,7 +12,7 @@ use miniscript::bitcoin::transaction::{Transaction, Version};
 use miniscript::bitcoin::{
     bip32, psbt, Amount, OutPoint, PublicKey, ScriptBuf, Sequence, XOnlyPublicKey,
 };
-use miniscript::bitcoin::{PrivateKey, Psbt, TxIn, TxOut, Txid};
+use miniscript::bitcoin::{PrivateKey, Psbt, Script, TxIn, TxOut, Txid};
 use miniscript::descriptor::{SinglePub, SinglePubKey};
 use miniscript::psbt::PsbtExt;
 use miniscript::{DescriptorPublicKey, ToPublicKey};
@@ -173,6 +174,32 @@ impl PsbtOutputData {
             bip32_derivation,
             tap_bip32_derivation,
         }
+    }
+}
+
+/// PSBT output data with a resolved address string (requires a coin name for encoding).
+#[derive(Debug, Clone)]
+pub struct PsbtOutputDataWithAddress {
+    pub script: Vec<u8>,
+    pub value: u64,
+    pub address: String,
+    pub bip32_derivation: Vec<Bip32Derivation>,
+    pub tap_bip32_derivation: Vec<Bip32Derivation>,
+}
+
+impl PsbtOutputDataWithAddress {
+    pub fn from(base: PsbtOutputData, network: crate::Network) -> Result<Self, WasmUtxoError> {
+        let script_obj = Script::from_bytes(&base.script);
+        let address =
+            from_output_script_with_network_and_format(script_obj, network, AddressFormat::Default)
+                .map_err(|e| WasmUtxoError::new(&e.to_string()))?;
+        Ok(PsbtOutputDataWithAddress {
+            script: base.script,
+            value: base.value,
+            address,
+            bip32_derivation: base.bip32_derivation,
+            tap_bip32_derivation: base.tap_bip32_derivation,
+        })
     }
 }
 
@@ -576,6 +603,28 @@ impl WrapPsbt {
             .zip(self.0.outputs.iter())
             .map(|(tx_out, psbt_out)| PsbtOutputData::from(tx_out, psbt_out))
             .collect();
+        outputs.try_to_js_value()
+    }
+
+    /// Get all PSBT outputs with resolved address strings.
+    ///
+    /// Like `getOutputs()` but each element also includes an `address` field
+    /// derived from the output script using the given coin name (e.g. "btc", "tbtc").
+    #[wasm_bindgen(js_name = getOutputsWithAddress)]
+    pub fn get_outputs_with_address(&self, coin: &str) -> Result<JsValue, WasmUtxoError> {
+        let network = crate::Network::from_coin_name(coin)
+            .ok_or_else(|| WasmUtxoError::new(&format!("Unknown coin: {}", coin)))?;
+        let outputs: Vec<PsbtOutputDataWithAddress> = self
+            .0
+            .unsigned_tx
+            .output
+            .iter()
+            .zip(self.0.outputs.iter())
+            .map(|(tx_out, psbt_out)| {
+                let base = PsbtOutputData::from(tx_out, psbt_out);
+                PsbtOutputDataWithAddress::from(base, network)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         outputs.try_to_js_value()
     }
 

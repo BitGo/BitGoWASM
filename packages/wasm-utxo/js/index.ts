@@ -88,6 +88,11 @@ declare module "./wasm/wasm_utxo.js" {
     tapBip32Derivation: PsbtBip32Derivation[];
   }
 
+  /** PSBT output data with resolved address, returned by getOutputsWithAddress() */
+  interface PsbtOutputDataWithAddress extends PsbtOutputData {
+    address: string;
+  }
+
   interface WrapPsbt {
     // Signing methods (legacy - kept for backwards compatibility)
     signWithXprv(this: WrapPsbt, xprv: string): SignPsbtResult;
@@ -102,6 +107,7 @@ declare module "./wasm/wasm_utxo.js" {
     outputCount(): number;
     getInputs(): PsbtInputData[];
     getOutputs(): PsbtOutputData[];
+    getOutputsWithAddress(coin: import("./coinName.js").CoinName): PsbtOutputDataWithAddress[];
     getPartialSignatures(inputIndex: number): Array<{
       pubkey: Uint8Array;
       signature: Uint8Array;
