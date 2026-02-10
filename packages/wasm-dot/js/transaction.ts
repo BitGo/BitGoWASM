@@ -122,6 +122,20 @@ export class DotTransaction {
   }
 
   /**
+   * Set account nonce (mutates in-place, reflected on next toBytes/toHex)
+   */
+  setNonce(nonce: number): void {
+    this.inner.setNonce(nonce);
+  }
+
+  /**
+   * Set tip amount (mutates in-place, reflected on next toBytes/toHex)
+   */
+  setTip(tip: bigint): void {
+    this.inner.setTip(tip);
+  }
+
+  /**
    * Add a signature to the transaction
    *
    * @param signature - 64-byte Ed25519 signature

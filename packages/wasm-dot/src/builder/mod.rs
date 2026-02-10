@@ -7,7 +7,7 @@ mod calls;
 pub mod types;
 
 use crate::error::WasmDotError;
-use crate::transaction::Transaction;
+use crate::transaction::{encode_era, Transaction};
 use crate::types::{Era, Validity};
 use calls::encode_call;
 use parity_scale_codec::{Compact, Encode};
@@ -29,14 +29,11 @@ pub fn build_transaction(
     // Calculate era from validity
     let era = compute_era(&context.validity);
 
-    // Build unsigned extrinsic
-    let unsigned_bytes = build_unsigned_extrinsic(&call_data)?;
+    // Build unsigned extrinsic with era/nonce/tip included in serialized bytes
+    let unsigned_bytes = build_unsigned_extrinsic(&call_data, &era, context.nonce, context.tip)?;
 
-    // Create transaction and set context
+    // Create transaction from bytes (parser will extract era/nonce/tip from the bytes)
     let mut tx = Transaction::from_bytes(&unsigned_bytes, None)?;
-    tx.set_nonce(context.nonce);
-    tx.set_tip(context.tip);
-    tx.set_era(era);
     tx.set_context(context.material, context.validity, &context.reference_block)?;
 
     Ok(tx)
@@ -63,11 +60,30 @@ fn compute_era(validity: &Validity) -> Era {
 }
 
 /// Build unsigned extrinsic bytes
-fn build_unsigned_extrinsic(call_data: &[u8]) -> Result<Vec<u8>, WasmDotError> {
+///
+/// Includes era, nonce, and tip after the version byte so they can be recovered
+/// when deserializing. This matches the signed extrinsic layout (minus signer/signature):
+///   [compact_len, 0x04, era, nonce_compact, tip_compact, call_data]
+fn build_unsigned_extrinsic(
+    call_data: &[u8],
+    era: &Era,
+    nonce: u32,
+    tip: u128,
+) -> Result<Vec<u8>, WasmDotError> {
     let mut body = Vec::new();
 
     // Version byte: 0x04 = unsigned, version 4
     body.push(0x04);
+
+    // Era
+    let era_bytes = encode_era(era);
+    body.extend_from_slice(&era_bytes);
+
+    // Nonce (compact)
+    Compact(nonce).encode_to(&mut body);
+
+    // Tip (compact)
+    Compact(tip).encode_to(&mut body);
 
     // Call data
     body.extend_from_slice(call_data);

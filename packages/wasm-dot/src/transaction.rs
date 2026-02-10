@@ -197,8 +197,8 @@ impl Transaction {
             // Fall back to manual serialization if no context
             self.to_bytes_manual()
         } else {
-            // Return original bytes for unsigned
-            Ok(self.raw_bytes.clone())
+            // Unsigned: rebuild from current fields (nonce/tip/era may have been mutated)
+            self.rebuild_unsigned_bytes()
         }
     }
 
@@ -245,6 +245,25 @@ impl Transaction {
         Compact(body.len() as u32).encode_to(&mut result);
         result.extend_from_slice(&body);
 
+        Ok(result)
+    }
+
+    /// Rebuild unsigned bytes from current field values
+    fn rebuild_unsigned_bytes(&self) -> Result<Vec<u8>, WasmDotError> {
+        use parity_scale_codec::{Compact, Encode};
+
+        let mut body = Vec::new();
+        body.push(0x04); // unsigned, version 4
+
+        let era_bytes = encode_era(&self.era);
+        body.extend_from_slice(&era_bytes);
+
+        Compact(self.nonce).encode_to(&mut body);
+        Compact(self.tip).encode_to(&mut body);
+        body.extend_from_slice(&self.call_data);
+
+        let mut result = Compact(body.len() as u32).encode();
+        result.extend_from_slice(&body);
         Ok(result)
     }
 
@@ -420,7 +439,7 @@ fn parse_hex_hash(hex_str: &str) -> Result<[u8; 32], WasmDotError> {
 }
 
 /// Encode era using subxt-core's Era type
-fn encode_era(era: &Era) -> Vec<u8> {
+pub(crate) fn encode_era(era: &Era) -> Vec<u8> {
     use parity_scale_codec::Encode;
 
     match era {
@@ -550,9 +569,29 @@ fn parse_extrinsic(
 
         Ok((true, signer, signature, era, nonce.0, tip.0, call_data))
     } else {
-        // Unsigned extrinsic - just call data
+        // Unsigned extrinsic: [0x04, era, nonce_compact, tip_compact, call_data]
+        // Era, nonce, and tip are included so the transaction can be fully reconstructed
+        // from the serialized bytes (same layout as signed, minus signer/signature).
+
+        // Era
+        let (era, era_size) = decode_era_bytes(&bytes[cursor..])?;
+        cursor += era_size;
+
+        // Nonce (compact)
+        let mut input = &bytes[cursor..];
+        let nonce = <Compact<u32>>::decode(&mut input)
+            .map_err(|e| WasmDotError::InvalidTransaction(format!("Invalid nonce: {}", e)))?;
+        cursor = bytes.len() - input.len();
+
+        // Tip (compact)
+        let mut input = &bytes[cursor..];
+        let tip = <Compact<u128>>::decode(&mut input)
+            .map_err(|e| WasmDotError::InvalidTransaction(format!("Invalid tip: {}", e)))?;
+        cursor = bytes.len() - input.len();
+
+        // Remaining bytes are call data
         let call_data = bytes[cursor..].to_vec();
-        Ok((false, None, None, Era::Immortal, 0, 0, call_data))
+        Ok((false, None, None, era, nonce.0, tip.0, call_data))
     }
 }
 

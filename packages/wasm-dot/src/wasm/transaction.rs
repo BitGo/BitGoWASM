@@ -120,6 +120,26 @@ impl WasmTransaction {
             .map_err(|e| e.into())
     }
 
+    /// Set account nonce
+    #[wasm_bindgen(js_name = setNonce)]
+    pub fn set_nonce(&mut self, nonce: u32) {
+        self.inner.set_nonce(nonce);
+    }
+
+    /// Set tip amount
+    #[wasm_bindgen(js_name = setTip)]
+    pub fn set_tip(&mut self, tip: js_sys::BigInt) -> Result<(), JsValue> {
+        let tip_str = tip
+            .to_string(10)
+            .map_err(|_| JsValue::from_str("Invalid tip value"))?;
+        let tip_str = String::from(tip_str);
+        let tip_u128: u128 = tip_str.parse().map_err(|_| {
+            JsValue::from_str("Tip value must be a non-negative integer that fits in u128")
+        })?;
+        self.inner.set_tip(tip_u128);
+        Ok(())
+    }
+
     /// Add a signature to the transaction
     ///
     /// # Arguments

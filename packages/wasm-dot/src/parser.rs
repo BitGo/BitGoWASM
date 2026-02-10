@@ -1,6 +1,13 @@
 //! Transaction parsing for DOT
 //!
-//! Parses raw extrinsic bytes into structured data
+//! Parses raw extrinsic bytes into structured data.
+//!
+//! Supports two modes of pallet/method resolution:
+//! - **Dynamic (metadata-based)**: Uses runtime metadata to resolve pallet and call names
+//!   from their indices. This is the preferred approach as it handles runtime upgrades
+//!   and chain-specific index differences automatically.
+//! - **Hardcoded fallback**: Uses a static mapping of known pallet/method indices.
+//!   Used when no metadata is provided in the parsing context.
 
 use crate::address::encode_ss58;
 use crate::error::WasmDotError;
@@ -92,8 +99,13 @@ pub fn parse_transaction(
     let sender = tx.sender(prefix);
     let id = tx.id();
 
-    // Parse the call data
-    let method = parse_call_data(tx.call_data(), prefix)?;
+    // Attempt to decode metadata for dynamic pallet resolution
+    let metadata = context
+        .as_ref()
+        .and_then(|ctx| decode_metadata(&ctx.material.metadata).ok());
+
+    // Parse the call data (with optional metadata for dynamic resolution)
+    let method = parse_call_data(tx.call_data(), prefix, metadata.as_ref())?;
 
     // Extract outputs from method
     let outputs = extract_outputs(&method);
@@ -118,8 +130,107 @@ pub fn parse_transaction(
     })
 }
 
-/// Parse call data into method info
-fn parse_call_data(call_data: &[u8], address_prefix: u16) -> Result<ParsedMethod, WasmDotError> {
+/// Decode metadata from hex string (same pattern as builder)
+fn decode_metadata(metadata_hex: &str) -> Result<subxt_core::metadata::Metadata, WasmDotError> {
+    let bytes = hex::decode(metadata_hex.trim_start_matches("0x"))
+        .map_err(|e| WasmDotError::InvalidInput(format!("Invalid metadata hex: {}", e)))?;
+
+    subxt_core::metadata::decode_from(&bytes[..])
+        .map_err(|e| WasmDotError::InvalidInput(format!("Failed to decode metadata: {}", e)))
+}
+
+/// Resolve pallet and call names from metadata using indices.
+///
+/// Returns `(pallet_name, call_name)` in JS-friendly format:
+/// - Pallet names are lowercased (e.g., "Balances" -> "balances")
+/// - Call names are converted from snake_case to camelCase
+///   (e.g., "transfer_keep_alive" -> "transferKeepAlive")
+fn resolve_call_from_metadata(
+    metadata: &subxt_core::metadata::Metadata,
+    pallet_index: u8,
+    method_index: u8,
+) -> Option<(String, String)> {
+    let pallet = metadata.pallet_by_index(pallet_index)?;
+    let variant = pallet.call_variant_by_index(method_index)?;
+
+    let pallet_name = pallet.name().to_lowercase();
+    let call_name = snake_to_camel(&variant.name);
+
+    Some((pallet_name, call_name))
+}
+
+/// Resolve pallet and call names using the hardcoded static mapping.
+///
+/// This is the fallback when no metadata is available. It covers known
+/// pallet indices for Polkadot, Kusama, and Westend.
+fn resolve_call_hardcoded(pallet_index: u8, method_index: u8) -> (&'static str, &'static str) {
+    match (pallet_index, method_index) {
+        // Balances pallet
+        // Polkadot: 5, Kusama: 4, Westend: 10
+        (4, 0) | (5, 0) | (10, 0) => ("balances", "transfer"),
+        (4, 3) | (5, 3) | (10, 3) => ("balances", "transferKeepAlive"),
+        (4, 4) | (5, 4) | (10, 4) => ("balances", "transferAll"),
+
+        // Staking pallet
+        // Polkadot: 7, Kusama: 6, Westend: 8
+        (6, 0) | (7, 0) | (8, 0) => ("staking", "bond"),
+        (6, 1) | (7, 1) | (8, 1) => ("staking", "bondExtra"),
+        (6, 2) | (7, 2) | (8, 2) => ("staking", "unbond"),
+        (6, 3) | (7, 3) | (8, 3) => ("staking", "withdrawUnbonded"),
+        (6, 6) | (7, 6) | (8, 6) => ("staking", "chill"),
+        (6, 18) | (7, 18) | (8, 18) => ("staking", "payoutStakers"),
+
+        // Proxy pallet
+        // Polkadot: 29, Kusama: 29, Westend: 30
+        (29, 0) | (30, 0) => ("proxy", "proxy"),
+        (29, 1) | (30, 1) => ("proxy", "addProxy"),
+        (29, 2) | (30, 2) => ("proxy", "removeProxy"),
+        (29, 4) | (30, 4) => ("proxy", "createPure"),
+
+        // Utility pallet
+        // Polkadot: 26, Kusama: 24, Westend: 16
+        (16, 0) | (24, 0) | (26, 0) => ("utility", "batch"),
+        (16, 2) | (24, 2) | (26, 2) => ("utility", "batchAll"),
+
+        // Unknown
+        _ => ("unknown", "unknown"),
+    }
+}
+
+/// Convert snake_case to camelCase.
+///
+/// Examples:
+///   "transfer_keep_alive" -> "transferKeepAlive"
+///   "bond" -> "bond"
+///   "batch_all" -> "batchAll"
+///   "payout_stakers" -> "payoutStakers"
+fn snake_to_camel(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut capitalize_next = false;
+
+    for ch in s.chars() {
+        if ch == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
+/// Parse call data into method info.
+///
+/// When metadata is provided, uses dynamic resolution via `pallet_by_index()` and
+/// `call_variant_by_index()`. Falls back to hardcoded mapping otherwise.
+fn parse_call_data(
+    call_data: &[u8],
+    address_prefix: u16,
+    metadata: Option<&subxt_core::metadata::Metadata>,
+) -> Result<ParsedMethod, WasmDotError> {
     if call_data.len() < 2 {
         return Err(WasmDotError::InvalidTransaction(
             "Call data too short".to_string(),
@@ -130,41 +241,23 @@ fn parse_call_data(call_data: &[u8], address_prefix: u16) -> Result<ParsedMethod
     let method_index = call_data[1];
     let args_data = &call_data[2..];
 
-    // Map known pallet/method indices to names
-    let (pallet, name) = match (pallet_index, method_index) {
-        // Balances pallet (typically index 5 on Polkadot, varies on other chains)
-        (4, 0) | (5, 0) => ("balances", "transfer"),
-        (4, 3) | (5, 3) => ("balances", "transferKeepAlive"),
-        (4, 4) | (5, 4) => ("balances", "transferAll"),
-
-        // Staking pallet (typically index 7)
-        (6, 0) | (7, 0) => ("staking", "bond"),
-        (6, 1) | (7, 1) => ("staking", "bondExtra"),
-        (6, 2) | (7, 2) => ("staking", "unbond"),
-        (6, 3) | (7, 3) => ("staking", "withdrawUnbonded"),
-        (6, 6) | (7, 6) => ("staking", "chill"),
-        (6, 18) | (7, 18) => ("staking", "payoutStakers"),
-
-        // Proxy pallet (typically index 29)
-        (29, 0) => ("proxy", "proxy"),
-        (29, 1) => ("proxy", "addProxy"),
-        (29, 2) => ("proxy", "removeProxy"),
-        (29, 4) => ("proxy", "createPure"),
-
-        // Utility pallet (typically index 26)
-        (24, 0) | (26, 0) => ("utility", "batch"),
-        (24, 2) | (26, 2) => ("utility", "batchAll"),
-
-        // Unknown
-        _ => ("unknown", "unknown"),
+    // Resolve pallet and method names: prefer metadata, fall back to hardcoded
+    let (pallet, name) = if let Some(md) = metadata {
+        resolve_call_from_metadata(md, pallet_index, method_index).unwrap_or_else(|| {
+            let (p, n) = resolve_call_hardcoded(pallet_index, method_index);
+            (p.to_string(), n.to_string())
+        })
+    } else {
+        let (p, n) = resolve_call_hardcoded(pallet_index, method_index);
+        (p.to_string(), n.to_string())
     };
 
     // Parse args based on method
-    let args = parse_method_args(pallet, name, args_data, address_prefix)?;
+    let args = parse_method_args(&pallet, &name, args_data, address_prefix)?;
 
     Ok(ParsedMethod {
-        pallet: pallet.to_string(),
-        name: name.to_string(),
+        pallet,
+        name,
         pallet_index,
         method_index,
         args,
@@ -179,9 +272,10 @@ fn parse_method_args(
     address_prefix: u16,
 ) -> Result<serde_json::Value, WasmDotError> {
     match (pallet, method) {
-        ("balances", "transfer") | ("balances", "transferKeepAlive") => {
-            parse_transfer_args(args_data, address_prefix)
-        }
+        // Handle both legacy name ("transfer") and metadata-resolved name ("transferAllowDeath")
+        ("balances", "transfer")
+        | ("balances", "transferAllowDeath")
+        | ("balances", "transferKeepAlive") => parse_transfer_args(args_data, address_prefix),
         ("balances", "transferAll") => parse_transfer_all_args(args_data, address_prefix),
         ("staking", "bond") => parse_bond_args(args_data, address_prefix),
         ("staking", "unbond") => parse_unbond_args(args_data),
@@ -349,7 +443,9 @@ fn parse_unbond_args(args: &[u8]) -> Result<serde_json::Value, WasmDotError> {
 /// Extract outputs from parsed method
 fn extract_outputs(method: &ParsedMethod) -> Vec<TransactionOutput> {
     match (method.pallet.as_str(), method.name.as_str()) {
-        ("balances", "transfer") | ("balances", "transferKeepAlive") => {
+        ("balances", "transfer")
+        | ("balances", "transferAllowDeath")
+        | ("balances", "transferKeepAlive") => {
             if let (Some(dest), Some(value)) = (
                 method.args.get("dest").and_then(|v| v.as_str()),
                 method.args.get("value").and_then(|v| v.as_str()),
@@ -462,5 +558,86 @@ mod tests {
         // This may fail without proper context, which is expected
         // The test verifies the parsing logic doesn't panic
         assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_snake_to_camel_single_word() {
+        assert_eq!(snake_to_camel("bond"), "bond");
+    }
+
+    #[test]
+    fn test_snake_to_camel_two_words() {
+        assert_eq!(snake_to_camel("batch_all"), "batchAll");
+    }
+
+    #[test]
+    fn test_snake_to_camel_three_words() {
+        assert_eq!(snake_to_camel("transfer_keep_alive"), "transferKeepAlive");
+    }
+
+    #[test]
+    fn test_snake_to_camel_payout() {
+        assert_eq!(snake_to_camel("payout_stakers"), "payoutStakers");
+    }
+
+    #[test]
+    fn test_snake_to_camel_withdraw() {
+        assert_eq!(snake_to_camel("withdraw_unbonded"), "withdrawUnbonded");
+    }
+
+    #[test]
+    fn test_snake_to_camel_allow_death() {
+        assert_eq!(snake_to_camel("transfer_allow_death"), "transferAllowDeath");
+    }
+
+    #[test]
+    fn test_resolve_hardcoded_polkadot_balances() {
+        assert_eq!(
+            resolve_call_hardcoded(5, 3),
+            ("balances", "transferKeepAlive")
+        );
+    }
+
+    #[test]
+    fn test_resolve_hardcoded_kusama_balances() {
+        assert_eq!(
+            resolve_call_hardcoded(4, 3),
+            ("balances", "transferKeepAlive")
+        );
+    }
+
+    #[test]
+    fn test_resolve_hardcoded_westend_balances() {
+        assert_eq!(
+            resolve_call_hardcoded(10, 3),
+            ("balances", "transferKeepAlive")
+        );
+    }
+
+    #[test]
+    fn test_resolve_hardcoded_unknown() {
+        assert_eq!(resolve_call_hardcoded(255, 255), ("unknown", "unknown"));
+    }
+
+    #[test]
+    fn test_parse_call_data_without_metadata() {
+        // Polkadot balances::transferKeepAlive (pallet=5, method=3) with a dummy address + amount
+        let mut call_data = vec![5u8, 3u8]; // pallet=5, method=3
+        call_data.push(0x00); // MultiAddress::Id variant
+        call_data.extend_from_slice(&[0u8; 32]); // dummy pubkey
+        call_data.push(0x04); // compact amount = 1
+
+        let result = parse_call_data(&call_data, 42, None).unwrap();
+        assert_eq!(result.pallet, "balances");
+        assert_eq!(result.name, "transferKeepAlive");
+        assert_eq!(result.pallet_index, 5);
+        assert_eq!(result.method_index, 3);
+    }
+
+    #[test]
+    fn test_parse_call_data_too_short() {
+        let call_data = vec![5u8]; // only 1 byte
+        let result = parse_call_data(&call_data, 42, None);
+        assert!(result.is_err());
     }
 }
