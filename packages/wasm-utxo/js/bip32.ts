@@ -229,6 +229,38 @@ export class BIP32 implements BIP32Interface {
   }
 
   /**
+   * Check equality with another BIP32 key.
+   * Two keys are equal if they have the same type (public/private) and identical
+   * BIP32 metadata (depth, parent fingerprint, child index, chain code, key data).
+   * This is a fast comparison that does not require serialization.
+   *
+   * @param other - The other key to compare with. Accepts BIP32, or any BIP32Interface.
+   * @returns True if the keys are equal
+   */
+  equals(other: BIP32Interface): boolean {
+    const otherWasm = other instanceof BIP32 ? other._wasm : BIP32.from(other)._wasm;
+    return this._wasm.equals(otherWasm);
+  }
+
+  /**
+   * Custom JSON representation for debugging.
+   * Always serializes the public key (xpub) to avoid leaking private keys.
+   * Includes a `hasPrivateKey` flag to indicate whether the key is neutered.
+   */
+  toJSON(): { xpub: string; hasPrivateKey: boolean } {
+    return { xpub: this.neutered().toBase58(), hasPrivateKey: !this.isNeutered() };
+  }
+
+  /**
+   * Custom inspect representation for Node.js util.inspect and console.log.
+   * Always shows the public key (xpub) to avoid leaking private keys.
+   */
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    const flag = this.isNeutered() ? "" : ", hasPrivateKey";
+    return `BIP32(${this.neutered().toBase58()}${flag})`;
+  }
+
+  /**
    * Get the underlying WASM instance (internal use only)
    * @internal
    */
