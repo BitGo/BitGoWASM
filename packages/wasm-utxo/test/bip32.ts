@@ -159,6 +159,95 @@ describe("WasmBIP32", () => {
   });
 });
 
+describe("BIP32.equals", () => {
+  it("should return true for identical keys from same base58", () => {
+    const a = BIP32.fromBase58(XPUB);
+    const b = BIP32.fromBase58(XPUB);
+    assert.ok(a.equals(b));
+    assert.ok(b.equals(a));
+  });
+
+  it("should return true for identical private keys", () => {
+    const a = BIP32.fromBase58(XPRV);
+    const b = BIP32.fromBase58(XPRV);
+    assert.ok(a.equals(b));
+  });
+
+  it("should return false for different keys", () => {
+    const a = BIP32.fromBase58(XPRV);
+    const b = a.derive(0);
+    assert.ok(!a.equals(b));
+    assert.ok(!b.equals(a));
+  });
+
+  it("should return false for private key vs its neutered form", () => {
+    const priv = BIP32.fromBase58(XPRV);
+    const pub_ = priv.neutered();
+    assert.ok(!priv.equals(pub_));
+    assert.ok(!pub_.equals(priv));
+  });
+
+  it("should return true for neutered keys derived from same private key", () => {
+    const a = BIP32.fromBase58(XPRV).neutered();
+    const b = BIP32.fromBase58(XPRV).neutered();
+    assert.ok(a.equals(b));
+  });
+
+  it("should return true for derived keys at same path", () => {
+    const root = BIP32.fromBase58(XPRV);
+    const a = root.derivePath("0/1/2").neutered();
+    const b = root.derivePath("0/1/2").neutered();
+    assert.ok(a.equals(b));
+  });
+
+  it("should work with BIP32Interface from utxolib", () => {
+    const wasmKey = BIP32.fromBase58(XPUB);
+    const utxolibKey = utxolibBip32.fromBase58(XPUB);
+    assert.ok(wasmKey.equals(utxolibKey));
+  });
+});
+
+describe("BIP32.toJSON and inspect", () => {
+  it("should return xpub and hasPrivateKey=false from toJSON for public key", () => {
+    const key = BIP32.fromBase58(XPUB);
+    assert.deepStrictEqual(key.toJSON(), { xpub: XPUB, hasPrivateKey: false });
+  });
+
+  it("should return xpub and hasPrivateKey=true from toJSON for private key", () => {
+    const key = BIP32.fromBase58(XPRV);
+    const json = key.toJSON();
+    assert.strictEqual(json.hasPrivateKey, true);
+    assert.ok(json.xpub.startsWith("xpub"), "should serialize as xpub, not xprv");
+    assert.strictEqual(json.xpub, key.neutered().toBase58());
+  });
+
+  it("should never leak xprv in JSON.stringify", () => {
+    const key = BIP32.fromBase58(XPRV);
+    const serialized = JSON.stringify({ key });
+    assert.ok(!serialized.includes("xprv"), "serialized JSON must not contain xprv");
+    assert.ok(serialized.includes("xpub"), "serialized JSON must contain xpub");
+  });
+
+  it("should return formatted string from inspect for public key", () => {
+    const key = BIP32.fromBase58(XPUB);
+    const inspect = key[
+      Symbol.for("nodejs.util.inspect.custom") as unknown as symbol
+    ] as () => string;
+    assert.strictEqual(inspect.call(key), `BIP32(${XPUB})`);
+  });
+
+  it("should return formatted string with flag from inspect for private key", () => {
+    const key = BIP32.fromBase58(XPRV);
+    const inspect = key[
+      Symbol.for("nodejs.util.inspect.custom") as unknown as symbol
+    ] as () => string;
+    const result = inspect.call(key) as string;
+    assert.ok(result.includes("hasPrivateKey"), "should indicate private key presence");
+    assert.ok(!result.includes("xprv"), "should not leak xprv");
+    assert.ok(result.startsWith("BIP32(xpub"), "should show xpub");
+  });
+});
+
 describe("WasmBIP32 parity with utxolib", () => {
   it("should match utxolib when creating from base58 xpub", () => {
     assertKeysMatch(BIP32.fromBase58(XPUB), utxolibBip32.fromBase58(XPUB));

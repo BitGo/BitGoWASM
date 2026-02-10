@@ -23,6 +23,16 @@
         "types": "./dist/cjs/js/index.d.ts",
         "default": "./dist/cjs/js/index.js"
       }
+    },
+    "./testutils": {
+      "import": {
+        "types": "./dist/esm/js/testutils/index.d.ts",
+        "default": "./dist/esm/js/testutils/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/js/testutils/index.d.ts",
+        "default": "./dist/cjs/js/testutils/index.js"
+      }
     }
   },
   "main": "./dist/cjs/js/index.js",

@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsValue;
 
 // Internal enum to hold either Xpub or Xpriv
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum BIP32Key {
     Public(Xpub),
     Private(Xpriv),
@@ -352,6 +352,14 @@ impl WasmBIP32 {
     #[wasm_bindgen]
     pub fn derive_path(&self, path: &str) -> Result<WasmBIP32, WasmUtxoError> {
         Ok(WasmBIP32(self.0.derive_path(path)?))
+    }
+
+    /// Check equality with another WasmBIP32 key.
+    /// Two keys are equal if they have the same type (public/private) and identical
+    /// BIP32 metadata (depth, parent fingerprint, child index, chain code, key data).
+    #[wasm_bindgen]
+    pub fn equals(&self, other: &WasmBIP32) -> bool {
+        self.0 == other.0
     }
 }
 
