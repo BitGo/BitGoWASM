@@ -1,63 +1,54 @@
 /**
- * TypeScript wrapper for ParserNamespace
+ * Transaction parsing.
+ *
+ * Provides the `parseTransaction()` function for parsing DOT transactions.
+ * Accepts raw bytes, hex string, or a DotTransaction object.
  */
 
 import { ParserNamespace, MaterialJs, ParseContextJs } from "./wasm/wasm_dot";
-import type { ParseContext, ParsedTransaction, TransactionOutput } from "./types";
+import { DotTransaction } from "./transaction";
+import type { ParseContext, ParsedTransaction } from "./types";
 
 /**
- * DOT Transaction Parser
- *
- * Provides methods for parsing DOT transactions
+ * Input type for parseTransaction — accepts raw bytes, hex string, or DotTransaction.
  */
-export class DotParser {
-  /**
-   * Parse a transaction from raw bytes
-   *
-   * @param bytes - Raw extrinsic bytes
-   * @param context - Optional parsing context with chain material
-   * @returns Parsed transaction data
-   */
-  static parseTransaction(bytes: Uint8Array, context?: ParseContext): ParsedTransaction {
-    const ctx = context ? createParseContext(context) : undefined;
-    return ParserNamespace.parseTransaction(bytes, ctx) as ParsedTransaction;
+export type TransactionInput = Uint8Array | string | DotTransaction;
+
+/**
+ * Parse a DOT transaction from bytes, hex, or a DotTransaction object.
+ *
+ * This is the standard entry point for parsing DOT transactions, matching
+ * the pattern used by wasm-solana's parseTransaction().
+ *
+ * @param input - Raw bytes, hex string (with or without 0x), or DotTransaction
+ * @param context - Parsing context with chain material (required for decoding)
+ * @returns Parsed transaction data
+ *
+ * @example
+ * ```typescript
+ * import { parseTransaction } from '@bitgo/wasm-dot';
+ *
+ * const parsed = parseTransaction(txHex, { material });
+ * console.log(parsed.method.pallet); // "balances"
+ * console.log(parsed.method.name);   // "transferKeepAlive"
+ * ```
+ */
+export function parseTransaction(
+  input: TransactionInput,
+  context?: ParseContext,
+): ParsedTransaction {
+  const ctx = context ? createParseContext(context) : undefined;
+
+  if (typeof input === "string") {
+    return ParserNamespace.parseTransactionHex(input, ctx) as ParsedTransaction;
   }
 
-  /**
-   * Parse a transaction from hex string
-   *
-   * @param hex - Hex-encoded extrinsic bytes (with or without 0x prefix)
-   * @param context - Optional parsing context
-   * @returns Parsed transaction data
-   */
-  static parseTransactionHex(hex: string, context?: ParseContext): ParsedTransaction {
-    const ctx = context ? createParseContext(context) : undefined;
+  if (input instanceof DotTransaction) {
+    const hex = input.toHex();
     return ParserNamespace.parseTransactionHex(hex, ctx) as ParsedTransaction;
   }
 
-  /**
-   * Get the transaction type from raw bytes
-   *
-   * Quickly determines the transaction type without full parsing
-   *
-   * @param bytes - Raw extrinsic bytes
-   * @returns Transaction type string
-   */
-  static getTransactionType(bytes: Uint8Array): string {
-    return ParserNamespace.getTransactionType(bytes);
-  }
-
-  /**
-   * Extract outputs (recipients and amounts) from transaction
-   *
-   * @param bytes - Raw extrinsic bytes
-   * @param context - Optional parsing context
-   * @returns Array of transaction outputs
-   */
-  static getOutputs(bytes: Uint8Array, context?: ParseContext): TransactionOutput[] {
-    const ctx = context ? createParseContext(context) : undefined;
-    return ParserNamespace.getOutputs(bytes, ctx) as TransactionOutput[];
-  }
+  return ParserNamespace.parseTransaction(input, ctx) as ParsedTransaction;
 }
 
 /**
