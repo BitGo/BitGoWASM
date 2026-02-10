@@ -16,8 +16,6 @@ export * as fixedScriptWallet from "./fixedScriptWallet/index.js";
 export * as descriptorWallet from "./descriptorWallet/index.js";
 export * as bip32 from "./bip32.js";
 export * as ecpair from "./ecpair.js";
-export * as testutils from "./testutils/index.js";
-
 // Only the most commonly used classes and types are exported at the top level for convenience
 export { ECPair } from "./ecpair.js";
 export { BIP32 } from "./bip32.js";
