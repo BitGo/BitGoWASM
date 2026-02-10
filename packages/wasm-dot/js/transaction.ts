@@ -160,6 +160,16 @@ export class DotTransaction {
   }
 
   /**
+   * Serialize to network broadcast format (hex string).
+   *
+   * This is the standard BitGo convention across all coins.
+   * For DOT, broadcast format is the hex-encoded SCALE extrinsic.
+   */
+  toBroadcastFormat(): string {
+    return this.toHex();
+  }
+
+  /**
    * Get era information
    */
   get era(): Era {
