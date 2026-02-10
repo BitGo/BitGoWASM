@@ -153,7 +153,7 @@ describe("buildFromVersionedData", () => {
     const tx = buildFromVersionedData(data);
 
     // Initially unsigned
-    assert.strictEqual(tx.id, "UNSIGNED");
+    assert.strictEqual(tx.id, undefined);
 
     // Add signature
     const signature = new Uint8Array(64);
@@ -161,7 +161,7 @@ describe("buildFromVersionedData", () => {
     tx.addSignature(feePayer, signature);
 
     // Now signed
-    assert.notStrictEqual(tx.id, "UNSIGNED");
+    assert.notStrictEqual(tx.id, undefined);
     assert.ok(tx.id.length > 20);
   });
 });
