@@ -21,7 +21,7 @@ export { ECPair } from "./ecpair.js";
 export { BIP32 } from "./bip32.js";
 export { Dimensions } from "./fixedScriptWallet/Dimensions.js";
 
-export type { CoinName } from "./coinName.js";
+export type { CoinName, getMainnet, isMainnet, isTestnet, isCoinName } from "./coinName.js";
 export type { Triple } from "./triple.js";
 export type { AddressFormat } from "./address.js";
 export type { TapLeafScript, PreparedInscriptionRevealData } from "./inscriptions.js";
