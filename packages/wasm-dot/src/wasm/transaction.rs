@@ -148,7 +148,7 @@ impl WasmTransaction {
     #[wasm_bindgen(js_name = addSignature)]
     pub fn add_signature(&mut self, signature: &[u8], pubkey: &[u8]) -> Result<(), JsValue> {
         self.inner
-            .add_signature(signature, pubkey)
+            .add_signature(pubkey, signature)
             .map_err(|e| e.into())
     }
 

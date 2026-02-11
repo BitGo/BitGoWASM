@@ -20,6 +20,7 @@ import {
 export {
   WasmTransaction,
   ParserNamespace,
+  ParserNamespace as DotParser,
   BuilderNamespace,
   MaterialJs,
   ValidityJs,
