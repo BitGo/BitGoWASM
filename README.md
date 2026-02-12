@@ -2,12 +2,27 @@
 
 This repo is the home of BitGo's WASM libraries.
 
-
 # Dependencies
 
 - [Rust](https://www.rust-lang.org/) nightly
 - [wasm-pack](https://rustwasm.github.io/wasm-pack/) (install with `cargo install wasm-pack`)
 - [Node.js](https://nodejs.org/en/)
+
+# Developer Setup
+
+```bash
+npm install
+```
+
+This will:
+
+- Install all dependencies
+- Set up pre-commit hooks via Husky
+
+Pre-commit hooks automatically run on staged files:
+
+- **JS/TS**: Prettier formatting + ESLint
+- **Rust**: `cargo fmt`
 
 # Package Management
 
@@ -44,7 +59,6 @@ npx lerna changed
 
 # Packages
 
-
 ## wasm-utxo
 
 This is a wrapper around the
@@ -56,5 +70,4 @@ compiled to WebAssembly.
 
 A live playground for the wasm-utxo crate.
 
-Go to https://bitgo.github.io/wasm-utxo to see a live demo of the wasm-utxo library in action. *WIP*
-
+Go to https://bitgo.github.io/wasm-utxo to see a live demo of the wasm-utxo library in action. _WIP_
