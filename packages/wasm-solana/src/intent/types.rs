@@ -26,6 +26,7 @@ pub enum IntentType {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum StakingType {
+    Native,
     Jito,
     Marinade,
 }
@@ -189,13 +190,16 @@ pub struct StakePoolConfig {
     pub stake_pool_address: Option<String>,
     #[serde(default)]
     pub withdraw_authority: Option<String>,
-    pub reserve_stake: String,
+    #[serde(default)]
+    pub reserve_stake: Option<String>,
     #[serde(default)]
     pub destination_pool_account: Option<String>,
-    pub manager_fee_account: String,
+    #[serde(default)]
+    pub manager_fee_account: Option<String>,
     #[serde(default)]
     pub referral_pool_account: Option<String>,
-    pub pool_mint: String,
+    #[serde(default)]
+    pub pool_mint: Option<String>,
     #[serde(default)]
     pub validator_list: Option<String>,
     #[serde(default)]

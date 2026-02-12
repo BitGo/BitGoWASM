@@ -300,6 +300,8 @@ fn build_jito_stake(
         .map_err(|_| WasmSolanaError::new("Invalid withdrawAuthority"))?;
     let reserve_stake: Pubkey = config
         .reserve_stake
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing reserveStake"))?
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid reserveStake"))?;
     let destination_pool_account: Pubkey = config
@@ -310,6 +312,8 @@ fn build_jito_stake(
         .map_err(|_| WasmSolanaError::new("Invalid destinationPoolAccount"))?;
     let manager_fee_account: Pubkey = config
         .manager_fee_account
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing managerFeeAccount"))?
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid managerFeeAccount"))?;
     let referral_pool_account: Pubkey = config
@@ -323,8 +327,10 @@ fn build_jito_stake(
         .map_err(|_| WasmSolanaError::new("Invalid referralPoolAccount"))?;
     let pool_mint: Pubkey = config
         .pool_mint
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing poolMint"))?
         .parse()
-        .map_err(|_| WasmSolanaError::new(&format!("Invalid poolMint: {}", config.pool_mint)))?;
+        .map_err(|_| WasmSolanaError::new("Invalid poolMint"))?;
 
     // Build instruction data
     let instruction_data = StakePoolInstruction::DepositSol(amount);
@@ -541,10 +547,14 @@ fn build_jito_unstake(
         .map_err(|_| WasmSolanaError::new("Invalid sourcePoolAccount"))?;
     let manager_fee_account: Pubkey = config
         .manager_fee_account
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing managerFeeAccount"))?
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid managerFeeAccount"))?;
     let pool_mint: Pubkey = config
         .pool_mint
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing poolMint"))?
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid poolMint"))?;
 
