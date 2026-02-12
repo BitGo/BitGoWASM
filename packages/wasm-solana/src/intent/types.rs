@@ -4,6 +4,32 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Intent type discriminant.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IntentType {
+    Payment,
+    GoUnstake,
+    Stake,
+    Unstake,
+    Claim,
+    Deactivate,
+    Delegate,
+    EnableToken,
+    CloseAssociatedTokenAccount,
+    Consolidate,
+    Authorize,
+    CustomTx,
+}
+
+/// Staking type for stake/unstake intents.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StakingType {
+    Jito,
+    Marinade,
+}
+
 /// Build parameters provided by wallet-platform.
 /// These are NOT part of the intent but needed to build the transaction.
 #[derive(Debug, Clone, Deserialize)]
@@ -143,12 +169,12 @@ pub struct PaymentIntent {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StakeIntent {
-    pub intent_type: String,
+    pub intent_type: IntentType,
     pub validator_address: String,
     #[serde(default)]
     pub amount: Option<AmountWrapper>,
     #[serde(default)]
-    pub staking_type: Option<String>,
+    pub staking_type: Option<StakingType>,
     #[serde(default)]
     pub stake_pool_config: Option<StakePoolConfig>,
     #[serde(default)]
@@ -180,8 +206,10 @@ pub struct StakePoolConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnstakeIntent {
-    pub intent_type: String,
-    pub staking_address: String,
+    pub intent_type: IntentType,
+    /// Staking address - required for native/Jito, must NOT be set for Marinade
+    #[serde(default)]
+    pub staking_address: Option<String>,
     #[serde(default)]
     pub validator_address: Option<String>,
     #[serde(default)]
@@ -189,9 +217,12 @@ pub struct UnstakeIntent {
     #[serde(default)]
     pub remaining_staking_amount: Option<AmountWrapper>,
     #[serde(default)]
-    pub staking_type: Option<String>,
+    pub staking_type: Option<StakingType>,
     #[serde(default)]
     pub stake_pool_config: Option<StakePoolConfig>,
+    /// Recipients - used by Marinade unstake (transfer to contract address)
+    #[serde(default)]
+    pub recipients: Option<Vec<Recipient>>,
     #[serde(default)]
     pub memo: Option<String>,
 }
