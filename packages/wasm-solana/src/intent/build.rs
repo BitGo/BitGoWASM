@@ -201,13 +201,13 @@ fn build_stake(
     let amount: u64 = intent.amount.as_ref().map(|a| a.value).unwrap_or(0);
 
     // Check if Jito staking
-    if intent.staking_type.as_deref() == Some("JITO") {
+    if intent.staking_type == Some(StakingType::Jito) {
         if let Some(config) = &intent.stake_pool_config {
             return build_jito_stake(config, &fee_payer, amount);
         }
     }
 
-    // Native staking: generate stake account keypair
+    // Generate stake account keypair (used by both native and Marinade)
     let stake_keypair = Keypair::new();
     let stake_address = stake_keypair.address();
     let stake_pubkey: Pubkey = stake_address
@@ -219,8 +219,38 @@ fn build_stake(
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid validatorAddress"))?;
 
+    // Marinade staking: CreateAccount + Initialize (no Delegate)
+    // Staker authority is the validator, withdrawer is the user
+    if intent.staking_type == Some(StakingType::Marinade) {
+        let instructions = vec![
+            system_ix::create_account(
+                &fee_payer,
+                &stake_pubkey,
+                amount + STAKE_ACCOUNT_RENT,
+                STAKE_ACCOUNT_SPACE,
+                &solana_stake_interface::program::ID,
+            ),
+            stake_ix::initialize(
+                &stake_pubkey,
+                &Authorized {
+                    staker: validator_pubkey,
+                    withdrawer: fee_payer,
+                },
+                &Lockup::default(),
+            ),
+        ];
+
+        let generated = vec![GeneratedKeypair {
+            purpose: "stakeAccount".to_string(),
+            address: stake_address,
+            secret_key: solana_sdk::bs58::encode(stake_keypair.secret_key_bytes()).into_string(),
+        }];
+
+        return Ok((instructions, generated));
+    }
+
+    // Native staking: CreateAccount + Initialize + Delegate
     let instructions = vec![
-        // Create account
         system_ix::create_account(
             &fee_payer,
             &stake_pubkey,
@@ -228,7 +258,6 @@ fn build_stake(
             STAKE_ACCOUNT_SPACE,
             &solana_stake_interface::program::ID,
         ),
-        // Initialize stake
         stake_ix::initialize(
             &stake_pubkey,
             &Authorized {
@@ -237,7 +266,6 @@ fn build_stake(
             },
             &Lockup::default(),
         ),
-        // Delegate
         stake_ix::delegate_stake(&stake_pubkey, &fee_payer, &validator_pubkey),
     ];
 
@@ -344,13 +372,22 @@ fn build_unstake(
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid feePayer"))?;
 
-    let stake_pubkey: Pubkey = intent
+    // Marinade unstake: SystemProgram.transfer to recipient (no stake account involved)
+    if intent.staking_type == Some(StakingType::Marinade) {
+        return build_marinade_unstake(&intent, &fee_payer);
+    }
+
+    // For native/Jito, staking_address is required
+    let staking_address = intent
         .staking_address
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing stakingAddress for native/Jito unstake"))?;
+    let stake_pubkey: Pubkey = staking_address
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid stakingAddress"))?;
 
     // Check if Jito unstaking
-    if intent.staking_type.as_deref() == Some("JITO") {
+    if intent.staking_type == Some(StakingType::Jito) {
         if let Some(config) = &intent.stake_pool_config {
             let amount: u64 = intent.amount.as_ref().map(|a| a.value).unwrap_or(0);
             return build_jito_unstake(config, &fee_payer, &intent.validator_address, amount);
@@ -415,6 +452,42 @@ fn build_partial_unstake(
     }];
 
     Ok((instructions, generated))
+}
+
+fn build_marinade_unstake(
+    intent: &UnstakeIntent,
+    fee_payer: &Pubkey,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    let recipients = intent
+        .recipients
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing recipients for Marinade unstake"))?;
+
+    if recipients.is_empty() {
+        return Err(WasmSolanaError::new(
+            "Recipients array is empty for Marinade unstake",
+        ));
+    }
+
+    let recipient = &recipients[0];
+    let to_address = recipient
+        .address
+        .as_ref()
+        .map(|a| &a.address)
+        .ok_or_else(|| WasmSolanaError::new("Recipient missing address for Marinade unstake"))?;
+    let amount = recipient
+        .amount
+        .as_ref()
+        .map(|a| a.value)
+        .ok_or_else(|| WasmSolanaError::new("Recipient missing amount for Marinade unstake"))?;
+
+    let to_pubkey: Pubkey = to_address
+        .parse()
+        .map_err(|_| WasmSolanaError::new(&format!("Invalid recipient address: {}", to_address)))?;
+
+    let instructions = vec![system_ix::transfer(fee_payer, &to_pubkey, amount)];
+
+    Ok((instructions, vec![]))
 }
 
 fn build_jito_unstake(
@@ -1019,5 +1092,83 @@ mod tests {
         assert!(result.is_ok(), "Failed: {:?}", result);
         let result = result.unwrap();
         assert!(result.generated_keypairs.is_empty());
+    }
+
+    #[test]
+    fn test_build_marinade_stake_intent() {
+        // Marinade stake: CreateAccount + Initialize (no Delegate)
+        // Staker = validator, Withdrawer = fee_payer
+        let intent = serde_json::json!({
+            "intentType": "stake",
+            "validatorAddress": "CyjoLt3kjqB57K7ewCBHmnHq3UgEj3ak6A7m6EsBsuhA",
+            "amount": { "value": "300000" },
+            "stakingType": "MARINADE"
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_ok(), "Failed: {:?}", result);
+        let result = result.unwrap();
+
+        // Should generate a stake account keypair
+        assert_eq!(result.generated_keypairs.len(), 1);
+        assert_eq!(result.generated_keypairs[0].purpose, "stakeAccount");
+
+        // Transaction should have 2 instructions (CreateAccount + Initialize)
+        // No Delegate instruction for Marinade
+        let msg = result.transaction.message();
+        assert_eq!(
+            msg.instructions.len(),
+            2,
+            "Marinade stake should have exactly 2 instructions (CreateAccount + Initialize)"
+        );
+    }
+
+    #[test]
+    fn test_build_marinade_unstake_intent() {
+        // Marinade unstake: SystemProgram.transfer to recipient
+        let intent = serde_json::json!({
+            "intentType": "unstake",
+            "stakingType": "MARINADE",
+            "amount": { "value": "500000000000" },
+            "recipients": [{
+                "address": { "address": "opNS8ENpEMWdXcJUgJCsJTDp7arTXayoBEeBUg6UezP" },
+                "amount": { "value": "500000000000" }
+            }],
+            "memo": "{\"PrepareForRevoke\":{\"user\":\"DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB\",\"amount\":\"500000000000\"}}"
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_ok(), "Failed: {:?}", result);
+        let result = result.unwrap();
+
+        // No generated keypairs for Marinade unstake
+        assert!(result.generated_keypairs.is_empty());
+
+        // Transaction should have 1 transfer + 1 memo = 2 instructions
+        let msg = result.transaction.message();
+        assert_eq!(
+            msg.instructions.len(),
+            2,
+            "Marinade unstake should have transfer + memo instructions"
+        );
+    }
+
+    #[test]
+    fn test_build_marinade_unstake_requires_recipients() {
+        let intent = serde_json::json!({
+            "intentType": "unstake",
+            "stakingType": "MARINADE",
+            "amount": { "value": "500000000000" }
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_err(), "Should fail without recipients");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Missing recipients"),
+            "Error should mention missing recipients"
+        );
     }
 }
