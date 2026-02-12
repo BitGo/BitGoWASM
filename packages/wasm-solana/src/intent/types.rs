@@ -155,14 +155,17 @@ pub struct StakeIntent {
     pub memo: Option<String>,
 }
 
-/// Stake pool configuration (for Jito)
+/// Stake pool configuration (for Jito and other stake pool programs)
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StakePoolConfig {
-    pub stake_pool_address: String,
-    pub withdraw_authority: String,
+    #[serde(default)]
+    pub stake_pool_address: Option<String>,
+    #[serde(default)]
+    pub withdraw_authority: Option<String>,
     pub reserve_stake: String,
-    pub destination_pool_account: String,
+    #[serde(default)]
+    pub destination_pool_account: Option<String>,
     pub manager_fee_account: String,
     #[serde(default)]
     pub referral_pool_account: Option<String>,
@@ -281,4 +284,48 @@ pub struct ConsolidateIntent {
     pub recipients: Vec<Recipient>,
     #[serde(default)]
     pub memo: Option<String>,
+}
+
+/// Authorize intent - pre-built transaction message
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizeIntent {
+    pub intent_type: String,
+    /// Base64-encoded serialized Solana Message (bincode)
+    pub transaction_message: String,
+}
+
+/// Custom transaction intent
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomTxIntent {
+    pub intent_type: String,
+    /// Custom instructions to include in the transaction
+    pub sol_instructions: Vec<CustomTxInstruction>,
+    #[serde(default)]
+    pub memo: Option<String>,
+}
+
+/// A single custom instruction
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomTxInstruction {
+    /// Program ID (base58)
+    pub program_id: String,
+    /// Account keys for the instruction
+    pub keys: Vec<CustomTxKey>,
+    /// Instruction data (base64)
+    pub data: String,
+}
+
+/// Account key for a custom instruction
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomTxKey {
+    /// Account public key (base58)
+    pub pubkey: String,
+    /// Whether this account must sign the transaction
+    pub is_signer: bool,
+    /// Whether this account is writable
+    pub is_writable: bool,
 }
