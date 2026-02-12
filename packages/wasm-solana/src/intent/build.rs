@@ -10,10 +10,13 @@ use super::types::*;
 
 // Solana SDK types
 use solana_sdk::hash::Hash;
-use solana_sdk::instruction::Instruction;
+use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::message::Message;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::transaction::Transaction;
+
+// Base64 decoding
+use base64::Engine;
 
 // Instruction builders from existing crates
 use solana_stake_interface::instruction as stake_ix;
@@ -50,6 +53,11 @@ pub fn build_from_intent(
         .and_then(|v| v.as_str())
         .ok_or_else(|| WasmSolanaError::new("Missing intentType in intent"))?;
 
+    // Authorize is a special case: the message is pre-built, so we skip nonce/memo
+    if intent_type == "authorize" {
+        return build_authorize(intent_json);
+    }
+
     // Build based on intent type
     let (instructions, generated_keypairs) = match intent_type {
         "payment" | "goUnstake" => build_payment(intent_json, params)?,
@@ -61,6 +69,7 @@ pub fn build_from_intent(
         "enableToken" => build_enable_token(intent_json, params)?,
         "closeAssociatedTokenAccount" => build_close_ata(intent_json, params)?,
         "consolidate" => build_consolidate(intent_json, params)?,
+        "customTx" => build_custom_tx(intent_json)?,
         _ => {
             return Err(WasmSolanaError::new(&format!(
                 "Unsupported intent type: {}",
@@ -88,7 +97,7 @@ pub fn build_from_intent(
 
 /// Build a Transaction from instructions and params.
 fn build_transaction_from_instructions(
-    mut instructions: Vec<Instruction>,
+    instructions: Vec<Instruction>,
     params: &BuildParams,
 ) -> Result<Transaction, WasmSolanaError> {
     let fee_payer: Pubkey = params
@@ -96,26 +105,26 @@ fn build_transaction_from_instructions(
         .parse()
         .map_err(|_| WasmSolanaError::new(&format!("Invalid feePayer: {}", params.fee_payer)))?;
 
-    // Handle nonce
-    let blockhash_str = match &params.nonce {
-        Nonce::Blockhash { value } => value.clone(),
+    let (blockhash_str, nonce_instruction) = match &params.nonce {
+        Nonce::Blockhash { value } => (value.clone(), None),
         Nonce::Durable {
             address,
             authority,
             value,
         } => {
-            // Prepend nonce advance instruction
             let nonce_pubkey: Pubkey = address.parse().map_err(|_| {
                 WasmSolanaError::new(&format!("Invalid nonce.address: {}", address))
             })?;
             let authority_pubkey: Pubkey = authority.parse().map_err(|_| {
                 WasmSolanaError::new(&format!("Invalid nonce.authority: {}", authority))
             })?;
-            instructions.insert(
-                0,
-                system_ix::advance_nonce_account(&nonce_pubkey, &authority_pubkey),
-            );
-            value.clone()
+            (
+                value.clone(),
+                Some(system_ix::advance_nonce_account(
+                    &nonce_pubkey,
+                    &authority_pubkey,
+                )),
+            )
         }
     };
 
@@ -123,8 +132,14 @@ fn build_transaction_from_instructions(
         .parse()
         .map_err(|_| WasmSolanaError::new(&format!("Invalid blockhash: {}", blockhash_str)))?;
 
-    // Create message and transaction
-    let message = Message::new_with_blockhash(&instructions, Some(&fee_payer), &blockhash);
+    // Build instruction list: nonce advance first (if durable), then intent instructions
+    let mut all_instructions = Vec::new();
+    if let Some(nonce_ix) = nonce_instruction {
+        all_instructions.push(nonce_ix);
+    }
+    all_instructions.extend(instructions);
+
+    let message = Message::new_with_blockhash(&all_instructions, Some(&fee_payer), &blockhash);
     let tx = Transaction::new_unsigned(message);
 
     Ok(tx)
@@ -243,38 +258,39 @@ fn build_jito_stake(
     use borsh::BorshSerialize;
     use spl_stake_pool::instruction::StakePoolInstruction;
 
-    let stake_pool: Pubkey = config.stake_pool_address.parse().map_err(|_| {
-        WasmSolanaError::new(&format!(
-            "Invalid stakePoolAddress: {}",
-            config.stake_pool_address
-        ))
-    })?;
-    let withdraw_authority: Pubkey = config.withdraw_authority.parse().map_err(|_| {
-        WasmSolanaError::new(&format!(
-            "Invalid withdrawAuthority: {}",
-            config.withdraw_authority
-        ))
-    })?;
-    let reserve_stake: Pubkey = config.reserve_stake.parse().map_err(|_| {
-        WasmSolanaError::new(&format!("Invalid reserveStake: {}", config.reserve_stake))
-    })?;
-    let destination_pool_account: Pubkey =
-        config.destination_pool_account.parse().map_err(|_| {
-            WasmSolanaError::new(&format!(
-                "Invalid destinationPoolAccount: {}",
-                config.destination_pool_account
-            ))
-        })?;
-    let manager_fee_account: Pubkey = config.manager_fee_account.parse().map_err(|_| {
-        WasmSolanaError::new(&format!(
-            "Invalid managerFeeAccount: {}",
-            config.manager_fee_account
-        ))
-    })?;
+    let stake_pool: Pubkey = config
+        .stake_pool_address
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing stakePoolAddress"))?
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid stakePoolAddress"))?;
+    let withdraw_authority: Pubkey = config
+        .withdraw_authority
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing withdrawAuthority"))?
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid withdrawAuthority"))?;
+    let reserve_stake: Pubkey = config
+        .reserve_stake
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid reserveStake"))?;
+    let destination_pool_account: Pubkey = config
+        .destination_pool_account
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing destinationPoolAccount"))?
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid destinationPoolAccount"))?;
+    let manager_fee_account: Pubkey = config
+        .manager_fee_account
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid managerFeeAccount"))?;
     let referral_pool_account: Pubkey = config
         .referral_pool_account
         .as_ref()
-        .unwrap_or(&config.destination_pool_account)
+        .or(config.destination_pool_account.as_ref())
+        .ok_or_else(|| {
+            WasmSolanaError::new("Missing referralPoolAccount or destinationPoolAccount")
+        })?
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid referralPoolAccount"))?;
     let pool_mint: Pubkey = config
@@ -384,7 +400,7 @@ fn build_partial_unstake(
             &StakeInstruction::Split(amount),
             vec![
                 solana_sdk::instruction::AccountMeta::new(*stake_pubkey, false),
-                solana_sdk::instruction::AccountMeta::new(unstake_pubkey, false),
+                solana_sdk::instruction::AccountMeta::new(unstake_pubkey, true),
                 solana_sdk::instruction::AccountMeta::new_readonly(*fee_payer, true),
             ],
         ),
@@ -421,12 +437,12 @@ fn build_jito_unstake(
     let transfer_authority_pubkey: Pubkey = transfer_authority_address.parse().unwrap();
 
     // Parse config addresses
-    let stake_pool: Pubkey = config.stake_pool_address.parse().map_err(|_| {
-        WasmSolanaError::new(&format!(
-            "Invalid stakePoolAddress: {}",
-            config.stake_pool_address
-        ))
-    })?;
+    let stake_pool: Pubkey = config
+        .stake_pool_address
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing stakePoolAddress"))?
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid stakePoolAddress"))?;
     let validator_list: Pubkey = config
         .validator_list
         .as_ref()
@@ -435,6 +451,8 @@ fn build_jito_unstake(
         .map_err(|_| WasmSolanaError::new("Invalid validatorList"))?;
     let withdraw_authority: Pubkey = config
         .withdraw_authority
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing withdrawAuthority"))?
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid withdrawAuthority"))?;
     let validator_stake: Pubkey = validator_address
@@ -781,6 +799,91 @@ fn build_consolidate(
     Ok((instructions, vec![]))
 }
 
+/// Build an authorize transaction from a pre-built message.
+///
+/// The authorize intent contains a `transactionMessage` field with a base64-encoded
+/// bincode-serialized Solana Message. We decode and wrap it in a Transaction directly.
+/// No nonce advance or memo is added — the message is already complete.
+fn build_authorize(intent_json: &serde_json::Value) -> Result<IntentBuildResult, WasmSolanaError> {
+    let intent: AuthorizeIntent = serde_json::from_value(intent_json.clone())
+        .map_err(|e| WasmSolanaError::new(&format!("Failed to parse authorize intent: {}", e)))?;
+
+    // Decode base64 → bytes
+    let message_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&intent.transaction_message)
+        .map_err(|e| {
+            WasmSolanaError::new(&format!(
+                "Failed to decode transactionMessage base64: {}",
+                e
+            ))
+        })?;
+
+    // Deserialize bytes → Message (bincode format, matching @solana/web3.js)
+    let message: Message = bincode::deserialize(&message_bytes).map_err(|e| {
+        WasmSolanaError::new(&format!("Failed to deserialize transactionMessage: {}", e))
+    })?;
+
+    let transaction = Transaction::new_unsigned(message);
+
+    Ok(IntentBuildResult {
+        transaction,
+        generated_keypairs: vec![],
+    })
+}
+
+/// Build a custom transaction from explicit instruction data.
+///
+/// Reads `solInstructions` from the intent and converts each to a Solana Instruction.
+/// Returns through the normal path so nonce advance and memo are added.
+fn build_custom_tx(
+    intent_json: &serde_json::Value,
+) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
+    let intent: CustomTxIntent = serde_json::from_value(intent_json.clone())
+        .map_err(|e| WasmSolanaError::new(&format!("Failed to parse customTx intent: {}", e)))?;
+
+    let mut instructions = Vec::new();
+
+    for (i, ix) in intent.sol_instructions.iter().enumerate() {
+        let program_id: Pubkey = ix.program_id.parse().map_err(|_| {
+            WasmSolanaError::new(&format!(
+                "Invalid programId at instruction {}: {}",
+                i, ix.program_id
+            ))
+        })?;
+
+        let mut accounts = Vec::new();
+        for (j, key) in ix.keys.iter().enumerate() {
+            let pubkey: Pubkey = key.pubkey.parse().map_err(|_| {
+                WasmSolanaError::new(&format!(
+                    "Invalid pubkey at instruction {} key {}: {}",
+                    i, j, key.pubkey
+                ))
+            })?;
+            if key.is_writable {
+                if key.is_signer {
+                    accounts.push(AccountMeta::new(pubkey, true));
+                } else {
+                    accounts.push(AccountMeta::new(pubkey, false));
+                }
+            } else if key.is_signer {
+                accounts.push(AccountMeta::new_readonly(pubkey, true));
+            } else {
+                accounts.push(AccountMeta::new_readonly(pubkey, false));
+            }
+        }
+
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(&ix.data)
+            .map_err(|e| {
+                WasmSolanaError::new(&format!("Failed to decode instruction {} data: {}", i, e))
+            })?;
+
+        instructions.push(Instruction::new_with_bytes(program_id, &data, accounts));
+    }
+
+    Ok((instructions, vec![]))
+}
+
 /// Build a memo instruction.
 fn build_memo(message: &str) -> Instruction {
     let memo_program: Pubkey = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
@@ -854,5 +957,67 @@ mod tests {
 
         let result = build_from_intent(&intent, &test_params());
         assert!(result.is_ok(), "Failed: {:?}", result);
+    }
+
+    #[test]
+    fn test_build_authorize_intent() {
+        // Build a simple message, serialize it with bincode, then base64 encode
+        let fee_payer: Pubkey = "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB"
+            .parse()
+            .unwrap();
+        let blockhash: Hash = "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4"
+            .parse()
+            .unwrap();
+        let to: Pubkey = "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH"
+            .parse()
+            .unwrap();
+
+        let ix = solana_system_interface::instruction::transfer(&fee_payer, &to, 1_000_000);
+        let message = Message::new_with_blockhash(&[ix], Some(&fee_payer), &blockhash);
+        let message_bytes = bincode::serialize(&message).unwrap();
+        let message_b64 = base64::engine::general_purpose::STANDARD.encode(&message_bytes);
+
+        let intent = serde_json::json!({
+            "intentType": "authorize",
+            "transactionMessage": message_b64,
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_ok(), "Failed: {:?}", result);
+        let result = result.unwrap();
+        assert!(result.generated_keypairs.is_empty());
+        // Verify the transaction message matches the original
+        assert_eq!(result.transaction.message, message);
+    }
+
+    #[test]
+    fn test_build_custom_tx_intent() {
+        use base64::Engine;
+
+        let program_id = "11111111111111111111111111111111";
+        let fee_payer_str = "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB";
+        let to_str = "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH";
+
+        // Build transfer instruction data manually (SystemInstruction::Transfer = index 2, then u64 LE)
+        let mut data = vec![2, 0, 0, 0]; // Transfer discriminant
+        data.extend_from_slice(&1_000_000u64.to_le_bytes());
+        let data_b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+
+        let intent = serde_json::json!({
+            "intentType": "customTx",
+            "solInstructions": [{
+                "programId": program_id,
+                "keys": [
+                    { "pubkey": fee_payer_str, "isSigner": true, "isWritable": true },
+                    { "pubkey": to_str, "isSigner": false, "isWritable": true },
+                ],
+                "data": data_b64,
+            }],
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_ok(), "Failed: {:?}", result);
+        let result = result.unwrap();
+        assert!(result.generated_keypairs.is_empty());
     }
 }

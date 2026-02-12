@@ -176,6 +176,40 @@ export interface ConsolidateIntent extends BaseIntent {
   }>;
 }
 
+/** Authorize intent - pre-built transaction message */
+export interface AuthorizeIntent extends BaseIntent {
+  intentType: "authorize";
+  /** Base64-encoded bincode-serialized Solana Message */
+  transactionMessage: string;
+}
+
+/** Custom transaction intent */
+export interface CustomTxIntent extends BaseIntent {
+  intentType: "customTx";
+  /** Custom instructions to include in the transaction */
+  solInstructions: CustomTxInstruction[];
+}
+
+/** A single custom instruction */
+export interface CustomTxInstruction {
+  /** Program ID (base58) */
+  programId: string;
+  /** Account keys for the instruction */
+  keys: CustomTxKey[];
+  /** Instruction data (base64) */
+  data: string;
+}
+
+/** Account key for a custom instruction */
+export interface CustomTxKey {
+  /** Account public key (base58) */
+  pubkey: string;
+  /** Whether this account must sign the transaction */
+  isSigner: boolean;
+  /** Whether this account is writable */
+  isWritable: boolean;
+}
+
 /** Union of all supported intent types */
 export type SolanaIntent =
   | PaymentIntent
@@ -186,7 +220,9 @@ export type SolanaIntent =
   | DelegateIntent
   | EnableTokenIntent
   | CloseAtaIntent
-  | ConsolidateIntent;
+  | ConsolidateIntent
+  | AuthorizeIntent
+  | CustomTxIntent;
 
 // =============================================================================
 // Main Function
