@@ -226,7 +226,7 @@ fn build_stake(
             system_ix::create_account(
                 &fee_payer,
                 &stake_pubkey,
-                amount + STAKE_ACCOUNT_RENT,
+                amount,
                 STAKE_ACCOUNT_SPACE,
                 &solana_stake_interface::program::ID,
             ),
