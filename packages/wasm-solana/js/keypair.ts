@@ -62,14 +62,6 @@ export class Keypair {
   }
 
   /**
-   * Get the public key as a base58 string
-   * @returns The public key as a base58 string
-   */
-  toBase58(): string {
-    return this._wasm.to_base58();
-  }
-
-  /**
    * Sign a message with this keypair
    * @param message - The message bytes to sign
    * @returns The 64-byte Ed25519 signature

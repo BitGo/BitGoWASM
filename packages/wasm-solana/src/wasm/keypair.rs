@@ -55,12 +55,6 @@ impl WasmKeypair {
         self.inner.address()
     }
 
-    /// Get the public key as a base58 string.
-    #[wasm_bindgen]
-    pub fn to_base58(&self) -> String {
-        self.inner.address()
-    }
-
     /// Sign a message with this keypair and return the 64-byte Ed25519 signature.
     ///
     /// @param message - The message bytes to sign
