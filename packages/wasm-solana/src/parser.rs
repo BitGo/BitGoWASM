@@ -153,8 +153,21 @@ pub fn parse_transaction(bytes: &[u8]) -> Result<ParsedTransaction, String> {
     // Note: Instruction combining (e.g., CreateAccount + StakeInitialize → StakingActivate)
     // is handled by TypeScript in mapWasmInstructionsToBitGoJS for flexibility
 
-    // Extract signatures as base58 strings
-    let signatures: Vec<String> = tx.signatures.iter().map(|s| s.to_string()).collect();
+    // Extract signatures as base58 strings.
+    // All-zeros signatures (unsigned placeholder slots) are returned as empty strings
+    // so the JS side can simply use `signatures[0] || 'UNAVAILABLE'`.
+    let signatures: Vec<String> = tx
+        .signatures
+        .iter()
+        .map(|s| {
+            let bytes: &[u8] = s.as_ref();
+            if bytes.iter().all(|&b| b == 0) {
+                String::new()
+            } else {
+                s.to_string()
+            }
+        })
+        .collect();
 
     Ok(ParsedTransaction {
         fee_payer,
