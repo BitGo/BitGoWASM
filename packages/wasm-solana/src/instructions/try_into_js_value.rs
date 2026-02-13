@@ -15,6 +15,7 @@ use crate::intent::{AuthorizeType, KeypairPurpose, StakingType};
 // Enum → JS string conversions
 // =============================================================================
 
+// UPPER_CASE: matches BitGo platform enum format
 impl TryIntoJsValue for StakingType {
     fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
         let s = match self {
@@ -26,6 +27,7 @@ impl TryIntoJsValue for StakingType {
     }
 }
 
+// PascalCase: matches Solana SDK StakeAuthorize variant names
 impl TryIntoJsValue for AuthorizeType {
     fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
         let s = match self {
@@ -36,6 +38,7 @@ impl TryIntoJsValue for AuthorizeType {
     }
 }
 
+// camelCase: matches JS/TS field naming convention
 impl TryIntoJsValue for KeypairPurpose {
     fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
         let s = match self {

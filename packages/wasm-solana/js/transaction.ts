@@ -1,4 +1,5 @@
 import { WasmTransaction } from "./wasm/wasm_solana.js";
+import { Keypair } from "./keypair.js";
 import { Pubkey } from "./pubkey.js";
 
 /**
@@ -225,15 +226,15 @@ export class Transaction {
   }
 
   /**
-   * Sign this transaction with a base58-encoded Ed25519 secret key.
+   * Sign this transaction with a Keypair.
    *
-   * Derives the public key from the secret, signs the transaction message,
-   * and places the signature at the correct signer index.
+   * Signs the transaction message and places the signature at the correct
+   * signer index.
    *
-   * @param secretKeyBase58 - The Ed25519 secret key (32-byte seed) as base58
+   * @param keypair - A Keypair instance
    */
-  signWithSecretKey(secretKeyBase58: string): void {
-    this._wasm.sign_with_secret_key(secretKeyBase58);
+  signWithKeypair(keypair: Keypair): void {
+    this._wasm.sign_with_keypair(keypair.wasm);
   }
 
   /**

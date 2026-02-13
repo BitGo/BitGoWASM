@@ -8,6 +8,7 @@
 use crate::error::WasmSolanaError;
 use crate::transaction::{Transaction, TransactionExt};
 use crate::versioned::{detect_transaction_version, TxVersion, VersionedTransactionExt};
+use crate::wasm::keypair::WasmKeypair;
 use solana_message::VersionedMessage;
 use solana_sdk::bs58;
 use solana_transaction::versioned::VersionedTransaction;
@@ -135,24 +136,21 @@ impl WasmTransaction {
         self.inner.signer_index(pubkey)
     }
 
-    /// Sign this transaction with a base58-encoded Ed25519 secret key.
+    /// Sign this transaction with a `WasmKeypair`.
     ///
-    /// Derives the public key from the secret, signs the transaction message,
-    /// and places the signature at the correct signer index.
+    /// Signs the transaction message and places the signature at the correct
+    /// signer index.
     ///
-    /// @param secret_key_base58 - The Ed25519 secret key (32-byte seed) as base58
+    /// @param keypair - A WasmKeypair instance
     #[wasm_bindgen]
-    pub fn sign_with_secret_key(&mut self, secret_key_base58: &str) -> Result<(), WasmSolanaError> {
-        use crate::keypair::{Keypair, KeypairExt};
+    pub fn sign_with_keypair(&mut self, keypair: &WasmKeypair) -> Result<(), WasmSolanaError> {
+        use crate::keypair::KeypairExt;
         use solana_signer::Signer;
 
-        let secret_bytes: Vec<u8> = bs58::decode(secret_key_base58)
-            .into_vec()
-            .map_err(|e| WasmSolanaError::new(&format!("Failed to decode secret key: {}", e)))?;
-        let keypair = Keypair::from_secret_key_bytes(&secret_bytes)?;
+        let inner = keypair.inner();
         let message_bytes = self.inner.message.serialize();
-        let signature = keypair.sign_message(&message_bytes);
-        let address = keypair.address();
+        let signature = inner.sign_message(&message_bytes);
+        let address = inner.address();
         self.inner.add_signature(&address, signature.as_ref())
     }
 
