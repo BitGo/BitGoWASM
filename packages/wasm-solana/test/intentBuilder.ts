@@ -65,6 +65,48 @@ describe("buildFromIntent", function () {
       assert.equal(transfers.length, 2, "Should have 2 transfer instructions");
     });
 
+    it("should reject native transfer exceeding 5 SOL", function () {
+      const intent = {
+        intentType: "payment",
+        recipients: [
+          {
+            address: { address: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH" },
+            amount: { value: 5000000001n }, // 5 SOL + 1 lamport
+          },
+        ],
+      };
+
+      assert.throws(
+        () => {
+          buildFromIntent(intent, {
+            feePayer,
+            nonce: { type: "blockhash", value: blockhash },
+          });
+        },
+        /exceeds maximum/,
+        "Should reject transfer exceeding 5 SOL",
+      );
+    });
+
+    it("should allow native transfer of exactly 5 SOL", function () {
+      const intent = {
+        intentType: "payment",
+        recipients: [
+          {
+            address: { address: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH" },
+            amount: { value: 5000000000n }, // exactly 5 SOL
+          },
+        ],
+      };
+
+      const result = buildFromIntent(intent, {
+        feePayer,
+        nonce: { type: "blockhash", value: blockhash },
+      });
+
+      assert(result.transaction instanceof Transaction, "Should return Transaction object");
+    });
+
     it("should include memo when provided", function () {
       const intent = {
         intentType: "payment",

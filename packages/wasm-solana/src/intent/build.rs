@@ -34,6 +34,7 @@ const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
 // Constants
 const STAKE_ACCOUNT_SPACE: u64 = 200;
 const STAKE_ACCOUNT_RENT: u64 = 2282880; // ~0.00228288 SOL
+const MAX_NATIVE_TRANSFER_LAMPORTS: u64 = 5_000_000_000; // 5 SOL
 
 /// Build a transaction from a BitGo intent.
 ///
@@ -179,6 +180,13 @@ fn build_payment(
             WasmSolanaError::new(&format!("Invalid recipient address: {}", address))
         })?;
         let lamports: u64 = *amount;
+
+        if lamports > MAX_NATIVE_TRANSFER_LAMPORTS {
+            return Err(WasmSolanaError::new(&format!(
+                "Native transfer amount {} lamports exceeds maximum of {} lamports (5 SOL)",
+                lamports, MAX_NATIVE_TRANSFER_LAMPORTS
+            )));
+        }
 
         instructions.push(system_ix::transfer(&fee_payer, &to_pubkey, lamports));
     }
@@ -1160,6 +1168,68 @@ mod tests {
             msg.instructions.len(),
             2,
             "Marinade unstake should have transfer + memo instructions"
+        );
+    }
+
+    #[test]
+    fn test_build_payment_rejects_amount_exceeding_max() {
+        // 5 SOL + 1 lamport should be rejected
+        let intent = serde_json::json!({
+            "intentType": "payment",
+            "recipients": [{
+                "address": { "address": "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH" },
+                "amount": { "value": "5000000001" }
+            }]
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_err(), "Should fail for amount exceeding 5 SOL");
+        assert!(
+            result.unwrap_err().to_string().contains("exceeds maximum"),
+            "Error should mention exceeds maximum"
+        );
+    }
+
+    #[test]
+    fn test_build_payment_allows_exactly_max_amount() {
+        // Exactly 5 SOL should succeed
+        let intent = serde_json::json!({
+            "intentType": "payment",
+            "recipients": [{
+                "address": { "address": "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH" },
+                "amount": { "value": "5000000000" }
+            }]
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(
+            result.is_ok(),
+            "Should succeed for exactly 5 SOL: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_build_payment_rejects_any_recipient_exceeding_max() {
+        // Multi-recipient where second exceeds max
+        let intent = serde_json::json!({
+            "intentType": "payment",
+            "recipients": [
+                {
+                    "address": { "address": "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH" },
+                    "amount": { "value": "1000000" }
+                },
+                {
+                    "address": { "address": "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN" },
+                    "amount": { "value": "6000000000" }
+                }
+            ]
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(
+            result.is_err(),
+            "Should fail when any recipient exceeds 5 SOL"
         );
     }
 
