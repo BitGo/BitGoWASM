@@ -267,6 +267,11 @@ export function buildFromIntent(
 ): BuildFromIntentResult {
   const result = IntentNamespace.build_from_intent(intent, params) as WasmBuildResult;
 
+  // Generated keypair signing happens in Rust (build_from_intent signs
+  // before returning). Signatures survive the wasm-bindgen boundary
+  // because WasmTransaction is a heap-allocated Rust object that JS
+  // holds a handle to — no serialization round-trip.
+
   return {
     transaction: Transaction.fromWasm(result.transaction),
     generatedKeypairs: result.generatedKeypairs,

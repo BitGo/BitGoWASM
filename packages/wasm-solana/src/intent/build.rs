@@ -5,6 +5,7 @@
 
 use crate::error::WasmSolanaError;
 use crate::keypair::{Keypair, KeypairExt};
+use crate::transaction::TransactionExt;
 
 use super::types::*;
 
@@ -87,7 +88,22 @@ pub fn build_from_intent(
     }
 
     // Build the transaction
-    let transaction = build_transaction_from_instructions(all_instructions, params)?;
+    let mut transaction = build_transaction_from_instructions(all_instructions, params)?;
+
+    // Sign with generated keypairs that are required signers
+    for kp in &generated_keypairs {
+        let secret_bytes: Vec<u8> = solana_sdk::bs58::decode(&kp.secret_key)
+            .into_vec()
+            .map_err(|e| WasmSolanaError::new(&format!("Failed to decode secret key: {}", e)))?;
+        let keypair = Keypair::from_secret_key_bytes(&secret_bytes)?;
+        use solana_signer::Signer;
+        let address = keypair.address();
+        if transaction.signer_index(&address).is_some() {
+            let msg_bytes = transaction.message.serialize();
+            let sig = keypair.sign_message(&msg_bytes);
+            transaction.add_signature(&address, sig.as_ref())?;
+        }
+    }
 
     Ok(IntentBuildResult {
         transaction,
@@ -203,7 +219,7 @@ fn build_stake(
     // Check if Jito staking
     if intent.staking_type == Some(StakingType::Jito) {
         if let Some(config) = &intent.stake_pool_config {
-            return build_jito_stake(config, &fee_payer, amount);
+            return build_jito_stake(config, &fee_payer, &intent.validator_address, amount);
         }
     }
 
@@ -241,7 +257,7 @@ fn build_stake(
         ];
 
         let generated = vec![GeneratedKeypair {
-            purpose: "stakeAccount".to_string(),
+            purpose: KeypairPurpose::StakeAccount,
             address: stake_address,
             secret_key: solana_sdk::bs58::encode(stake_keypair.secret_key_bytes()).into_string(),
         }];
@@ -254,7 +270,7 @@ fn build_stake(
         system_ix::create_account(
             &fee_payer,
             &stake_pubkey,
-            amount + STAKE_ACCOUNT_RENT,
+            amount,
             STAKE_ACCOUNT_SPACE,
             &solana_stake_interface::program::ID,
         ),
@@ -270,7 +286,7 @@ fn build_stake(
     ];
 
     let generated = vec![GeneratedKeypair {
-        purpose: "stakeAccount".to_string(),
+        purpose: KeypairPurpose::StakeAccount,
         address: stake_address,
         secret_key: solana_sdk::bs58::encode(stake_keypair.secret_key_bytes()).into_string(),
     }];
@@ -281,50 +297,45 @@ fn build_stake(
 fn build_jito_stake(
     config: &StakePoolConfig,
     fee_payer: &Pubkey,
+    validator_address: &str,
     amount: u64,
 ) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
     use borsh::BorshSerialize;
     use spl_stake_pool::instruction::StakePoolInstruction;
 
+    let stake_pool_program: Pubkey = "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"
+        .parse()
+        .unwrap();
+    let system_program: Pubkey = SYSTEM_PROGRAM_ID.parse().unwrap();
+    let token_program: Pubkey = SPL_TOKEN_PROGRAM_ID.parse().unwrap();
+    let ata_program: Pubkey = SPL_ATA_PROGRAM_ID.parse().unwrap();
+
+    // For Jito, validatorAddress is the stake pool address
     let stake_pool: Pubkey = config
         .stake_pool_address
         .as_ref()
-        .ok_or_else(|| WasmSolanaError::new("Missing stakePoolAddress"))?
+        .map(|s| s.as_str())
+        .unwrap_or(validator_address)
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid stakePoolAddress"))?;
-    let withdraw_authority: Pubkey = config
-        .withdraw_authority
-        .as_ref()
-        .ok_or_else(|| WasmSolanaError::new("Missing withdrawAuthority"))?
-        .parse()
-        .map_err(|_| WasmSolanaError::new("Invalid withdrawAuthority"))?;
+
+    // Derive withdraw authority PDA if not provided
+    let withdraw_authority: Pubkey = if let Some(wa) = &config.withdraw_authority {
+        wa.parse()
+            .map_err(|_| WasmSolanaError::new("Invalid withdrawAuthority"))?
+    } else {
+        let (pda, _) =
+            Pubkey::find_program_address(&[stake_pool.as_ref(), b"withdraw"], &stake_pool_program);
+        pda
+    };
+
     let reserve_stake: Pubkey = config
         .reserve_stake
         .as_ref()
         .ok_or_else(|| WasmSolanaError::new("Missing reserveStake"))?
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid reserveStake"))?;
-    let destination_pool_account: Pubkey = config
-        .destination_pool_account
-        .as_ref()
-        .ok_or_else(|| WasmSolanaError::new("Missing destinationPoolAccount"))?
-        .parse()
-        .map_err(|_| WasmSolanaError::new("Invalid destinationPoolAccount"))?;
-    let manager_fee_account: Pubkey = config
-        .manager_fee_account
-        .as_ref()
-        .ok_or_else(|| WasmSolanaError::new("Missing managerFeeAccount"))?
-        .parse()
-        .map_err(|_| WasmSolanaError::new("Invalid managerFeeAccount"))?;
-    let referral_pool_account: Pubkey = config
-        .referral_pool_account
-        .as_ref()
-        .or(config.destination_pool_account.as_ref())
-        .ok_or_else(|| {
-            WasmSolanaError::new("Missing referralPoolAccount or destinationPoolAccount")
-        })?
-        .parse()
-        .map_err(|_| WasmSolanaError::new("Invalid referralPoolAccount"))?;
+
     let pool_mint: Pubkey = config
         .pool_mint
         .as_ref()
@@ -332,21 +343,61 @@ fn build_jito_stake(
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid poolMint"))?;
 
+    let manager_fee_account: Pubkey = config
+        .manager_fee_account
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing managerFeeAccount"))?
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid managerFeeAccount"))?;
+
+    // Derive destination pool account (user's ATA for pool mint) if not provided
+    let destination_pool_account: Pubkey = if let Some(dpa) = &config.destination_pool_account {
+        dpa.parse()
+            .map_err(|_| WasmSolanaError::new("Invalid destinationPoolAccount"))?
+    } else {
+        let seeds = &[
+            fee_payer.as_ref(),
+            token_program.as_ref(),
+            pool_mint.as_ref(),
+        ];
+        let (ata, _) = Pubkey::find_program_address(seeds, &ata_program);
+        ata
+    };
+
+    // Referral pool account defaults to destination pool account
+    let referral_pool_account: Pubkey = if let Some(rpa) = &config.referral_pool_account {
+        rpa.parse()
+            .map_err(|_| WasmSolanaError::new("Invalid referralPoolAccount"))?
+    } else {
+        destination_pool_account
+    };
+
     // Build instruction data
     let instruction_data = StakePoolInstruction::DepositSol(amount);
     let mut data = Vec::new();
     instruction_data.serialize(&mut data).unwrap();
 
-    let stake_pool_program: Pubkey = "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"
-        .parse()
-        .unwrap();
-    let system_program: Pubkey = "11111111111111111111111111111111".parse().unwrap();
-    let token_program: Pubkey = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        .parse()
-        .unwrap();
-
     use solana_sdk::instruction::AccountMeta;
-    let instruction = Instruction::new_with_bytes(
+
+    let mut instructions = Vec::new();
+
+    // Optionally create ATA for pool mint (JitoSOL) if requested
+    if config.create_associated_token_account == Some(true) {
+        instructions.push(Instruction::new_with_bytes(
+            ata_program,
+            &[],
+            vec![
+                AccountMeta::new(*fee_payer, true),
+                AccountMeta::new(destination_pool_account, false),
+                AccountMeta::new_readonly(*fee_payer, false),
+                AccountMeta::new_readonly(pool_mint, false),
+                AccountMeta::new_readonly(system_program, false),
+                AccountMeta::new_readonly(token_program, false),
+            ],
+        ));
+    }
+
+    instructions.push(Instruction::new_with_bytes(
         stake_pool_program,
         &data,
         vec![
@@ -361,9 +412,9 @@ fn build_jito_stake(
             AccountMeta::new_readonly(system_program, false),
             AccountMeta::new_readonly(token_program, false),
         ],
-    );
+    ));
 
-    Ok((vec![instruction], vec![]))
+    Ok((instructions, vec![]))
 }
 
 fn build_unstake(
@@ -452,7 +503,7 @@ fn build_partial_unstake(
     ];
 
     let generated = vec![GeneratedKeypair {
-        purpose: "unstakeAccount".to_string(),
+        purpose: KeypairPurpose::UnstakeAccount,
         address: unstake_address,
         secret_key: solana_sdk::bs58::encode(unstake_keypair.secret_key_bytes()).into_string(),
     }];
@@ -505,6 +556,13 @@ fn build_jito_unstake(
     use borsh::BorshSerialize;
     use spl_stake_pool::instruction::StakePoolInstruction;
 
+    let stake_pool_program: Pubkey = "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"
+        .parse()
+        .unwrap();
+    let token_program: Pubkey = SPL_TOKEN_PROGRAM_ID.parse().unwrap();
+    let ata_program: Pubkey = SPL_ATA_PROGRAM_ID.parse().unwrap();
+    let clock_sysvar: Pubkey = solana_sdk::sysvar::clock::ID;
+
     // Generate destination stake account
     let unstake_keypair = Keypair::new();
     let unstake_address = unstake_keypair.address();
@@ -515,7 +573,7 @@ fn build_jito_unstake(
     let transfer_authority_address = transfer_authority_keypair.address();
     let transfer_authority_pubkey: Pubkey = transfer_authority_address.parse().unwrap();
 
-    // Parse config addresses
+    // Parse config addresses (with derivation for missing fields)
     let stake_pool: Pubkey = config
         .stake_pool_address
         .as_ref()
@@ -528,29 +586,23 @@ fn build_jito_unstake(
         .ok_or_else(|| WasmSolanaError::new("Missing validatorList"))?
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid validatorList"))?;
-    let withdraw_authority: Pubkey = config
-        .withdraw_authority
-        .as_ref()
-        .ok_or_else(|| WasmSolanaError::new("Missing withdrawAuthority"))?
-        .parse()
-        .map_err(|_| WasmSolanaError::new("Invalid withdrawAuthority"))?;
+
+    // Derive withdraw authority PDA if not provided
+    let withdraw_authority: Pubkey = if let Some(wa) = &config.withdraw_authority {
+        wa.parse()
+            .map_err(|_| WasmSolanaError::new("Invalid withdrawAuthority"))?
+    } else {
+        let (pda, _) =
+            Pubkey::find_program_address(&[stake_pool.as_ref(), b"withdraw"], &stake_pool_program);
+        pda
+    };
+
     let validator_stake: Pubkey = validator_address
         .as_ref()
         .ok_or_else(|| WasmSolanaError::new("Missing validatorAddress"))?
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid validatorAddress"))?;
-    let source_pool_account: Pubkey = config
-        .source_pool_account
-        .as_ref()
-        .ok_or_else(|| WasmSolanaError::new("Missing sourcePoolAccount"))?
-        .parse()
-        .map_err(|_| WasmSolanaError::new("Invalid sourcePoolAccount"))?;
-    let manager_fee_account: Pubkey = config
-        .manager_fee_account
-        .as_ref()
-        .ok_or_else(|| WasmSolanaError::new("Missing managerFeeAccount"))?
-        .parse()
-        .map_err(|_| WasmSolanaError::new("Invalid managerFeeAccount"))?;
+
     let pool_mint: Pubkey = config
         .pool_mint
         .as_ref()
@@ -558,21 +610,57 @@ fn build_jito_unstake(
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid poolMint"))?;
 
-    // Build instruction data
-    let instruction_data = StakePoolInstruction::WithdrawStake(amount);
-    let mut data = Vec::new();
-    instruction_data.serialize(&mut data).unwrap();
+    // Derive source pool account (user's ATA for pool mint) if not provided
+    let source_pool_account: Pubkey = if let Some(spa) = &config.source_pool_account {
+        spa.parse()
+            .map_err(|_| WasmSolanaError::new("Invalid sourcePoolAccount"))?
+    } else {
+        let seeds = &[
+            fee_payer.as_ref(),
+            token_program.as_ref(),
+            pool_mint.as_ref(),
+        ];
+        let (ata, _) = Pubkey::find_program_address(seeds, &ata_program);
+        ata
+    };
 
-    let stake_pool_program: Pubkey = "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"
+    let manager_fee_account: Pubkey = config
+        .manager_fee_account
+        .as_ref()
+        .ok_or_else(|| WasmSolanaError::new("Missing managerFeeAccount"))?
         .parse()
-        .unwrap();
-    let clock_sysvar: Pubkey = solana_sdk::sysvar::clock::ID;
-    let token_program: Pubkey = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        .parse()
-        .unwrap();
+        .map_err(|_| WasmSolanaError::new("Invalid managerFeeAccount"))?;
+
+    // 1. Approve: allow transfer_authority to spend pool tokens from user's ATA
+    //    SPL Token Approve instruction (index 4): [4u8] + amount as u64 LE
+    let mut approve_data = vec![4u8];
+    approve_data.extend_from_slice(&amount.to_le_bytes());
+    let approve_ix = Instruction::new_with_bytes(
+        token_program,
+        &approve_data,
+        vec![
+            AccountMeta::new(source_pool_account, false),
+            AccountMeta::new_readonly(transfer_authority_pubkey, false),
+            AccountMeta::new_readonly(*fee_payer, true),
+        ],
+    );
+
+    // 2. CreateAccount: create the destination stake account (makes unstake_pubkey a signer)
+    let create_account_ix = system_ix::create_account(
+        fee_payer,
+        &unstake_pubkey,
+        STAKE_ACCOUNT_RENT,
+        STAKE_ACCOUNT_SPACE,
+        &solana_stake_interface::program::ID,
+    );
+
+    // 3. WithdrawStake: withdraw from stake pool into the new stake account
+    let withdraw_data = StakePoolInstruction::WithdrawStake(amount);
+    let mut data = Vec::new();
+    withdraw_data.serialize(&mut data).unwrap();
 
     use solana_sdk::instruction::AccountMeta;
-    let instruction = Instruction::new_with_bytes(
+    let withdraw_stake_ix = Instruction::new_with_bytes(
         stake_pool_program,
         &data,
         vec![
@@ -592,21 +680,32 @@ fn build_jito_unstake(
         ],
     );
 
+    // 4. Deactivate: deactivate the newly created stake account
+    let deactivate_ix = stake_ix::deactivate_stake(&unstake_pubkey, fee_payer);
+
     let generated = vec![
         GeneratedKeypair {
-            purpose: "unstakeAccount".to_string(),
+            purpose: KeypairPurpose::UnstakeAccount,
             address: unstake_address,
             secret_key: solana_sdk::bs58::encode(unstake_keypair.secret_key_bytes()).into_string(),
         },
         GeneratedKeypair {
-            purpose: "transferAuthority".to_string(),
+            purpose: KeypairPurpose::TransferAuthority,
             address: transfer_authority_address,
             secret_key: solana_sdk::bs58::encode(transfer_authority_keypair.secret_key_bytes())
                 .into_string(),
         },
     ];
 
-    Ok((vec![instruction], generated))
+    Ok((
+        vec![
+            approve_ix,
+            create_account_ix,
+            withdraw_stake_ix,
+            deactivate_ix,
+        ],
+        generated,
+    ))
 }
 
 fn build_claim(
@@ -1016,7 +1115,53 @@ mod tests {
         assert!(result.is_ok(), "Failed: {:?}", result);
         let result = result.unwrap();
         assert_eq!(result.generated_keypairs.len(), 1);
-        assert_eq!(result.generated_keypairs[0].purpose, "stakeAccount");
+        assert_eq!(
+            result.generated_keypairs[0].purpose,
+            KeypairPurpose::StakeAccount
+        );
+    }
+
+    #[test]
+    fn test_stake_with_durable_nonce_structure() {
+        use crate::transaction::TransactionExt;
+
+        let nonce_authority = Keypair::new();
+        let params = BuildParams {
+            fee_payer: "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB".to_string(),
+            nonce: Nonce::Durable {
+                address: "27E3MXFvXMUNYeMJeX1pAbERGsJfUbkaZTfgMgpmNN5g".to_string(),
+                authority: nonce_authority.address(),
+                value: "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4".to_string(),
+            },
+        };
+
+        let intent = serde_json::json!({
+            "intentType": "stake",
+            "validatorAddress": "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN",
+            "amount": { "value": "1000000000" }
+        });
+
+        let result = build_from_intent(&intent, &params).unwrap();
+
+        // Transaction should have 3 required signatures: fee_payer + stake_account + nonce_authority
+        assert_eq!(
+            result.transaction.num_signatures(),
+            3,
+            "Durable nonce stake tx should have 3 signature slots"
+        );
+
+        // Generated keypair (stake account) should already be signed in Rust
+        let zero_sig = [0u8; 64];
+        let non_zero_count = result
+            .transaction
+            .signatures
+            .iter()
+            .filter(|s| s.as_ref() != &zero_sig)
+            .count();
+        assert_eq!(
+            non_zero_count, 1,
+            "build_from_intent should sign generated keypairs in Rust"
+        );
     }
 
     #[test]
@@ -1121,7 +1266,10 @@ mod tests {
 
         // Should generate a stake account keypair
         assert_eq!(result.generated_keypairs.len(), 1);
-        assert_eq!(result.generated_keypairs[0].purpose, "stakeAccount");
+        assert_eq!(
+            result.generated_keypairs[0].purpose,
+            KeypairPurpose::StakeAccount
+        );
 
         // Transaction should have 2 instructions (CreateAccount + Initialize)
         // No Delegate instruction for Marinade

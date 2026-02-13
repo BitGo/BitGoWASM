@@ -60,6 +60,17 @@ impl WasmKeypair {
     pub fn to_base58(&self) -> String {
         self.inner.address()
     }
+
+    /// Sign a message with this keypair and return the 64-byte Ed25519 signature.
+    ///
+    /// @param message - The message bytes to sign
+    /// @returns The 64-byte signature as a Uint8Array
+    #[wasm_bindgen]
+    pub fn sign(&self, message: &[u8]) -> js_sys::Uint8Array {
+        use solana_signer::Signer;
+        let sig = self.inner.sign_message(message);
+        js_sys::Uint8Array::from(sig.as_ref())
+    }
 }
 
 impl WasmKeypair {

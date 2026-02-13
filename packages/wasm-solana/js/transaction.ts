@@ -225,6 +225,18 @@ export class Transaction {
   }
 
   /**
+   * Sign this transaction with a base58-encoded Ed25519 secret key.
+   *
+   * Derives the public key from the secret, signs the transaction message,
+   * and places the signature at the correct signer index.
+   *
+   * @param secretKeyBase58 - The Ed25519 secret key (32-byte seed) as base58
+   */
+  signWithSecretKey(secretKeyBase58: string): void {
+    this._wasm.sign_with_secret_key(secretKeyBase58);
+  }
+
+  /**
    * Get the underlying WASM instance (internal use only)
    * @internal
    */
