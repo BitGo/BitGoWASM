@@ -1,6 +1,7 @@
 //! Instruction decoding using official Solana interface crates.
 
 use super::types::*;
+use crate::intent::AuthorizeType;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_stake_interface::instruction::StakeInstruction;
 use solana_system_interface::instruction::SystemInstruction;
@@ -155,8 +156,10 @@ fn decode_stake_instruction(ctx: InstructionContext) -> ParsedInstruction {
             // Accounts: [0] stake, [1] clock, [2] authority, [3] optional custodian
             if ctx.accounts.len() >= 3 {
                 let auth_type = match stake_authorize {
-                    solana_stake_interface::state::StakeAuthorize::Staker => "Staker",
-                    solana_stake_interface::state::StakeAuthorize::Withdrawer => "Withdrawer",
+                    solana_stake_interface::state::StakeAuthorize::Staker => AuthorizeType::Staker,
+                    solana_stake_interface::state::StakeAuthorize::Withdrawer => {
+                        AuthorizeType::Withdrawer
+                    }
                 };
                 let custodian = if ctx.accounts.len() >= 4 {
                     Some(ctx.accounts[3].clone())
@@ -167,7 +170,7 @@ fn decode_stake_instruction(ctx: InstructionContext) -> ParsedInstruction {
                     staking_address: ctx.accounts[0].clone(),
                     old_authorize_address: ctx.accounts[2].clone(),
                     new_authorize_address: new_authority.to_string(),
-                    authorize_type: auth_type.to_string(),
+                    authorize_type: auth_type,
                     custodian_address: custodian,
                 })
             } else {
@@ -178,8 +181,10 @@ fn decode_stake_instruction(ctx: InstructionContext) -> ParsedInstruction {
             // Accounts: [0] stake, [1] clock, [2] authority, [3] new_authority (signer), [4] optional custodian
             if ctx.accounts.len() >= 4 {
                 let auth_type = match stake_authorize {
-                    solana_stake_interface::state::StakeAuthorize::Staker => "Staker",
-                    solana_stake_interface::state::StakeAuthorize::Withdrawer => "Withdrawer",
+                    solana_stake_interface::state::StakeAuthorize::Staker => AuthorizeType::Staker,
+                    solana_stake_interface::state::StakeAuthorize::Withdrawer => {
+                        AuthorizeType::Withdrawer
+                    }
                 };
                 let custodian = if ctx.accounts.len() >= 5 {
                     Some(ctx.accounts[4].clone())
@@ -190,7 +195,7 @@ fn decode_stake_instruction(ctx: InstructionContext) -> ParsedInstruction {
                     staking_address: ctx.accounts[0].clone(),
                     old_authorize_address: ctx.accounts[2].clone(),
                     new_authorize_address: ctx.accounts[3].clone(),
-                    authorize_type: auth_type.to_string(),
+                    authorize_type: auth_type,
                     custodian_address: custodian,
                 })
             } else {

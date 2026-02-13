@@ -9,6 +9,43 @@ use base64::prelude::*;
 use wasm_bindgen::JsValue;
 
 use super::types::*;
+use crate::intent::{AuthorizeType, KeypairPurpose, StakingType};
+
+// =============================================================================
+// Enum → JS string conversions
+// =============================================================================
+
+impl TryIntoJsValue for StakingType {
+    fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
+        let s = match self {
+            StakingType::Native => "NATIVE",
+            StakingType::Jito => "JITO",
+            StakingType::Marinade => "MARINADE",
+        };
+        Ok(JsValue::from_str(s))
+    }
+}
+
+impl TryIntoJsValue for AuthorizeType {
+    fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
+        let s = match self {
+            AuthorizeType::Staker => "Staker",
+            AuthorizeType::Withdrawer => "Withdrawer",
+        };
+        Ok(JsValue::from_str(s))
+    }
+}
+
+impl TryIntoJsValue for KeypairPurpose {
+    fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
+        let s = match self {
+            KeypairPurpose::StakeAccount => "stakeAccount",
+            KeypairPurpose::UnstakeAccount => "unstakeAccount",
+            KeypairPurpose::TransferAuthority => "transferAuthority",
+        };
+        Ok(JsValue::from_str(s))
+    }
+}
 
 // =============================================================================
 // System Program Params

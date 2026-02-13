@@ -124,7 +124,7 @@ pub struct StakingActivateParams {
     pub staking_address: String,
     pub amount: u64,
     pub validator: String,
-    pub staking_type: String, // "NATIVE", "JITO", "MARINADE"
+    pub staking_type: crate::intent::StakingType,
 }
 
 #[derive(Debug, Clone)]
@@ -152,7 +152,7 @@ pub struct StakingAuthorizeParams {
     pub staking_address: String,
     pub old_authorize_address: String,
     pub new_authorize_address: String,
-    pub authorize_type: String, // "Staker" or "Withdrawer"
+    pub authorize_type: crate::intent::AuthorizeType,
     pub custodian_address: Option<String>,
 }
 

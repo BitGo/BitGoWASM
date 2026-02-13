@@ -70,6 +70,15 @@ export class Keypair {
   }
 
   /**
+   * Sign a message with this keypair
+   * @param message - The message bytes to sign
+   * @returns The 64-byte Ed25519 signature
+   */
+  sign(message: Uint8Array): Uint8Array {
+    return this._wasm.sign(message);
+  }
+
+  /**
    * Get the underlying WASM instance (internal use only)
    * @internal
    */

@@ -135,6 +135,27 @@ impl WasmTransaction {
         self.inner.signer_index(pubkey)
     }
 
+    /// Sign this transaction with a base58-encoded Ed25519 secret key.
+    ///
+    /// Derives the public key from the secret, signs the transaction message,
+    /// and places the signature at the correct signer index.
+    ///
+    /// @param secret_key_base58 - The Ed25519 secret key (32-byte seed) as base58
+    #[wasm_bindgen]
+    pub fn sign_with_secret_key(&mut self, secret_key_base58: &str) -> Result<(), WasmSolanaError> {
+        use crate::keypair::{Keypair, KeypairExt};
+        use solana_signer::Signer;
+
+        let secret_bytes: Vec<u8> = bs58::decode(secret_key_base58)
+            .into_vec()
+            .map_err(|e| WasmSolanaError::new(&format!("Failed to decode secret key: {}", e)))?;
+        let keypair = Keypair::from_secret_key_bytes(&secret_bytes)?;
+        let message_bytes = self.inner.message.serialize();
+        let signature = keypair.sign_message(&message_bytes);
+        let address = keypair.address();
+        self.inner.add_signature(&address, signature.as_ref())
+    }
+
     /// Get all instructions as an array.
     ///
     /// Each instruction is a JS object with programId, accounts, and data.

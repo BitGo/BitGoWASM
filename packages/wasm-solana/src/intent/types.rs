@@ -65,12 +65,28 @@ pub struct IntentBuildResult {
     pub generated_keypairs: Vec<GeneratedKeypair>,
 }
 
+/// Purpose of a generated keypair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KeypairPurpose {
+    StakeAccount,
+    UnstakeAccount,
+    TransferAuthority,
+}
+
+/// Authorize type for stake account authority changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthorizeType {
+    Staker,
+    Withdrawer,
+}
+
 /// A keypair generated during transaction building.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GeneratedKeypair {
     /// Purpose of this keypair
-    pub purpose: String,
+    pub purpose: KeypairPurpose,
     /// Public address (base58)
     pub address: String,
     /// Secret key (base58)
@@ -204,6 +220,9 @@ pub struct StakePoolConfig {
     pub validator_list: Option<String>,
     #[serde(default)]
     pub source_pool_account: Option<String>,
+    /// Whether to create an ATA for the pool mint before depositing (Jito staking)
+    #[serde(default)]
+    pub create_associated_token_account: Option<bool>,
 }
 
 /// Unstake intent
