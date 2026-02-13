@@ -22,7 +22,7 @@ This will:
 Pre-commit hooks automatically run on staged files:
 
 - **JS/TS**: Prettier formatting + ESLint
-- **Rust**: `cargo fmt`
+- **Rust**: `cargo fmt` + `cargo clippy`
 
 # Package Management
 

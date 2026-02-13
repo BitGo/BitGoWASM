@@ -63,10 +63,9 @@ export default {
       const manifest = `packages/${pkg}/Cargo.toml`;
       if (existsSync(manifest)) {
         commands.push(`cargo fmt --manifest-path ${manifest}`);
-        // TODO: enable once pre-existing clippy warnings are fixed
-        // commands.push(
-        //   `cargo clippy --manifest-path ${manifest} --all-targets --all-features -- -D warnings`,
-        // );
+        commands.push(
+          `cargo clippy --manifest-path ${manifest} --all-targets --all-features -- -D warnings`,
+        );
       }
     }
     return commands;
