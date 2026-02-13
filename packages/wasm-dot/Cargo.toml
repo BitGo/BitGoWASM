@@ -1,0 +1,47 @@
+[package]
+name = "wasm-dot"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]
+# WASM bindings
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde-wasm-bindgen = "0.6"
+
+# SCALE codec (Substrate/Polkadot serialization)
+parity-scale-codec = { version = "3.6", features = ["derive"] }
+
+# Subxt for client-side Substrate types (WASM compatible)
+# Note: We use subxt_core::ext::scale_value for dynamic call building
+subxt-core = { version = "0.37", default-features = false }
+
+# Crypto
+blake2 = "0.10"
+bs58 = "0.5"
+
+# WASM random number generation support
+getrandom = { version = "0.2", features = ["js"] }
+
+# Hex encoding
+hex = "0.4"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+hex = "0.4"
+
+[profile.release]
+strip = true
