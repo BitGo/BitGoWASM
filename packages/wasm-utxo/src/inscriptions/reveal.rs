@@ -97,7 +97,7 @@ pub fn create_inscription_reveal_data(
         output_script: output_script.to_bytes(),
         reveal_transaction_vsize: reveal_vsize,
         tap_leaf_script: TapLeafScript {
-            leaf_version: LeafVersion::TapScript.to_consensus() as u8,
+            leaf_version: LeafVersion::TapScript.to_consensus(),
             script: script.to_bytes(),
             control_block: control_block.serialize(),
         },
@@ -238,7 +238,7 @@ fn estimate_reveal_vsize(script: &ScriptBuf, control_block: &ControlBlock) -> us
     let total_weight = base_weight + segwit_overhead + witness_weight;
 
     // Virtual size = ceil(weight / 4)
-    (total_weight + 3) / 4
+    total_weight.div_ceil(4)
 }
 
 #[cfg(test)]

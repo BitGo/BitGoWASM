@@ -13,6 +13,13 @@ crate-type = ["cdylib", "rlib"]
 [lints.clippy]
 all = "warn"
 
+[lints.rust]
+# These cfg conditions come from the zebra-chain dependency
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(zcash_unstable, values("zfuture"))',
+    'cfg(feature, values("zebra-test"))',
+] }
+
 [dependencies]
 wasm-bindgen = "0.2"
 js-sys = "0.3"

@@ -46,6 +46,7 @@ impl Bip322Namespace {
     /// # Returns
     /// The index of the added input
     #[wasm_bindgen]
+    #[allow(clippy::too_many_arguments)]
     pub fn add_bip322_input(
         psbt: &mut super::fixed_script_wallet::BitGoPsbt,
         message: &str,
@@ -97,6 +98,7 @@ impl Bip322Namespace {
     /// # Throws
     /// Throws an error if verification fails
     #[wasm_bindgen]
+    #[allow(clippy::too_many_arguments)]
     pub fn verify_bip322_tx_input(
         tx: &super::transaction::WasmTransaction,
         input_index: u32,

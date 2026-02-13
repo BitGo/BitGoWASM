@@ -393,7 +393,7 @@ fn create_musig2_deterministic_nonce(
     let secp = secp256k1::Secp256k1::new();
     let (tweaked_key, _parity): (crate::bitcoin::key::TweakedPublicKey, Parity) =
         internal_pub_key.tap_tweak(&secp, Some(*tap_tree_root));
-    let tap_output_key = tweaked_key.to_inner().serialize();
+    let tap_output_key = tweaked_key.to_x_only_public_key().serialize();
 
     // Serialize aggregate other nonce
     let agg_other_nonce_bytes = agg_other_nonce.serialize();

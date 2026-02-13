@@ -182,8 +182,7 @@ pub fn add_bip322_input(
                 // Key path spending (MuSig2 with user/bitgo)
                 let internal_key = script.spend_info.internal_key();
                 inner_psbt.inputs[input_index].tap_internal_key = Some(internal_key);
-                inner_psbt.inputs[input_index].tap_merkle_root =
-                    script.spend_info.merkle_root().map(Into::into);
+                inner_psbt.inputs[input_index].tap_merkle_root = script.spend_info.merkle_root();
                 inner_psbt.inputs[input_index].tap_key_origins = create_tap_bip32_derivation(
                     wallet_keys,
                     chain,
@@ -209,6 +208,7 @@ pub fn add_bip322_input(
 /// * `wallet_keys` - The wallet's root keys
 /// * `network` - The network
 /// * `tag` - Optional custom tag for message hashing
+#[allow(clippy::too_many_arguments)]
 pub fn verify_bip322_tx_input(
     tx: &Transaction,
     input_index: usize,
