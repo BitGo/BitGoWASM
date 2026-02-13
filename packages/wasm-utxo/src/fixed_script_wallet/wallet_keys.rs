@@ -102,7 +102,7 @@ impl RootWalletKeys {
         {
             let cache = self.derivation_cache.borrow();
             if let Some(cached) = cache.get(&cache_key) {
-                return Ok(cached.clone());
+                return Ok(*cached);
             }
         }
 
@@ -128,7 +128,7 @@ impl RootWalletKeys {
             if cache.len() >= DERIVATION_CACHE_MAX_SIZE {
                 cache.clear();
             }
-            cache.insert(cache_key, derived.clone());
+            cache.insert(cache_key, derived);
         }
 
         Ok(derived)

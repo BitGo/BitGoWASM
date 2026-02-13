@@ -123,12 +123,11 @@ impl NetworkUpgrade {
 /// Returns `None` if the height is before Overwinter activation.
 pub fn network_upgrade_at_height(height: u32, is_mainnet: bool) -> Option<NetworkUpgrade> {
     // Iterate in reverse chronological order
-    for &upgrade in NetworkUpgrade::ALL.iter().rev() {
-        if height >= upgrade.activation_height(is_mainnet) {
-            return Some(upgrade);
-        }
-    }
-    None
+    NetworkUpgrade::ALL
+        .iter()
+        .rev()
+        .find(|&&upgrade| height >= upgrade.activation_height(is_mainnet))
+        .copied()
 }
 
 /// Get the consensus branch ID for a given block height
@@ -197,9 +196,9 @@ mod tests {
                 ZebraNetworkUpgrade::Nu6 => Some(NetworkUpgrade::Nu6),
                 ZebraNetworkUpgrade::Nu6_1 => Some(NetworkUpgrade::Nu6_1),
                 #[cfg(any(test, feature = "zebra-test"))]
-                ZebraNetworkUpgrade::Nu7 => None, // Not yet in production
+                ZebraNetworkUpgrade::Nu7 => None,
                 #[cfg(zcash_unstable = "zfuture")]
-                ZebraNetworkUpgrade::ZFuture => None, // Test-only
+                ZebraNetworkUpgrade::ZFuture => None,
             }
         }
 
@@ -222,10 +221,12 @@ mod tests {
                     continue;
                 }
 
-                let our_upgrade = from_zebra_upgrade(zebra_upgrade).expect(&format!(
-                    "Missing mapping for zebra upgrade {:?}. Add it to NetworkUpgrade enum!",
-                    zebra_upgrade
-                ));
+                let our_upgrade = from_zebra_upgrade(zebra_upgrade).unwrap_or_else(|| {
+                    panic!(
+                        "Missing mapping for zebra upgrade {:?}. Add it to NetworkUpgrade enum!",
+                        zebra_upgrade
+                    )
+                });
 
                 // Verify round-trip
                 assert_eq!(
@@ -253,7 +254,7 @@ mod tests {
                 let zebra_upgrade = to_zebra_upgrade(upgrade);
                 let expected = zebra_upgrade
                     .branch_id()
-                    .map(|b| u32::from(b))
+                    .map(u32::from)
                     .expect("upgrade should have branch_id");
 
                 assert_eq!(

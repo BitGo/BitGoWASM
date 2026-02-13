@@ -82,7 +82,6 @@ pub fn build_inscription_script(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use miniscript::bitcoin::hashes::Hash;
     use miniscript::bitcoin::secp256k1::{Secp256k1, SecretKey};
     use miniscript::bitcoin::XOnlyPublicKey;
 

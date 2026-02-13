@@ -1986,7 +1986,7 @@ impl BitGoPsbt {
 
         // Copy tap_script_sigs (Taproot script path signatures)
         for (key, sig) in &cloned_input.tap_script_sigs {
-            target_input.tap_script_sigs.insert(key.clone(), *sig);
+            target_input.tap_script_sigs.insert(*key, *sig);
         }
 
         // Copy tap_key_sig (Taproot key path signature)
@@ -2106,7 +2106,7 @@ impl BitGoPsbt {
                             .psbt()
                             .inputs
                             .get(**input_index)
-                            .map(|input| p2tr_musig2_input::Musig2Input::is_musig2_input(input))
+                            .map(p2tr_musig2_input::Musig2Input::is_musig2_input)
                             .unwrap_or(false);
 
                         // Don't report "key not found" errors - those are normal for inputs
@@ -2205,7 +2205,7 @@ impl BitGoPsbt {
 
         // Copy tap_script_sigs (Taproot script path signatures)
         for (key, sig) in &cloned_input.tap_script_sigs {
-            target_input.tap_script_sigs.insert(key.clone(), *sig);
+            target_input.tap_script_sigs.insert(*key, *sig);
         }
 
         // Copy tap_key_sig (Taproot key path signature)
@@ -2485,6 +2485,7 @@ impl BitGoPsbt {
     /// # Returns
     /// - `Ok(EcdsaSignature)` containing the signature and sighash type
     /// - `Err(String)` if sighash computation fails
+    #[allow(clippy::too_many_arguments)]
     fn sign_p2sh_p2pk_input_zcash<C: secp256k1::Signing>(
         psbt: &Psbt,
         input_index: usize,
@@ -2621,7 +2622,7 @@ impl BitGoPsbt {
                     input_index,
                     redeem_script,
                     value,
-                    ecdsa_sig.sighash_type as u32,
+                    ecdsa_sig.sighash_type,
                     branch_id,
                     version_group_id,
                     expiry_height,
@@ -2645,7 +2646,7 @@ impl BitGoPsbt {
                     input_index,
                     redeem_script,
                     value,
-                    ecdsa_sig.sighash_type as u32,
+                    ecdsa_sig.sighash_type,
                     Some(fork_id),
                 )
                 .map_err(|e| format!("Failed to compute FORKID sighash: {}", e))?;
@@ -3816,7 +3817,7 @@ mod tests {
         let psbt = bitgo_psbt.psbt();
         let has_matching_input = psbt.inputs.iter().any(|input| {
             // Check if this input matches the script type we're testing
-            if let Some(ref witness_script) = input.witness_script {
+            if let Some(ref _witness_script) = input.witness_script {
                 // p2wsh or p2shP2wsh
                 if input.redeem_script.is_some() {
                     matches!(script_type, fixtures::ScriptType::P2shP2wsh)
