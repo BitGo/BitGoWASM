@@ -9,7 +9,7 @@
  * overall transaction type.
  */
 
-import { parseTransaction } from "./parser.js";
+import { parseTransactionData } from "./parser.js";
 import type { InstructionParams, ParsedTransaction } from "./parser.js";
 
 // =============================================================================
@@ -211,7 +211,7 @@ export function explainTransaction(
 ): ExplainedTransaction {
   const { lamportsPerSignature, tokenAccountRentExemptAmount } = options;
 
-  const parsed: ParsedTransaction = parseTransaction(input);
+  const parsed: ParsedTransaction = parseTransactionData(input);
 
   // --- Transaction ID ---
   const id = extractTransactionId(parsed.signatures);
