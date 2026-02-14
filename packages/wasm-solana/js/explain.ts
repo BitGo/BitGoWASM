@@ -16,39 +16,76 @@ import type { InstructionParams, ParsedTransaction } from "./parser.js";
 // Public types
 // =============================================================================
 
+export enum TransactionType {
+  Send = "Send",
+  StakingActivate = "StakingActivate",
+  StakingDeactivate = "StakingDeactivate",
+  StakingWithdraw = "StakingWithdraw",
+  StakingAuthorize = "StakingAuthorize",
+  StakingDelegate = "StakingDelegate",
+  WalletInitialization = "WalletInitialization",
+  AssociatedTokenAccountInitialization = "AssociatedTokenAccountInitialization",
+}
+
+/** Solana base fee per signature (protocol constant). */
+const DEFAULT_LAMPORTS_PER_SIGNATURE = 5000n;
+
 export interface ExplainOptions {
-  lamportsPerSignature: bigint | number | string;
+  /** Defaults to 5000 (Solana protocol constant). */
+  lamportsPerSignature?: bigint | number | string;
   tokenAccountRentExemptAmount?: bigint | number | string;
 }
 
 export interface ExplainedOutput {
   address: string;
-  amount: string;
+  amount: bigint;
   tokenName?: string;
 }
 
 export interface ExplainedInput {
   address: string;
-  value: string;
+  value: bigint;
+}
+
+export interface TokenEnablement {
+  /** The ATA address being created */
+  address: string;
+  /** The SPL token mint address */
+  mintAddress: string;
+}
+
+export interface StakingAuthorizeInfo {
+  stakingAddress: string;
+  oldAuthorizeAddress: string;
+  newAuthorizeAddress: string;
+  authorizeType: "Staker" | "Withdrawer";
+  custodianAddress?: string;
 }
 
 export interface ExplainedTransaction {
   /** Transaction ID (base58 signature). Undefined if the transaction is unsigned. */
   id: string | undefined;
-  type: string;
+  type: TransactionType;
   feePayer: string;
-  fee: string;
+  fee: bigint;
   blockhash: string;
   durableNonce?: { walletNonceAddress: string; authWalletAddress: string };
   outputs: ExplainedOutput[];
   inputs: ExplainedInput[];
-  outputAmount: string;
+  outputAmount: bigint;
   memo?: string;
   /**
    * Maps ATA address → owner address for CreateAssociatedTokenAccount instructions.
    * Allows resolving newly-created token account ownership without an external lookup.
    */
   ataOwnerMap: Record<string, string>;
+  /**
+   * Token enablements from CreateAssociatedTokenAccount instructions.
+   * Contains the ATA address and mint address (consumer resolves token names).
+   */
+  tokenEnablements: TokenEnablement[];
+  /** Staking authorize details, present when the transaction changes stake authority. */
+  stakingAuthorize?: StakingAuthorizeInfo;
   numSignatures: number;
 }
 
@@ -63,10 +100,20 @@ export interface ExplainedTransaction {
 // Marinade's staker authority is the Marinade program, not a validator.
 
 interface CombinedStakeActivate {
+  kind: "StakingActivate";
   fromAddress: string;
   stakingAddress: string;
   amount: bigint;
 }
+
+interface CombinedWalletInit {
+  kind: "WalletInitialization";
+  fromAddress: string;
+  nonceAddress: string;
+  amount: bigint;
+}
+
+type CombinedPattern = CombinedStakeActivate | CombinedWalletInit;
 
 /**
  * Scan for multi-instruction patterns that should be combined:
@@ -74,16 +121,28 @@ interface CombinedStakeActivate {
  * 1. CreateAccount + StakeInitialize [+ StakingDelegate] → StakingActivate
  *    - With Delegate following = NATIVE staking
  *    - Without Delegate = MARINADE staking (Marinade's program handles delegation)
+ * 2. CreateAccount + NonceInitialize → WalletInitialization
+ *    - BitGo creates a nonce account during wallet initialization
  */
-function detectCombinedPattern(instructions: InstructionParams[]): CombinedStakeActivate | null {
+function detectCombinedPattern(instructions: InstructionParams[]): CombinedPattern | null {
   for (let i = 0; i < instructions.length - 1; i++) {
     const curr = instructions[i];
     const next = instructions[i + 1];
 
     if (curr.type === "CreateAccount" && next.type === "StakeInitialize") {
       return {
+        kind: "StakingActivate",
         fromAddress: curr.fromAddress,
         stakingAddress: curr.newAddress,
+        amount: curr.amount,
+      };
+    }
+
+    if (curr.type === "CreateAccount" && next.type === "NonceInitialize") {
+      return {
+        kind: "WalletInitialization",
+        fromAddress: curr.fromAddress,
+        nonceAddress: curr.newAddress,
         amount: curr.amount,
       };
     }
@@ -96,72 +155,40 @@ function detectCombinedPattern(instructions: InstructionParams[]): CombinedStake
 // Transaction type derivation
 // =============================================================================
 
+const BOILERPLATE_TYPES = new Set([
+  "NonceAdvance",
+  "Memo",
+  "SetComputeUnitLimit",
+  "SetPriorityFee",
+]);
+
 function deriveTransactionType(
   instructions: InstructionParams[],
-  combined: CombinedStakeActivate | null,
+  combined: CombinedPattern | null,
   memo: string | undefined,
-): string {
-  // Combined CreateAccount + StakeInitialize [+ Delegate] → StakingActivate
-  if (combined) {
-    return "StakingActivate";
+): TransactionType {
+  if (combined) return TransactionType[combined.kind];
+
+  // Marinade deactivate: Transfer + memo containing "PrepareForRevoke"
+  if (memo?.includes("PrepareForRevoke")) return TransactionType.StakingDeactivate;
+
+  // Jito pool operations map to staking types
+  if (instructions.some((i) => i.type === "StakePoolDepositSol"))
+    return TransactionType.StakingActivate;
+  if (instructions.some((i) => i.type === "StakePoolWithdrawStake"))
+    return TransactionType.StakingDeactivate;
+
+  // ATA-only transactions (ignoring boilerplate like nonce/memo/compute budget)
+  const meaningful = instructions.filter((i) => !BOILERPLATE_TYPES.has(i.type));
+  if (meaningful.length > 0 && meaningful.every((i) => i.type === "CreateAssociatedTokenAccount")) {
+    return TransactionType.AssociatedTokenAccountInitialization;
   }
 
-  // Marinade deactivate pattern: a Transfer instruction paired with a memo
-  // containing "PrepareForRevoke". Marinade requires a small SOL transfer to
-  // a program-owned account as part of its unstaking flow; the memo marks
-  // the Transfer so we know it's a deactivation, not a real send.
-  if (memo && memo.includes("PrepareForRevoke")) {
-    return "StakingDeactivate";
-  }
+  // For staking instructions, the instruction type IS the transaction type
+  const staking = instructions.find((i) => i.type in TransactionType);
+  if (staking) return TransactionType[staking.type as keyof typeof TransactionType];
 
-  let txType = "Send";
-
-  for (const instr of instructions) {
-    switch (instr.type) {
-      case "StakingActivate":
-        txType = "StakingActivate";
-        break;
-
-      // Jito liquid staking uses the SPL Stake Pool program.
-      // StakePoolDepositSol deposits SOL into the Jito stake pool in exchange
-      // for jitoSOL tokens, which is semantically a staking activation.
-      case "StakePoolDepositSol":
-        txType = "StakingActivate";
-        break;
-
-      case "StakingDeactivate":
-        txType = "StakingDeactivate";
-        break;
-
-      // Jito's StakePoolWithdrawStake burns jitoSOL and returns a stake account,
-      // which is semantically a staking deactivation.
-      case "StakePoolWithdrawStake":
-        txType = "StakingDeactivate";
-        break;
-
-      case "StakingWithdraw":
-        txType = "StakingWithdraw";
-        break;
-
-      case "StakingAuthorize":
-        txType = "StakingAuthorize";
-        break;
-
-      // StakingDelegate alone (without the preceding CreateAccount + StakeInitialize)
-      // means re-delegation of an already-active stake account to a new validator.
-      // It should not override StakingActivate if that was already determined.
-      case "StakingDelegate":
-        if (txType !== "StakingActivate") {
-          txType = "StakingDelegate";
-        }
-        break;
-
-      // CreateAssociatedTokenAccount, CloseAssociatedTokenAccount, Transfer,
-      // TokenTransfer, Memo, etc. keep the default 'Send' type.
-    }
-  }
-
-  return txType;
+  return TransactionType.Send;
 }
 
 // =============================================================================
@@ -218,7 +245,11 @@ export function explainTransaction(
 
   // --- Fee calculation ---
   // Base fee = numSignatures × lamportsPerSignature
-  let fee = BigInt(parsed.numSignatures) * BigInt(lamportsPerSignature);
+  let fee =
+    BigInt(parsed.numSignatures) *
+    (lamportsPerSignature !== undefined
+      ? BigInt(lamportsPerSignature)
+      : DEFAULT_LAMPORTS_PER_SIGNATURE);
 
   // Each CreateAssociatedTokenAccount instruction creates a new token account,
   // which requires a rent-exempt deposit. Add that to the fee.
@@ -245,22 +276,34 @@ export function explainTransaction(
   // The Transfer is a contract interaction (not a real value transfer),
   // so we skip it from outputs.
   const isMarinadeDeactivate =
-    txType === "StakingDeactivate" && memo !== undefined && memo.includes("PrepareForRevoke");
+    txType === TransactionType.StakingDeactivate &&
+    memo !== undefined &&
+    memo.includes("PrepareForRevoke");
 
   // --- Extract outputs and inputs ---
   const outputs: ExplainedOutput[] = [];
   const inputs: ExplainedInput[] = [];
 
-  if (combined) {
+  if (combined?.kind === "StakingActivate") {
     // Combined native/Marinade staking activate — the staking address receives
     // the full amount from the funding account.
     outputs.push({
       address: combined.stakingAddress,
-      amount: String(combined.amount),
+      amount: combined.amount,
     });
     inputs.push({
       address: combined.fromAddress,
-      value: String(combined.amount),
+      value: combined.amount,
+    });
+  } else if (combined?.kind === "WalletInitialization") {
+    // Wallet initialization — funds the new nonce account.
+    outputs.push({
+      address: combined.nonceAddress,
+      amount: combined.amount,
+    });
+    inputs.push({
+      address: combined.fromAddress,
+      value: combined.amount,
     });
   } else {
     // Process individual instructions for outputs/inputs
@@ -272,34 +315,34 @@ export function explainTransaction(
           if (isMarinadeDeactivate) break;
           outputs.push({
             address: instr.toAddress,
-            amount: String(instr.amount),
+            amount: instr.amount,
           });
           inputs.push({
             address: instr.fromAddress,
-            value: String(instr.amount),
+            value: instr.amount,
           });
           break;
 
         case "TokenTransfer":
           outputs.push({
             address: instr.toAddress,
-            amount: String(instr.amount),
+            amount: instr.amount,
             tokenName: instr.tokenAddress,
           });
           inputs.push({
             address: instr.fromAddress,
-            value: String(instr.amount),
+            value: instr.amount,
           });
           break;
 
         case "StakingActivate":
           outputs.push({
             address: instr.stakingAddress,
-            amount: String(instr.amount),
+            amount: instr.amount,
           });
           inputs.push({
             address: instr.fromAddress,
-            value: String(instr.amount),
+            value: instr.amount,
           });
           break;
 
@@ -309,21 +352,24 @@ export function explainTransaction(
           // `stakingAddress` is the source.
           outputs.push({
             address: instr.fromAddress,
-            amount: String(instr.amount),
+            amount: instr.amount,
           });
           inputs.push({
             address: instr.stakingAddress,
-            value: String(instr.amount),
+            value: instr.amount,
           });
           break;
 
         case "StakePoolDepositSol":
           // Jito liquid staking: SOL is deposited into the stake pool.
-          // The funding account is debited. No traditional output because the
-          // received jitoSOL pool tokens arrive via an ATA, not a direct transfer.
+          // The funding account is debited; output goes to the pool address.
+          outputs.push({
+            address: instr.stakePool,
+            amount: instr.lamports,
+          });
           inputs.push({
             address: instr.fundingAccount,
-            value: String(instr.lamports),
+            value: instr.lamports,
           });
           break;
 
@@ -338,18 +384,35 @@ export function explainTransaction(
   }
 
   // --- Output amount ---
-  const outputAmount = outputs.reduce((sum, o) => sum + BigInt(o.amount), 0n);
+  // Only count native SOL outputs (no tokenName). Token amounts are in different
+  // denominations and shouldn't be mixed with SOL lamports.
+  const outputAmount = outputs.filter((o) => !o.tokenName).reduce((sum, o) => sum + o.amount, 0n);
 
-  // --- ATA owner mapping ---
-  // Maps ATA address → owner address for each CreateAssociatedTokenAccount
-  // instruction in this transaction. This is an improved version of the explain
-  // response that allows consumers to resolve newly-created token account
-  // addresses to their owner addresses without requiring an external DB lookup
-  // (the ATA may not exist on-chain yet if it's being created in this tx).
+  // --- ATA owner mapping and token enablements ---
   const ataOwnerMap: Record<string, string> = {};
+  const tokenEnablements: TokenEnablement[] = [];
   for (const instr of parsed.instructionsData) {
     if (instr.type === "CreateAssociatedTokenAccount") {
       ataOwnerMap[instr.ataAddress] = instr.ownerAddress;
+      tokenEnablements.push({
+        address: instr.ataAddress,
+        mintAddress: instr.mintAddress,
+      });
+    }
+  }
+
+  // --- Staking authorize ---
+  let stakingAuthorize: StakingAuthorizeInfo | undefined;
+  for (const instr of parsed.instructionsData) {
+    if (instr.type === "StakingAuthorize") {
+      stakingAuthorize = {
+        stakingAddress: instr.stakingAddress,
+        oldAuthorizeAddress: instr.oldAuthorizeAddress,
+        newAuthorizeAddress: instr.newAuthorizeAddress,
+        authorizeType: instr.authorizeType,
+        custodianAddress: instr.custodianAddress,
+      };
+      break;
     }
   }
 
@@ -357,14 +420,16 @@ export function explainTransaction(
     id,
     type: txType,
     feePayer: parsed.feePayer,
-    fee: String(fee),
+    fee,
     blockhash: parsed.nonce,
     durableNonce: parsed.durableNonce,
     outputs,
     inputs,
-    outputAmount: String(outputAmount),
+    outputAmount,
     memo,
     ataOwnerMap,
+    tokenEnablements,
+    stakingAuthorize,
     numSignatures: parsed.numSignatures,
   };
 }

@@ -24,7 +24,7 @@ export type { AddressLookupTableData } from "./versioned.js";
 export { parseTransactionData } from "./parser.js";
 export { buildFromVersionedData } from "./builder.js";
 export { buildFromIntent, buildFromIntent as buildTransactionFromIntent } from "./intentBuilder.js";
-export { explainTransaction } from "./explain.js";
+export { explainTransaction, TransactionType } from "./explain.js";
 
 // Re-export Transaction import for parseTransaction
 import { Transaction as _Transaction } from "./transaction.js";
@@ -144,6 +144,8 @@ export type {
   ExplainedOutput,
   ExplainedInput,
   ExplainOptions,
+  TokenEnablement,
+  StakingAuthorizeInfo,
 } from "./explain.js";
 
 // Versioned transaction builder type exports
