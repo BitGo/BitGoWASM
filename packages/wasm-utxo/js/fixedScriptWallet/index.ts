@@ -37,6 +37,15 @@ export {
   type CreateEmptyZcashOptions,
 } from "./ZcashBitGoPsbt.js";
 
+// PSBT introspection types (re-exported for consumer convenience)
+export type {
+  PsbtBip32Derivation,
+  PsbtInputData,
+  PsbtOutputData,
+  PsbtOutputDataWithAddress,
+  PsbtWitnessUtxo,
+} from "../wasm/wasm_utxo.js";
+
 import type { ScriptType } from "./scriptType.js";
 
 /**

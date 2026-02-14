@@ -1,3 +1,18 @@
+import type { PsbtInputData, PsbtOutputData, PsbtOutputDataWithAddress } from "./wasm/wasm_utxo.js";
+
+/** Common interface for PSBT introspection methods */
+export interface IPsbtIntrospection {
+  readonly inputCount: number;
+  readonly outputCount: number;
+  getInputs(): PsbtInputData[];
+  getOutputs(): PsbtOutputData[];
+}
+
+/** Extended introspection with address resolution (no coin parameter needed) */
+export interface IPsbtIntrospectionWithAddress extends IPsbtIntrospection {
+  getOutputsWithAddress(): PsbtOutputDataWithAddress[];
+}
+
 /** PSBT magic bytes: "psbt" (0x70 0x73 0x62 0x74) followed by separator 0xff */
 const PSBT_MAGIC = new Uint8Array([0x70, 0x73, 0x62, 0x74, 0xff]);
 

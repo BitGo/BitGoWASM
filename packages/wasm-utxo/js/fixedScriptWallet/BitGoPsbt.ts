@@ -1,4 +1,10 @@
-import { BitGoPsbt as WasmBitGoPsbt } from "../wasm/wasm_utxo.js";
+import {
+  BitGoPsbt as WasmBitGoPsbt,
+  type PsbtInputData,
+  type PsbtOutputData,
+  type PsbtOutputDataWithAddress,
+} from "../wasm/wasm_utxo.js";
+import type { IPsbtIntrospectionWithAddress } from "../psbt.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
 import { type ReplayProtectionArg, ReplayProtection } from "./ReplayProtection.js";
 import { type BIP32Arg, BIP32, isBIP32Arg } from "../bip32.js";
@@ -109,7 +115,7 @@ export type AddWalletOutputOptions = {
   value: bigint;
 };
 
-export class BitGoPsbt {
+export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
   protected constructor(protected _wasm: WasmBitGoPsbt) {}
 
   /**
@@ -805,5 +811,66 @@ export class BitGoPsbt {
    */
   getHalfSignedLegacyFormat(): Uint8Array {
     return this._wasm.extract_half_signed_legacy_tx();
+  }
+
+  /**
+   * Get the number of inputs in the PSBT
+   * @returns The number of inputs
+   */
+  get inputCount(): number {
+    return this._wasm.input_count();
+  }
+
+  /**
+   * Get the number of outputs in the PSBT
+   * @returns The number of outputs
+   */
+  get outputCount(): number {
+    return this._wasm.output_count();
+  }
+
+  /**
+   * Get all PSBT inputs as an array
+   *
+   * Returns raw PSBT input data including witness_utxo and derivation info.
+   * For parsed transaction data with address identification, use
+   * parseTransactionWithWalletKeys() instead.
+   *
+   * @returns Array of PsbtInputData objects
+   */
+  getInputs(): PsbtInputData[] {
+    return this._wasm.get_inputs() as PsbtInputData[];
+  }
+
+  /**
+   * Get all PSBT outputs as an array
+   *
+   * Returns raw PSBT output data without address resolution.
+   * For output data with addresses, use getOutputsWithAddress().
+   *
+   * @returns Array of PsbtOutputData objects
+   */
+  getOutputs(): PsbtOutputData[] {
+    return this._wasm.get_outputs() as PsbtOutputData[];
+  }
+
+  /**
+   * Get all PSBT outputs with resolved address strings
+   *
+   * Unlike the generic Psbt class which requires a coin parameter,
+   * BitGoPsbt automatically uses the network it was created with to resolve addresses.
+   *
+   * @returns Array of PsbtOutputDataWithAddress objects
+   *
+   * @example
+   * ```typescript
+   * const outputs = psbt.getOutputsWithAddress();
+   * for (const output of outputs) {
+   *   console.log(`${output.address}: ${output.value} satoshis`);
+   * }
+   * ```
+   */
+  getOutputsWithAddress(): PsbtOutputDataWithAddress[] {
+    return this._wasm.get_outputs_with_address() as PsbtOutputDataWithAddress[];
   }
 }

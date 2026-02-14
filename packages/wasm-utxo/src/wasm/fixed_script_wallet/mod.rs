@@ -628,6 +628,40 @@ impl BitGoPsbt {
         }
     }
 
+    /// Get the number of inputs in the PSBT
+    pub fn input_count(&self) -> usize {
+        self.psbt.psbt().inputs.len()
+    }
+
+    /// Get the number of outputs in the PSBT
+    pub fn output_count(&self) -> usize {
+        self.psbt.psbt().outputs.len()
+    }
+
+    /// Get all PSBT inputs as an array of PsbtInputData
+    ///
+    /// Returns an array with witness_utxo, bip32_derivation, and tap_bip32_derivation
+    /// for each input.
+    pub fn get_inputs(&self) -> Result<JsValue, WasmUtxoError> {
+        crate::wasm::psbt::get_inputs_from_psbt(self.psbt.psbt())
+    }
+
+    /// Get all PSBT outputs as an array of PsbtOutputData
+    ///
+    /// Returns an array with script, value, bip32_derivation, and tap_bip32_derivation
+    /// for each output.
+    pub fn get_outputs(&self) -> Result<JsValue, WasmUtxoError> {
+        crate::wasm::psbt::get_outputs_from_psbt(self.psbt.psbt())
+    }
+
+    /// Get all PSBT outputs with resolved address strings.
+    ///
+    /// Unlike the generic WrapPsbt which requires a coin parameter, BitGoPsbt
+    /// uses the network it was created/deserialized with to resolve addresses.
+    pub fn get_outputs_with_address(&self) -> Result<JsValue, WasmUtxoError> {
+        crate::wasm::psbt::get_outputs_with_address_from_psbt(self.psbt.psbt(), self.psbt.network())
+    }
+
     /// Parse transaction with wallet keys to identify wallet inputs/outputs
     pub fn parse_transaction_with_wallet_keys(
         &self,

@@ -203,6 +203,46 @@ impl PsbtOutputDataWithAddress {
     }
 }
 
+// ============================================================================
+// Helper functions for PSBT introspection - shared by WrapPsbt and BitGoPsbt
+// ============================================================================
+
+/// Get all PSBT inputs as an array of PsbtInputData
+pub fn get_inputs_from_psbt(psbt: &Psbt) -> Result<JsValue, WasmUtxoError> {
+    let inputs: Vec<PsbtInputData> = psbt.inputs.iter().map(PsbtInputData::from).collect();
+    inputs.try_to_js_value()
+}
+
+/// Get all PSBT outputs as an array of PsbtOutputData
+pub fn get_outputs_from_psbt(psbt: &Psbt) -> Result<JsValue, WasmUtxoError> {
+    let outputs: Vec<PsbtOutputData> = psbt
+        .unsigned_tx
+        .output
+        .iter()
+        .zip(psbt.outputs.iter())
+        .map(|(tx_out, psbt_out)| PsbtOutputData::from(tx_out, psbt_out))
+        .collect();
+    outputs.try_to_js_value()
+}
+
+/// Get all PSBT outputs with resolved address strings
+pub fn get_outputs_with_address_from_psbt(
+    psbt: &Psbt,
+    network: crate::Network,
+) -> Result<JsValue, WasmUtxoError> {
+    let outputs: Vec<PsbtOutputDataWithAddress> = psbt
+        .unsigned_tx
+        .output
+        .iter()
+        .zip(psbt.outputs.iter())
+        .map(|(tx_out, psbt_out)| {
+            let base = PsbtOutputData::from(tx_out, psbt_out);
+            PsbtOutputDataWithAddress::from(base, network)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    outputs.try_to_js_value()
+}
+
 #[wasm_bindgen]
 pub struct WrapPsbt(Psbt);
 
@@ -585,8 +625,7 @@ impl WrapPsbt {
     /// for each input. This is useful for introspecting the PSBT structure.
     #[wasm_bindgen(js_name = getInputs)]
     pub fn get_inputs(&self) -> Result<JsValue, WasmUtxoError> {
-        let inputs: Vec<PsbtInputData> = self.0.inputs.iter().map(PsbtInputData::from).collect();
-        inputs.try_to_js_value()
+        get_inputs_from_psbt(&self.0)
     }
 
     /// Get all PSBT outputs as an array of PsbtOutputData
@@ -595,15 +634,7 @@ impl WrapPsbt {
     /// for each output. This is useful for introspecting the PSBT structure.
     #[wasm_bindgen(js_name = getOutputs)]
     pub fn get_outputs(&self) -> Result<JsValue, WasmUtxoError> {
-        let outputs: Vec<PsbtOutputData> = self
-            .0
-            .unsigned_tx
-            .output
-            .iter()
-            .zip(self.0.outputs.iter())
-            .map(|(tx_out, psbt_out)| PsbtOutputData::from(tx_out, psbt_out))
-            .collect();
-        outputs.try_to_js_value()
+        get_outputs_from_psbt(&self.0)
     }
 
     /// Get all PSBT outputs with resolved address strings.
@@ -614,18 +645,7 @@ impl WrapPsbt {
     pub fn get_outputs_with_address(&self, coin: &str) -> Result<JsValue, WasmUtxoError> {
         let network = crate::Network::from_coin_name(coin)
             .ok_or_else(|| WasmUtxoError::new(&format!("Unknown coin: {}", coin)))?;
-        let outputs: Vec<PsbtOutputDataWithAddress> = self
-            .0
-            .unsigned_tx
-            .output
-            .iter()
-            .zip(self.0.outputs.iter())
-            .map(|(tx_out, psbt_out)| {
-                let base = PsbtOutputData::from(tx_out, psbt_out);
-                PsbtOutputDataWithAddress::from(base, network)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        outputs.try_to_js_value()
+        get_outputs_with_address_from_psbt(&self.0, network)
     }
 
     /// Get partial signatures for an input
