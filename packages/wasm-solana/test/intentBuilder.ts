@@ -8,7 +8,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
 
 import assert from "assert";
-import { buildFromIntent, Transaction, parseTransaction } from "../dist/cjs/js/index.js";
+import {
+  buildFromIntent,
+  Transaction,
+  parseTransactionData as parseTransaction,
+} from "../dist/cjs/js/index.js";
 
 describe("buildFromIntent", function () {
   // Common test params
