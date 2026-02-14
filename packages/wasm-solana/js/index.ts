@@ -144,6 +144,7 @@ export type {
   ExplainedOutput,
   ExplainedInput,
   ExplainOptions,
+  TokenEnablement,
 } from "./explain.js";
 
 // Versioned transaction builder type exports

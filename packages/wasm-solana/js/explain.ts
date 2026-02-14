@@ -32,6 +32,13 @@ export interface ExplainedInput {
   value: string;
 }
 
+export interface TokenEnablement {
+  /** The ATA address being created */
+  address: string;
+  /** The SPL token mint address */
+  mintAddress: string;
+}
+
 export interface ExplainedTransaction {
   /** Transaction ID (base58 signature). Undefined if the transaction is unsigned. */
   id: string | undefined;
@@ -49,6 +56,11 @@ export interface ExplainedTransaction {
    * Allows resolving newly-created token account ownership without an external lookup.
    */
   ataOwnerMap: Record<string, string>;
+  /**
+   * Token enablements from CreateAssociatedTokenAccount instructions.
+   * Contains the ATA address and mint address (consumer resolves token names).
+   */
+  tokenEnablements: TokenEnablement[];
   numSignatures: number;
 }
 
@@ -63,10 +75,20 @@ export interface ExplainedTransaction {
 // Marinade's staker authority is the Marinade program, not a validator.
 
 interface CombinedStakeActivate {
+  kind: "StakingActivate";
   fromAddress: string;
   stakingAddress: string;
   amount: bigint;
 }
+
+interface CombinedWalletInit {
+  kind: "WalletInitialization";
+  fromAddress: string;
+  nonceAddress: string;
+  amount: bigint;
+}
+
+type CombinedPattern = CombinedStakeActivate | CombinedWalletInit;
 
 /**
  * Scan for multi-instruction patterns that should be combined:
@@ -74,16 +96,28 @@ interface CombinedStakeActivate {
  * 1. CreateAccount + StakeInitialize [+ StakingDelegate] → StakingActivate
  *    - With Delegate following = NATIVE staking
  *    - Without Delegate = MARINADE staking (Marinade's program handles delegation)
+ * 2. CreateAccount + NonceInitialize → WalletInitialization
+ *    - BitGo creates a nonce account during wallet initialization
  */
-function detectCombinedPattern(instructions: InstructionParams[]): CombinedStakeActivate | null {
+function detectCombinedPattern(instructions: InstructionParams[]): CombinedPattern | null {
   for (let i = 0; i < instructions.length - 1; i++) {
     const curr = instructions[i];
     const next = instructions[i + 1];
 
     if (curr.type === "CreateAccount" && next.type === "StakeInitialize") {
       return {
+        kind: "StakingActivate",
         fromAddress: curr.fromAddress,
         stakingAddress: curr.newAddress,
+        amount: curr.amount,
+      };
+    }
+
+    if (curr.type === "CreateAccount" && next.type === "NonceInitialize") {
+      return {
+        kind: "WalletInitialization",
+        fromAddress: curr.fromAddress,
+        nonceAddress: curr.newAddress,
         amount: curr.amount,
       };
     }
@@ -98,12 +132,12 @@ function detectCombinedPattern(instructions: InstructionParams[]): CombinedStake
 
 function deriveTransactionType(
   instructions: InstructionParams[],
-  combined: CombinedStakeActivate | null,
+  combined: CombinedPattern | null,
   memo: string | undefined,
 ): string {
-  // Combined CreateAccount + StakeInitialize [+ Delegate] → StakingActivate
+  // Combined multi-instruction patterns
   if (combined) {
-    return "StakingActivate";
+    return combined.kind;
   }
 
   // Marinade deactivate pattern: a Transfer instruction paired with a memo
@@ -115,6 +149,21 @@ function deriveTransactionType(
   }
 
   let txType = "Send";
+
+  // If the transaction primarily creates ATAs (with optional memo/nonce), it's an ATA init.
+  const hasAta = instructions.some((i) => i.type === "CreateAssociatedTokenAccount");
+  const nonBoilerplateInstructions = instructions.filter(
+    (i) =>
+      i.type !== "NonceAdvance" &&
+      i.type !== "Memo" &&
+      i.type !== "SetComputeUnitLimit" &&
+      i.type !== "SetPriorityFee",
+  );
+  const allAreAta =
+    hasAta && nonBoilerplateInstructions.every((i) => i.type === "CreateAssociatedTokenAccount");
+  if (allAreAta) {
+    return "AssociatedTokenAccountInitialization";
+  }
 
   for (const instr of instructions) {
     switch (instr.type) {
@@ -251,11 +300,21 @@ export function explainTransaction(
   const outputs: ExplainedOutput[] = [];
   const inputs: ExplainedInput[] = [];
 
-  if (combined) {
+  if (combined?.kind === "StakingActivate") {
     // Combined native/Marinade staking activate — the staking address receives
     // the full amount from the funding account.
     outputs.push({
       address: combined.stakingAddress,
+      amount: String(combined.amount),
+    });
+    inputs.push({
+      address: combined.fromAddress,
+      value: String(combined.amount),
+    });
+  } else if (combined?.kind === "WalletInitialization") {
+    // Wallet initialization — funds the new nonce account.
+    outputs.push({
+      address: combined.nonceAddress,
       amount: String(combined.amount),
     });
     inputs.push({
@@ -319,8 +378,11 @@ export function explainTransaction(
 
         case "StakePoolDepositSol":
           // Jito liquid staking: SOL is deposited into the stake pool.
-          // The funding account is debited. No traditional output because the
-          // received jitoSOL pool tokens arrive via an ATA, not a direct transfer.
+          // The funding account is debited; output goes to the pool address.
+          outputs.push({
+            address: instr.stakePool,
+            amount: String(instr.lamports),
+          });
           inputs.push({
             address: instr.fundingAccount,
             value: String(instr.lamports),
@@ -338,18 +400,22 @@ export function explainTransaction(
   }
 
   // --- Output amount ---
-  const outputAmount = outputs.reduce((sum, o) => sum + BigInt(o.amount), 0n);
+  // Only count native SOL outputs (no tokenName). Token amounts are in different
+  // denominations and shouldn't be mixed with SOL lamports.
+  const outputAmount = outputs
+    .filter((o) => !o.tokenName)
+    .reduce((sum, o) => sum + BigInt(o.amount), 0n);
 
-  // --- ATA owner mapping ---
-  // Maps ATA address → owner address for each CreateAssociatedTokenAccount
-  // instruction in this transaction. This is an improved version of the explain
-  // response that allows consumers to resolve newly-created token account
-  // addresses to their owner addresses without requiring an external DB lookup
-  // (the ATA may not exist on-chain yet if it's being created in this tx).
+  // --- ATA owner mapping and token enablements ---
   const ataOwnerMap: Record<string, string> = {};
+  const tokenEnablements: TokenEnablement[] = [];
   for (const instr of parsed.instructionsData) {
     if (instr.type === "CreateAssociatedTokenAccount") {
       ataOwnerMap[instr.ataAddress] = instr.ownerAddress;
+      tokenEnablements.push({
+        address: instr.ataAddress,
+        mintAddress: instr.mintAddress,
+      });
     }
   }
 
@@ -365,6 +431,7 @@ export function explainTransaction(
     outputAmount: String(outputAmount),
     memo,
     ataOwnerMap,
+    tokenEnablements,
     numSignatures: parsed.numSignatures,
   };
 }
