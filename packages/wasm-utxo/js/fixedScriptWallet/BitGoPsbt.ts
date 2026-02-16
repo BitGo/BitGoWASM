@@ -115,6 +115,15 @@ export type AddWalletOutputOptions = {
   value: bigint;
 };
 
+export type ParseTransactionOptions = {
+  replayProtection: ReplayProtectionArg;
+  payGoPubkeys?: ECPairArg[];
+};
+
+export type ParseOutputsOptions = {
+  payGoPubkeys?: ECPairArg[];
+};
+
 export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
   protected constructor(protected _wasm: WasmBitGoPsbt) {}
 
@@ -424,18 +433,18 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
   /**
    * Parse transaction with wallet keys to identify wallet inputs/outputs
    * @param walletKeys - The wallet keys to use for identification
-   * @param replayProtection - Scripts that are allowed as inputs without wallet validation
-   * @param payGoPubkeys - Optional public keys for PayGo attestation verification
+   * @param options - Options for parsing
+   * @param options.replayProtection - Scripts that are allowed as inputs without wallet validation
+   * @param options.payGoPubkeys - Optional public keys for PayGo attestation verification
    * @returns Parsed transaction information
    */
   parseTransactionWithWalletKeys(
     walletKeys: WalletKeysArg,
-    replayProtection: ReplayProtectionArg,
-    payGoPubkeys?: ECPairArg[],
+    options: ParseTransactionOptions,
   ): ParsedTransaction {
     const keys = RootWalletKeys.from(walletKeys);
-    const rp = ReplayProtection.from(replayProtection, this._wasm.network());
-    const pubkeys = payGoPubkeys?.map((arg) => ECPair.from(arg).wasm);
+    const rp = ReplayProtection.from(options.replayProtection, this._wasm.network());
+    const pubkeys = options.payGoPubkeys?.map((arg) => ECPair.from(arg).wasm);
     return this._wasm.parse_transaction_with_wallet_keys(
       keys.wasm,
       rp.wasm,
@@ -451,16 +460,17 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
    * wallet than the inputs.
    *
    * @param walletKeys - The wallet keys to use for identification
-   * @param payGoPubkeys - Optional public keys for PayGo attestation verification
+   * @param options - Optional options for parsing
+   * @param options.payGoPubkeys - Optional public keys for PayGo attestation verification
    * @returns Array of parsed outputs
    * @note This method does NOT validate wallet inputs. It only parses outputs.
    */
   parseOutputsWithWalletKeys(
     walletKeys: WalletKeysArg,
-    payGoPubkeys?: ECPairArg[],
+    options?: ParseOutputsOptions,
   ): ParsedOutput[] {
     const keys = RootWalletKeys.from(walletKeys);
-    const pubkeys = payGoPubkeys?.map((arg) => ECPair.from(arg).wasm);
+    const pubkeys = options?.payGoPubkeys?.map((arg) => ECPair.from(arg).wasm);
     return this._wasm.parse_outputs_with_wallet_keys(keys.wasm, pubkeys) as ParsedOutput[];
   }
 
@@ -719,7 +729,7 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
    * const counterpartyPsbt = BitGoPsbt.fromBytes(counterpartyPsbtBytes, network);
    * psbt.combineMusig2Nonces(counterpartyPsbt);
    * // Sign MuSig2 key path inputs
-   * const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, replayProtection);
+   * const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, { replayProtection });
    * for (let i = 0; i < parsed.inputs.length; i++) {
    *   if (parsed.inputs[i].scriptType === "p2trMusig2KeyPath") {
    *     psbt.sign(i, userXpriv);

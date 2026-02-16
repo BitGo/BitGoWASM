@@ -82,7 +82,7 @@ describe("PSBT reconstruction", function () {
         // Parse the original PSBT to get inputs/outputs
         const replayProtectionKey = loadReplayProtectionKeyFromFixture(fixture);
         const parsedTx = originalPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-          publicKeys: [replayProtectionKey],
+          replayProtection: { publicKeys: [replayProtectionKey] },
         });
 
         // Parse outputs with other wallet keys to detect outputs from different wallet
@@ -211,7 +211,7 @@ describe("PSBT reconstruction", function () {
       it("should include sequence in parsed inputs", function () {
         const replayProtectionKey = loadReplayProtectionKeyFromFixture(fixture);
         const parsedTx = originalPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-          publicKeys: [replayProtectionKey],
+          replayProtection: { publicKeys: [replayProtectionKey] },
         });
 
         // Verify all inputs have sequence field
@@ -237,7 +237,7 @@ describe("PSBT reconstruction", function () {
 
         const replayProtectionKey = loadReplayProtectionKeyFromFixture(fixture);
         const parsedTx = originalPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-          publicKeys: [replayProtectionKey],
+          replayProtection: { publicKeys: [replayProtectionKey] },
         });
         const parsedOutputsOther = originalPsbt.parseOutputsWithWalletKeys(otherWalletKeys);
 

@@ -173,7 +173,9 @@ function benchmarkPerInputSign(
   // Clone PSBT for this benchmark
   const testPsbt = BitGoPsbt.fromBytes(psbt.serialize(), "bitcoin");
 
-  const parsed = testPsbt.parseTransactionWithWalletKeys(walletKeys, { publicKeys: [] });
+  const parsed = testPsbt.parseTransactionWithWalletKeys(walletKeys, {
+    replayProtection: { publicKeys: [] },
+  });
 
   // For MuSig2, generate nonces first (not timed)
   if (scriptType.isMuSig2KeyPath) {

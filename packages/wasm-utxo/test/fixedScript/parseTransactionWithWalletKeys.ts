@@ -68,7 +68,7 @@ describe("parseTransactionWithWalletKeys", function () {
 
       it("should parse transaction and identify internal/external outputs", function () {
         const parsed = bitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-          publicKeys: [replayProtectionKey],
+          replayProtection: { publicKeys: [replayProtectionKey] },
         });
 
         // Verify all inputs have addresses and values
@@ -190,7 +190,7 @@ describe("parseTransactionWithWalletKeys", function () {
 
       it("should parse inputs with correct scriptType", function () {
         const parsed = bitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-          publicKeys: [replayProtectionKey],
+          replayProtection: { publicKeys: [replayProtectionKey] },
         });
 
         // Verify all inputs have scriptType matching fixture
@@ -245,7 +245,7 @@ describe("parseTransactionWithWalletKeys", function () {
         assert.throws(
           () => {
             bitgoPsbt.parseTransactionWithWalletKeys(getOtherWalletKeys(), {
-              publicKeys: [replayProtectionKey],
+              replayProtection: { publicKeys: [replayProtectionKey] },
             });
           },
           (error: Error) => {
