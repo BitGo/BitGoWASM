@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn test_extract_paygo_attestation_success() {
         let output = create_test_output_with_attestation();
-        let address = "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c";
+        let address = "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c";
 
         let result = extract_paygo_attestation(&output, address);
         assert!(result.is_ok());
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn test_extract_paygo_attestation_not_found() {
         let output = Output::default();
-        let address = "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c";
+        let address = "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c";
 
         let result = extract_paygo_attestation(&output, address);
         assert!(result.is_err());
@@ -236,7 +236,7 @@ mod tests {
             output.proprietary.insert(key, signature);
         }
 
-        let address = "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c";
+        let address = "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c";
         let result = extract_paygo_attestation(&output, address);
         assert!(result.is_err());
         assert!(result
@@ -320,7 +320,7 @@ mod tests {
              b722b6d0d9adbab782d2d0d66402794b6bd6449dc26f634035ee388a2b5e7b53f6",
         )
         .unwrap();
-        let address = "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c";
+        let address = "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c";
         let pubkey_bytes =
             hex::decode("02456f4f788b6af55eb9c54d88692cadef4babdbc34cde75218cc1d6b6de3dea2d")
                 .unwrap();
@@ -337,10 +337,8 @@ mod tests {
         assert_eq!(attestation.address, address);
 
         // Verify with pubkeys
-        // Note: Signature verification is not fully working yet with bitcoinjs-message format
-        // For now, we just verify the function runs without panic
         let result = has_paygo_attestation_verify(&output, Some(address), &[pubkey]);
-        // The verification may fail, but should not panic
-        let _ = result;
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "Signature should be valid");
     }
 }

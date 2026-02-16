@@ -106,10 +106,7 @@ mod tests {
     use super::*;
     use crate::paygo::PayGoAttestation;
 
-    // TODO: Fix signature verification test - the recovery algorithm needs adjustment
-    // to match bitcoinjs-message format
     #[test]
-    #[ignore]
     fn test_verify_valid_signature() {
         use secp256k1::PublicKey;
 
@@ -120,7 +117,7 @@ mod tests {
              b722b6d0d9adbab782d2d0d66402794b6bd6449dc26f634035ee388a2b5e7b53f6",
         )
         .unwrap();
-        let address = "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c".to_string();
+        let address = "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c".to_string();
         let pubkey_bytes =
             hex::decode("02456f4f788b6af55eb9c54d88692cadef4babdbc34cde75218cc1d6b6de3dea2d")
                 .unwrap();
@@ -144,7 +141,7 @@ mod tests {
              b722b6d0d9adbab782d2d0d66402794b6bd6449dc26f634035ee388a2b5e7b53f6",
         )
         .unwrap();
-        let address = "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c".to_string();
+        let address = "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c".to_string();
 
         // Different public key
         let wrong_pubkey_bytes =
@@ -165,7 +162,7 @@ mod tests {
 
         let entropy = vec![0u8; 64];
         let signature = vec![1u8; 32]; // Too short
-        let address = "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c".to_string();
+        let address = "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c".to_string();
         let pubkey_bytes =
             hex::decode("02456f4f788b6af55eb9c54d88692cadef4babdbc34cde75218cc1d6b6de3dea2d")
                 .unwrap();
