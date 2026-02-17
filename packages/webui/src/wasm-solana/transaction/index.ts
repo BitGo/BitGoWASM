@@ -516,7 +516,8 @@ class SolanaTransactionParser extends BaseComponent {
     try {
       // Parse the transaction
       const bytes = base64ToBytes(txData);
-      const parsed = parseTransaction(bytes);
+      const tx = parseTransaction(bytes);
+      const parsed = tx.parse();
 
       // Render transaction info
       txInfoEl.replaceChildren(this.renderTxInfo(parsed));
@@ -533,7 +534,9 @@ class SolanaTransactionParser extends BaseComponent {
           "section",
           { class: "instructions-section" },
           h("h2", {}, `Instructions (${parsed.instructionsData.length})`),
-          ...parsed.instructionsData.map((instr, idx) => this.renderInstruction(instr, idx)),
+          ...parsed.instructionsData.map((instr: InstructionParams, idx: number) =>
+            this.renderInstruction(instr, idx),
+          ),
         ),
       );
     } catch (e) {

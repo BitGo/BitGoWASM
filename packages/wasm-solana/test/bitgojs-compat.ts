@@ -5,7 +5,7 @@
  * what BitGoJS's Transaction.toJson() produces.
  */
 import * as assert from "assert";
-import { parseTransaction } from "../js/parser.js";
+import { parseTransactionData as parseTransaction } from "../js/parser.js";
 
 // Helper to decode base64 in tests
 function base64ToBytes(base64: string): Uint8Array {

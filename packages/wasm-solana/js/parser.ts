@@ -5,17 +5,9 @@
  * matching BitGoJS's TxData format.
  *
  * All monetary amounts (amount, fee, lamports, poolTokens) are returned as bigint.
- * Accepts both raw bytes and Transaction objects for convenience.
  */
 
 import { ParserNamespace } from "./wasm/wasm_solana.js";
-import type { Transaction } from "./transaction.js";
-import type { VersionedTransaction } from "./versioned.js";
-
-/**
- * Input type for parseTransaction - accepts bytes or Transaction objects.
- */
-export type TransactionInput = Uint8Array | Transaction | VersionedTransaction;
 
 // =============================================================================
 // Instruction Types - matching BitGoJS InstructionParams.
@@ -277,48 +269,19 @@ export interface ParsedTransaction {
 }
 
 // =============================================================================
-// parseTransaction function
+// parseTransactionData function
 // =============================================================================
 
 /**
- * Parse a Solana transaction into structured data.
+ * Parse raw transaction bytes into a plain data object with decoded instructions.
  *
- * This is the main entry point for transaction parsing. It deserializes the
- * transaction and decodes all instructions into semantic types.
+ * This is the low-level parsing function. Most callers should use the top-level
+ * `parseTransaction(bytes)` which returns a `Transaction` instance with both
+ * inspection (`.parse()`) and signing (`.addSignature()`) capabilities.
  *
- * All monetary amounts (amount, fee, lamports, poolTokens) are returned as bigint
- * directly from WASM - no post-processing needed.
- *
- * Note: This returns the raw parsed data including NonceAdvance instructions.
- * Consumers (like BitGoJS) may choose to filter NonceAdvance from instructionsData
- * since that info is also available in durableNonce.
- *
- * @param input - Raw transaction bytes, Transaction, or VersionedTransaction
+ * @param bytes - Raw transaction bytes
  * @returns A ParsedTransaction with all instructions decoded
- * @throws Error if the transaction cannot be parsed
- *
- * @example
- * ```typescript
- * import { parseTransaction, buildTransaction, Transaction } from '@bitgo/wasm-solana';
- *
- * // From bytes
- * const txBytes = Buffer.from(base64EncodedTx, 'base64');
- * const parsed = parseTransaction(txBytes);
- *
- * // Directly from a Transaction object (no roundtrip through bytes)
- * const tx = buildTransaction(intent);
- * const parsed = parseTransaction(tx);
- *
- * console.log(parsed.feePayer);
- * for (const instr of parsed.instructionsData) {
- *   if (instr.type === 'Transfer') {
- *     console.log(`Transfer ${instr.amount} from ${instr.fromAddress} to ${instr.toAddress}`);
- *   }
- * }
- * ```
  */
-export function parseTransaction(input: TransactionInput): ParsedTransaction {
-  // If input is a Transaction or VersionedTransaction, extract bytes
-  const bytes = input instanceof Uint8Array ? input : input.toBytes();
+export function parseTransactionData(bytes: Uint8Array): ParsedTransaction {
   return ParserNamespace.parse_transaction(bytes) as ParsedTransaction;
 }
