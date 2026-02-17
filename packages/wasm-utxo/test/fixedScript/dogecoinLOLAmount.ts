@@ -33,7 +33,9 @@ describe("Dogecoin large output limit amount (LOL amounts) (1-in/1-out)", functi
     psbt.addWalletInput({ txid, vout: 0, value }, walletKeys, { scriptId: { chain: 0, index: 0 } });
     psbt.addWalletOutput(walletKeys, { chain: 0, index: 0, value });
 
-    const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, { publicKeys: [] });
+    const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, {
+      replayProtection: { publicKeys: [] },
+    });
     assert.strictEqual(parsed.inputs.length, 1);
     assert.strictEqual(parsed.outputs.length, 1);
     assert.strictEqual(parsed.inputs[0].value, value);

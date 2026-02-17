@@ -65,7 +65,7 @@ mod tests {
     fn test_new_valid_entropy() {
         let entropy = vec![0u8; 64];
         let signature = vec![1u8; 65];
-        let address = "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c".to_string();
+        let address = "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c".to_string();
 
         let attestation =
             PayGoAttestation::new(entropy.clone(), signature.clone(), address.clone());
@@ -81,7 +81,7 @@ mod tests {
     fn test_new_invalid_entropy_length() {
         let entropy = vec![0u8; 32]; // Wrong length
         let signature = vec![1u8; 65];
-        let address = "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c".to_string();
+        let address = "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c".to_string();
 
         let result = PayGoAttestation::new(entropy, signature, address);
         assert!(result.is_err());
@@ -99,23 +99,23 @@ mod tests {
              b722b6d0d9adbab782d2d0d66402794b6bd6449dc26f634035ee388a2b5e7b53f6",
         )
         .unwrap();
-        let address = "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c".to_string();
+        let address = "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c".to_string();
 
         let attestation = PayGoAttestation::new(entropy, signature, address.clone()).unwrap();
         let message = attestation.to_message();
 
-        // Message should be: 64 bytes entropy + 33 bytes address + 36 bytes UUID = 133 bytes
-        assert_eq!(message.len(), 133);
+        // Message should be: 64 bytes entropy + 34 bytes address + 36 bytes UUID = 134 bytes
+        assert_eq!(message.len(), 134);
 
         // Verify components
         let entropy_part = &message[0..64];
-        let address_part = &message[64..97];
-        let uuid_part = &message[97..133];
+        let address_part = &message[64..98];
+        let uuid_part = &message[98..134];
 
         assert_eq!(entropy_part, &vec![0u8; 64][..]);
         assert_eq!(
             std::str::from_utf8(address_part).unwrap(),
-            "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c"
+            "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c"
         );
         assert_eq!(
             std::str::from_utf8(uuid_part).unwrap(),

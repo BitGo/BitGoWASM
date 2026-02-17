@@ -3979,7 +3979,7 @@ mod tests {
         psbt.unsigned_tx.output.push(miniscript::bitcoin::TxOut {
             value: miniscript::bitcoin::Amount::from_sat(10000),
             script_pubkey: miniscript::bitcoin::ScriptBuf::from_hex(
-                "76a91479b000887626b294a914501a4cd226b58b23598388ac",
+                "76a9147f90f63fed017815f1da8bea299da27945a17bda88ac",
             )
             .unwrap(),
         });
@@ -3998,7 +3998,7 @@ mod tests {
         assert!(result.is_ok(), "Should add attestation successfully");
 
         // Extract and verify
-        let address = "1CdWUVacSQQJ617HuNWByGiisEGXGNx2c";
+        let address = "1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c";
         let psbt = bitgo_psbt.psbt();
 
         // Verify it was added (with address, no verification)
@@ -4091,9 +4091,9 @@ mod tests {
         psbt.unsigned_tx.output.push(miniscript::bitcoin::TxOut {
             value: miniscript::bitcoin::Amount::from_sat(10000),
             script_pubkey: miniscript::bitcoin::ScriptBuf::from_hex(
-                "76a91479b000887626b294a914501a4cd226b58b23598388ac",
+                "76a9147f90f63fed017815f1da8bea299da27945a17bda88ac",
             )
-            .unwrap(), // Address: 1CdWUVacSQQJ617HuNWByGiisEGXGNx2c
+            .unwrap(), // Address: 1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c
         });
 
         // Add PayGo attestation
@@ -4122,15 +4122,12 @@ mod tests {
                 .unwrap();
         let pubkey = secp256k1::PublicKey::from_slice(&pubkey_bytes).unwrap();
 
-        // Note: Signature verification with bitcoinjs-message format is not fully working yet
-        // So parsing with pubkey will fail validation
-        let parsed_result = bitgo_psbt.parse_outputs_with_wallet_keys(&wallet_keys, &[pubkey]);
+        let parsed_result = bitgo_psbt
+            .parse_outputs_with_wallet_keys(&wallet_keys, &[pubkey])
+            .unwrap();
 
-        // We expect this to fail validation for now
-        assert!(
-            parsed_result.is_err(),
-            "Expected verification to fail with current signature format"
-        );
+        // The PayGo output should have paygo: true (verified)
+        assert!(parsed_result[output_index].paygo);
     }
 
     crate::test_psbt_fixtures!(test_parse_transaction_with_wallet_keys, network, format, {

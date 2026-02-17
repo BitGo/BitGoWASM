@@ -11,9 +11,9 @@ describe("PayGo Attestation", function () {
       hash: Buffer.alloc(32, 0),
       index: 0,
     });
-    // Add output with script_pubkey for address 1CdWUVacSQQJ617HuNWByGiisEGXGNx2c
+    // Add output with script_pubkey for address 1CdWUVacSQQJ617HfuNWByGiisEGXGNx2c
     psbt.addOutput({
-      script: Buffer.from("76a91479b000887626b294a914501a4cd226b58b23598388ac", "hex"),
+      script: Buffer.from("76a9147f90f63fed017815f1da8bea299da27945a17bda88ac", "hex"),
       value: BigInt(10000000),
     });
 
@@ -104,10 +104,8 @@ describe("PayGo Attestation", function () {
   });
 
   it("should verify PayGo attestation with correct pubkey", function () {
-    // This test documents the expected behavior once signature verification is working
     const psbt = createSimplePsbt();
 
-    // Test fixtures
     const entropy = Buffer.alloc(64, 0);
     const signature = Buffer.from(
       "1fd62abac20bb963f5150aa4b3f4753c5f2f53ced5183ab7761d0c95c2820f6b" +
@@ -115,12 +113,26 @@ describe("PayGo Attestation", function () {
       "hex",
     );
 
-    // Add attestation
     psbt.addPayGoAttestation(0, entropy, signature);
 
-    // Note: Verification with ECPair would be tested here once signature format is aligned
-    // For now, we just verify the attestation was added
-    const bytesWithAttestation = psbt.serialize();
-    assert.ok(bytesWithAttestation.length > 0);
+    // Verification pubkey from utxo-core test fixtures
+    const pubkey = Buffer.from(
+      "02456f4f788b6af55eb9c54d88692cadef4babdbc34cde75218cc1d6b6de3dea2d",
+      "hex",
+    );
+
+    // Parse outputs with PayGo pubkey - should set paygo: true on the attested output
+    const outputs = psbt.parseOutputsWithWalletKeys(
+      // Use dummy wallet keys - they won't match any output but PayGo verification is independent
+      [
+        "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8",
+        "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8",
+        "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8",
+      ],
+      { payGoPubkeys: [pubkey] },
+    );
+
+    assert.strictEqual(outputs.length, 1);
+    assert.strictEqual(outputs[0].paygo, true);
   });
 });

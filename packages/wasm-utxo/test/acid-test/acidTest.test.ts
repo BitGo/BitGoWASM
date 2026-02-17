@@ -95,7 +95,7 @@ describe("AcidTest", function () {
       // Verify no signatures present
       const rpKey = test.getReplayProtectionKey();
       const replayProtection = { publicKeys: [rpKey.publicKey] };
-      const parsed = psbt.parseTransactionWithWalletKeys(test.rootWalletKeys, replayProtection);
+      const parsed = psbt.parseTransactionWithWalletKeys(test.rootWalletKeys, { replayProtection });
       const user = test.rootWalletKeys.userKey();
       const backup = test.rootWalletKeys.backupKey();
       const bitgo = test.rootWalletKeys.bitgoKey();
@@ -128,7 +128,7 @@ describe("AcidTest", function () {
       // Verify one signature per input (user only)
       const rpKey = test.getReplayProtectionKey();
       const replayProtection = { publicKeys: [rpKey.publicKey] };
-      const parsed = psbt.parseTransactionWithWalletKeys(test.rootWalletKeys, replayProtection);
+      const parsed = psbt.parseTransactionWithWalletKeys(test.rootWalletKeys, { replayProtection });
       const user = test.rootWalletKeys.userKey();
       const backup = test.rootWalletKeys.backupKey();
       const bitgo = test.rootWalletKeys.bitgoKey();
@@ -175,7 +175,7 @@ describe("AcidTest", function () {
       // Verify two signatures per input (user + bitgo or user + backup)
       const rpKey = test.getReplayProtectionKey();
       const replayProtection = { publicKeys: [rpKey.publicKey] };
-      const parsed = psbt.parseTransactionWithWalletKeys(test.rootWalletKeys, replayProtection);
+      const parsed = psbt.parseTransactionWithWalletKeys(test.rootWalletKeys, { replayProtection });
       const user = test.rootWalletKeys.userKey();
       const backup = test.rootWalletKeys.backupKey();
       const bitgo = test.rootWalletKeys.bitgoKey();

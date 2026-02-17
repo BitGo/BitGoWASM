@@ -80,6 +80,12 @@ impl<T: TryIntoJsValue> TryIntoJsValue for Option<T> {
     }
 }
 
+impl TryIntoJsValue for bool {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        Ok(JsValue::from_bool(*self))
+    }
+}
+
 impl TryIntoJsValue for XOnlyPublicKey {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
         Ok(JsValue::from_str(&self.to_string()))
@@ -367,7 +373,8 @@ impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedOutput {
             "address" => self.address.clone(),
             "script" => self.script.clone(),
             "value" => self.value,
-            "scriptId" => self.script_id
+            "scriptId" => self.script_id,
+            "paygo" => self.paygo
         )
     }
 }

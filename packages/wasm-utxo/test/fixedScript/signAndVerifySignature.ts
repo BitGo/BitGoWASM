@@ -163,7 +163,7 @@ function verifyAllInputSignatures(
   signatureStage: SignatureStage,
 ): void {
   const parsed = bitgoPsbt.parseTransactionWithWalletKeys(rootWalletKeys, {
-    publicKeys: [replayProtectionKey],
+    replayProtection: { publicKeys: [replayProtectionKey] },
   });
 
   fixture.psbtInputs.forEach((input, index) => {

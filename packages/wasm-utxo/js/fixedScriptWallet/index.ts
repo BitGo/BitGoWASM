@@ -28,6 +28,8 @@ export {
   type AddOutputOptions,
   type AddWalletInputOptions,
   type AddWalletOutputOptions,
+  type ParseTransactionOptions,
+  type ParseOutputsOptions,
 } from "./BitGoPsbt.js";
 
 // Zcash-specific PSBT subclass
