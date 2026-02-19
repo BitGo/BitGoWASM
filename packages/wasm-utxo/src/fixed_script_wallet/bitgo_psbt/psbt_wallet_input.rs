@@ -1274,10 +1274,11 @@ pub mod test_helpers {
         ]);
 
         // Load fixture and extract psbt and wallet keys
-        let fixture = fixtures::load_psbt_fixture_with_format(
+        let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
             network.to_utxolib_name(),
             fixtures::SignatureState::Unsigned,
             format,
+            fixtures::FixtureNamespace::UtxolibCompat,
         )
         .expect("Failed to load fixture");
         let psbt_bytes = fixture.to_psbt_bytes().expect("Failed to get PSBT bytes");

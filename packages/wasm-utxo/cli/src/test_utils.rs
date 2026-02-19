@@ -76,7 +76,7 @@ pub fn load_psbt_bytes(
     let filename = format!(
         "{}.{}.{}.json",
         tx_format.as_str(),
-        network.to_utxolib_name(),
+        network.to_coin_name(),
         signature_state.as_str()
     );
     let path = format!(
@@ -120,7 +120,7 @@ pub fn load_tx_bytes(
     let filename = format!(
         "{}.{}.{}.json",
         tx_format.as_str(),
-        network.to_utxolib_name(),
+        network.to_coin_name(),
         signature_state.as_str()
     );
     let path = format!(

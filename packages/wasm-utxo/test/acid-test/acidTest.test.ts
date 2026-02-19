@@ -9,7 +9,7 @@ describe("AcidTest", function () {
     it("should create AcidTest with default config for btc", function () {
       const test = AcidTest.withConfig("btc", "unsigned", "psbt");
 
-      assert.strictEqual(test.network, "btc");
+      assert.strictEqual(test.coin, "btc");
       assert.strictEqual(test.signStage, "unsigned");
       assert.strictEqual(test.txFormat, "psbt");
       assert.ok(test.rootWalletKeys);
@@ -239,7 +239,7 @@ describe("AcidTest", function () {
       assert.ok(bytes.length > 0);
 
       // Deserialize and check it works
-      const psbt2 = BitGoPsbt.fromBytes(bytes, test.network);
+      const psbt2 = BitGoPsbt.fromBytes(bytes, test.coin);
       assert.ok(psbt2);
     });
   });
@@ -267,7 +267,7 @@ describe("AcidTest", function () {
       const suite = AcidTest.forAllNetworksSignStagesTxFormats({
         includeP2trMusig2ScriptPath: true,
       });
-      const hasBsv = suite.some((test) => test.network === "bsv");
+      const hasBsv = suite.some((test) => test.coin === "bsv");
       assert.ok(!hasBsv, "Suite should not include bitcoinsv");
     });
 

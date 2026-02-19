@@ -8,7 +8,11 @@ import { BIP32, type BIP32Interface } from "../../js/bip32.js";
 import { RootWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
 import { ECPair } from "../../js/ecpair.js";
 import { fixedScriptWallet } from "../../js/index.js";
-import type { BitGoPsbt, NetworkName } from "../../js/fixedScriptWallet/index.js";
+import type { BitGoPsbt } from "../../js/fixedScriptWallet/index.js";
+import type { CoinName } from "../../js/coinName.js";
+import { getFixture } from "../fixtures.js";
+import { generateAllStates } from "./generateFixture.js";
+import type { TxFormat } from "../../js/testutils/AcidTest.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -18,14 +22,11 @@ export type SignatureState = "unsigned" | "halfsigned" | "fullsigned";
 export type Triple<T> = [T, T, T];
 
 export type Bip32Derivation = {
-  masterFingerprint: string;
   pubkey: string;
   path: string;
 };
 
-export type TapBip32Derivation = Bip32Derivation & {
-  leafHashes: string[];
-};
+export type TapBip32Derivation = Bip32Derivation;
 
 export type WitnessUtxo = {
   value: string;
@@ -111,23 +112,49 @@ export function getPsbtBuffer(fixture: Fixture): Buffer {
  * @param networkName - The network name for deserializing the PSBT
  * @returns A BitGoPsbt instance
  */
-export function getBitGoPsbt(fixture: Fixture, networkName: NetworkName): BitGoPsbt {
+export function getBitGoPsbt(fixture: Fixture, networkName: CoinName): BitGoPsbt {
   return fixedScriptWallet.BitGoPsbt.fromBytes(getPsbtBuffer(fixture), networkName);
 }
 
-/**
- * Load a PSBT fixture from JSON file
- */
-export function loadPsbtFixture(network: string, signatureState: string): Fixture {
-  const fixturePath = path.join(
+function getFixturePath(
+  network: string,
+  signatureState: string,
+  txFormat: TxFormat = "psbt-lite",
+): string {
+  return path.join(
     __dirname,
     "..",
     "fixtures",
     "fixed-script",
-    `psbt-lite.${network}.${signatureState}.json`,
+    `${txFormat}.${network}.${signatureState}.json`,
   );
-  const fixtureContent = fs.readFileSync(fixturePath, "utf-8");
-  return JSON.parse(fixtureContent) as Fixture;
+}
+
+const SIGNATURE_STATES: SignatureState[] = ["unsigned", "halfsigned", "fullsigned"];
+
+/**
+ * Load a PSBT fixture from JSON file.
+ * If the fixture does not exist, generates all three signature states
+ * (unsigned, halfsigned, fullsigned) and writes them to disk.
+ */
+export async function loadPsbtFixture(
+  network: CoinName,
+  signatureState: SignatureState,
+  txFormat: TxFormat = "psbt-lite",
+): Promise<Fixture> {
+  const fixturePath = getFixturePath(network, signatureState, txFormat);
+  return getFixture(fixturePath, () => {
+    const allStates = generateAllStates(network, txFormat);
+    // Write sibling states so all three are consistent
+    for (const state of SIGNATURE_STATES) {
+      if (state !== signatureState) {
+        const siblingPath = getFixturePath(network, state, txFormat);
+        fs.mkdirSync(path.dirname(siblingPath), { recursive: true });
+        fs.writeFileSync(siblingPath, JSON.stringify(allStates[state], null, 2));
+      }
+    }
+    return allStates[signatureState];
+  }) as Promise<Fixture>;
 }
 
 /**

@@ -1,96 +1,86 @@
 tx: None
-├─ version: 1i32
+├─ version: 2i32
 ├─ lock_time: 0u32
-├─ txid: 14e265621c43bfa4636be39ac761b9ac77523f2510b7ac5fc9830d32ff35867f (32 bytes)
-├─ ntxid: 5e9a93a20ef076d902be4e361a633c35eec975633036e35e3890ba2d3daa78ae (32 bytes)
-├─ wtxid: aea57018f39bee9cfc062c7bd9439415b98e30184447eea45be991b99f17314e (32 bytes)
-├─ inputs: 7u64
+├─ txid: a4552cc9ccc8db06c214f1ae814e23f729c7697ff0a79e0de3aab9ec14eebfe4 (32 bytes)
+├─ ntxid: a74380ecd12e5c6e66f608c790daa4be6870f499581b3951cd65b4dcdfae7316 (32 bytes)
+├─ wtxid: a079ce928e643ded05e589af154aec4d821911a252e95a9c0eb1ae276722787a (32 bytes)
+├─ inputs: 6u64
 │  ├─ input_0: None
-│  │  ├─ prev_txid: 7cce12effc2ea564c4227333fd305447e0de7b3ae7a5fcc751effff3ea1377e1 (32 bytes)
+│  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
 │  │  ├─ prev_vout: 0u32
-│  │  ├─ sequence: 4294967295u32
-│  │  └─ script_sig: 0047304402204ed1631487b06c29f7e586998de96acd42ceec747e33dc52a455efd0059da14a0220615d8d2f159314c45ef79dd831419dc5cab1c21987d0fa14d0dbfba4113e21640147304402201720c319f1acfc962998bec10d8e1c918cd96f02d5f1b5ebf41c39ff1c627cba02206f7941de25ed468bf2e6ad1678d32d4a4ac2c19b74ea1c9a8089c7a2ba933cde014c69522103f6f40764bd5d63f200a2778883acf75e96f15095c998263c087270d0c97e7e7f21035ffb7abc70159e0469f4b989a6d5e1785a2904169ff050b2f468fe5d3d5dbbf22103e1524d7f6fc57ab3eacbb659b787106780a475d1db483952c2310b7e9a38975b53ae (252 bytes)
+│  │  ├─ sequence: 4294967294u32
+│  │  └─ script_sig: 47304402203780ddb8eaddcbf7f2328996f9a827eab7fcca9e7e8e30e07a922f64f0d7af5a0220203ce27c1194638fbb2155f2e635293966e636a586362cfadbdaadcbdb7bac610123210336ef228ffe9b8efffba052c32d334660dd1f8366cf8fe44ae5aa672b6b629095ac (108 bytes)
 │  ├─ input_1: None
-│  │  ├─ prev_txid: b9c7b288fd6aa0d1415996e2a5dad9a4e070c129e179277f53e32f602f180646 (32 bytes)
+│  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
 │  │  ├─ prev_vout: 1u32
-│  │  ├─ sequence: 4294967295u32
-│  │  ├─ script_sig: 22002046d4800a1393330196085399ed4a1700b4c2fd38c52188c3a3a91f721f3c9600 (35 bytes)
-│  │  └─ witness: 4u64
-│  │     ├─ item_0:  (0 bytes)
-│  │     ├─ item_1: 304402200a2d971c408317038596ad6ab0ef17282fd3d8b368d599026bc4ef2dbe0d7ea40220415624b6b92e9846566cab7a828d22017d494064b72aa2620fd13225b54938d301 (71 bytes)
-│  │     ├─ item_2: 304402206a7b992610f302ac7320a999aa42531e8b623b0492768daf032c39d6d52ec7c60220670939f9ecd102ce69e98750060646db5e1fb162b1891350b95a8ff21378f83c01 (71 bytes)
-│  │     └─ item_3: 522102a585f3fab49b5ef95346d932221a221bd55ec191f15533e0f270b3582574f0352102c4f7866cfd5996bc1068a96313ca15e9ccb5e984583a07340dddae7af014605b2102234531bc9119a36a7946e95aeb74915dd087c7b44f517b8eeeb73f89a0ff1a9953ae (105 bytes)
+│  │  ├─ sequence: 4294967294u32
+│  │  └─ script_sig: 0047304402206f0db45dc265718b44e1c0a5f5f986bd55c304fee8470d47baaa58b5905cb92d0220587758f798d87db5df57ea0424740e818f796be3381ee3dd25e18fa58f6d311901473044022056d4c049b474025c7c1d34125b02b2f3806b1007d42fba3cdb030383e2807b43022043246ddaad87b30e48d9c8a47341d292ff8a9890d595d7aa02773eb64ac33e77014c69522102dd86907236b77a3bb7b64ce668cae4a25d48253f32e6ee0c3a34eaf89becfe142103f7b6baf47cbc61cda968fe73d78cb3bce0c88e7a9bc9abba5dac739d25b2046721033c34f9b46ff91498c3a56b8b2a8b752ecd0079337028bdd4e48045f8c6560e0253ae (252 bytes)
 │  ├─ input_2: None
-│  │  ├─ prev_txid: 1f57d9560ae9071600b696533192dc17799164fd3fa12804a7f7eb4201c4d5dd (32 bytes)
+│  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
 │  │  ├─ prev_vout: 2u32
-│  │  ├─ sequence: 4294967295u32
+│  │  ├─ sequence: 4294967294u32
+│  │  ├─ script_sig: 2200208224f2e5de25d91de7ae08f8744f98ac30a7c86e9c0fcf169279e520c2b8313a (35 bytes)
+│  │  └─ witness: 4u64
+│  │     ├─ item_0:  (0 bytes)
+│  │     ├─ item_1: 304402202937a3e0de53e4979796410bf72aaaaae2a9910692d2dddf332e36b6cfd04c8702200c190ba6ae72addecc2ea0b714343992f3f314b1d0548c7fa302366ef365dcea01 (71 bytes)
+│  │     ├─ item_2: 304402206a7419475c4d18dfdb2fce7a0dfaefc8b1aad1af41d38431aa935d29bb7d91e0022077252e9ef649298616e7086006fa838578047c88257c31defe01a934d8edba1801 (71 bytes)
+│  │     └─ item_3: 522102d5878a4d1c23ea735d7146ef2e1094f08d118bf0e20ea09366077c6b086c49d62102804dae97fd1acbb46d2816f530f83119dccdcaf3f5dd4c4dabb8edccd04bc65c21022ddee7d0b3f7f894fca44650a72137908eb843432e6874cb873cc0f2d27a54d653ae (105 bytes)
+│  ├─ input_3: None
+│  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
+│  │  ├─ prev_vout: 3u32
+│  │  ├─ sequence: 4294967294u32
 │  │  ├─ script_sig:  (0 bytes)
 │  │  └─ witness: 4u64
 │  │     ├─ item_0:  (0 bytes)
-│  │     ├─ item_1: 3045022100e57d42ff5e19de633312bcdeea3a8d298c2f0b7da59b80af50570d7bb9f6678a022013488e7e86183467c4430fe88536f1e40ddd4eb1b64fdbf00d0d5195ccb757a001 (72 bytes)
-│  │     ├─ item_2: 30440220162101914f7fadf5ca92de401acaf9f4e9995acfa222fc7bb09d692650290d81022020004b2656dda5efd0f8a48cdc5e362b092f53bc0a12bf32cbb96a00525bf27601 (71 bytes)
-│  │     └─ item_3: 522103519e572ab468560d1f8d0f87699d098308e166905f5dcae4390f060faa8f1ce32103a05bc26391221d685e18daaff36a1e95c34f99451253c16cd42650db278a79112102e80a08885c353676b820cdc290e6d81a0ac95a03e8abbf4bb7aeebfb70feb41853ae (105 bytes)
-│  ├─ input_3: None
-│  │  ├─ prev_txid: fc8fe5ff2a818c7661a4629809df2a1ffd60b6d16549fbf4882b54e7413ff8e6 (32 bytes)
-│  │  ├─ prev_vout: 3u32
-│  │  ├─ sequence: 4294967295u32
-│  │  ├─ script_sig:  (0 bytes)
-│  │  └─ witness: 4u64
-│  │     ├─ item_0: 1465b7f642f60b6c6038576a7a206fadb437f495f8c4c8944b6cc245191fa813e588d1002547817beae03faaca034b290276b4083d35057239812bcc79cbd0b5 (64 bytes)
-│  │     ├─ item_1: 4be8acb13a61e47181481b6f2a061411cbade92f76ffa652f3b2bf3e07987f8a8ad6a7a02c8d5c1a3cdeb141cc189f08948d209f9fa044f7610bbec5b16e2772 (64 bytes)
-│  │     ├─ item_2: 207373d723ce0a87f8fdd66843be12dae9d51939f68188d5ad96920bef5f51f496ad20aa88ca194fda43486504b86ac9b71f10fc41de7b1713874839427f74e78c2d5aac (68 bytes)
-│  │     └─ item_3: c0bc17ea2bbf6ff46bd5c0c3780be2a63880eb7bb782b39ed86f29b99f4882994e1b178b1b55d3c6aac7b039e3422dfdb9c9d75d4d6fc908e9743e88b651e48d83 (65 bytes)
+│  │     ├─ item_1: 3044022016ce6ed179be6335879112613ade1a9dcc3008a6a6259a03a6068ab699460ca6022031124343115a98c0cb10c0b4f83bd0fd2d49e407ba47a20b1fef245668e12be201 (71 bytes)
+│  │     ├─ item_2: 3044022066ab38e9f4ad3becba92a8a755acd761d469aaa96b689e86317bcab8f826a99302205f8a78d0cd2674fdf0fbcf709f2898f4543c0907a8670afbb743502d15aa15ca01 (71 bytes)
+│  │     └─ item_3: 522102e91c97d46914b51550679e3d2fa32f4faa3de76663d1fcc2d86ead788e852d642102ab00aad496ca72ffac27a32820636eaa4f8fe59cdc09500097a6d221bd00c20e2102794b2cbc176d694d8160b3c42d640b125aee2ce92d8c1f3055ab90b8ec4f800053ae (105 bytes)
 │  ├─ input_4: None
-│  │  ├─ prev_txid: 998804e6718d94c77eef1e8b3cd787bcc2dbfcbd6c009ab33043e7e500d5b49b (32 bytes)
+│  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
 │  │  ├─ prev_vout: 4u32
-│  │  ├─ sequence: 4294967295u32
+│  │  ├─ sequence: 4294967294u32
 │  │  ├─ script_sig:  (0 bytes)
 │  │  └─ witness: 4u64
-│  │     ├─ item_0: c666314befdb68879feaef3b4e4787d351bb6a26d711c68674a5e60fc63e10a2a0f01bba12af1914a2dde7857b1d0f333907f318c5d63be7e2aeb611f7135375 (64 bytes)
-│  │     ├─ item_1: 6aea690459b25692b2481dc55fd222d4e8f88596b93089328494af67c0eb22bcfa660617513af706876252150ab3236e965390d2d292c83999b21d1a8b0c88d3 (64 bytes)
-│  │     ├─ item_2: 20643151ab03f3a97bb86d3592f12f8d25a8026d89cd47342fc1b49c5e2e63478bad20035c9d632db2ddb8f90cf3ccfc931822bcb1f24562b23ae041abf12e54bca64dac (68 bytes)
-│  │     └─ item_3: c1a107a403f7a207e7b1f552d3fd3f55f64ae40e149d0d26f4868ad7faec949eb7637e37cac6e5f22347ab68e876b559117d9597ee7b37fb983c2ab9e51023c976 (65 bytes)
-│  ├─ input_5: None
-│  │  ├─ prev_txid: 02b23e9ffd550fa053f4c43e097b8114e463c8ba52c72b30d31d10cde853aabf (32 bytes)
-│  │  ├─ prev_vout: 5u32
-│  │  ├─ sequence: 4294967295u32
-│  │  ├─ script_sig:  (0 bytes)
-│  │  └─ witness: 1u64
-│  │     └─ item_0: ec2a176b3854a3226b1c757495e7481623a03d728a65302bf6cc0bd70fe7803f3f497c1235211d73acb94fab19f08f85ec9f56cab8b53d6e5b585581a4b30056 (64 bytes)
-│  └─ input_6: None
-│     ├─ prev_txid: 200d021345d40b204cc22a07ebad78da17159f34c2c656a2f4a51d68c6ca7754 (32 bytes)
-│     ├─ prev_vout: 6u32
-│     ├─ sequence: 4294967295u32
-│     └─ script_sig: 47304402204890fd617b33ecf9f56f5a53fadbcaa447701b219f107c39a1aceff88bea446102202ef154cd23b17e79a235767e568490149baae698628082664db2d9e629c53e6e0123210336ef228ffe9b8efffba052c32d334660dd1f8366cf8fe44ae5aa672b6b629095ac (108 bytes)
+│  │     ├─ item_0: f8238b4b6adc7fe76fbb513264fb990c55853e741983bdcc34e52489c3c679f435c193d854112c18e3ea8b76781e5efab1acc9cb906d592051c1ce7d04a0790b (64 bytes)
+│  │     ├─ item_1: e5297e68e48fefabda2971dc709baf21cf5ffa1754c201f040698a3585257e6c42b99483c72e3c59845a60e43ab6f9961be4f4584a7e7fd0407cdf19618879df (64 bytes)
+│  │     ├─ item_2: 20bce391a0851301fad14c722167c15d78d55819f21f7ad246eacfd29840ff75c3ad207ea42acbb09754f509aeca81e87c37060b74d1146ef57ada9fcb78f1078f5467ac (68 bytes)
+│  │     └─ item_3: c1c8dcc9df48aeb7699370d871dbd787da545aeb249b4f46be8f6dceb26e411899aa0761196e48e5e008fa70fa593639a09acf1cb8a1761af965c2f78ad0d8e68c (65 bytes)
+│  └─ input_5: None
+│     ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
+│     ├─ prev_vout: 5u32
+│     ├─ sequence: 4294967294u32
+│     ├─ script_sig:  (0 bytes)
+│     └─ witness: 1u64
+│        └─ item_0: 4d8695a354d519fcb96ebf9fdb1ac3a03c3e5e39a5a598d5ed72ac5aa52ba28c0ce7403317ce5c39fceadbfb2a91f51880fa71ad21783d812c1ed2c4dcefe9f9 (64 bytes)
 └─ outputs: 8u64
    ├─ output_0: None
    │  ├─ value: 900u64
    │  ├─ script_pubkey: a914d909474404c124a3d04c3fbff61faa49cf43c58b87 (23 bytes)
    │  └─ address: 3MUbfqvBeD7g1R3b9g8ZQxDwjR7SjQWciv
    ├─ output_1: None
-   │  ├─ value: 900u64
+   │  ├─ value: 1000u64
    │  ├─ script_pubkey: a914054127121d37f32266cd967c485404976a67adf087 (23 bytes)
    │  └─ address: 32AoMPMpT2ErEqupk6CJvrEMrj6TzmZu8V
    ├─ output_2: None
-   │  ├─ value: 900u64
+   │  ├─ value: 1100u64
    │  ├─ script_pubkey: 0020ba48e3f9874463943f90192a45f1ae895b779362a7629af7ad6a9d7a835e3d4f (34 bytes)
    │  └─ address: bc1qhfyw87v8g33eg0usry4ytudw39dh0ymz5a3f4aadd2wh4q67848sqay5xu
    ├─ output_3: None
-   │  ├─ value: 900u64
+   │  ├─ value: 1200u64
    │  ├─ script_pubkey: 5120b27227f5cadc056afea4b02b4b97b9a0151786234c26ad588dccf134e78931c6 (34 bytes)
    │  └─ address: bc1pkfez0aw2mszk4l4ykq45h9ae5q230p3rfsn26kydencnfeufx8rq23ty2z
    ├─ output_4: None
-   │  ├─ value: 900u64
+   │  ├─ value: 1300u64
    │  ├─ script_pubkey: 51204f73b5561399eb397b5ab413e090cc0c48ff703a61afe47cf7d47a23d43b978b (34 bytes)
    │  └─ address: bc1pfaem24snn84nj766ksf7pyxvp3y07up6vxh7gl8h63az84pmj79sehcc5d
    ├─ output_5: None
-   │  ├─ value: 900u64
+   │  ├─ value: 800u64
    │  ├─ script_pubkey: a9141e490a2a3641ffccc557aecddca67104f42978b387 (23 bytes)
    │  └─ address: 34T9hBmUH9m7aCiJzk3BCPuLaGdGKRmWdL
    ├─ output_6: None
-   │  ├─ value: 900u64
-   │  ├─ script_pubkey: a914954288203f9697e25eaecb48d85b8a8608c385cf87 (23 bytes)
-   │  └─ address: 3FJEJqGMWCA8XUnK1jypEy7bu74YMCT8eE
+   │  ├─ value: 700u64
+   │  ├─ script_pubkey: a91434f8e1ceb2f8c014277de7835558c78c5045fa4f87 (23 bytes)
+   │  └─ address: 36X7D9Wv5MnVS6eyDKW7kXG2Psr7cnNMxb
    └─ output_7: None
       ├─ value: 0u64
       └─ script_pubkey: 6a0f736574656320617374726f6e6f6d79 (17 bytes)

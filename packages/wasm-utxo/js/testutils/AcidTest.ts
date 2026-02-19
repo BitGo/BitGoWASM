@@ -3,13 +3,14 @@ import { ZcashBitGoPsbt } from "../fixedScriptWallet/ZcashBitGoPsbt.js";
 import { RootWalletKeys } from "../fixedScriptWallet/RootWalletKeys.js";
 import { BIP32 } from "../bip32.js";
 import { ECPair } from "../ecpair.js";
+import { Transaction } from "../transaction.js";
 import {
-  assertChainCode,
   ChainCode,
   createOpReturnScript,
   inputScriptTypes,
   outputScript,
   outputScriptTypes,
+  p2shP2pkOutputScript,
   supportsScriptType,
   type InputScriptType,
   type OutputScriptType,
@@ -91,6 +92,22 @@ type SuiteConfig = {
 // Re-export for convenience
 export { inputScriptTypes, outputScriptTypes };
 
+/** Map InputScriptType to the OutputScriptType used for chain code derivation */
+function inputScriptTypeToOutputScriptType(scriptType: InputScriptType): OutputScriptType {
+  switch (scriptType) {
+    case "p2sh":
+    case "p2shP2wsh":
+    case "p2wsh":
+    case "p2trLegacy":
+      return scriptType;
+    case "p2shP2pk":
+      return "p2sh";
+    case "p2trMusig2ScriptPath":
+    case "p2trMusig2KeyPath":
+      return "p2trMusig2";
+  }
+}
+
 /**
  * Creates a valid PSBT with as many features as possible (kitchen sink).
  *
@@ -113,7 +130,7 @@ export { inputScriptTypes, outputScriptTypes };
  * - psbt-lite: Only witness_utxo (no non_witness_utxo)
  */
 export class AcidTest {
-  public readonly network: CoinName;
+  public readonly coin: CoinName;
   public readonly signStage: SignStage;
   public readonly txFormat: TxFormat;
   public readonly rootWalletKeys: RootWalletKeys;
@@ -126,7 +143,7 @@ export class AcidTest {
   private readonly bitgoXprv: BIP32;
 
   constructor(
-    network: CoinName,
+    coin: CoinName,
     signStage: SignStage,
     txFormat: TxFormat,
     rootWalletKeys: RootWalletKeys,
@@ -135,7 +152,7 @@ export class AcidTest {
     outputs: Output[],
     xprvTriple: Triple<BIP32>,
   ) {
-    this.network = network;
+    this.coin = coin;
     this.signStage = signStage;
     this.txFormat = txFormat;
     this.rootWalletKeys = rootWalletKeys;
@@ -151,7 +168,7 @@ export class AcidTest {
    * Create an AcidTest with specific configuration
    */
   static withConfig(
-    network: CoinName,
+    coin: CoinName,
     signStage: SignStage,
     txFormat: TxFormat,
     suiteConfig: SuiteConfig = {},
@@ -167,9 +184,9 @@ export class AcidTest {
 
         // Map input script types to output script types for support check
         if (scriptType === "p2trMusig2KeyPath" || scriptType === "p2trMusig2ScriptPath") {
-          return supportsScriptType(network, "p2trMusig2");
+          return supportsScriptType(coin, "p2trMusig2");
         }
-        return supportsScriptType(network, scriptType);
+        return supportsScriptType(coin, scriptType);
       })
       .filter(
         (scriptType) =>
@@ -183,7 +200,7 @@ export class AcidTest {
 
     // Filter outputs based on network support
     const outputs: Output[] = outputScriptTypes
-      .filter((scriptType) => supportsScriptType(network, scriptType))
+      .filter((scriptType) => supportsScriptType(coin, scriptType))
       .map((scriptType, index) => ({
         scriptType,
         value: BigInt(900 + index * 100), // Deterministic amounts
@@ -202,7 +219,7 @@ export class AcidTest {
     const xprvTriple = getKeyTriple("default");
 
     return new AcidTest(
-      network,
+      coin,
       signStage,
       txFormat,
       rootWalletKeys,
@@ -217,7 +234,7 @@ export class AcidTest {
    * Get a human-readable name for this test configuration
    */
   get name(): string {
-    return `${this.network} ${this.signStage} ${this.txFormat}`;
+    return `${this.coin} ${this.signStage} ${this.txFormat}`;
   }
 
   /**
@@ -232,68 +249,82 @@ export class AcidTest {
    */
   createPsbt(): BitGoPsbt {
     // Use ZcashBitGoPsbt for Zcash networks
-    const isZcash = this.network === "zec" || this.network === "tzec";
+    const isZcash = this.coin === "zec" || this.coin === "tzec";
     const psbt = isZcash
-      ? ZcashBitGoPsbt.createEmptyWithConsensusBranchId(this.network, this.rootWalletKeys, {
-          version: 2,
-          lockTime: 0,
-          consensusBranchId: 0xc2d6d0b4, // NU5
+      ? ZcashBitGoPsbt.createEmpty(this.coin, this.rootWalletKeys, {
+          // Sapling activation height: mainnet=419200, testnet=280000
+          blockHeight: this.coin === "zec" ? 419200 : 280000,
         })
-      : BitGoPsbt.createEmpty(this.network, this.rootWalletKeys, {
+      : BitGoPsbt.createEmpty(this.coin, this.rootWalletKeys, {
           version: 2,
           lockTime: 0,
         });
 
+    // Build a fake previous transaction for non_witness_utxo (psbt format)
+    const usePrevTx = this.txFormat === "psbt" && !isZcash;
+    const buildPrevTx = (
+      vout: number,
+      script: Uint8Array,
+      value: bigint,
+    ): Uint8Array | undefined => {
+      if (!usePrevTx) return undefined;
+      const tx = Transaction.create();
+      tx.addInput("0".repeat(64), 0xffffffff);
+      for (let i = 0; i < vout; i++) {
+        tx.addOutput(new Uint8Array(0), 0n);
+      }
+      tx.addOutput(script, value);
+      return tx.toBytes();
+    };
+
     // Add inputs with deterministic outpoints
     this.inputs.forEach((input, index) => {
-      // Resolve scriptId: either from explicit scriptId or from scriptType + index
-      const scriptId: ScriptId = input.scriptId ?? {
-        chain: ChainCode.value("p2sh", "external"),
-        index: input.index ?? index,
-      };
       const walletKeys = input.walletKeys ?? this.rootWalletKeys;
+      const outpoint = { txid: "0".repeat(64), vout: index, value: input.value };
 
-      // Get scriptType: either explicit or derive from scriptId chain
-      const scriptType = input.scriptType ?? ChainCode.scriptType(assertChainCode(scriptId.chain));
+      // scriptId variant: caller provides explicit chain + index
+      if (input.scriptId) {
+        const script = outputScript(
+          walletKeys,
+          input.scriptId.chain,
+          input.scriptId.index,
+          this.coin,
+        );
+        psbt.addWalletInput(
+          { ...outpoint, prevTx: buildPrevTx(index, script, input.value) },
+          walletKeys,
+          { scriptId: input.scriptId, signPath: { signer: "user", cosigner: "bitgo" } },
+        );
+        return;
+      }
+
+      const scriptType = input.scriptType ?? "p2sh";
 
       if (scriptType === "p2shP2pk") {
-        // Add replay protection input
-        const replayKey = this.getReplayProtectionKey();
-        // Convert BIP32 to ECPair using public key
-        const ecpair = ECPair.fromPublicKey(replayKey.publicKey);
+        const ecpair = ECPair.fromPublicKey(this.getReplayProtectionKey().publicKey);
+        const script = p2shP2pkOutputScript(ecpair.publicKey);
         psbt.addReplayProtectionInput(
-          {
-            txid: "0".repeat(64),
-            vout: index,
-            value: input.value,
-          },
+          { ...outpoint, prevTx: buildPrevTx(index, script, input.value) },
           ecpair,
         );
-      } else {
-        // Determine signing path based on input type
-        let signPath: { signer: SignerKey; cosigner: SignerKey };
-
-        if (scriptType === "p2trMusig2ScriptPath") {
-          // Script path uses user + backup
-          signPath = { signer: "user", cosigner: "backup" };
-        } else {
-          // Default: user + bitgo
-          signPath = { signer: "user", cosigner: "bitgo" };
-        }
-
-        psbt.addWalletInput(
-          {
-            txid: "0".repeat(64),
-            vout: index,
-            value: input.value,
-          },
-          walletKeys,
-          {
-            scriptId,
-            signPath,
-          },
-        );
+        return;
       }
+
+      const scriptId: ScriptId = {
+        chain: ChainCode.value(inputScriptTypeToOutputScriptType(scriptType), "external"),
+        index: input.index ?? index,
+      };
+      const signPath: { signer: SignerKey; cosigner: SignerKey } =
+        scriptType === "p2trMusig2ScriptPath"
+          ? { signer: "user", cosigner: "backup" }
+          : { signer: "user", cosigner: "bitgo" };
+      const script = outputScript(walletKeys, scriptId.chain, scriptId.index, this.coin);
+
+      psbt.addWalletInput(
+        { ...outpoint, prevTx: buildPrevTx(index, script, input.value) },
+        walletKeys,
+        { scriptId, signPath },
+      );
     });
 
     // Add outputs
@@ -327,7 +358,7 @@ export class AcidTest {
             this.rootWalletKeys,
             externalScriptId.chain,
             externalScriptId.index,
-            this.network,
+            this.coin,
           );
           psbt.addOutput(script, output.value);
         } else {
@@ -366,40 +397,27 @@ export class AcidTest {
     );
 
     if (hasMusig2Inputs) {
-      const isZcash = this.network === "zec" || this.network === "tzec";
-      if (isZcash) {
+      if (this.coin === "zec" || this.coin === "tzec") {
         throw new Error("Zcash does not support MuSig2/Taproot inputs");
       }
 
-      // Generate nonces with user key
+      // MuSig2 requires ALL participant nonces before ANY signing.
+      // Generate nonces directly on the same PSBT for each participant key.
       psbt.generateMusig2Nonces(userKey);
 
-      if (this.signStage === "fullsigned") {
-        // Create a second PSBT with cosigner nonces for combination
-        // For p2trMusig2ScriptPath use backup, for p2trMusig2KeyPath use bitgo
-        // Since we might have both types, we need to generate nonces separately
-        const bytes = psbt.serialize();
+      const hasKeyPath = this.inputs.some((input) => input.scriptType === "p2trMusig2KeyPath");
+      const hasScriptPath = this.inputs.some(
+        (input) => input.scriptType === "p2trMusig2ScriptPath",
+      );
 
-        const hasKeyPath = this.inputs.some((input) => input.scriptType === "p2trMusig2KeyPath");
-        const hasScriptPath = this.inputs.some(
-          (input) => input.scriptType === "p2trMusig2ScriptPath",
-        );
-
-        if (hasKeyPath && !hasScriptPath) {
-          // Only key path inputs - generate bitgo nonces for all
-          const psbt2 = BitGoPsbt.fromBytes(bytes, this.network);
-          psbt2.generateMusig2Nonces(bitgoKey);
-          psbt.combineMusig2Nonces(psbt2);
-        } else if (hasScriptPath && !hasKeyPath) {
-          // Only script path inputs - generate backup nonces for all
-          const psbt2 = BitGoPsbt.fromBytes(bytes, this.network);
-          psbt2.generateMusig2Nonces(backupKey);
-          psbt.combineMusig2Nonces(psbt2);
-        } else {
-          const psbt2 = BitGoPsbt.fromBytes(bytes, this.network);
-          psbt2.generateMusig2Nonces(bitgoKey);
-          psbt.combineMusig2Nonces(psbt2);
-        }
+      // Key path uses user+bitgo, script path uses user+backup.
+      // generateMusig2Nonces fails if the key isn't a participant in any musig2 input,
+      // so we only call it for keys that match.
+      if (hasKeyPath) {
+        psbt.generateMusig2Nonces(bitgoKey);
+      }
+      if (hasScriptPath) {
+        psbt.generateMusig2Nonces(backupKey);
       }
     }
 
@@ -446,8 +464,8 @@ export class AcidTest {
    * Generate test suite for all networks, sign stages, and tx formats
    */
   static forAllNetworksSignStagesTxFormats(suiteConfig: SuiteConfig = {}): AcidTest[] {
-    return (coinNames as readonly CoinName[])
-      .filter((network) => isMainnet(network) && network !== "bsv") // Exclude bitcoinsv
+    return coinNames
+      .filter((network): network is CoinName => isMainnet(network) && network !== "bsv")
       .flatMap((network) =>
         signStages.flatMap((signStage) =>
           txFormats.map((txFormat) =>
