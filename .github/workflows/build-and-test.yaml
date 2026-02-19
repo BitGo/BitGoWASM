@@ -41,6 +41,7 @@ jobs:
           workspaces: |
             packages/wasm-utxo
             packages/wasm-bip32
+            packages/wasm-mps
             packages/wasm-solana
           cache-on-failure: true
 
@@ -91,6 +92,8 @@ jobs:
             packages/wasm-utxo/js/wasm/
             packages/wasm-bip32/dist/
             packages/wasm-bip32/js/wasm/
+            packages/wasm-mps/dist/
+            packages/wasm-mps/js/wasm/
             packages/wasm-solana/dist/
             packages/wasm-solana/js/wasm/
           retention-days: 1
@@ -108,12 +111,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [wasm-bip32, wasm-utxo, wasm-solana]
+        package: [wasm-bip32, wasm-mps, wasm-utxo, wasm-solana]
         include:
           - package: wasm-utxo
             needs-wasm-pack: true
             has-wasm-pack-tests: true
           - package: wasm-bip32
+            needs-wasm-pack: false
+            has-wasm-pack-tests: false
+          - package: wasm-mps
             needs-wasm-pack: false
             has-wasm-pack-tests: false
           - package: wasm-solana
@@ -210,6 +216,16 @@ jobs:
       - name: webui / Unit Test
         run: npm test
         working-directory: packages/webui
+
+      - name: Upload wasm-mps build artifacts
+        if: inputs.upload-artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-mps-build
+          path: |
+            packages/wasm-mps/pkg/
+            packages/wasm-mps/dist/
+          retention-days: 1
 
       - name: Upload wasm-utxo build artifacts
         if: inputs.upload-artifacts
