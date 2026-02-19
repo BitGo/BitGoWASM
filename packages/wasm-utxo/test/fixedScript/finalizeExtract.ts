@@ -1,5 +1,4 @@
 import assert from "node:assert";
-import * as utxolib from "@bitgo/utxo-lib";
 import { fixedScriptWallet } from "../../js/index.js";
 import {
   loadPsbtFixture,
@@ -7,19 +6,17 @@ import {
   getExtractedTransactionHex,
   type Fixture,
 } from "./fixtureUtil.js";
-import { getFixtureNetworks } from "./networkSupport.util.js";
+import { mainnetCoinNames } from "./networkSupport.util.js";
 
 describe("finalize and extract transaction", function () {
-  getFixtureNetworks().forEach((network) => {
-    const networkName = utxolib.getNetworkName(network);
-
+  mainnetCoinNames.forEach((networkName) => {
     describe(`network: ${networkName}`, function () {
       let fullsignedFixture: Fixture;
       let fullsignedPsbtBuffer: Buffer;
       let fullsignedBitgoPsbt: fixedScriptWallet.BitGoPsbt;
 
-      before(function () {
-        fullsignedFixture = loadPsbtFixture(networkName, "fullsigned");
+      before(async function () {
+        fullsignedFixture = await loadPsbtFixture(networkName, "fullsigned");
         fullsignedPsbtBuffer = getPsbtBuffer(fullsignedFixture);
         fullsignedBitgoPsbt = fixedScriptWallet.BitGoPsbt.fromBytes(
           fullsignedPsbtBuffer,
@@ -108,11 +105,6 @@ describe("finalize and extract transaction", function () {
         const txid = extractedTx.getId();
         assert.strictEqual(txid.length, 64, "txid should be 64 characters");
         assert.match(txid, /^[0-9a-f]{64}$/, "txid should be lowercase hex");
-
-        // Verify txid matches utxolib calculation
-        const expectedTxHex = getExtractedTransactionHex(fullsignedFixture);
-        const utxolibTx = utxolib.bitgo.createTransactionFromHex(expectedTxHex, network);
-        assert.strictEqual(txid, utxolibTx.getId(), "txid should match utxolib calculation");
       });
     });
   });

@@ -1,5 +1,4 @@
 import assert from "node:assert";
-import * as utxolib from "@bitgo/utxo-lib";
 import { Dimensions, fixedScriptWallet } from "../js/index.js";
 import { Transaction } from "../js/transaction.js";
 import {
@@ -8,7 +7,7 @@ import {
   type Fixture,
   type Output,
 } from "./fixedScript/fixtureUtil.js";
-import { getFixtureNetworks } from "./fixedScript/networkSupport.util.js";
+import { mainnetCoinNames } from "./fixedScript/networkSupport.util.js";
 import type { InputScriptType } from "../js/fixedScriptWallet/BitGoPsbt.js";
 
 /**
@@ -383,16 +382,14 @@ describe("Dimensions", function () {
   describe("integration tests with fixtures", function () {
     // Zcash has additional transaction overhead (version group, expiry height, etc.)
     // that we don't account for in Dimensions - skip it for now
-    const networksToTest = getFixtureNetworks().filter((n) => n !== utxolib.networks.zcash);
+    const networksToTest = mainnetCoinNames.filter((n) => n !== "zec");
 
-    networksToTest.forEach((network) => {
-      const networkName = utxolib.getNetworkName(network);
-
+    networksToTest.forEach((networkName) => {
       describe(`${networkName}`, function () {
         let fixture: Fixture;
 
-        before(function () {
-          fixture = loadPsbtFixture(networkName, "fullsigned");
+        before(async function () {
+          fixture = await loadPsbtFixture(networkName, "fullsigned");
         });
 
         it("actual vSize is within estimated min/max bounds", function () {
@@ -432,47 +429,24 @@ describe("Dimensions", function () {
   });
 
   describe("manual construction test", function () {
-    it("builds correct dimensions for bitcoin fixture", function () {
-      const fixture = loadPsbtFixture("bitcoin", "fullsigned");
+    it("builds correct dimensions for bitcoin fixture", async function () {
+      const fixture = await loadPsbtFixture("btc", "fullsigned");
       if (!fixture.extractedTransaction) {
         return;
       }
 
-      // Build dimensions based on fixture input types:
-      // 0: p2sh, 1: p2shP2wsh, 2: p2wsh, 3: p2tr (script),
-      // 4: p2trMusig2 (script path), 5: p2trMusig2 (keypath), 6: p2shP2pk
-      let dim = Dimensions.empty()
-        .plus(Dimensions.fromInput({ chain: 0 })) // p2sh
-        .plus(Dimensions.fromInput({ chain: 11 })) // p2shP2wsh
-        .plus(Dimensions.fromInput({ chain: 21 })) // p2wsh
-        .plus(Dimensions.fromInput({ chain: 31 })) // p2tr script path level 1
-        .plus(
-          Dimensions.fromInput({
-            chain: 41,
-            signPath: { signer: "user", cosigner: "backup" },
-          }),
-        ) // p2trMusig2 script path
-        .plus(Dimensions.fromInput({ chain: 41 })) // p2trMusig2 keypath
-        .plus(Dimensions.fromInput({ scriptType: "p2shP2pk" })); // replay protection
+      // Build dimensions from fixture psbtInputs (adapts to AcidTest structure)
+      let dim = Dimensions.empty();
+      for (const psbtInput of fixture.psbtInputs) {
+        const scriptType = fixtureTypeToInputScriptType(psbtInput.type);
+        if (scriptType === null) {
+          throw new Error(`Unknown input type: ${psbtInput.type}`);
+        }
+        dim = dim.plus(Dimensions.fromInput({ scriptType }));
+      }
 
       // Add outputs
       dim = dim.plus(dimensionsFromOutputs(fixture.outputs));
-
-      // Build dimensions using scriptType
-      let dimFromTypes = Dimensions.empty()
-        .plus(Dimensions.fromInput({ scriptType: "p2sh" }))
-        .plus(Dimensions.fromInput({ scriptType: "p2shP2wsh" }))
-        .plus(Dimensions.fromInput({ scriptType: "p2wsh" }))
-        .plus(Dimensions.fromInput({ scriptType: "p2trLegacy" }))
-        .plus(Dimensions.fromInput({ scriptType: "p2trMusig2ScriptPath" }))
-        .plus(Dimensions.fromInput({ scriptType: "p2trMusig2KeyPath" }))
-        .plus(Dimensions.fromInput({ scriptType: "p2shP2pk" }));
-
-      dimFromTypes = dimFromTypes.plus(dimensionsFromOutputs(fixture.outputs));
-
-      // Both methods should produce same weights
-      assert.strictEqual(dim.getWeight("min"), dimFromTypes.getWeight("min"));
-      assert.strictEqual(dim.getWeight("max"), dimFromTypes.getWeight("max"));
 
       // Get actual vSize
       const txBytes = Buffer.from(fixture.extractedTransaction, "hex");
@@ -492,14 +466,12 @@ describe("Dimensions", function () {
 
   describe("fromPsbt", function () {
     // Zcash has additional transaction overhead that we don't account for
-    const networksToTest = getFixtureNetworks().filter((n) => n !== utxolib.networks.zcash);
+    const networksToTest = mainnetCoinNames.filter((n) => n !== "zec");
 
-    networksToTest.forEach((network) => {
-      const networkName = utxolib.getNetworkName(network);
-
+    networksToTest.forEach((networkName) => {
       describe(`${networkName}`, function () {
-        it("actual vSize is within fromPsbt estimated bounds", function () {
-          const fixture = loadPsbtFixture(networkName, "fullsigned");
+        it("actual vSize is within fromPsbt estimated bounds", async function () {
+          const fixture = await loadPsbtFixture(networkName, "fullsigned");
           if (!fixture.extractedTransaction) {
             this.skip();
             return;

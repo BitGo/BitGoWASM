@@ -434,13 +434,18 @@ mod tests {
     #[test]
     fn test_round_trip_zcash_psbt() {
         use crate::fixed_script_wallet::test_utils::fixtures::{
-            load_psbt_fixture_with_network, SignatureState,
+            load_psbt_fixture_with_format_and_namespace, FixtureNamespace, SignatureState, TxFormat,
         };
         use crate::networks::Network;
 
-        // Load the Zcash fixture
-        let fixture = load_psbt_fixture_with_network(Network::Zcash, SignatureState::Unsigned)
-            .expect("Failed to load Zcash fixture");
+        // Load the Zcash fixture from utxolib-compat
+        let fixture = load_psbt_fixture_with_format_and_namespace(
+            "zcash",
+            SignatureState::Unsigned,
+            TxFormat::Psbt,
+            FixtureNamespace::UtxolibCompat,
+        )
+        .expect("Failed to load Zcash fixture");
 
         // Deserialize from fixture
         let original_bytes = BASE64_STANDARD.decode(&fixture.psbt_base64).unwrap();

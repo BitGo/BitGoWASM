@@ -1,12 +1,7 @@
 import assert from "node:assert";
-import * as utxolib from "@bitgo/utxo-lib";
 import { BIP32, ECPair } from "../../js/index.js";
-import {
-  BitGoPsbt,
-  RootWalletKeys,
-  ParsedTransaction,
-  type NetworkName,
-} from "../../js/fixedScriptWallet/index.js";
+import { BitGoPsbt, RootWalletKeys, ParsedTransaction } from "../../js/fixedScriptWallet/index.js";
+import type { CoinName } from "../../js/coinName.js";
 import {
   loadPsbtFixture,
   loadWalletKeysFromFixture,
@@ -14,7 +9,8 @@ import {
   type Fixture,
   loadReplayProtectionKeyFromFixture,
 } from "./fixtureUtil.js";
-import { getFixtureNetworks } from "./networkSupport.util.js";
+import { mainnetCoinNames } from "./networkSupport.util.js";
+import { txFormats } from "../../js/testutils/AcidTest.js";
 
 type SignatureStage = "unsigned" | "halfsigned" | "fullsigned";
 
@@ -224,7 +220,7 @@ function signAllInputs(
  */
 function runTestsForFixture(
   fixture: Fixture,
-  networkName: NetworkName,
+  networkName: CoinName,
   rootWalletKeys: RootWalletKeys,
   replayProtectionKey: ECPair,
   xprivs: RootWalletXprivs,
@@ -243,161 +239,165 @@ function runTestsForFixture(
 }
 
 describe("verifySignature", function () {
-  getFixtureNetworks().forEach((network) => {
-    const networkName = utxolib.getNetworkName(network);
+  mainnetCoinNames.forEach((networkName) => {
+    txFormats
+      .filter((f) => f !== "psbt" || networkName !== "zec")
+      .forEach((txFormat) => {
+        describe(`${networkName} ${txFormat}`, function () {
+          let rootWalletKeys: RootWalletKeys;
+          let replayProtectionKey: ECPair;
+          let xprivs: RootWalletXprivs;
+          let unsignedFixture: Fixture;
+          let halfsignedFixture: Fixture;
+          let fullsignedFixture: Fixture;
 
-    describe(`network: ${networkName}`, function () {
-      let rootWalletKeys: RootWalletKeys;
-      let replayProtectionKey: ECPair;
-      let xprivs: RootWalletXprivs;
-      let unsignedFixture: Fixture;
-      let halfsignedFixture: Fixture;
-      let fullsignedFixture: Fixture;
+          before(async function () {
+            unsignedFixture = await loadPsbtFixture(networkName, "unsigned", txFormat);
+            halfsignedFixture = await loadPsbtFixture(networkName, "halfsigned", txFormat);
+            fullsignedFixture = await loadPsbtFixture(networkName, "fullsigned", txFormat);
+            rootWalletKeys = loadWalletKeysFromFixture(fullsignedFixture);
+            replayProtectionKey = loadReplayProtectionKeyFromFixture(fullsignedFixture);
+            xprivs = loadXprivsFromFixture(fullsignedFixture);
+          });
 
-      before(function () {
-        unsignedFixture = loadPsbtFixture(networkName, "unsigned");
-        halfsignedFixture = loadPsbtFixture(networkName, "halfsigned");
-        fullsignedFixture = loadPsbtFixture(networkName, "fullsigned");
-        rootWalletKeys = loadWalletKeysFromFixture(fullsignedFixture);
-        replayProtectionKey = loadReplayProtectionKeyFromFixture(fullsignedFixture);
-        xprivs = loadXprivsFromFixture(fullsignedFixture);
-      });
+          describe("unsigned PSBT", function () {
+            it("should return false for unsigned inputs, then sign and verify", function () {
+              runTestsForFixture(
+                unsignedFixture,
+                networkName,
+                rootWalletKeys,
+                replayProtectionKey,
+                xprivs,
+                "unsigned",
+              );
+            });
+          });
 
-      describe("unsigned PSBT", function () {
-        it("should return false for unsigned inputs, then sign and verify", function () {
-          runTestsForFixture(
-            unsignedFixture,
-            networkName,
-            rootWalletKeys,
-            replayProtectionKey,
-            xprivs,
-            "unsigned",
-          );
+          describe("half-signed PSBT", function () {
+            it("should return true for signed xpubs and false for unsigned, then sign and verify", function () {
+              runTestsForFixture(
+                halfsignedFixture,
+                networkName,
+                rootWalletKeys,
+                replayProtectionKey,
+                xprivs,
+                "halfsigned",
+              );
+            });
+          });
+
+          describe("fully signed PSBT", function () {
+            it("should have 2 signatures (2-of-3 multisig)", function () {
+              runTestsForFixture(
+                fullsignedFixture,
+                networkName,
+                rootWalletKeys,
+                replayProtectionKey,
+                xprivs,
+                "fullsigned",
+              );
+            });
+          });
+
+          describe("error handling", function () {
+            it("should throw error for out of bounds input index", function () {
+              const psbt = getBitGoPsbt(fullsignedFixture, networkName);
+              assert.throws(
+                () => {
+                  psbt.verifySignature(999, rootWalletKeys.userKey());
+                },
+                (error: Error) => {
+                  return error.message.includes("Input index 999 out of bounds");
+                },
+                "Should throw error for out of bounds input index",
+              );
+            });
+
+            it("should throw error for invalid xpub", function () {
+              const psbt = getBitGoPsbt(fullsignedFixture, networkName);
+              assert.throws(
+                () => {
+                  psbt.verifySignature(0, "invalid-xpub");
+                },
+                (error: Error) => {
+                  return error.message.includes("Invalid");
+                },
+                "Should throw error for invalid xpub",
+              );
+            });
+
+            it("should return false for xpub not in derivation path", function () {
+              const psbt = getBitGoPsbt(fullsignedFixture, networkName);
+              // Create a different xpub that's not in the wallet
+              // Use a proper 32-byte seed (256 bits)
+              const differentSeed = Buffer.alloc(32, 0xaa); // 32 bytes filled with 0xaa
+              const differentKey = BIP32.fromSeed(differentSeed);
+              const differentXpub = differentKey.neutered();
+
+              const result = psbt.verifySignature(0, differentXpub);
+              assert.strictEqual(
+                result,
+                false,
+                "Should return false for xpub not in PSBT derivation paths",
+              );
+            });
+
+            it("should verify signature with raw public key (Uint8Array)", function () {
+              const psbt = getBitGoPsbt(fullsignedFixture, networkName);
+              // Find first wallet input (non-p2shP2pk) for xpub verification
+              const walletInputIndex = fullsignedFixture.psbtInputs.findIndex(
+                (input) => input.type !== "p2shP2pk",
+              );
+              assert.ok(walletInputIndex >= 0, "Should have a wallet input");
+
+              // Verify that xpub-based verification works
+              const userKey = rootWalletKeys.userKey();
+              const hasXpubSig = psbt.verifySignature(walletInputIndex, userKey);
+
+              // Use a random public key that's not in the PSBT to test the API works
+              const randomSeed = Buffer.alloc(32, 0xcc);
+              const randomKey = BIP32.fromSeed(randomSeed);
+              const randomPubkey = randomKey.publicKey;
+
+              // This should return false (no signature for this key)
+              const result = psbt.verifySignature(walletInputIndex, randomPubkey);
+              assert.strictEqual(result, false, "Should return false for public key not in PSBT");
+
+              // Verify the xpub check still works (regression test)
+              assert.strictEqual(hasXpubSig, true, "Should still verify with xpub");
+            });
+
+            it("should return false for raw public key with no signature", function () {
+              const psbt = getBitGoPsbt(fullsignedFixture, networkName);
+              // Create a random public key that's not in the PSBT
+              const randomSeed = Buffer.alloc(32, 0xbb);
+              const randomKey = BIP32.fromSeed(randomSeed);
+              const randomPubkey = randomKey.publicKey;
+
+              const result = psbt.verifySignature(0, randomPubkey);
+              assert.strictEqual(
+                result,
+                false,
+                "Should return false for public key not in PSBT signatures",
+              );
+            });
+
+            it("should throw error for invalid key length", function () {
+              const psbt = getBitGoPsbt(fullsignedFixture, networkName);
+              const invalidKey = Buffer.alloc(31); // Invalid length (should be 32 for private key or 33 for public key)
+
+              assert.throws(
+                () => {
+                  psbt.verifySignature(0, invalidKey);
+                },
+                (error: Error) => {
+                  return error.message.includes("Invalid key length");
+                },
+                "Should throw error for invalid key length",
+              );
+            });
+          });
         });
       });
-
-      describe("half-signed PSBT", function () {
-        it("should return true for signed xpubs and false for unsigned, then sign and verify", function () {
-          runTestsForFixture(
-            halfsignedFixture,
-            networkName,
-            rootWalletKeys,
-            replayProtectionKey,
-            xprivs,
-            "halfsigned",
-          );
-        });
-      });
-
-      describe("fully signed PSBT", function () {
-        it("should have 2 signatures (2-of-3 multisig)", function () {
-          runTestsForFixture(
-            fullsignedFixture,
-            networkName,
-            rootWalletKeys,
-            replayProtectionKey,
-            xprivs,
-            "fullsigned",
-          );
-        });
-      });
-
-      describe("error handling", function () {
-        it("should throw error for out of bounds input index", function () {
-          const psbt = getBitGoPsbt(fullsignedFixture, networkName);
-          assert.throws(
-            () => {
-              psbt.verifySignature(999, rootWalletKeys.userKey());
-            },
-            (error: Error) => {
-              return error.message.includes("Input index 999 out of bounds");
-            },
-            "Should throw error for out of bounds input index",
-          );
-        });
-
-        it("should throw error for invalid xpub", function () {
-          const psbt = getBitGoPsbt(fullsignedFixture, networkName);
-          assert.throws(
-            () => {
-              psbt.verifySignature(0, "invalid-xpub");
-            },
-            (error: Error) => {
-              return error.message.includes("Invalid");
-            },
-            "Should throw error for invalid xpub",
-          );
-        });
-
-        it("should return false for xpub not in derivation path", function () {
-          const psbt = getBitGoPsbt(fullsignedFixture, networkName);
-          // Create a different xpub that's not in the wallet
-          // Use a proper 32-byte seed (256 bits)
-          const differentSeed = Buffer.alloc(32, 0xaa); // 32 bytes filled with 0xaa
-          const differentKey = BIP32.fromSeed(differentSeed);
-          const differentXpub = differentKey.neutered();
-
-          const result = psbt.verifySignature(0, differentXpub);
-          assert.strictEqual(
-            result,
-            false,
-            "Should return false for xpub not in PSBT derivation paths",
-          );
-        });
-
-        it("should verify signature with raw public key (Uint8Array)", function () {
-          const psbt = getBitGoPsbt(fullsignedFixture, networkName);
-          // Verify that xpub-based verification works
-          const userKey = rootWalletKeys.userKey();
-          const hasXpubSig = psbt.verifySignature(0, userKey);
-
-          // This test specifically checks that raw public key verification works
-          // We test the underlying WASM API by ensuring both xpub and raw pubkey
-          // calls reach the correct methods
-
-          // Use a random public key that's not in the PSBT to test the API works
-          const randomSeed = Buffer.alloc(32, 0xcc);
-          const randomKey = BIP32.fromSeed(randomSeed);
-          const randomPubkey = randomKey.publicKey;
-
-          // This should return false (no signature for this key)
-          const result = psbt.verifySignature(0, randomPubkey);
-          assert.strictEqual(result, false, "Should return false for public key not in PSBT");
-
-          // Verify the xpub check still works (regression test)
-          assert.strictEqual(hasXpubSig, true, "Should still verify with xpub");
-        });
-
-        it("should return false for raw public key with no signature", function () {
-          const psbt = getBitGoPsbt(fullsignedFixture, networkName);
-          // Create a random public key that's not in the PSBT
-          const randomSeed = Buffer.alloc(32, 0xbb);
-          const randomKey = BIP32.fromSeed(randomSeed);
-          const randomPubkey = randomKey.publicKey;
-
-          const result = psbt.verifySignature(0, randomPubkey);
-          assert.strictEqual(
-            result,
-            false,
-            "Should return false for public key not in PSBT signatures",
-          );
-        });
-
-        it("should throw error for invalid key length", function () {
-          const psbt = getBitGoPsbt(fullsignedFixture, networkName);
-          const invalidKey = Buffer.alloc(31); // Invalid length (should be 32 for private key or 33 for public key)
-
-          assert.throws(
-            () => {
-              psbt.verifySignature(0, invalidKey);
-            },
-            (error: Error) => {
-              return error.message.includes("Invalid key length");
-            },
-            "Should throw error for invalid key length",
-          );
-        });
-      });
-    });
   });
 });
