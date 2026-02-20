@@ -1,6 +1,6 @@
 {
   "name": "@bitgo/wasm-mps",
-  "description": "WebAssembly wrapper for multi-partyschnorr protocol",
+  "description": "WebAssembly wrapper for multi-party-schnorr protocol",
   "version": "0.0.1",
   "type": "module",
   "repository": {
