@@ -52,7 +52,7 @@ mod mps {
     }
 
     /// Process round 0 of protocol.
-    /// party_id: Party indentifier / index.
+    /// party_id: Party identifier / index.
     /// decryption_key: Private Curve25519 key.
     /// encryption_keys: Public Curve25519 keys of other parties.
     /// seed: PRNG seed for entropy.
