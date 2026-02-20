@@ -187,6 +187,7 @@ mod tests {
     use super::*;
     use rand::{self, Rng};
 
+    /// Test full DGK protocol.
     #[test]
     fn test_dkg() {
         // Generate key pairs and seeds for all parties
