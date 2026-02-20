@@ -180,6 +180,22 @@ impl FixedScriptWalletNamespace {
         Ok(builder.into_script().to_bytes())
     }
 
+    /// Get the P2SH-P2PK output script for a compressed public key
+    ///
+    /// # Arguments
+    /// * `pubkey` - The compressed public key bytes (33 bytes)
+    ///
+    /// # Returns
+    /// The P2SH-P2PK output script as bytes
+    #[wasm_bindgen]
+    pub fn p2sh_p2pk_output_script(pubkey: &[u8]) -> Result<Vec<u8>, WasmUtxoError> {
+        use crate::fixed_script_wallet::wallet_scripts::ScriptP2shP2pk;
+        use miniscript::bitcoin::CompressedPublicKey;
+        let pubkey = CompressedPublicKey::from_slice(pubkey)
+            .map_err(|e| WasmUtxoError::new(&format!("Invalid pubkey: {}", e)))?;
+        Ok(ScriptP2shP2pk::new(pubkey).output_script().into_bytes())
+    }
+
     /// Get all chain code metadata for building TypeScript lookup tables
     ///
     /// Returns an array of [chainCode, scriptType, scope] tuples where:
@@ -550,6 +566,7 @@ impl BitGoPsbt {
         vout: u32,
         value: u64,
         sequence: Option<u32>,
+        prev_tx: Option<Vec<u8>>,
     ) -> Result<usize, WasmUtxoError> {
         use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ReplayProtectionOptions;
         use miniscript::bitcoin::{CompressedPublicKey, Txid};
@@ -567,7 +584,7 @@ impl BitGoPsbt {
         let options = ReplayProtectionOptions {
             sequence,
             sighash_type: None,
-            prev_tx: None,
+            prev_tx: prev_tx.as_deref(),
         };
 
         Ok(self

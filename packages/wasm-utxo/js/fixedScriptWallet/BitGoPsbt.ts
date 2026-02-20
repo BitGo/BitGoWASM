@@ -403,6 +403,7 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
       inputOptions.vout,
       inputOptions.value,
       inputOptions.sequence,
+      inputOptions.prevTx,
     );
   }
 

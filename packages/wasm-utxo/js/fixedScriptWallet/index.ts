@@ -98,3 +98,13 @@ export function supportsScriptType(coin: CoinName, scriptType: ScriptType): bool
 export function createOpReturnScript(data?: Uint8Array): Uint8Array {
   return FixedScriptWalletNamespace.create_op_return_script(data);
 }
+
+/**
+ * Get the P2SH-P2PK output script for a compressed public key
+ *
+ * @param pubkey - The compressed public key bytes (33 bytes)
+ * @returns The P2SH-P2PK output script as a Uint8Array
+ */
+export function p2shP2pkOutputScript(pubkey: Uint8Array): Uint8Array {
+  return FixedScriptWalletNamespace.p2sh_p2pk_output_script(pubkey);
+}

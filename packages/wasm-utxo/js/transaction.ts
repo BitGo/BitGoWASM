@@ -16,6 +16,13 @@ export interface ITransaction {
 export class Transaction implements ITransaction {
   private constructor(private _wasm: WasmTransaction) {}
 
+  /**
+   * Create an empty transaction (version 1, locktime 0)
+   */
+  static create(): Transaction {
+    return new Transaction(WasmTransaction.create());
+  }
+
   static fromBytes(bytes: Uint8Array): Transaction {
     return new Transaction(WasmTransaction.from_bytes(bytes));
   }
@@ -25,6 +32,27 @@ export class Transaction implements ITransaction {
    */
   static fromWasm(wasm: WasmTransaction): Transaction {
     return new Transaction(wasm);
+  }
+
+  /**
+   * Add an input to the transaction
+   * @param txid - Previous transaction ID (hex string)
+   * @param vout - Output index being spent
+   * @param sequence - Optional sequence number (default: 0xFFFFFFFF)
+   * @returns The index of the newly added input
+   */
+  addInput(txid: string, vout: number, sequence?: number): number {
+    return this._wasm.add_input(txid, vout, sequence);
+  }
+
+  /**
+   * Add an output to the transaction
+   * @param script - Output script (scriptPubKey)
+   * @param value - Value in satoshis
+   * @returns The index of the newly added output
+   */
+  addOutput(script: Uint8Array, value: bigint): number {
+    return this._wasm.add_output(script, value);
   }
 
   toBytes(): Uint8Array {
