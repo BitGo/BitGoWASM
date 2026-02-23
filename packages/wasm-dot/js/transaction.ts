@@ -2,47 +2,36 @@
  * TypeScript wrapper for WasmTransaction
  */
 
-import { WasmTransaction, MaterialJs, ValidityJs, ParseContextJs } from "./wasm/wasm_dot";
-import { parseTransactionData } from "./parser";
-import type { Material, Validity, ParseContext, ParsedTransaction, Era } from "./types";
+import { WasmTransaction, MaterialJs, ValidityJs } from "./wasm/wasm_dot";
+import type { Material, Validity, Era } from "./types";
 
 /**
  * DOT Transaction wrapper
  *
- * Provides a high-level interface for working with DOT transactions
+ * Provides a high-level interface for working with DOT transactions.
+ * Handles signing context and serialization — parsing is separate
+ * (use `parseTransactionData()` from parser.ts).
  */
 export class DotTransaction {
-  private inner: WasmTransaction;
-  private _context?: ParseContext;
+  private _wasm: WasmTransaction;
 
-  private constructor(inner: WasmTransaction, context?: ParseContext) {
-    this.inner = inner;
-    this._context = context;
+  private constructor(inner: WasmTransaction) {
+    this._wasm = inner;
   }
 
   /**
    * Create a transaction from raw bytes
    */
-  static fromBytes(bytes: Uint8Array, context?: ParseContext): DotTransaction {
-    const ctx = context ? createParseContext(context) : undefined;
-    const inner = new WasmTransaction(bytes, ctx);
-    return new DotTransaction(inner, context);
-  }
-
-  /**
-   * Create from hex string
-   */
-  static fromHex(hex: string, context?: ParseContext): DotTransaction {
-    const ctx = context ? createParseContext(context) : undefined;
-    const inner = WasmTransaction.fromHex(hex, ctx);
-    return new DotTransaction(inner, context);
+  static fromBytes(bytes: Uint8Array): DotTransaction {
+    const inner = new WasmTransaction(bytes);
+    return new DotTransaction(inner);
   }
 
   /**
    * Get the transaction ID (hash) if signed
    */
   get id(): string | undefined {
-    return this.inner.id ?? undefined;
+    return this._wasm.id ?? undefined;
   }
 
   /**
@@ -51,59 +40,45 @@ export class DotTransaction {
    * @param prefix - SS58 address prefix (0 for Polkadot, 2 for Kusama, 42 for generic)
    */
   sender(prefix: number = 0): string | undefined {
-    return this.inner.sender(prefix) ?? undefined;
+    return this._wasm.sender(prefix) ?? undefined;
   }
 
   /**
    * Get account nonce
    */
   get nonce(): number {
-    return this.inner.nonce;
+    return this._wasm.nonce;
   }
 
   /**
    * Get tip amount as bigint
    */
   get tip(): bigint {
-    return this.inner.tip;
+    return this._wasm.tip;
   }
 
   /**
    * Check if transaction is signed
    */
   get isSigned(): boolean {
-    return this.inner.isSigned;
+    return this._wasm.isSigned;
   }
 
   /**
    * Get the call data
    */
   get callData(): Uint8Array {
-    return this.inner.callData();
-  }
-
-  /**
-   * Get call data as hex string
-   */
-  get callDataHex(): string {
-    return this.inner.callDataHex();
+    return this._wasm.callData();
   }
 
   /**
    * Get the signable payload
    *
    * Returns the bytes that should be signed with Ed25519.
-   * Requires context to be set.
+   * Requires context to be set via `setContext()`.
    */
   signablePayload(): Uint8Array {
-    return this.inner.signablePayload();
-  }
-
-  /**
-   * Get signable payload as hex
-   */
-  signablePayloadHex(): string {
-    return this.inner.signablePayloadHex();
+    return this._wasm.signablePayload();
   }
 
   /**
@@ -121,21 +96,21 @@ export class DotTransaction {
       material.metadata,
     );
     const validityJs = new ValidityJs(validity.firstValid, validity.maxDuration);
-    this.inner.setContext(materialJs, validityJs, referenceBlock);
+    this._wasm.setContext(materialJs, validityJs, referenceBlock);
   }
 
   /**
-   * Set account nonce (mutates in-place, reflected on next toBytes/toHex)
+   * Set account nonce (mutates in-place, reflected on next toBytes)
    */
   setNonce(nonce: number): void {
-    this.inner.setNonce(nonce);
+    this._wasm.setNonce(nonce);
   }
 
   /**
-   * Set tip amount (mutates in-place, reflected on next toBytes/toHex)
+   * Set tip amount (mutates in-place, reflected on next toBytes)
    */
   setTip(tip: bigint): void {
-    this.inner.setTip(tip);
+    this._wasm.setTip(tip);
   }
 
   /**
@@ -145,88 +120,36 @@ export class DotTransaction {
    * @param pubkey - 32-byte public key
    */
   addSignature(signature: Uint8Array, pubkey: Uint8Array): void {
-    this.inner.addSignature(signature, pubkey);
+    this._wasm.addSignature(signature, pubkey);
   }
 
   /**
    * Serialize to bytes
    */
   toBytes(): Uint8Array {
-    return this.inner.toBytes();
-  }
-
-  /**
-   * Serialize to hex string
-   */
-  toHex(): string {
-    return this.inner.toHex();
-  }
-
-  /**
-   * Serialize to network broadcast format (hex string).
-   *
-   * This is the standard BitGo convention across all coins.
-   * For DOT, broadcast format is the hex-encoded SCALE extrinsic.
-   */
-  toBroadcastFormat(): string {
-    return this.toHex();
+    return this._wasm.toBytes();
   }
 
   /**
    * Get era information
    */
   get era(): Era {
-    return this.inner.era as Era;
+    return this._wasm.era as Era;
   }
 
   /**
-   * Decode transaction into structured data (pallet, method, args).
-   *
-   * Returns the raw decoded output — no type derivation or output extraction.
-   * For high-level explanation (type, outputs, inputs), use `explainTransaction()`.
-   *
-   * @param context - Optional parsing context override (uses stored context if omitted)
-   *
-   * @example
-   * ```typescript
-   * const tx = parseTransaction(txHex, { material });
-   * const parsed = tx.parse();
-   * console.log(parsed.method.pallet);  // "balances"
-   * console.log(parsed.method.name);    // "transferKeepAlive"
-   * console.log(parsed.method.args);    // { dest: "5FHne...", value: "1000000000000" }
-   * ```
+   * Get the underlying WASM transaction
+   * @internal
    */
-  parse(context?: ParseContext): ParsedTransaction {
-    return parseTransactionData(this.toHex(), context ?? this._context);
-  }
-
-  /**
-   * Get the underlying WASM transaction (for advanced use)
-   */
-  getInner(): WasmTransaction {
-    return this.inner;
+  get wasm(): WasmTransaction {
+    return this._wasm;
   }
 
   /**
    * Create a DotTransaction from an inner WasmTransaction
    * @internal
    */
-  static fromInner(inner: WasmTransaction, context?: ParseContext): DotTransaction {
-    return new DotTransaction(inner, context);
+  static fromInner(inner: WasmTransaction): DotTransaction {
+    return new DotTransaction(inner);
   }
-}
-
-/**
- * Create a ParseContextJs from ParseContext
- */
-function createParseContext(ctx: ParseContext): ParseContextJs {
-  const material = new MaterialJs(
-    ctx.material.genesisHash,
-    ctx.material.chainName,
-    ctx.material.specName,
-    ctx.material.specVersion,
-    ctx.material.txVersion,
-    ctx.material.metadata,
-  );
-  return new ParseContextJs(material, ctx.sender ?? null);
 }

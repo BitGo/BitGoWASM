@@ -2,6 +2,13 @@ import * as assert from "assert";
 import { buildTransaction, type TransactionIntent, type BuildContext } from "../js/index.js";
 import { westendMetadataRpc } from "./resources/westend.js";
 
+/** Convert Uint8Array to hex string (no 0x prefix) */
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 describe("buildTransaction", () => {
   // Test addresses (Substrate generic format, prefix 42)
   const SENDER = "5EGoFA95omzemRssELLDjVenNZ68aXyUeqtKQScXSEBvVJkr";
@@ -140,7 +147,7 @@ describe("buildTransaction", () => {
         amount: 1000000000000n,
       };
       const standaloneTx = buildTransaction(transferIntent, testContext(0));
-      const standaloneCallData = standaloneTx.callDataHex.replace("0x", "");
+      const standaloneCallData = toHex(standaloneTx.callData);
 
       // Build a batch with the same transfer
       const batchIntent: TransactionIntent = {
@@ -149,7 +156,7 @@ describe("buildTransaction", () => {
         atomic: true,
       };
       const batchTx = buildTransaction(batchIntent, testContext(0));
-      const batchCallData = batchTx.callDataHex.replace("0x", "");
+      const batchCallData = toHex(batchTx.callData);
 
       // Batch structure: [pallet_idx][call_idx][compact_len][call1...]
       // The inner call should appear in the batch call data after the header
@@ -192,7 +199,7 @@ describe("buildTransaction", () => {
         atomic: false,
       };
       const batchTx = buildTransaction(batchIntent, testContext(0));
-      const batchCallData = batchTx.callDataHex.replace("0x", "");
+      const batchCallData = toHex(batchTx.callData);
 
       // Verify compact length = 0x08 (2 calls)
       const compactLen = batchCallData.slice(4, 6);
@@ -200,13 +207,10 @@ describe("buildTransaction", () => {
 
       // Verify both calls are in the batch
       assert.ok(
-        batchCallData.includes(transferTx.callDataHex.replace("0x", "")),
+        batchCallData.includes(toHex(transferTx.callData)),
         "Batch should contain transfer call",
       );
-      assert.ok(
-        batchCallData.includes(chillTx.callDataHex.replace("0x", "")),
-        "Batch should contain chill call",
-      );
+      assert.ok(batchCallData.includes(toHex(chillTx.callData)), "Batch should contain chill call");
     });
   });
 

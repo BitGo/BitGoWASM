@@ -6,7 +6,7 @@
  * the structured ExplainedTransaction that consumers expect.
  */
 
-import { parseTransactionData, type TransactionInput } from "./parser";
+import { parseTransaction, type TransactionInput } from "./parser";
 import type { Era, ParseContext, ParsedMethod } from "./types";
 
 const MAX_NESTING_DEPTH = 10;
@@ -98,7 +98,7 @@ export function explainTransaction(
   input: TransactionInput,
   options?: { context?: ParseContext },
 ): ExplainedTransaction {
-  const parsed = parseTransactionData(input, options?.context);
+  const parsed = parseTransaction(input, options?.context);
   const type_ = deriveTransactionType(parsed.method, 0);
   const outputs = extractOutputs(parsed.method, 0);
   const sender = parsed.sender ?? undefined;

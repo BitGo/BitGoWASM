@@ -1,11 +1,10 @@
 /**
- * Low-level transaction parsing.
+ * Transaction parsing — standalone function that decodes extrinsic bytes
+ * into structured data (pallet, method, args, nonce, etc.).
  *
- * Provides `parseTransactionData()` — the low-level parser that returns
- * a plain `ParsedTransaction` object (pallet, method, args, nonce, etc.).
- *
- * For the high-level entry point that returns a `DotTransaction` (with
- * signing + `.parse()` methods), use `parseTransaction()` from index.ts.
+ * This is separate from the DotTransaction class, which handles signing.
+ * Use DotTransaction.fromBytes() when you need to sign.
+ * Use parseTransaction() when you need decoded data.
  */
 
 import { ParserNamespace, MaterialJs, ParseContextJs } from "./wasm/wasm_dot";
@@ -18,14 +17,12 @@ import type { ParseContext, ParsedTransaction } from "./types";
 export type TransactionInput = Uint8Array | string | DotTransaction;
 
 /**
- * Parse a DOT transaction into structured data (low-level).
+ * Parse a DOT transaction into structured data.
  *
  * Returns a plain `ParsedTransaction` object with decoded pallet, method,
- * args, nonce, tip, era, etc. This is the raw decoded output — no type
- * derivation or output extraction.
+ * args, nonce, tip, era, etc.
  *
- * For a `DotTransaction` object (with signing methods + `.parse()`),
- * use `parseTransaction()` instead.
+ * For a signable `DotTransaction` object, use `DotTransaction.fromBytes()` instead.
  *
  * @param input - Raw bytes, hex string (with or without 0x), or DotTransaction
  * @param context - Parsing context with chain material (required for decoding)
@@ -33,29 +30,29 @@ export type TransactionInput = Uint8Array | string | DotTransaction;
  *
  * @example
  * ```typescript
- * import { parseTransactionData } from '@bitgo/wasm-dot';
+ * import { parseTransaction } from '@bitgo/wasm-dot';
  *
- * const parsed = parseTransactionData(txHex, { material });
+ * const parsed = parseTransaction(txBytes, { material });
  * console.log(parsed.method.pallet); // "balances"
  * console.log(parsed.method.name);   // "transferKeepAlive"
  * ```
  */
-export function parseTransactionData(
+export function parseTransaction(
   input: TransactionInput,
   context?: ParseContext,
 ): ParsedTransaction {
   const ctx = context ? createParseContext(context) : undefined;
 
-  if (typeof input === "string") {
-    return ParserNamespace.parseTransactionHex(input, ctx) as ParsedTransaction;
-  }
-
   if (input instanceof DotTransaction) {
-    const hex = input.toHex();
-    return ParserNamespace.parseTransactionHex(hex, ctx) as ParsedTransaction;
+    return ParserNamespace.parseTransaction(input.toBytes(), ctx) as ParsedTransaction;
   }
 
-  return ParserNamespace.parseTransaction(input, ctx) as ParsedTransaction;
+  if (input instanceof Uint8Array) {
+    return ParserNamespace.parseTransaction(input, ctx) as ParsedTransaction;
+  }
+
+  // String input — let WASM handle hex parsing
+  return ParserNamespace.parseTransactionHex(input, ctx) as ParsedTransaction;
 }
 
 /**

@@ -2,6 +2,7 @@ import * as assert from "assert";
 import {
   buildTransaction,
   parseTransaction,
+  DotTransaction,
   explainTransaction,
   TransactionType,
   type TransactionIntent,
@@ -43,7 +44,7 @@ describe("explainTransaction", () => {
   /** Build a transaction, then explain it (round-trip) */
   function buildAndExplain(intent: TransactionIntent, nonce = 0) {
     const tx = buildTransaction(intent, testContext(nonce));
-    return explainTransaction(tx.toHex(), { context: parseContext });
+    return explainTransaction(tx.toBytes(), { context: parseContext });
   }
 
   describe("transfers", () => {
@@ -198,7 +199,7 @@ describe("explainTransaction", () => {
 
       const tx = buildTransaction(intent, testContext(0));
       // Parse without signing → unsigned
-      const explained = explainTransaction(tx.toHex(), { context: parseContext });
+      const explained = explainTransaction(tx.toBytes(), { context: parseContext });
 
       assert.strictEqual(explained.isSigned, false);
       assert.strictEqual(explained.id, undefined);
@@ -243,7 +244,7 @@ describe("explainTransaction", () => {
         { type: "transfer", to: RECIPIENT, amount: 1000000000000n },
         testContext(0),
       );
-      const explained = explainTransaction(tx.toHex(), {});
+      const explained = explainTransaction(tx.toBytes(), {});
 
       assert.strictEqual(explained.genesisHash, undefined);
       assert.strictEqual(explained.specVersion, undefined);
@@ -252,41 +253,35 @@ describe("explainTransaction", () => {
     });
   });
 
-  describe("parseTransaction → .parse() pattern", () => {
-    it("should return a DotTransaction with .parse() method", () => {
+  describe("DotTransaction.fromBytes + parseTransaction", () => {
+    it("DotTransaction.fromBytes should return a signable transaction", () => {
       const builtTx = buildTransaction(
         { type: "transfer", to: RECIPIENT, amount: 1000000000000n },
         testContext(0),
       );
 
-      // parseTransaction returns a DotTransaction (not plain data)
-      const tx = parseTransaction(builtTx.toHex(), parseContext);
+      // DotTransaction.fromBytes returns a signable transaction object
+      const tx = DotTransaction.fromBytes(builtTx.toBytes());
       assert.ok(tx.signablePayload, "should have signablePayload method");
       assert.ok(tx.addSignature, "should have addSignature method");
-      assert.ok(tx.parse, "should have parse method");
+      assert.ok(tx.toBytes, "should have toBytes method");
+    });
 
-      // .parse() returns decoded method data
-      const parsed = tx.parse();
+    it("parseTransaction should return decoded method data", () => {
+      const builtTx = buildTransaction(
+        { type: "transfer", to: RECIPIENT, amount: 1000000000000n },
+        testContext(0),
+      );
+
+      // parseTransaction is the standalone parsing function
+      const parsed = parseTransaction(builtTx.toBytes(), parseContext);
       assert.strictEqual(parsed.method.pallet, "balances");
       assert.strictEqual(parsed.method.name, "transferKeepAlive");
       assert.strictEqual(parsed.nonce, 0);
       assert.strictEqual(parsed.isSigned, false);
     });
 
-    it("should preserve context from buildTransaction for .parse()", () => {
-      // buildTransaction stores context — .parse() should work without extra args
-      const tx = buildTransaction(
-        { type: "stake", amount: 10000000000000n, payee: { type: "stash" } },
-        testContext(5),
-      );
-
-      const parsed = tx.parse();
-      assert.strictEqual(parsed.method.pallet, "staking");
-      assert.strictEqual(parsed.method.name, "bond");
-      assert.strictEqual(parsed.nonce, 5);
-    });
-
-    it("should roundtrip: build → toHex → parseTransaction → .parse()", () => {
+    it("should roundtrip: build → toBytes → parseTransaction", () => {
       const tx = buildTransaction(
         {
           type: "batch",
@@ -296,10 +291,9 @@ describe("explainTransaction", () => {
         testContext(0),
       );
 
-      // Roundtrip through hex
-      const hex = tx.toHex();
-      const parsed = parseTransaction(hex, parseContext);
-      const data = parsed.parse();
+      // Roundtrip through bytes
+      const bytes = tx.toBytes();
+      const data = parseTransaction(bytes, parseContext);
 
       assert.strictEqual(data.method.pallet, "utility");
       assert.strictEqual(data.method.name, "batchAll");
