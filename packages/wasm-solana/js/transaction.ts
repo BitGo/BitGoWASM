@@ -1,8 +1,6 @@
 import { WasmTransaction } from "./wasm/wasm_solana.js";
 import { Keypair } from "./keypair.js";
 import { Pubkey } from "./pubkey.js";
-import { parseTransactionData } from "./parser.js";
-import type { ParsedTransaction } from "./parser.js";
 
 /**
  * Account metadata for an instruction
@@ -29,27 +27,25 @@ export interface Instruction {
 }
 
 /**
- * Solana Transaction — the single object for inspecting and signing transactions.
+ * Solana Transaction — deserialization wrapper for signing and serialization.
  *
- * Use `parseTransaction(bytes)` to create an instance. The returned Transaction
- * can be both inspected (`.parse()` for decoded instructions) and signed
- * (`.addSignature()`, `.signablePayload()`, `.toBytes()`).
+ * Use `Transaction.fromBytes(bytes)` to create an instance for signing.
+ * Use `parseTransaction(bytes)` from parser.ts to get decoded instruction data.
  *
  * @example
  * ```typescript
- * import { parseTransaction } from '@bitgo/wasm-solana';
+ * import { Transaction, parseTransaction } from '@bitgo/wasm-solana';
  *
- * const tx = parseTransaction(txBytes);
- *
- * // Inspect decoded instructions
- * const parsed = tx.parse();
+ * // Parse for decoded instructions
+ * const parsed = parseTransaction(txBytes);
  * for (const instr of parsed.instructionsData) {
  *   if (instr.type === 'Transfer') {
  *     console.log(`${instr.amount} lamports to ${instr.toAddress}`);
  *   }
  * }
  *
- * // Sign and serialize
+ * // Deserialize for signing
+ * const tx = Transaction.fromBytes(txBytes);
  * tx.addSignature(pubkey, signature);
  * const signedBytes = tx.toBytes();
  * ```
@@ -244,26 +240,6 @@ export class Transaction {
    */
   signWithKeypair(keypair: Keypair): void {
     this._wasm.sign_with_keypair(keypair.wasm);
-  }
-
-  /**
-   * Parse the transaction into decoded instruction data.
-   *
-   * Returns structured data with all instructions decoded into semantic types
-   * (Transfer, StakeActivate, TokenTransfer, etc.) with amounts as bigint.
-   *
-   * @returns A ParsedTransaction with decoded instructions, feePayer, nonce, etc.
-   *
-   * @example
-   * ```typescript
-   * const tx = parseTransaction(txBytes);
-   * const parsed = tx.parse();
-   * console.log(parsed.feePayer);
-   * console.log(parsed.instructionsData); // Decoded instruction types
-   * ```
-   */
-  parse(): ParsedTransaction {
-    return parseTransactionData(this._wasm.to_bytes());
   }
 
   /**

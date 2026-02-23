@@ -269,19 +269,21 @@ export interface ParsedTransaction {
 }
 
 // =============================================================================
-// parseTransactionData function
+// parseTransaction function
 // =============================================================================
 
 /**
  * Parse raw transaction bytes into a plain data object with decoded instructions.
  *
- * This is the low-level parsing function. Most callers should use the top-level
- * `parseTransaction(bytes)` which returns a `Transaction` instance with both
- * inspection (`.parse()`) and signing (`.addSignature()`) capabilities.
+ * This is the main parsing function that returns structured data with all
+ * instructions decoded into semantic types (Transfer, StakingActivate, etc.)
+ * with amounts as bigint.
+ *
+ * For signing/serialization, use `Transaction.fromBytes()` instead.
  *
  * @param bytes - Raw transaction bytes
  * @returns A ParsedTransaction with all instructions decoded
  */
-export function parseTransactionData(bytes: Uint8Array): ParsedTransaction {
+export function parseTransaction(bytes: Uint8Array): ParsedTransaction {
   return ParserNamespace.parse_transaction(bytes) as ParsedTransaction;
 }
