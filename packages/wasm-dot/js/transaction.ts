@@ -4,6 +4,7 @@
 
 import { WasmTransaction, MaterialJs, ValidityJs } from "./wasm/wasm_dot";
 import type { Material, Validity, Era } from "./types";
+import { AddressFormat } from "./types";
 
 /**
  * DOT Transaction wrapper
@@ -37,10 +38,10 @@ export class DotTransaction {
   /**
    * Get sender address (SS58 encoded)
    *
-   * @param prefix - SS58 address prefix (0 for Polkadot, 2 for Kusama, 42 for generic)
+   * @param format - Address format (Polkadot, Kusama, or Substrate)
    */
-  sender(prefix: number = 0): string | undefined {
-    return this._wasm.sender(prefix) ?? undefined;
+  sender(format: AddressFormat = AddressFormat.Polkadot): string | undefined {
+    return this._wasm.sender(format) ?? undefined;
   }
 
   /**
