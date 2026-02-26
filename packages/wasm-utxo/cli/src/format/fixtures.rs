@@ -1,13 +1,13 @@
 #[cfg(test)]
 use super::tree::{node_to_string_with_scheme, ColorScheme};
 #[cfg(test)]
-use crate::node::Node;
-#[cfg(test)]
 use std::env;
 #[cfg(test)]
 use std::fs;
 #[cfg(test)]
 use std::io::{self, Write};
+#[cfg(test)]
+use wasm_utxo::inspect::Node;
 
 /// Ensure the generated tree output matches the fixture file
 /// If the fixture doesn't exist, it will be created

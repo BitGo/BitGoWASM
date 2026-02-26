@@ -1,10 +1,10 @@
-use crate::node::{Node, Primitive};
 use colored::*;
 use ptree::print_tree;
 #[cfg(test)]
 use ptree::TreeBuilder;
 use std::borrow::Cow;
 use std::io;
+use wasm_utxo::inspect::{Node, Primitive};
 
 /// Defines how different parts of the tree should be styled
 #[derive(Clone, Debug)]

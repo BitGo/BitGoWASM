@@ -4,6 +4,8 @@ pub mod dash;
 mod error;
 pub mod fixed_script_wallet;
 pub mod inscriptions;
+#[cfg(feature = "inspect")]
+pub mod inspect;
 pub mod message;
 mod networks;
 pub mod paygo;

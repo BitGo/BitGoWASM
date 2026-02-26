@@ -24,6 +24,16 @@
         "default": "./dist/cjs/js/index.js"
       }
     },
+    "./inspect": {
+      "import": {
+        "types": "./dist/esm/js/inspect/index.d.ts",
+        "default": "./dist/esm/js/inspect/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/js/inspect/index.d.ts",
+        "default": "./dist/cjs/js/inspect/index.js"
+      }
+    },
     "./testutils": {
       "import": {
         "types": "./dist/esm/js/testutils/index.d.ts",
@@ -33,6 +43,13 @@
         "types": "./dist/cjs/js/testutils/index.d.ts",
         "default": "./dist/cjs/js/testutils/index.js"
       }
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "inspect": [
+        "./dist/esm/js/inspect/index.d.ts"
+      ]
     }
   },
   "main": "./dist/cjs/js/index.js",

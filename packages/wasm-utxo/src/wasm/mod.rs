@@ -6,6 +6,7 @@ mod descriptor;
 mod ecpair;
 mod fixed_script_wallet;
 mod inscriptions;
+mod inspect;
 mod message;
 mod miniscript;
 mod psbt;
