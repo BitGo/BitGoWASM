@@ -205,7 +205,7 @@ mod tests {
                 "specName": "polkadot",
                 "specVersion": 9150,
                 "txVersion": 9,
-                "metadata": "0x00"
+                "metadata": [0]
             },
             "validity": {
                 "firstValid": 1000,

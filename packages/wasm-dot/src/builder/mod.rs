@@ -46,12 +46,9 @@ pub fn build_transaction(
     Ok(tx)
 }
 
-/// Decode metadata from hex string
-fn decode_metadata(metadata_hex: &str) -> Result<subxt_core::metadata::Metadata, WasmDotError> {
-    let bytes = hex::decode(metadata_hex.trim_start_matches("0x"))
-        .map_err(|e| WasmDotError::InvalidInput(format!("Invalid metadata hex: {}", e)))?;
-
-    subxt_core::metadata::decode_from(&bytes[..])
+/// Decode metadata from raw bytes
+fn decode_metadata(metadata_bytes: &[u8]) -> Result<subxt_core::metadata::Metadata, WasmDotError> {
+    subxt_core::metadata::decode_from(metadata_bytes)
         .map_err(|e| WasmDotError::InvalidInput(format!("Failed to decode metadata: {}", e)))
 }
 
@@ -60,7 +57,7 @@ fn compute_era(validity: &Validity) -> Era {
     if validity.max_duration == 0 {
         Era::Immortal
     } else {
-        let period = validity.max_duration.next_power_of_two().min(65536).max(4);
+        let period = validity.max_duration.next_power_of_two().clamp(4, 65536);
         let phase = validity.first_valid % period;
         Era::Mortal { period, phase }
     }

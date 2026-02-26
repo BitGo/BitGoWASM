@@ -99,12 +99,9 @@ pub fn parse_transaction(
     })
 }
 
-/// Decode metadata from hex string (same pattern as builder)
-fn decode_metadata(metadata_hex: &str) -> Result<subxt_core::metadata::Metadata, WasmDotError> {
-    let bytes = hex::decode(metadata_hex.trim_start_matches("0x"))
-        .map_err(|e| WasmDotError::InvalidInput(format!("Invalid metadata hex: {}", e)))?;
-
-    subxt_core::metadata::decode_from(&bytes[..])
+/// Decode metadata from raw bytes
+fn decode_metadata(metadata_bytes: &[u8]) -> Result<subxt_core::metadata::Metadata, WasmDotError> {
+    subxt_core::metadata::decode_from(metadata_bytes)
         .map_err(|e| WasmDotError::InvalidInput(format!("Failed to decode metadata: {}", e)))
 }
 

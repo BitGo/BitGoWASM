@@ -1,6 +1,6 @@
 import * as assert from "assert";
 import { buildTransaction, type TransactionIntent, type BuildContext } from "../js/index.js";
-import { westendMetadataRpc } from "./resources/westend.js";
+import { getWestendMetadata } from "./resources/westend.js";
 
 /** Convert Uint8Array to hex string (no 0x prefix) */
 function toHex(bytes: Uint8Array): string {
@@ -21,7 +21,7 @@ describe("buildTransaction", () => {
     specName: "westend",
     specVersion: 9420,
     txVersion: 16,
-    metadata: westendMetadataRpc,
+    metadata: getWestendMetadata(),
   };
 
   // Reference block (use genesis for testing)

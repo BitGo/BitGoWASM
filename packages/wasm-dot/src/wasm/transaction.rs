@@ -224,7 +224,7 @@ impl MaterialJs {
         spec_name: &str,
         spec_version: u32,
         tx_version: u32,
-        metadata: &str,
+        metadata: &[u8],
     ) -> MaterialJs {
         MaterialJs {
             inner: Material {
@@ -233,7 +233,7 @@ impl MaterialJs {
                 spec_name: spec_name.to_string(),
                 spec_version,
                 tx_version,
-                metadata: metadata.to_string(),
+                metadata: metadata.to_vec(),
             },
         }
     }
