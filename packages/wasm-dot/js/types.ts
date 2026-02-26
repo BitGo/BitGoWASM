@@ -24,8 +24,8 @@ export interface Material {
   specVersion: number;
   /** Transaction format version */
   txVersion: number;
-  /** Runtime metadata bytes (hex encoded) - required for encoding calls */
-  metadata: string;
+  /** Runtime metadata bytes - required for encoding calls */
+  metadata: Uint8Array;
 }
 
 /**

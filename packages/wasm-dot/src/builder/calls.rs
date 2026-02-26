@@ -265,7 +265,7 @@ fn account_id(address: &str) -> Result<Value<()>, WasmDotError> {
             v.len()
         ))
     })?;
-    Ok(Value::from_bytes(&bytes))
+    Ok(Value::from_bytes(bytes))
 }
 
 #[cfg(test)]

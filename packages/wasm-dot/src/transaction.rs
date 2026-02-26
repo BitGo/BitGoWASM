@@ -399,12 +399,9 @@ impl Transaction {
 // Helper functions
 // =============================================================================
 
-/// Decode metadata from hex string
-fn decode_metadata(metadata_hex: &str) -> Result<Metadata, WasmDotError> {
-    let bytes = hex::decode(metadata_hex.trim_start_matches("0x"))
-        .map_err(|e| WasmDotError::InvalidInput(format!("Invalid metadata hex: {}", e)))?;
-
-    subxt_core::metadata::decode_from(&bytes[..])
+/// Decode metadata from raw bytes
+fn decode_metadata(metadata_bytes: &[u8]) -> Result<Metadata, WasmDotError> {
+    subxt_core::metadata::decode_from(metadata_bytes)
         .map_err(|e| WasmDotError::InvalidInput(format!("Failed to decode metadata: {}", e)))
 }
 
@@ -438,22 +435,22 @@ pub(crate) fn encode_era(era: &Era) -> Vec<u8> {
     }
 }
 
+/// Parsed extrinsic data: (is_signed, sender, signature, era, nonce, tip, call_data)
+type ParsedExtrinsic = (
+    bool,
+    Option<[u8; 32]>,
+    Option<[u8; 64]>,
+    Era,
+    u32,
+    u128,
+    Vec<u8>,
+);
+
 /// Parse a raw extrinsic
 fn parse_extrinsic(
     bytes: &[u8],
     metadata: Option<&Metadata>,
-) -> Result<
-    (
-        bool,
-        Option<[u8; 32]>,
-        Option<[u8; 64]>,
-        Era,
-        u32,
-        u128,
-        Vec<u8>,
-    ),
-    WasmDotError,
-> {
+) -> Result<ParsedExtrinsic, WasmDotError> {
     use parity_scale_codec::{Compact, Decode};
 
     let mut cursor = 0;

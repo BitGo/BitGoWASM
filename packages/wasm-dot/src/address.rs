@@ -77,7 +77,7 @@ pub fn decode_ss58(address: &str) -> Result<(Vec<u8>, u16), WasmDotError> {
 /// Validate an SS58 address
 pub fn validate_address(address: &str, expected_prefix: Option<u16>) -> bool {
     match decode_ss58(address) {
-        Ok((_, prefix)) => expected_prefix.map_or(true, |expected| prefix == expected),
+        Ok((_, prefix)) => expected_prefix.is_none_or(|expected| prefix == expected),
         Err(_) => false,
     }
 }

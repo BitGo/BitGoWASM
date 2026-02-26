@@ -8,7 +8,7 @@ import {
   type TransactionIntent,
   type BuildContext,
 } from "../js/index.js";
-import { westendMetadataRpc } from "./resources/westend.js";
+import { getWestendMetadata } from "./resources/westend.js";
 
 describe("explainTransaction", () => {
   const SENDER = "5EGoFA95omzemRssELLDjVenNZ68aXyUeqtKQScXSEBvVJkr";
@@ -20,7 +20,7 @@ describe("explainTransaction", () => {
     specName: "westend",
     specVersion: 9420,
     txVersion: 16,
-    metadata: westendMetadataRpc,
+    metadata: getWestendMetadata(),
   };
 
   const REFERENCE_BLOCK = "0xe143f23803ac50e8f6f8e62695d1ce9e4e1d68aa36c1cd2cfd15340213f3423e";
