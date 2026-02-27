@@ -8,6 +8,7 @@
  */
 
 import { ParserNamespace } from "./wasm/wasm_solana.js";
+import type { Transaction } from "./transaction.js";
 
 // =============================================================================
 // Instruction Types - matching BitGoJS InstructionParams.
@@ -273,17 +274,24 @@ export interface ParsedTransaction {
 // =============================================================================
 
 /**
- * Parse raw transaction bytes into a plain data object with decoded instructions.
+ * Parse a Transaction into a plain data object with decoded instructions.
  *
  * This is the main parsing function that returns structured data with all
  * instructions decoded into semantic types (Transfer, StakingActivate, etc.)
  * with amounts as bigint.
  *
- * For signing/serialization, use `Transaction.fromBytes()` instead.
+ * Accepts a `Transaction` object (from `Transaction.fromBytes()`), avoiding
+ * double deserialization.
  *
- * @param bytes - Raw transaction bytes
+ * @param tx - A Transaction instance (from Transaction.fromBytes())
  * @returns A ParsedTransaction with all instructions decoded
+ *
+ * @example
+ * ```typescript
+ * const tx = Transaction.fromBytes(txBytes);
+ * const parsed = parseTransaction(tx);
+ * ```
  */
-export function parseTransaction(bytes: Uint8Array): ParsedTransaction {
-  return ParserNamespace.parse_transaction(bytes) as ParsedTransaction;
+export function parseTransaction(tx: Transaction): ParsedTransaction {
+  return ParserNamespace.parse_from_transaction(tx.wasm) as ParsedTransaction;
 }

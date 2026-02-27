@@ -9,6 +9,7 @@
 
 use crate::instructions::{decode_instruction, InstructionContext, ParsedInstruction};
 use crate::js_obj;
+use crate::transaction::Transaction;
 use crate::versioned::VersionedTransactionExt;
 use crate::wasm::try_into_js_value::{JsConversionError, TryIntoJsValue};
 use solana_message::VersionedMessage;
@@ -91,20 +92,52 @@ pub fn parse_transaction(bytes: &[u8]) -> Result<ParsedTransaction, String> {
     {
         VersionedMessage::Legacy(msg) => (
             msg.account_keys.iter().map(|k| k.to_string()).collect(),
-            &msg.instructions,
+            &msg.instructions[..],
             msg.recent_blockhash.to_string(),
             msg.header.num_required_signatures,
         ),
         VersionedMessage::V0(msg) => (
             msg.account_keys.iter().map(|k| k.to_string()).collect(),
-            &msg.instructions,
+            &msg.instructions[..],
             msg.recent_blockhash.to_string(),
             msg.header.num_required_signatures,
         ),
     };
 
-    let account_keys: Vec<String> = account_keys;
+    parse_transaction_inner(
+        account_keys,
+        instructions,
+        recent_blockhash,
+        num_required_signatures,
+        &tx.signatures,
+    )
+}
 
+/// Parse a pre-deserialized legacy Transaction into structured data.
+///
+/// Same logic as `parse_transaction(bytes)` but skips deserialization.
+/// Used when the caller already has a `Transaction` from `fromBytes()`.
+pub fn parse_from_transaction(tx: &Transaction) -> Result<ParsedTransaction, String> {
+    let msg = &tx.message;
+    let account_keys: Vec<String> = msg.account_keys.iter().map(|k| k.to_string()).collect();
+
+    parse_transaction_inner(
+        account_keys,
+        &msg.instructions,
+        msg.recent_blockhash.to_string(),
+        msg.header.num_required_signatures,
+        &tx.signatures,
+    )
+}
+
+/// Shared parsing logic for both bytes-based and Transaction-based entry points.
+fn parse_transaction_inner(
+    account_keys: Vec<String>,
+    instructions: &[solana_message::compiled_instruction::CompiledInstruction],
+    recent_blockhash: String,
+    num_required_signatures: u8,
+    signatures: &[solana_signature::Signature],
+) -> Result<ParsedTransaction, String> {
     // Extract fee payer (first account key)
     let fee_payer = account_keys
         .first()
@@ -156,8 +189,7 @@ pub fn parse_transaction(bytes: &[u8]) -> Result<ParsedTransaction, String> {
     // Extract signatures as base58 strings.
     // All-zeros signatures (unsigned placeholder slots) are returned as empty strings
     // so the JS side can simply use `signatures[0] || 'UNAVAILABLE'`.
-    let signatures: Vec<String> = tx
-        .signatures
+    let signatures: Vec<String> = signatures
         .iter()
         .map(|s| {
             let bytes: &[u8] = s.as_ref();

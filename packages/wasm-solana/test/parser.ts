@@ -1,5 +1,6 @@
 import * as assert from "assert";
 import { parseTransaction } from "../js/parser.js";
+import { Transaction } from "../js/transaction.js";
 
 // Helper to decode base64 in tests
 function base64ToBytes(base64: string): Uint8Array {
@@ -15,7 +16,7 @@ describe("parseTransaction", () => {
   const TEST_TX_BYTES = base64ToBytes(TEST_TX_BASE64);
 
   it("should parse a SOL transfer transaction", () => {
-    const parsed = parseTransaction(TEST_TX_BYTES);
+    const parsed = parseTransaction(Transaction.fromBytes(TEST_TX_BYTES));
 
     // Check basic structure
     assert.ok(parsed.feePayer);
@@ -26,7 +27,7 @@ describe("parseTransaction", () => {
   });
 
   it("should decode SOL transfer instruction correctly", () => {
-    const parsed = parseTransaction(TEST_TX_BYTES);
+    const parsed = parseTransaction(Transaction.fromBytes(TEST_TX_BYTES));
 
     assert.strictEqual(parsed.instructionsData.length, 1);
     const instr = parsed.instructionsData[0];
@@ -44,25 +45,25 @@ describe("parseTransaction", () => {
   });
 
   it("should include fee payer as first account key", () => {
-    const parsed = parseTransaction(TEST_TX_BYTES);
+    const parsed = parseTransaction(Transaction.fromBytes(TEST_TX_BYTES));
 
     assert.strictEqual(parsed.feePayer, parsed.accountKeys[0]);
   });
 
   it("should reject invalid bytes", () => {
     const invalidBytes = new Uint8Array([0, 1, 2, 3]);
-    assert.throws(() => parseTransaction(invalidBytes));
+    assert.throws(() => Transaction.fromBytes(invalidBytes));
   });
 
   it("should set durableNonce for nonce transactions", () => {
     // This is a regular (non-nonce) transaction, so durableNonce should be undefined
-    const parsed = parseTransaction(TEST_TX_BYTES);
+    const parsed = parseTransaction(Transaction.fromBytes(TEST_TX_BYTES));
     assert.strictEqual(parsed.durableNonce, undefined);
   });
 
   describe("instruction type discrimination", () => {
     it("should have type field on all instructions", () => {
-      const parsed = parseTransaction(TEST_TX_BYTES);
+      const parsed = parseTransaction(Transaction.fromBytes(TEST_TX_BYTES));
 
       for (const instr of parsed.instructionsData) {
         assert.ok("type" in instr, "Instruction should have type field");
@@ -71,7 +72,7 @@ describe("parseTransaction", () => {
     });
 
     it("Transfer instruction should have correct fields", () => {
-      const parsed = parseTransaction(TEST_TX_BYTES);
+      const parsed = parseTransaction(Transaction.fromBytes(TEST_TX_BYTES));
       const transfer = parsed.instructionsData[0];
 
       if (transfer.type === "Transfer") {
@@ -91,7 +92,7 @@ describe("StakingAuthorize parsing", () => {
       "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAwQJSN/yAiroYbrh33Xw+MKSGtu8m4Hx4sqwncAXz/he+b84neq4+YPEcZolDyLtQRwrgvHDZaDkTO1AFV+8JECpZViONvuJhgX6ijN1ogXXktMlrW9LsGh17WRMFiwbX9DjtnKIrK5VJ/5vhQidfy2H5id17M7MCqU8z9fuL/G26kb+iZNTXfchXIJtP9yKrACRJunT7w9bkgs7KLnfQO4e/QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABqHYF5E3VCqYNDe9/ip6slV/U1yKeHIraKSdwAAAAAAGp9UXGMd0yShWY5hpHV62i164o5tLbVxzVVshAAAAAAan1RcZLFaO4IqEX3PSl4jPA1wxRbIas0TYBi6pQAAAHv54hjZyXUu92IV/PX26I8zpgfXc5S/zZXMURlOUSjQCBQMECAAEBAAAAAYFBAcCAQMICgAAAAEAAAA=";
 
     const bytes = Buffer.from(STAKING_AUTHORIZE_RAW_MSG_TXN, "base64");
-    const parsed = parseTransaction(bytes);
+    const parsed = parseTransaction(Transaction.fromBytes(bytes));
 
     // Should have NonceAdvance + StakingAuthorize
     assert.strictEqual(parsed.instructionsData.length, 2);

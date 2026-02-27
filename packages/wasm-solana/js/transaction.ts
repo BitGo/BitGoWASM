@@ -30,22 +30,23 @@ export interface Instruction {
  * Solana Transaction — deserialization wrapper for signing and serialization.
  *
  * Use `Transaction.fromBytes(bytes)` to create an instance for signing.
- * Use `parseTransaction(bytes)` from parser.ts to get decoded instruction data.
+ * Use `parseTransaction(tx)` from parser.ts to get decoded instruction data.
  *
  * @example
  * ```typescript
  * import { Transaction, parseTransaction } from '@bitgo/wasm-solana';
  *
+ * const tx = Transaction.fromBytes(txBytes);
+ *
  * // Parse for decoded instructions
- * const parsed = parseTransaction(txBytes);
+ * const parsed = parseTransaction(tx);
  * for (const instr of parsed.instructionsData) {
  *   if (instr.type === 'Transfer') {
  *     console.log(`${instr.amount} lamports to ${instr.toAddress}`);
  *   }
  * }
  *
- * // Deserialize for signing
- * const tx = Transaction.fromBytes(txBytes);
+ * // Sign and serialize
  * tx.addSignature(pubkey, signature);
  * const signedBytes = tx.toBytes();
  * ```

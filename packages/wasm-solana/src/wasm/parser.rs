@@ -1,9 +1,10 @@
 //! WASM binding for high-level transaction parsing.
 //!
-//! Exposes a single `parseTransaction` function that returns fully decoded
+//! Exposes transaction parsing functions that return fully decoded
 //! transaction data matching BitGoJS's TxData format.
 
 use crate::parser;
+use crate::wasm::transaction::WasmTransaction;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use wasm_bindgen::prelude::*;
 
@@ -33,6 +34,24 @@ impl ParserNamespace {
     #[wasm_bindgen]
     pub fn parse_transaction(bytes: &[u8]) -> Result<JsValue, JsValue> {
         let parsed = parser::parse_transaction(bytes).map_err(|e| JsValue::from_str(&e))?;
+
+        parsed
+            .try_to_js_value()
+            .map_err(|e| JsValue::from_str(&format!("Conversion error: {}", e)))
+    }
+
+    /// Parse a pre-deserialized Transaction into structured data.
+    ///
+    /// Same as `parse_transaction(bytes)` but accepts an already-deserialized
+    /// WasmTransaction, avoiding double deserialization when the caller already
+    /// has a Transaction from `fromBytes()`.
+    ///
+    /// @param tx - A WasmTransaction instance
+    /// @returns A ParsedTransaction object
+    #[wasm_bindgen]
+    pub fn parse_from_transaction(tx: &WasmTransaction) -> Result<JsValue, JsValue> {
+        let parsed =
+            parser::parse_from_transaction(tx.inner()).map_err(|e| JsValue::from_str(&e))?;
 
         parsed
             .try_to_js_value()
