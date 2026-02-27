@@ -1,8 +1,8 @@
 /**
  * High-level transaction parsing.
  *
- * Provides types and functions for parsing Solana transactions into semantic data
- * matching BitGoJS's TxData format.
+ * Provides types and functions for parsing Solana transactions into
+ * semantic data matching BitGoJS's TxData format.
  *
  * All monetary amounts (amount, fee, lamports, poolTokens) are returned as bigint.
  */
