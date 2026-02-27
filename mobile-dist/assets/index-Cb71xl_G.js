@@ -44490,6 +44490,7 @@ Please pass a 2048 word array explicitly.`;
                 $.jsx(g1, {}),
                 $.jsx(vE, {
                     children: $.jsx(uE, {
+                        basename: "/BitGoWASM/",
                         children: $.jsxs(H8, {
                             children: [
                                 $.jsx(fs, {
