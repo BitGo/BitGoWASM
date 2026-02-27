@@ -24,8 +24,16 @@ export interface Material {
   specVersion: number;
   /** Transaction format version */
   txVersion: number;
-  /** Runtime metadata bytes - required for encoding calls */
-  metadata: Uint8Array;
+  /**
+   * Runtime metadata as a 0x-prefixed hex string, matching the Substrate
+   * `state_getMetadata` RPC wire format.
+   *
+   * This is a string rather than Uint8Array because metadata is returned as
+   * hex from the Substrate RPC and typically stored/transported as hex through
+   * JSON APIs. The hex-to-bytes decode happens once internally right before
+   * SCALE decoding.
+   */
+  metadata: string;
 }
 
 /**

@@ -46,11 +46,8 @@ pub fn build_transaction(
     Ok(tx)
 }
 
-/// Decode metadata from raw bytes
-fn decode_metadata(metadata_bytes: &[u8]) -> Result<subxt_core::metadata::Metadata, WasmDotError> {
-    subxt_core::metadata::decode_from(metadata_bytes)
-        .map_err(|e| WasmDotError::InvalidInput(format!("Failed to decode metadata: {}", e)))
-}
+// Re-use the central decode_metadata from transaction.rs
+use crate::transaction::decode_metadata;
 
 /// Compute era from validity window
 fn compute_era(validity: &Validity) -> Era {

@@ -2,8 +2,7 @@
  * wasm-dot: WASM bindings for Polkadot/DOT transaction operations
  *
  * This module provides:
- * - Transaction parsing: parseTransaction(bytes, context) → ParsedTransaction
- * - Transaction explanation: explainTransaction(bytes, options) → ExplainedTransaction
+ * - Transaction parsing: parseTransaction(tx, context) → ParsedTransaction
  * - Transaction building: buildTransaction(intent, context) → DotTransaction
  * - Transaction signing: DotTransaction.fromBytes(bytes) → inspect + sign
  */
@@ -32,4 +31,3 @@ export * from "./types";
 export * from "./transaction";
 export * from "./parser";
 export * from "./builder";
-export * from "./explain";
