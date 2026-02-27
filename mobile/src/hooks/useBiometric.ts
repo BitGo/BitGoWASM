@@ -1,14 +1,22 @@
-// TODO: Production — use @capacitor-community/biometric-auth for native biometric gating.
-// In browser dev mode, biometric is not available and authenticate() always resolves true.
+import { Capacitor } from "@capacitor/core";
+import SecureKeyStore from "../plugins/secureKeyStore";
 
 export function useBiometric() {
   async function authenticate(): Promise<boolean> {
-    console.warn("[useBiometric] No biometric available in browser — auto-approving");
-    return true;
+    if (!Capacitor.isNativePlatform()) {
+      console.warn("[useBiometric] No biometric available in browser — auto-approving");
+      return true;
+    }
+    // Pre-check: verify biometric is enrolled. The actual Face ID prompt
+    // happens during keyStore.retrieve() via Keychain access control.
+    const { available } = await SecureKeyStore.isBiometricAvailable();
+    return available;
   }
 
   async function isAvailable(): Promise<boolean> {
-    return false;
+    if (!Capacitor.isNativePlatform()) return false;
+    const { available } = await SecureKeyStore.isBiometricAvailable();
+    return available;
   }
 
   return { authenticate, isAvailable };
