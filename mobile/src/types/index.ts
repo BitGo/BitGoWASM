@@ -49,6 +49,7 @@ export interface ParsedTransaction {
 /** Opaque handle for a parsed PSBT held by the WASM layer. Do not access _inner directly. */
 export interface PsbtHandle {
   readonly _tag: "PsbtHandle";
+  readonly _mode: WalletMode;
   /** @internal */
   readonly _inner: unknown;
 }
@@ -56,6 +57,13 @@ export interface PsbtHandle {
 /** Opaque handle for RootWalletKeys created from 3 xpubs. Do not access _inner directly. */
 export interface WalletKeysHandle {
   readonly _tag: "WalletKeysHandle";
+  /** @internal */
+  readonly _inner: unknown;
+}
+
+/** Opaque handle for a descriptor map used in descriptor wallet mode. Do not access _inner directly. */
+export interface DescriptorMapHandle {
+  readonly _tag: "DescriptorMapHandle";
   /** @internal */
   readonly _inner: unknown;
 }

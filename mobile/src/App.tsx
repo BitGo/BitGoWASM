@@ -24,6 +24,10 @@ const GlobalStyles = createGlobalStyle`
     font-family: 'VT323', 'ms_sans_serif', monospace;
     margin: 0;
     padding: 16px;
+    padding-top: calc(16px + env(safe-area-inset-top));
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+    padding-left: calc(16px + env(safe-area-inset-left));
+    padding-right: calc(16px + env(safe-area-inset-right));
     min-height: 100vh;
     font-size: 16px;
     -webkit-font-smoothing: none;
@@ -98,7 +102,7 @@ function App() {
     <ThemeProvider theme={theme}>
       <GlobalStyles />
       <WalletProvider>
-        <BrowserRouter>
+        <BrowserRouter basename={import.meta.env.BASE_URL}>
           <Routes>
             <Route path="/" element={<WalletList />} />
             <Route path="/wallet/add" element={<AddWallet />} />

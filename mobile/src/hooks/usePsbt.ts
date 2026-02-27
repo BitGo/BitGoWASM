@@ -1,11 +1,13 @@
 import { useCallback, useReducer } from "react";
 import type {
+  DescriptorMapHandle,
   ParsedTransaction,
   PsbtHandle,
   SignatureInfo,
   Wallet,
   WalletKeysHandle,
 } from "../types/index.ts";
+import { WalletMode } from "../types/index.ts";
 import { wasmService } from "../services/wasm.ts";
 import { keyStore } from "../services/keyStore.ts";
 import { useBiometric } from "./useBiometric.ts";
@@ -33,6 +35,7 @@ interface PsbtState {
   flowState: PsbtFlowState;
   psbtHandle: PsbtHandle | null;
   walletKeys: WalletKeysHandle | null;
+  descriptorMap: DescriptorMapHandle | null;
   parsedTx: ParsedTransaction | null;
   signedPsbtHex: string | null;
   signatureInfo: SignatureInfo | null;
@@ -44,7 +47,8 @@ type PsbtAction =
   | {
       type: "PARSED";
       psbtHandle: PsbtHandle;
-      walletKeys: WalletKeysHandle;
+      walletKeys: WalletKeysHandle | null;
+      descriptorMap: DescriptorMapHandle | null;
       parsedTx: ParsedTransaction;
     }
   | { type: "SIGNING" }
@@ -56,6 +60,7 @@ const initialState: PsbtState = {
   flowState: PsbtFlowState.Idle,
   psbtHandle: null,
   walletKeys: null,
+  descriptorMap: null,
   parsedTx: null,
   signedPsbtHex: null,
   signatureInfo: null,
@@ -72,6 +77,7 @@ function reducer(state: PsbtState, action: PsbtAction): PsbtState {
         flowState: PsbtFlowState.Parsed,
         psbtHandle: action.psbtHandle,
         walletKeys: action.walletKeys,
+        descriptorMap: action.descriptorMap,
         parsedTx: action.parsedTx,
         error: null,
       };
@@ -100,13 +106,24 @@ export function usePsbt() {
   const parsePsbt = useCallback(async (base64: string, wallet: Wallet) => {
     dispatch({ type: "LOADING" });
     try {
-      const psbtHandle = wasmService.parsePsbt(base64, wallet.network);
-      const walletKeys = wasmService.createWalletKeys(
-        wallet.userXpub,
-        wallet.backupXpub,
-        wallet.bitgoXpub,
-      );
-      const parsedTx = wasmService.parseTransaction(psbtHandle, walletKeys);
+      const psbtHandle = wasmService.parsePsbt(base64, wallet.network, wallet.mode);
+
+      let walletKeys: WalletKeysHandle | null = null;
+      let descriptorMap: DescriptorMapHandle | null = null;
+      let parsedTx: ParsedTransaction;
+
+      if (wallet.mode === WalletMode.Descriptor) {
+        descriptorMap = wasmService.createDescriptorMap(wallet.descriptor!);
+        const coin = wallet.network === "bitcoin" ? "btc" : "tbtc";
+        parsedTx = wasmService.parseTransactionDescriptor(psbtHandle, descriptorMap, coin);
+      } else {
+        walletKeys = wasmService.createWalletKeys(
+          wallet.userXpub,
+          wallet.backupXpub,
+          wallet.bitgoXpub,
+        );
+        parsedTx = wasmService.parseTransaction(psbtHandle, walletKeys);
+      }
 
       // Verification: all inputs must belong to the wallet
       const foreignInput = parsedTx.inputs.find((inp) => inp.scriptId === null);
@@ -129,6 +146,7 @@ export function usePsbt() {
         type: "PARSED",
         psbtHandle,
         walletKeys,
+        descriptorMap,
         parsedTx,
       });
     } catch (err) {
@@ -142,7 +160,7 @@ export function usePsbt() {
   /** Sign the parsed PSBT after biometric authentication. */
   const signPsbt = useCallback(
     async (wallet: Wallet) => {
-      if (!state.psbtHandle || !state.walletKeys) {
+      if (!state.psbtHandle) {
         dispatch({ type: "ERROR", error: "No PSBT parsed — parse first" });
         return;
       }
@@ -167,26 +185,38 @@ export function usePsbt() {
         const xprv = await keyStore.retrieve(wallet.id);
 
         // Step 3: Sign the PSBT
-        const signedHex = wasmService.signPsbt(state.psbtHandle, xprv);
+        let signedHex: string;
+        let verified: boolean;
+        let signatureInfo: SignatureInfo;
+
+        if (wallet.mode === WalletMode.Descriptor) {
+          signedHex = wasmService.signPsbtDescriptor(state.psbtHandle, xprv);
+          const userXpub = wasmService.deriveXpubFromXprv(xprv);
+          verified = wasmService.verifySignaturesDescriptor(state.psbtHandle, userXpub);
+          signatureInfo = wasmService.countSignaturesDescriptor(
+            state.psbtHandle,
+            wallet.descriptor!,
+          );
+        } else {
+          signedHex = wasmService.signPsbt(state.psbtHandle, xprv);
+          verified = wasmService.verifySignatures(
+            state.psbtHandle,
+            wallet.userXpub,
+            state.walletKeys!,
+          );
+          signatureInfo = wasmService.countSignatures(
+            state.psbtHandle,
+            state.walletKeys!,
+            wallet.descriptor,
+          );
+        }
 
         // Step 4: Verify our signature landed
-        const verified = wasmService.verifySignatures(
-          state.psbtHandle,
-          wallet.userXpub,
-          state.walletKeys,
-        );
         if (!verified) {
           throw new Error("Signature verification failed after signing");
         }
 
-        // Step 5: Count signatures on the PSBT
-        const signatureInfo = wasmService.countSignatures(
-          state.psbtHandle,
-          state.walletKeys,
-          wallet.descriptor,
-        );
-
-        // Step 6: Zero xprv from memory (best-effort in JS)
+        // Step 5: Zero xprv from memory (best-effort in JS)
         // The `xprv` variable goes out of scope here and will be GC'd.
         // In production, we'd overwrite the buffer if using Uint8Array.
 
@@ -198,7 +228,7 @@ export function usePsbt() {
         });
       }
     },
-    [state.psbtHandle, state.walletKeys, authenticate],
+    [state.psbtHandle, state.walletKeys, state.descriptorMap, authenticate],
   );
 
   /** Reset back to idle state. */

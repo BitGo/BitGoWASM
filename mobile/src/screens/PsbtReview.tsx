@@ -5,6 +5,7 @@ import styled from "styled-components";
 import Win95Window from "../components/Win95Window";
 import { useWallets } from "../hooks/useWallets";
 import { usePsbt, PsbtFlowState } from "../hooks/usePsbt";
+import { WalletMode } from "../types";
 import { formatBtc } from "../utils/format";
 
 const WarningBanner = styled.div`
@@ -203,7 +204,10 @@ export default function PsbtReview() {
             </AmountLine>
             <AddressLine>
               {inp.address}
-              {inp.scriptId && ` (chain ${inp.scriptId.chain}/${inp.scriptId.index})`}
+              {inp.scriptId &&
+                (wallet.mode === WalletMode.Descriptor
+                  ? ` (index ${inp.scriptId.index})`
+                  : ` (chain ${inp.scriptId.chain}/${inp.scriptId.index})`)}
             </AddressLine>
           </InputEntry>
         ))}
@@ -226,7 +230,10 @@ export default function PsbtReview() {
             </AmountLine>
             <AddressLine>
               {out.address}
-              {out.scriptId && ` (chain ${out.scriptId.chain}/${out.scriptId.index})`}
+              {out.scriptId &&
+                (wallet.mode === WalletMode.Descriptor
+                  ? ` (index ${out.scriptId.index})`
+                  : ` (chain ${out.scriptId.chain}/${out.scriptId.index})`)}
             </AddressLine>
           </OutputEntry>
         ))}

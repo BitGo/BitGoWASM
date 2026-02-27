@@ -69,9 +69,10 @@ export default function AddWallet() {
         return;
       }
 
-      // TODO: When wasm-utxo is linked, parse the descriptor to extract
-      // xpubs and script type using WrapDescriptor.fromStringDetectType()
-      // For now, store the raw descriptor string.
+      if (!wasmService.validateDescriptor(descriptor.trim())) {
+        setError("Invalid descriptor string. Check the format and try again.");
+        return;
+      }
 
       setError("");
       setSubmitting(true);

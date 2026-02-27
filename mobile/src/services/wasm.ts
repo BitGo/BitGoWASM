@@ -1,4 +1,5 @@
 import type {
+  DescriptorMapHandle,
   ParsedInput,
   ParsedOutput,
   ParsedTransaction,
@@ -6,8 +7,15 @@ import type {
   SignatureInfo,
   WalletKeysHandle,
 } from "../types/index.ts";
-import { WasmState } from "../types/index.ts";
-import { BIP32, fixedScriptWallet } from "@bitgo/wasm-utxo";
+import { WalletMode, WasmState } from "../types/index.ts";
+import {
+  BIP32,
+  fixedScriptWallet,
+  descriptorWallet,
+  Psbt,
+  Descriptor,
+  type CoinName,
+} from "@bitgo/wasm-utxo";
 
 const { BitGoPsbt, RootWalletKeys } = fixedScriptWallet;
 type BitGoPsbtInstance = fixedScriptWallet.BitGoPsbt;
@@ -74,8 +82,11 @@ function assertReady(): void {
 // Internal helpers for opaque handles
 // ---------------------------------------------------------------------------
 
-function wrapPsbt(psbt: BitGoPsbtInstance): PsbtHandle {
-  return { _tag: "PsbtHandle" as const, _inner: psbt };
+function wrapPsbt(
+  psbt: BitGoPsbtInstance | InstanceType<typeof Psbt>,
+  mode: WalletMode,
+): PsbtHandle {
+  return { _tag: "PsbtHandle" as const, _mode: mode, _inner: psbt };
 }
 
 function unwrapPsbt(handle: PsbtHandle): BitGoPsbtInstance {
@@ -88,6 +99,14 @@ function wrapKeys(keys: RootWalletKeysInstance): WalletKeysHandle {
 
 function unwrapKeys(handle: WalletKeysHandle): RootWalletKeysInstance {
   return handle._inner as RootWalletKeysInstance;
+}
+
+function wrapDescriptorMap(map: descriptorWallet.DescriptorMap): DescriptorMapHandle {
+  return { _tag: "DescriptorMapHandle" as const, _inner: map };
+}
+
+function unwrapDescriptorMap(handle: DescriptorMapHandle): descriptorWallet.DescriptorMap {
+  return handle._inner as descriptorWallet.DescriptorMap;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +125,22 @@ export function createWalletKeys(
 }
 
 // ---------------------------------------------------------------------------
+// Descriptor map
+// ---------------------------------------------------------------------------
+
+/** Create a DescriptorMap from a receive descriptor (auto-derives internal/change). */
+export function createDescriptorMap(descriptor: string): DescriptorMapHandle {
+  assertReady();
+  // Auto-derive internal (change) descriptor: /0/* → /1/*
+  const internalDescriptor = descriptor.replace(/\/0\/\*/g, "/1/*");
+  const map = descriptorWallet.toDescriptorMap([
+    { name: "external", value: descriptor },
+    { name: "internal", value: internalDescriptor },
+  ]);
+  return wrapDescriptorMap(map);
+}
+
+// ---------------------------------------------------------------------------
 // PSBT parsing
 // ---------------------------------------------------------------------------
 
@@ -113,6 +148,7 @@ export function createWalletKeys(
 export function parsePsbt(
   base64OrHex: string,
   network: "bitcoin" | "testnet" = "bitcoin",
+  mode: WalletMode = WalletMode.FixedScript,
 ): PsbtHandle {
   assertReady();
 
@@ -128,8 +164,13 @@ export function parsePsbt(
     raw = new Uint8Array((base64OrHex.match(/.{1,2}/g) ?? []).map((b) => parseInt(b, 16)));
   }
 
+  if (mode === WalletMode.Descriptor) {
+    const psbt = Psbt.deserialize(raw);
+    return wrapPsbt(psbt, mode);
+  }
+
   const psbt = BitGoPsbt.fromBytes(raw, network);
-  return wrapPsbt(psbt);
+  return wrapPsbt(psbt, mode);
 }
 
 /** Parse a PSBT into a human-readable transaction using wallet keys. */
@@ -156,6 +197,38 @@ export function parseTransaction(
     value: out.value,
     scriptId: out.scriptId,
     isChange: out.scriptId !== null,
+  }));
+
+  return {
+    inputs,
+    outputs,
+    spendAmount: wasmResult.spendAmount,
+    minerFee: wasmResult.minerFee,
+  };
+}
+
+/** Parse a descriptor-wallet PSBT into a human-readable transaction. */
+export function parseTransactionDescriptor(
+  psbtHandle: PsbtHandle,
+  descriptorMapHandle: DescriptorMapHandle,
+  coin: CoinName,
+): ParsedTransaction {
+  assertReady();
+  const psbt = psbtHandle._inner as InstanceType<typeof Psbt>;
+  const descriptorMap = unwrapDescriptorMap(descriptorMapHandle);
+  const wasmResult = descriptorWallet.parse(psbt, descriptorMap, coin);
+
+  const inputs: ParsedInput[] = wasmResult.inputs.map((inp: descriptorWallet.ParsedInput) => ({
+    address: inp.address,
+    value: inp.value,
+    scriptId: { chain: 0, index: inp.scriptId.index ?? 0 },
+  }));
+
+  const outputs: ParsedOutput[] = wasmResult.outputs.map((out: descriptorWallet.ParsedOutput) => ({
+    address: out.address ?? "OP_RETURN",
+    value: out.value,
+    scriptId: out.scriptId ? { chain: 0, index: out.scriptId.index ?? 0 } : null,
+    isChange: out.scriptId !== undefined,
   }));
 
   return {
@@ -197,6 +270,31 @@ export function verifySignatures(
   const parsed = psbt.parseTransactionWithWalletKeys(keys, noReplayProtection);
   for (let i = 0; i < parsed.inputs.length; i++) {
     if (!psbt.verifySignature(i, xpub)) return false;
+  }
+  return true;
+}
+
+/** Sign all inputs on a descriptor-wallet PSBT with the user's xprv. Returns hex-encoded signed PSBT. */
+export function signPsbtDescriptor(psbtHandle: PsbtHandle, xprv: string): string {
+  assertReady();
+  const psbt = psbtHandle._inner as InstanceType<typeof Psbt>;
+  const key = BIP32.fromBase58(xprv);
+  const result = descriptorWallet.signWithKey(psbt, key);
+  if (descriptorWallet.getNewSignatureCount(result) === 0) {
+    throw new Error("No inputs were signed — key may not match PSBT derivation paths");
+  }
+  const bytes = psbt.serialize();
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Verify that a specific xpub has signed all inputs on a descriptor-wallet PSBT. */
+export function verifySignaturesDescriptor(psbtHandle: PsbtHandle, xpub: string): boolean {
+  assertReady();
+  const psbt = psbtHandle._inner as InstanceType<typeof Psbt>;
+  const key = BIP32.fromBase58(xpub);
+  const count = psbt.inputCount();
+  for (let i = 0; i < count; i++) {
+    if (!psbt.verifySignatureWithKey(i, key.wasm)) return false;
   }
   return true;
 }
@@ -246,6 +344,35 @@ export function countSignatures(
   return { current, required };
 }
 
+/** Count signatures on a descriptor-wallet PSBT. */
+export function countSignaturesDescriptor(
+  psbtHandle: PsbtHandle,
+  descriptor: string,
+): SignatureInfo {
+  assertReady();
+  const psbt = psbtHandle._inner as InstanceType<typeof Psbt>;
+  const partialSigs = psbt.getPartialSignatures(0);
+  const current = partialSigs.length;
+
+  let required = 2;
+  const match = descriptor.match(/(?:sorted)?multi\((\d+)/);
+  if (match) {
+    required = parseInt(match[1], 10);
+  }
+
+  return { current, required };
+}
+
+/** Validate that a descriptor string is well-formed. */
+export function validateDescriptor(descriptor: string): boolean {
+  try {
+    Descriptor.fromStringDetectType(descriptor);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Key utilities
 // ---------------------------------------------------------------------------
@@ -285,11 +412,17 @@ export const wasmService = {
   initWasm,
   getWasmState,
   createWalletKeys,
+  createDescriptorMap,
   parsePsbt,
   parseTransaction,
+  parseTransactionDescriptor,
   signPsbt,
+  signPsbtDescriptor,
   verifySignatures,
+  verifySignaturesDescriptor,
   countSignatures,
+  countSignaturesDescriptor,
+  validateDescriptor,
   deriveXpubFromXprv,
   validateXpub,
   validateXprv,
