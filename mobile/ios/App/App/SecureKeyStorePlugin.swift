@@ -12,6 +12,7 @@ public class SecureKeyStorePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "remove", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "has", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "isBiometricAvailable", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "generateEntropy", returnType: CAPPluginReturnPromise),
     ]
 
     private let serviceName = "com.bitgo.psbtsigner"
@@ -164,6 +165,28 @@ public class SecureKeyStorePlugin: CAPPlugin, CAPBridgedPlugin {
         default:
             call.resolve(["exists": false])
         }
+    }
+
+    // MARK: - generateEntropy
+
+    @objc func generateEntropy(_ call: CAPPluginCall) {
+        let bytes = call.getInt("bytes") ?? 32
+
+        guard bytes >= 16 && bytes <= 64 else {
+            call.reject("Byte count must be between 16 and 64")
+            return
+        }
+
+        var randomBytes = [UInt8](repeating: 0, count: bytes)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes, &randomBytes)
+
+        guard status == errSecSuccess else {
+            call.reject("Failed to generate random bytes: \(status)")
+            return
+        }
+
+        let hex = randomBytes.map { String(format: "%02x", $0) }.joined()
+        call.resolve(["entropy": hex])
     }
 
     // MARK: - isBiometricAvailable

@@ -9,6 +9,7 @@ export interface SecureKeyStorePlugin {
     available: boolean;
     biometryType: string;
   }>;
+  generateEntropy(options: { bytes?: number }): Promise<{ entropy: string }>;
 }
 
 const SecureKeyStore = registerPlugin<SecureKeyStorePlugin>("SecureKeyStore");

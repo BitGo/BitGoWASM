@@ -79,3 +79,16 @@ export enum WasmState {
   Ready = "ready",
   Error = "error",
 }
+
+export enum GeneratedKeyState {
+  Unlinked = "unlinked",
+  Linked = "linked",
+}
+
+export interface GeneratedKey {
+  id: string;
+  xpub: string;
+  createdAt: string;
+  state: GeneratedKeyState;
+  linkedWalletId: string | null;
+}

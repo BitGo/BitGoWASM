@@ -13,6 +13,7 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import java.security.KeyStore
+import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -243,6 +244,32 @@ class SecureKeyStorePlugin : Plugin() {
         val ret = com.getcapacitor.JSObject()
         ret.put("exists", exists)
         call.resolve(ret)
+    }
+
+    // -------------------------------------------------------------------------
+    // generateEntropy: generate cryptographically secure random bytes
+    // -------------------------------------------------------------------------
+
+    @PluginMethod
+    fun generateEntropy(call: PluginCall) {
+        val bytes = call.getInt("bytes") ?: 32
+
+        if (bytes < 16 || bytes > 64) {
+            call.reject("Byte count must be between 16 and 64")
+            return
+        }
+
+        try {
+            val randomBytes = ByteArray(bytes)
+            SecureRandom.getInstanceStrong().nextBytes(randomBytes)
+
+            val hex = randomBytes.joinToString("") { "%02x".format(it) }
+            val ret = com.getcapacitor.JSObject()
+            ret.put("entropy", hex)
+            call.resolve(ret)
+        } catch (e: Exception) {
+            call.reject("Failed to generate random bytes: ${e.message}", "ENTROPY_ERROR")
+        }
     }
 
     // -------------------------------------------------------------------------

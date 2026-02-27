@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Button, TextInput, Radio, GroupBox, Separator, Tab, Tabs, TabBody } from "react95";
+import { Button, TextInput, Radio, GroupBox, Separator, Tab, Tabs, TabBody, Select } from "react95";
 import styled from "styled-components";
 import Win95Window from "../components/Win95Window";
-import { WalletMode } from "../types";
+import { WalletMode, GeneratedKeyState } from "../types";
 import { useWallets } from "../hooks/useWallets";
+import { useGeneratedKeys } from "../hooks/useGeneratedKeys";
+import { generatedKeyStore } from "../services/generatedKeyStore";
 import { wasmService } from "../services/wasm";
 
 const FieldGroup = styled.div`
@@ -39,6 +41,9 @@ const HintText = styled.div`
 export default function AddWallet() {
   const navigate = useNavigate();
   const { addWallet } = useWallets();
+  const { keys: generatedKeys, refresh: refreshKeys } = useGeneratedKeys();
+
+  const unlinkedKeys = generatedKeys.filter((k) => k.state === GeneratedKeyState.Unlinked);
 
   // Shared state
   const [name, setName] = useState("");
@@ -51,6 +56,7 @@ export default function AddWallet() {
   const [userXpub, setUserXpub] = useState("");
   const [backupXpub, setBackupXpub] = useState("");
   const [bitgoXpub, setBitgoXpub] = useState("");
+  const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
 
   // Descriptor mode state
   const [descriptor, setDescriptor] = useState("");
@@ -118,15 +124,21 @@ export default function AddWallet() {
       setError("");
       setSubmitting(true);
       try {
-        await addWallet({
+        const newWallet = await addWallet({
           name: name.trim(),
           mode: WalletMode.FixedScript,
           userXpub: userXpub.trim(),
           backupXpub: backupXpub.trim(),
           bitgoXpub: bitgoXpub.trim(),
           network,
-          hasUserKey: false,
+          hasUserKey: selectedKeyId !== null,
         });
+
+        if (selectedKeyId) {
+          await generatedKeyStore.linkToWallet(selectedKeyId, newWallet.id);
+          await refreshKeys();
+        }
+
         navigate("/");
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -156,13 +168,47 @@ export default function AddWallet() {
       <TabBody style={{ minHeight: 200 }}>
         {activeTab === 0 ? (
           <>
+            {unlinkedKeys.length > 0 && (
+              <FieldGroup>
+                <Label>Use generated key:</Label>
+                <Select
+                  defaultValue="manual"
+                  options={[
+                    { value: "manual", label: "Paste manually" },
+                    ...unlinkedKeys.map((k) => ({
+                      value: k.id,
+                      label: `${k.xpub.slice(0, 16)}...${k.xpub.slice(-6)}`,
+                    })),
+                  ]}
+                  onChange={(e) => {
+                    const val = e.value as string;
+                    if (val === "manual") {
+                      setSelectedKeyId(null);
+                      setUserXpub("");
+                    } else {
+                      const key = unlinkedKeys.find((k) => k.id === val);
+                      if (key) {
+                        setSelectedKeyId(key.id);
+                        setUserXpub(key.xpub);
+                      }
+                    }
+                  }}
+                  width="100%"
+                />
+              </FieldGroup>
+            )}
+
             <FieldGroup>
               <Label>User xpub:</Label>
               <TextInput
                 value={userXpub}
-                onChange={(e) => setUserXpub(e.target.value)}
+                onChange={(e) => {
+                  setUserXpub(e.target.value);
+                  if (selectedKeyId) setSelectedKeyId(null);
+                }}
                 placeholder="xpub6CUGRUo..."
                 fullWidth
+                disabled={selectedKeyId !== null}
               />
             </FieldGroup>
 

@@ -5,6 +5,7 @@ import { createGlobalStyle } from "styled-components";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import theme from "./theme/win95";
 import { WalletProvider } from "./hooks/useWallets";
+import { GeneratedKeyProvider } from "./hooks/useGeneratedKeys";
 import { initWasm } from "./services/wasm";
 import Win95Window from "./components/Win95Window";
 import WalletList from "./screens/WalletList";
@@ -13,6 +14,7 @@ import WalletDetail from "./screens/WalletDetail";
 import ImportKey from "./screens/ImportKey";
 import PsbtReview from "./screens/PsbtReview";
 import SignedExport from "./screens/SignedExport";
+import GenerateKey from "./screens/GenerateKey";
 
 const GlobalStyles = createGlobalStyle`
   ${styleReset}
@@ -102,16 +104,19 @@ function App() {
     <ThemeProvider theme={theme}>
       <GlobalStyles />
       <WalletProvider>
-        <BrowserRouter basename={import.meta.env.BASE_URL}>
-          <Routes>
-            <Route path="/" element={<WalletList />} />
-            <Route path="/wallet/add" element={<AddWallet />} />
-            <Route path="/wallet/:id" element={<WalletDetail />} />
-            <Route path="/wallet/:id/import-key" element={<ImportKey />} />
-            <Route path="/wallet/:id/review" element={<PsbtReview />} />
-            <Route path="/wallet/:id/signed" element={<SignedExport />} />
-          </Routes>
-        </BrowserRouter>
+        <GeneratedKeyProvider>
+          <BrowserRouter basename={import.meta.env.BASE_URL}>
+            <Routes>
+              <Route path="/" element={<WalletList />} />
+              <Route path="/wallet/add" element={<AddWallet />} />
+              <Route path="/wallet/:id" element={<WalletDetail />} />
+              <Route path="/wallet/:id/import-key" element={<ImportKey />} />
+              <Route path="/wallet/:id/review" element={<PsbtReview />} />
+              <Route path="/wallet/:id/signed" element={<SignedExport />} />
+              <Route path="/generate-key" element={<GenerateKey />} />
+            </Routes>
+          </BrowserRouter>
+        </GeneratedKeyProvider>
       </WalletProvider>
     </ThemeProvider>
   );
