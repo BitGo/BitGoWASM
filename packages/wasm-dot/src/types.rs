@@ -16,9 +16,14 @@ pub struct Material {
     pub spec_version: u32,
     /// Transaction format version
     pub tx_version: u32,
-    /// Runtime metadata bytes
-    /// Required for encoding calls - handles runtime upgrades automatically
-    pub metadata: Vec<u8>,
+    /// Runtime metadata as a 0x-prefixed hex string, matching the Substrate
+    /// `state_getMetadata` RPC wire format.
+    ///
+    /// This is a string rather than raw bytes because metadata is returned as hex
+    /// from the Substrate RPC and typically stored/transported as hex through JSON
+    /// APIs. The hex-to-bytes decode happens once internally (in `decode_metadata`)
+    /// right before SCALE decoding.
+    pub metadata: String,
 }
 
 /// Validity window for mortal transactions

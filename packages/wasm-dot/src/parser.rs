@@ -82,11 +82,37 @@ pub fn parse_transaction(
 
     let tx = Transaction::from_bytes(bytes, context, metadata.as_ref())?;
 
+    build_parsed_transaction(&tx, prefix, metadata.as_ref())
+}
+
+/// Parse a pre-deserialized Transaction into structured data.
+///
+/// Same logic as `parse_transaction(bytes, context)` but skips deserialization.
+/// Used when the caller already has a `Transaction` from `fromBytes()`.
+pub fn parse_from_transaction(
+    tx: &Transaction,
+    context: Option<&ParseContext>,
+) -> Result<ParsedTransaction, WasmDotError> {
+    let prefix = context
+        .map(|ctx| AddressFormat::from_chain_name(&ctx.material.chain_name).prefix())
+        .unwrap_or(42);
+
+    let metadata = context.and_then(|ctx| decode_metadata(&ctx.material.metadata).ok());
+
+    build_parsed_transaction(tx, prefix, metadata.as_ref())
+}
+
+/// Shared logic for building ParsedTransaction from an already-deserialized Transaction.
+fn build_parsed_transaction(
+    tx: &Transaction,
+    prefix: u16,
+    metadata: Option<&subxt_core::metadata::Metadata>,
+) -> Result<ParsedTransaction, WasmDotError> {
     let sender = tx.sender(prefix);
     let id = tx.id();
 
     // Parse the call data (with optional metadata for dynamic resolution)
-    let method = parse_call_data(tx.call_data(), prefix, metadata.as_ref())?;
+    let method = parse_call_data(tx.call_data(), prefix, metadata)?;
 
     Ok(ParsedTransaction {
         id,
@@ -99,11 +125,8 @@ pub fn parse_transaction(
     })
 }
 
-/// Decode metadata from raw bytes
-fn decode_metadata(metadata_bytes: &[u8]) -> Result<subxt_core::metadata::Metadata, WasmDotError> {
-    subxt_core::metadata::decode_from(metadata_bytes)
-        .map_err(|e| WasmDotError::InvalidInput(format!("Failed to decode metadata: {}", e)))
-}
+// Re-use the central decode_metadata from transaction.rs
+use crate::transaction::decode_metadata;
 
 /// Resolve pallet and call names from metadata using indices.
 ///

@@ -2,7 +2,7 @@
 //!
 //! Thin wrapper around core Transaction with #[wasm_bindgen]
 
-use crate::transaction::Transaction;
+use crate::transaction::{decode_metadata, Transaction};
 use crate::types::{Material, ParseContext, Validity};
 use crate::WasmDotError;
 use wasm_bindgen::prelude::*;
@@ -23,11 +23,20 @@ impl WasmTransaction {
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8], context: Option<ParseContextJs>) -> Result<WasmTransaction, JsValue> {
         let ctx = context.map(|c| c.into_inner());
-        let inner = Transaction::from_bytes(bytes, ctx, None)?;
+        let metadata = ctx
+            .as_ref()
+            .and_then(|c| decode_metadata(&c.material.metadata).ok());
+        let inner = Transaction::from_bytes(bytes, ctx, metadata.as_ref())?;
         Ok(WasmTransaction { inner })
     }
 
     /// Create from hex string
+    ///
+    /// When context is provided, its metadata is decoded and used during
+    /// deserialization so that non-standard signed extensions (e.g. Westend's
+    /// `AuthorizeCall`, `StorageWeightReclaim`) are handled correctly.
+    /// Without metadata the parser falls back to a default extension layout,
+    /// which can mis-identify the call_data boundary and produce empty args.
     #[wasm_bindgen(js_name = fromHex)]
     pub fn from_hex(
         hex: &str,
@@ -37,7 +46,10 @@ impl WasmTransaction {
         let bytes = hex::decode(hex)
             .map_err(|e| WasmDotError::InvalidInput(format!("Invalid hex: {}", e)))?;
         let ctx = context.map(|c| c.into_inner());
-        let inner = Transaction::from_bytes(&bytes, ctx, None)?;
+        let metadata = ctx
+            .as_ref()
+            .and_then(|c| decode_metadata(&c.material.metadata).ok());
+        let inner = Transaction::from_bytes(&bytes, ctx, metadata.as_ref())?;
         Ok(WasmTransaction { inner })
     }
 
@@ -224,7 +236,7 @@ impl MaterialJs {
         spec_name: &str,
         spec_version: u32,
         tx_version: u32,
-        metadata: &[u8],
+        metadata: &str,
     ) -> MaterialJs {
         MaterialJs {
             inner: Material {
@@ -233,7 +245,7 @@ impl MaterialJs {
                 spec_name: spec_name.to_string(),
                 spec_version,
                 tx_version,
-                metadata: metadata.to_vec(),
+                metadata: metadata.to_string(),
             },
         }
     }
@@ -275,5 +287,10 @@ impl WasmTransaction {
     /// Create from core Transaction (for builder)
     pub fn from_inner(inner: Transaction) -> Self {
         WasmTransaction { inner }
+    }
+
+    /// Get the inner Transaction for internal Rust use.
+    pub fn inner(&self) -> &Transaction {
+        &self.inner
     }
 }

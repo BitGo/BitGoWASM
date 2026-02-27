@@ -399,9 +399,15 @@ impl Transaction {
 // Helper functions
 // =============================================================================
 
-/// Decode metadata from raw bytes
-fn decode_metadata(metadata_bytes: &[u8]) -> Result<Metadata, WasmDotError> {
-    subxt_core::metadata::decode_from(metadata_bytes)
+/// Decode metadata from a hex string (0x-prefixed or bare).
+///
+/// This is the single entry point for metadata decoding across the crate.
+/// It handles the hex → bytes → SCALE decode pipeline so callers don't have to.
+pub(crate) fn decode_metadata(metadata_hex: &str) -> Result<Metadata, WasmDotError> {
+    let hex = metadata_hex.strip_prefix("0x").unwrap_or(metadata_hex);
+    let bytes = hex::decode(hex)
+        .map_err(|e| WasmDotError::InvalidInput(format!("Invalid metadata hex: {}", e)))?;
+    subxt_core::metadata::decode_from(&bytes)
         .map_err(|e| WasmDotError::InvalidInput(format!("Failed to decode metadata: {}", e)))
 }
 
