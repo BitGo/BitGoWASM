@@ -339,6 +339,16 @@ class AddressConverter extends BaseComponent {
           margin: 0;
         }
 
+        .disclaimer {
+          padding: 0.75rem 1rem;
+          background: rgba(207, 172, 83, 0.1);
+          border: 1px solid rgba(207, 172, 83, 0.4);
+          border-radius: 6px;
+          color: var(--warning, #CFAC53);
+          margin-bottom: 1.5rem;
+          font-size: 0.875rem;
+        }
+
         @media (max-width: 768px) {
           .result-row {
             grid-template-columns: 1fr auto;
@@ -371,6 +381,11 @@ class AddressConverter extends BaseComponent {
         ),
         h("h1", {}, "UTXO Address Converter"),
         h(
+          "div",
+          { class: "disclaimer" },
+          "⚠ Careful: funds sent to addresses of other networks may be lost forever!",
+        ),
+        h(
           "section",
           { class: "input-section" },
           h(
@@ -380,6 +395,9 @@ class AddressConverter extends BaseComponent {
               id: "address-input",
               placeholder: "Paste a utxo address...",
               rows: "2",
+              spellcheck: "false",
+              autocomplete: "off",
+              style: "resize: none",
               oninput: (e: Event) => this.handleInput(e),
             }),
             h(

@@ -27,6 +27,12 @@ module.exports = {
   },
   resolve: {
     extensions: [".ts", ".js"],
+    alias: {
+      // Use webui's local wasm build (with parse_node enabled) instead of wasm-utxo's default build.
+      // Both paths are needed: js/wasm for ts-loader project references, dist/esm/js/wasm for module resolution.
+      [path.resolve(__dirname, "../wasm-utxo/js/wasm")]: path.resolve(__dirname, "wasm"),
+      [path.resolve(__dirname, "../wasm-utxo/dist/esm/js/wasm")]: path.resolve(__dirname, "wasm"),
+    },
   },
   output: {
     filename: "bundle.js",
