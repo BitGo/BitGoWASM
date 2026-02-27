@@ -26,14 +26,14 @@ mod mps {
 
     /// Internal state used for round 1.
     #[derive(serde::Serialize, serde::Deserialize)]
-    struct StateR1 {
+    struct DkgStateR1 {
         pub msg: KeygenMsg1,
         pub party: KeygenParty<R1<EdwardsPoint>, EdwardsPoint>,
     }
 
     /// Internal state used for round 2.
     #[derive(serde::Serialize, serde::Deserialize)]
-    struct StateR2 {
+    struct DkgStateR2 {
         pub msg: KeygenMsg2<EdwardsPoint>,
         pub party: KeygenParty<R2, EdwardsPoint>,
     }
@@ -56,7 +56,7 @@ mod mps {
     /// decryption_key: Private Curve25519 key.
     /// encryption_keys: Public Curve25519 keys of other parties.
     /// seed: PRNG seed for entropy.
-    pub fn round0_process(
+    pub fn dkg_round0_process(
         party_id: u8,
         decryption_key: &[u8; 32],
         encryption_keys: &[Vec<u8>; 2],
@@ -107,7 +107,7 @@ mod mps {
         let (p1, msg1) = p0.process(()).map_err(|_| DkgError::ProtocolError)?;
 
         // Create the state for storage between rounds
-        let state = StateR1 {
+        let state = DkgStateR1 {
             msg: msg1,
             party: p1,
         };
@@ -121,12 +121,12 @@ mod mps {
     /// Process round 1 of protocol.
     /// round1_messages: Public messages from other parties.
     /// state: Private state result from from round 0.
-    pub fn round1_process(
+    pub fn dkg_round1_process(
         round1_messages: &[Vec<u8>; 2],
         state: &[u8],
     ) -> Result<MsgState, DkgError> {
         // Parse state
-        let state: StateR1 =
+        let state: DkgStateR1 =
             bincode::deserialize(state).map_err(|_| DkgError::DeserializationError)?;
 
         // Parse messages
@@ -143,7 +143,7 @@ mod mps {
             .map_err(|_| DkgError::ProtocolError)?;
 
         // Create the state for storage between rounds
-        let state = StateR2 {
+        let state = DkgStateR2 {
             msg: msg2.clone(),
             party: p2,
         };
@@ -157,7 +157,10 @@ mod mps {
     /// Process round 2 of protocol.
     /// round2_messages: Public messages from other parties.
     /// state: Private state result from round 1.
-    pub fn round2_process(round2_messages: &[Vec<u8>; 2], state: &[u8]) -> Result<Share, DkgError> {
+    pub fn dkg_round2_process(
+        round2_messages: &[Vec<u8>; 2],
+        state: &[u8],
+    ) -> Result<Share, DkgError> {
         // Deserialize round2 messages from other parties
         let i0_msg2: KeygenMsg2<EdwardsPoint> = bincode::deserialize(round2_messages[0].as_slice())
             .map_err(|_| DkgError::DeserializationError)?;
@@ -165,7 +168,7 @@ mod mps {
             .map_err(|_| DkgError::DeserializationError)?;
 
         // Deserialize state
-        let state: StateR2 =
+        let state: DkgStateR2 =
             bincode::deserialize(state).map_err(|_| DkgError::DeserializationError)?;
 
         // Generate share
@@ -204,7 +207,7 @@ mod tests {
         }
 
         // Parties generate their round 0 messages
-        let p0_0 = mps::round0_process(
+        let p0_0 = mps::dkg_round0_process(
             0,
             &prv_keys[0].to_bytes(),
             &[
@@ -214,7 +217,7 @@ mod tests {
             &seeds[0],
         )
         .unwrap();
-        let p1_0 = mps::round0_process(
+        let p1_0 = mps::dkg_round0_process(
             1,
             &prv_keys[1].to_bytes(),
             &[
@@ -224,7 +227,7 @@ mod tests {
             &seeds[1],
         )
         .unwrap();
-        let p2_0 = mps::round0_process(
+        let p2_0 = mps::dkg_round0_process(
             2,
             &prv_keys[2].to_bytes(),
             &[
@@ -237,24 +240,24 @@ mod tests {
 
         // Parties generate their round 1 messages
         let p0_1 =
-            mps::round1_process(&[p1_0.msg.clone(), p2_0.msg.clone()], p0_0.state.as_slice())
+            mps::dkg_round1_process(&[p1_0.msg.clone(), p2_0.msg.clone()], p0_0.state.as_slice())
                 .unwrap();
         let p1_1 =
-            mps::round1_process(&[p0_0.msg.clone(), p2_0.msg.clone()], p1_0.state.as_slice())
+            mps::dkg_round1_process(&[p0_0.msg.clone(), p2_0.msg.clone()], p1_0.state.as_slice())
                 .unwrap();
         let p2_1 =
-            mps::round1_process(&[p0_0.msg.clone(), p1_0.msg.clone()], p2_0.state.as_slice())
+            mps::dkg_round1_process(&[p0_0.msg.clone(), p1_0.msg.clone()], p2_0.state.as_slice())
                 .unwrap();
 
         // Parties generate their key shares
         let p0_share =
-            mps::round2_process(&[p1_1.msg.clone(), p2_1.msg.clone()], p0_1.state.as_slice())
+            mps::dkg_round2_process(&[p1_1.msg.clone(), p2_1.msg.clone()], p0_1.state.as_slice())
                 .unwrap();
         let p1_share =
-            mps::round2_process(&[p0_1.msg.clone(), p2_1.msg.clone()], p1_1.state.as_slice())
+            mps::dkg_round2_process(&[p0_1.msg.clone(), p2_1.msg.clone()], p1_1.state.as_slice())
                 .unwrap();
         let p2_share =
-            mps::round2_process(&[p0_1.msg.clone(), p1_1.msg.clone()], p2_1.state.as_slice())
+            mps::dkg_round2_process(&[p0_1.msg.clone(), p1_1.msg.clone()], p2_1.state.as_slice())
                 .unwrap();
 
         // Assert generated public keys are equal
@@ -333,7 +336,7 @@ impl MsgShare {
 }
 
 #[wasm_bindgen]
-pub fn round0_process(
+pub fn dkg_round0_process(
     party_id: u8,
     decryption_key: &[u8],
     encryption_keys: Array,
@@ -343,7 +346,7 @@ pub fn round0_process(
         .try_into()
         .map_err(|_| "Deserialization Error")?;
     let seed_32: [u8; 32] = seed[..32].try_into().map_err(|_| "Deserialization Error")?;
-    let result = mps::round0_process(
+    let result = mps::dkg_round0_process(
         party_id,
         &decryption_key_32,
         &[
@@ -361,8 +364,8 @@ pub fn round0_process(
 }
 
 #[wasm_bindgen]
-pub fn round1_process(round1_messages: Array, state: &[u8]) -> Result<MsgState, String> {
-    let result = mps::round1_process(
+pub fn dkg_round1_process(round1_messages: Array, state: &[u8]) -> Result<MsgState, String> {
+    let result = mps::dkg_round1_process(
         &[
             js_sys::Uint8Array::from(round1_messages.get(0)).to_vec(),
             js_sys::Uint8Array::from(round1_messages.get(1)).to_vec(),
@@ -378,8 +381,8 @@ pub fn round1_process(round1_messages: Array, state: &[u8]) -> Result<MsgState, 
 }
 
 #[wasm_bindgen]
-pub fn round2_process(round2_messages: Array, state: &[u8]) -> Result<Share, String> {
-    let result = mps::round2_process(
+pub fn dkg_round2_process(round2_messages: Array, state: &[u8]) -> Result<Share, String> {
+    let result = mps::dkg_round2_process(
         &[
             js_sys::Uint8Array::from(round2_messages.get(0)).to_vec(),
             js_sys::Uint8Array::from(round2_messages.get(1)).to_vec(),
