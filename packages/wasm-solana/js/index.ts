@@ -9,7 +9,6 @@ export * as pubkey from "./pubkey.js";
 export * as transaction from "./transaction.js";
 export * as parser from "./parser.js";
 export * as builder from "./builder.js";
-export * as explain from "./explain.js";
 
 // Top-level class exports for convenience
 export { Keypair } from "./keypair.js";
@@ -24,8 +23,6 @@ export type { AddressLookupTableData } from "./versioned.js";
 export { parseTransaction } from "./parser.js";
 export { buildFromVersionedData } from "./builder.js";
 export { buildFromIntent, buildFromIntent as buildTransactionFromIntent } from "./intentBuilder.js";
-export { explainTransaction, TransactionType } from "./explain.js";
-
 // Intent builder type exports
 export type {
   BaseIntent,
@@ -98,16 +95,6 @@ export type {
   StakePoolWithdrawStakeParams,
   UnknownInstructionParams,
 } from "./parser.js";
-
-// Explain types
-export type {
-  ExplainedTransaction,
-  ExplainedOutput,
-  ExplainedInput,
-  ExplainOptions,
-  TokenEnablement,
-  StakingAuthorizeInfo,
-} from "./explain.js";
 
 // Versioned transaction builder type exports
 export type {
