@@ -1,4 +1,4 @@
-//! Session-based Multi-Party Schnorr frontend
+//! BitGo frontend to Silence Labs' Multi-Party-Schnorr
 
 mod mps {
 
