@@ -6,6 +6,7 @@
  */
 import * as assert from "assert";
 import { parseTransaction } from "../js/parser.js";
+import { Transaction } from "../js/transaction.js";
 
 // Helper to decode base64 in tests
 function base64ToBytes(base64: string): Uint8Array {
@@ -51,25 +52,25 @@ describe("BitGoJS Compatibility", () => {
 
     it("should parse feePayer correctly", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
       assert.strictEqual(parsed.feePayer, EXPECTED.feePayer);
     });
 
     it("should parse nonce correctly", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
       assert.strictEqual(parsed.nonce, EXPECTED.nonce);
     });
 
     it("should parse numSignatures correctly", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
       assert.strictEqual(parsed.numSignatures, EXPECTED.numSignatures);
     });
 
     it("should detect durable nonce transaction", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
       assert.ok(parsed.durableNonce, "Should detect durable nonce");
       assert.strictEqual(
         parsed.durableNonce.walletNonceAddress,
@@ -83,7 +84,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should have NonceAdvance in both instructionsData and durableNonce", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
       // WASM returns all instructions including NonceAdvance
       const nonceAdvance = parsed.instructionsData.find((i) => i.type === "NonceAdvance");
       assert.ok(nonceAdvance, "NonceAdvance should be in instructionsData");
@@ -97,7 +98,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should parse Transfer instruction correctly", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
       // Transfer is at index 1 (after NonceAdvance)
       const instr = parsed.instructionsData[1];
 
@@ -114,7 +115,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should parse Memo instruction correctly", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
       // Memo is at index 2 (after NonceAdvance and Transfer)
       const instr = parsed.instructionsData[2];
 
@@ -129,7 +130,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should have correct number of instructions", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
       // 3 instructions: NonceAdvance + Transfer + Memo
       assert.strictEqual(parsed.instructionsData.length, 3);
     });
@@ -154,7 +155,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should parse multi-transfer with correct structure", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
 
       assert.strictEqual(parsed.feePayer, EXPECTED_FEE_PAYER);
       assert.strictEqual(parsed.nonce, EXPECTED_NONCE);
@@ -166,7 +167,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should parse all transfer recipients correctly", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
 
       // Transfers are at indices 1-6 (index 0 is NonceAdvance)
       const transfers = parsed.instructionsData.slice(1, 7);
@@ -185,7 +186,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should have memo as last instruction", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
       const lastInstr = parsed.instructionsData[parsed.instructionsData.length - 1];
 
       assert.strictEqual(lastInstr.type, "Memo");
@@ -202,7 +203,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should parse staking transaction structure", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
 
       assert.strictEqual(parsed.feePayer, "5hr5fisPi6DXNuuRpm5XUbzpiEnmdyxXuBDTwzwZj5Pe");
       assert.ok(parsed.instructionsData.length >= 1, "Should have instructions");
@@ -225,7 +226,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should parse token transfer transaction", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
 
       // Should have 4 instructions: NonceAdvance, SetPriorityFee, TokenTransfer, Memo
       assert.strictEqual(parsed.instructionsData.length, 4);
@@ -252,7 +253,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should parse basic unsigned transfer", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
 
       // This is a durable nonce transaction: NonceAdvance + Transfer
       assert.strictEqual(parsed.instructionsData.length, 2);
@@ -275,7 +276,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should parse Jito DepositSol instruction", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
 
       // Find the StakePoolDepositSol instruction
       const depositSolInstr = parsed.instructionsData.find((i) => i.type === "StakePoolDepositSol");
@@ -294,7 +295,7 @@ describe("BitGoJS Compatibility", () => {
 
     it("should have correct fee payer for Jito transaction", () => {
       const bytes = base64ToBytes(TX_BASE64);
-      const parsed = parseTransaction(bytes);
+      const parsed = parseTransaction(Transaction.fromBytes(bytes));
 
       // Fee payer from BitGoJS tests
       assert.strictEqual(parsed.feePayer, "5hr5fisPi6DXNuuRpm5XUbzpiEnmdyxXuBDTwzwZj5Pe");

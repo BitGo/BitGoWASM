@@ -9,6 +9,7 @@ import { BaseComponent, defineComponent, h, css, fragment, type Child } from "..
 import { setParams } from "../../lib/router";
 import { commonStyles } from "../../index";
 import {
+  Transaction,
   parseTransaction,
   type ParsedTransaction,
   type InstructionParams,
@@ -516,7 +517,8 @@ class SolanaTransactionParser extends BaseComponent {
     try {
       // Parse the transaction
       const bytes = base64ToBytes(txData);
-      const parsed = parseTransaction(bytes);
+      const tx = Transaction.fromBytes(bytes);
+      const parsed = parseTransaction(tx);
 
       // Render transaction info
       txInfoEl.replaceChildren(this.renderTxInfo(parsed));

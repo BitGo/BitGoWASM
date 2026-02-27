@@ -313,8 +313,7 @@ fn build_jito_stake(
     // For Jito, validatorAddress is the stake pool address
     let stake_pool: Pubkey = config
         .stake_pool_address
-        .as_ref()
-        .map(|s| s.as_str())
+        .as_deref()
         .unwrap_or(validator_address)
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid stakePoolAddress"))?;
@@ -1156,7 +1155,7 @@ mod tests {
             .transaction
             .signatures
             .iter()
-            .filter(|s| s.as_ref() != &zero_sig)
+            .filter(|s| s.as_ref() != zero_sig)
             .count();
         assert_eq!(
             non_zero_count, 1,

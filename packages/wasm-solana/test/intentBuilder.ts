@@ -58,7 +58,7 @@ describe("buildFromIntent", function () {
       });
 
       // Parse to verify
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       // Should have 2 Transfer instructions
       const transfers = parsed.instructionsData.filter((i: any) => i.type === "Transfer");
@@ -83,7 +83,7 @@ describe("buildFromIntent", function () {
       });
 
       // Parse to verify
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       // Should have Memo instruction
       const memos = parsed.instructionsData.filter((i: any) => i.type === "Memo");
@@ -125,7 +125,7 @@ describe("buildFromIntent", function () {
       });
 
       // Parse to verify
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       // Native staking should have 3 instructions: CreateAccount, StakeInitialize, StakeDelegate
       assert(parsed.instructionsData.length >= 3, "Should have at least 3 instructions");
@@ -157,7 +157,7 @@ describe("buildFromIntent", function () {
       assert.equal(result.generatedKeypairs.length, 0, "Should not generate keypairs");
 
       // Verify instruction
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       const deactivate = parsed.instructionsData.find((i: any) => i.type === "StakingDeactivate");
       assert(deactivate, "Should have StakingDeactivate instruction");
@@ -178,7 +178,7 @@ describe("buildFromIntent", function () {
       });
 
       // Verify instructions
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       const deactivates = parsed.instructionsData.filter(
         (i: any) => i.type === "StakingDeactivate",
@@ -204,7 +204,7 @@ describe("buildFromIntent", function () {
       assert.equal(result.generatedKeypairs.length, 0, "Should not generate keypairs");
 
       // Verify instruction
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       const withdraw = parsed.instructionsData.find((i: any) => i.type === "StakingWithdraw");
       assert(withdraw, "Should have StakingWithdraw instruction");
@@ -228,7 +228,7 @@ describe("buildFromIntent", function () {
       assert.equal(result.generatedKeypairs.length, 0, "Should not generate keypairs");
 
       // Verify instruction - delegate is a StakingDelegate instruction
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       const delegate = parsed.instructionsData.find((i: any) => i.type === "StakingDelegate");
       assert(delegate, "Should have StakingDelegate instruction");
@@ -252,7 +252,7 @@ describe("buildFromIntent", function () {
       assert.equal(result.generatedKeypairs.length, 0, "Should not generate keypairs");
 
       // Verify instruction
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       const createAta = parsed.instructionsData.find(
         (i: any) => i.type === "CreateAssociatedTokenAccount",
@@ -285,7 +285,7 @@ describe("buildFromIntent", function () {
       assert.equal(result.generatedKeypairs.length, 0, "Should not generate keypairs");
 
       // Verify instructions
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       const createAtaInstructions = parsed.instructionsData.filter(
         (i: any) => i.type === "CreateAssociatedTokenAccount",
@@ -314,7 +314,7 @@ describe("buildFromIntent", function () {
       assert.equal(result.generatedKeypairs.length, 0, "Should not generate keypairs");
 
       // Verify instruction
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       const closeAta = parsed.instructionsData.find(
         (i: any) => i.type === "CloseAssociatedTokenAccount",
@@ -347,7 +347,7 @@ describe("buildFromIntent", function () {
       assert.equal(result.generatedKeypairs.length, 0, "Should not generate keypairs");
 
       // Verify instruction
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       // Should have a Transfer instruction where the sender is the child address
       const transfer = parsed.instructionsData.find((i: any) => i.type === "Transfer");
@@ -379,7 +379,7 @@ describe("buildFromIntent", function () {
         nonce: { type: "blockhash", value: blockhash },
       });
 
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       // Should have 2 Transfer instructions
       const transfers = parsed.instructionsData.filter((i: any) => i.type === "Transfer");
@@ -413,7 +413,7 @@ describe("buildFromIntent", function () {
       });
 
       // Verify instructions
-      const parsed = parseTransaction(result.transaction.toBytes());
+      const parsed = parseTransaction(result.transaction);
 
       // First instruction should be NonceAdvance
       assert.equal(
