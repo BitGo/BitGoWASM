@@ -921,6 +921,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "crypto_box",
+ "ed25519-dalek",
  "getrandom",
  "js-sys",
  "multi-party-schnorr",
