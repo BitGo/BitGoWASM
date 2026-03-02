@@ -4,4 +4,4 @@
 
 # These owners and first officers will be the default owners for everything in the repo.
 *   @BitGo/btc-team
-packages/wasm-mps/* @BitGo/hsm
+packages/wasm-mps @BitGo/hsm
