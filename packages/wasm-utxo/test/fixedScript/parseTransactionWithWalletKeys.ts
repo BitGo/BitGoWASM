@@ -58,12 +58,12 @@ describe("parseTransactionWithWalletKeys", function () {
       });
 
       it("should have matching unsigned transaction ID", function () {
-        const unsignedTxid = bitgoPsbt.unsignedTxid();
+        const unsignedTxId = bitgoPsbt.unsignedTxId();
         const expectedUnsignedTxid = utxolib.bitgo
           .createPsbtFromBuffer(fullsignedPsbtBytes, network)
           .getUnsignedTx()
           .getId();
-        assert.strictEqual(unsignedTxid, expectedUnsignedTxid);
+        assert.strictEqual(unsignedTxId, expectedUnsignedTxid);
       });
 
       it("should parse transaction and identify internal/external outputs", function () {

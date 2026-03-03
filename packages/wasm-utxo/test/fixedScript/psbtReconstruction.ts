@@ -97,16 +97,16 @@ describe("PSBT reconstruction", function () {
             rootWalletKeys,
             {
               consensusBranchId: ZCASH_SAPLING_BRANCH_ID,
-              version: zcashPsbt.version,
-              lockTime: zcashPsbt.lockTime,
+              version: zcashPsbt.version(),
+              lockTime: zcashPsbt.lockTime(),
               versionGroupId: zcashPsbt.versionGroupId,
               expiryHeight: zcashPsbt.expiryHeight,
             },
           );
         } else {
           reconstructed = BitGoPsbt.createEmpty(networkName, rootWalletKeys, {
-            version: originalPsbt.version,
-            lockTime: originalPsbt.lockTime,
+            version: originalPsbt.version(),
+            lockTime: originalPsbt.lockTime(),
           });
         }
 
@@ -182,30 +182,30 @@ describe("PSBT reconstruction", function () {
 
         // Compare unsigned txids
         assert.strictEqual(
-          reconstructed.unsignedTxid(),
-          originalPsbt.unsignedTxid(),
+          reconstructed.unsignedTxId(),
+          originalPsbt.unsignedTxId(),
           "Reconstructed PSBT should have same unsigned txid as original",
         );
       });
 
       it("should have correct version and lockTime getters", function () {
         // Version and lockTime should be numbers
-        assert.strictEqual(typeof originalPsbt.version, "number", "version should be a number");
-        assert.strictEqual(typeof originalPsbt.lockTime, "number", "lockTime should be a number");
+        assert.strictEqual(typeof originalPsbt.version(), "number", "version should be a number");
+        assert.strictEqual(typeof originalPsbt.lockTime(), "number", "lockTime should be a number");
         // Version depends on network: Zcash uses version 4 (Sapling) or 5 (NU5), others use 1 or 2
         if (network === utxolib.networks.zcash) {
           assert.ok(
-            originalPsbt.version === 4 || originalPsbt.version === 5,
-            `Zcash version should be 4 or 5, got ${originalPsbt.version}`,
+            originalPsbt.version() === 4 || originalPsbt.version() === 5,
+            `Zcash version should be 4 or 5, got ${originalPsbt.version()}`,
           );
         } else {
           assert.ok(
-            originalPsbt.version === 1 || originalPsbt.version === 2,
-            `version should be 1 or 2, got ${originalPsbt.version}`,
+            originalPsbt.version() === 1 || originalPsbt.version() === 2,
+            `version should be 1 or 2, got ${originalPsbt.version()}`,
           );
         }
         // LockTime is typically 0 for these fixtures
-        assert.strictEqual(originalPsbt.lockTime, 0, "lockTime should be 0 for unsigned fixtures");
+        assert.strictEqual(originalPsbt.lockTime(), 0, "lockTime should be 0 for unsigned fixtures");
       });
 
       it("should include sequence in parsed inputs", function () {
@@ -253,8 +253,8 @@ describe("PSBT reconstruction", function () {
           rootWalletKeys,
           {
             consensusBranchId: ZCASH_SAPLING_BRANCH_ID,
-            version: zcashPsbt.version,
-            lockTime: zcashPsbt.lockTime,
+            version: zcashPsbt.version(),
+            lockTime: zcashPsbt.lockTime(),
             versionGroupId: zcashPsbt.versionGroupId,
             expiryHeight: zcashPsbt.expiryHeight,
           },
@@ -263,8 +263,8 @@ describe("PSBT reconstruction", function () {
         // Create PSBT using block height (preferred approach)
         const psbtWithHeight = ZcashBitGoPsbt.createEmpty(networkName, rootWalletKeys, {
           blockHeight: saplingHeight,
-          version: zcashPsbt.version,
-          lockTime: zcashPsbt.lockTime,
+          version: zcashPsbt.version(),
+          lockTime: zcashPsbt.lockTime(),
           versionGroupId: zcashPsbt.versionGroupId,
           expiryHeight: zcashPsbt.expiryHeight,
         });
@@ -332,8 +332,8 @@ describe("PSBT reconstruction", function () {
 
         // Verify both PSBTs produce the same unsigned txid
         assert.strictEqual(
-          psbtWithHeight.unsignedTxid(),
-          psbtWithBranchId.unsignedTxid(),
+          psbtWithHeight.unsignedTxId(),
+          psbtWithBranchId.unsignedTxId(),
           "PSBT created with block height should have same unsigned txid as one created with explicit branch ID",
         );
 
@@ -363,10 +363,10 @@ describe("PSBT reconstruction", function () {
         assert.strictEqual(txid.length, 64, "txid should be 64 characters");
         assert.match(txid, /^[0-9a-f]{64}$/, "txid should be lowercase hex");
 
-        // Verify unsignedTxid() also returns valid format
-        const unsignedTxid = psbt.unsignedTxid();
-        assert.strictEqual(unsignedTxid.length, 64, "unsignedTxid should be 64 characters");
-        assert.match(unsignedTxid, /^[0-9a-f]{64}$/, "unsignedTxid should be lowercase hex");
+        // Verify unsignedTxId() also returns valid format
+        const unsignedTxId = psbt.unsignedTxId();
+        assert.strictEqual(unsignedTxId.length, 64, "unsignedTxId should be 64 characters");
+        assert.match(unsignedTxId, /^[0-9a-f]{64}$/, "unsignedTxId should be lowercase hex");
       });
     });
   });

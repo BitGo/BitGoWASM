@@ -4,7 +4,7 @@ import {
   type PsbtOutputData,
   type PsbtOutputDataWithAddress,
 } from "../wasm/wasm_utxo.js";
-import type { IPsbtIntrospectionWithAddress } from "../psbt.js";
+import type { IPsbtWithAddress } from "../psbt.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
 import { type ReplayProtectionArg, ReplayProtection } from "./ReplayProtection.js";
 import { type BIP32Arg, BIP32, isBIP32Arg } from "../bip32.js";
@@ -124,7 +124,7 @@ export type ParseOutputsOptions = {
   payGoPubkeys?: ECPairArg[];
 };
 
-export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
+export class BitGoPsbt implements IPsbtWithAddress {
   protected constructor(protected _wasm: WasmBitGoPsbt) {}
 
   /**
@@ -202,6 +202,45 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
    * }, outputScript);
    * ```
    */
+  addInputAtIndex(
+    index: number,
+    txid: string,
+    vout: number,
+    value: bigint,
+    script: Uint8Array,
+    sequence?: number,
+  ): number;
+  addInputAtIndex(index: number, options: AddInputOptions, script: Uint8Array): number;
+  addInputAtIndex(
+    index: number,
+    txidOrOptions: string | AddInputOptions,
+    voutOrScript: number | Uint8Array,
+    value?: bigint,
+    script?: Uint8Array,
+    sequence?: number,
+  ): number {
+    if (typeof txidOrOptions === "string") {
+      return this._wasm.add_input_at_index(
+        index,
+        txidOrOptions,
+        voutOrScript as number,
+        value,
+        script,
+        sequence,
+      );
+    }
+    const options = txidOrOptions;
+    return this._wasm.add_input_at_index(
+      index,
+      options.txid,
+      options.vout,
+      options.value,
+      voutOrScript as Uint8Array,
+      options.sequence,
+      options.prevTx,
+    );
+  }
+
   addInput(options: AddInputOptions, script: Uint8Array): number {
     return this._wasm.add_input(
       options.txid,
@@ -225,41 +264,36 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
    * const outputIndex = psbt.addOutput(outputScript, 50000n);
    * ```
    */
+  addOutputAtIndex(index: number, script: Uint8Array, value: bigint): number;
+  addOutputAtIndex(index: number, address: string, value: bigint): number;
+  addOutputAtIndex(index: number, options: AddOutputOptions): number;
+  addOutputAtIndex(
+    index: number,
+    scriptOrOptions: Uint8Array | string | AddOutputOptions,
+    value?: bigint,
+  ): number {
+    if (scriptOrOptions instanceof Uint8Array || typeof scriptOrOptions === "string") {
+      if (value === undefined) {
+        throw new Error("Value is required when passing a script or address");
+      }
+      if (scriptOrOptions instanceof Uint8Array) {
+        return this._wasm.add_output_at_index(index, scriptOrOptions, value);
+      }
+      return this._wasm.add_output_with_address_at_index(index, scriptOrOptions, value);
+    }
+
+    const options = scriptOrOptions;
+    if ("script" in options) {
+      return this._wasm.add_output_at_index(index, options.script, options.value);
+    }
+    if ("address" in options) {
+      return this._wasm.add_output_with_address_at_index(index, options.address, options.value);
+    }
+    throw new Error("Invalid output options");
+  }
+
   addOutput(script: Uint8Array, value: bigint): number;
-  /**
-   * Add an output to the PSBT by address
-   *
-   * @param address - The destination address
-   * @param value - Value in satoshis
-   * @returns The index of the newly added output
-   *
-   * @example
-   * ```typescript
-   * const outputIndex = psbt.addOutput("bc1q...", 50000n);
-   * ```
-   */
   addOutput(address: string, value: bigint): number;
-  /**
-   * Add an output to the PSBT
-   *
-   * @param options - Output options (script or address, and value)
-   * @returns The index of the newly added output
-   *
-   * @example
-   * ```typescript
-   * // Using script
-   * const outputIndex = psbt.addOutput({
-   *   script: outputScript,
-   *   value: 50000n,
-   * });
-   *
-   * // Using address
-   * const outputIndex = psbt.addOutput({
-   *   address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
-   *   value: 50000n,
-   * });
-   * ```
-   */
   addOutput(options: AddOutputOptions): number;
   addOutput(scriptOrOptions: Uint8Array | string | AddOutputOptions, value?: bigint): number {
     if (scriptOrOptions instanceof Uint8Array || typeof scriptOrOptions === "string") {
@@ -321,6 +355,28 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
    * );
    * ```
    */
+  addWalletInputAtIndex(
+    index: number,
+    inputOptions: AddInputOptions,
+    walletKeys: WalletKeysArg,
+    walletOptions: AddWalletInputOptions,
+  ): number {
+    const keys = RootWalletKeys.from(walletKeys);
+    return this._wasm.add_wallet_input_at_index(
+      index,
+      inputOptions.txid,
+      inputOptions.vout,
+      inputOptions.value,
+      keys.wasm,
+      walletOptions.scriptId.chain,
+      walletOptions.scriptId.index,
+      walletOptions.signPath?.signer,
+      walletOptions.signPath?.cosigner,
+      inputOptions.sequence,
+      inputOptions.prevTx,
+    );
+  }
+
   addWalletInput(
     inputOptions: AddInputOptions,
     walletKeys: WalletKeysArg,
@@ -371,6 +427,21 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
    * });
    * ```
    */
+  addWalletOutputAtIndex(
+    index: number,
+    walletKeys: WalletKeysArg,
+    options: AddWalletOutputOptions,
+  ): number {
+    const keys = RootWalletKeys.from(walletKeys);
+    return this._wasm.add_wallet_output_at_index(
+      index,
+      options.chain,
+      options.index,
+      options.value,
+      keys.wasm,
+    );
+  }
+
   addWalletOutput(walletKeys: WalletKeysArg, options: AddWalletOutputOptions): number {
     const keys = RootWalletKeys.from(walletKeys);
     return this._wasm.add_wallet_output(options.chain, options.index, options.value, keys.wasm);
@@ -395,6 +466,23 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
    * );
    * ```
    */
+  addReplayProtectionInputAtIndex(
+    index: number,
+    inputOptions: AddInputOptions,
+    key: ECPairArg,
+  ): number {
+    const ecpair = ECPair.from(key);
+    return this._wasm.add_replay_protection_input_at_index(
+      index,
+      ecpair.wasm,
+      inputOptions.txid,
+      inputOptions.vout,
+      inputOptions.value,
+      inputOptions.sequence,
+      inputOptions.prevTx,
+    );
+  }
+
   addReplayProtectionInput(inputOptions: AddInputOptions, key: ECPairArg): number {
     const ecpair = ECPair.from(key);
     return this._wasm.add_replay_protection_input(
@@ -407,11 +495,19 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
     );
   }
 
+  removeInput(index: number): void {
+    this._wasm.remove_input(index);
+  }
+
+  removeOutput(index: number): void {
+    this._wasm.remove_output(index);
+  }
+
   /**
    * Get the unsigned transaction ID
    * @returns The unsigned transaction ID
    */
-  unsignedTxid(): string {
+  unsignedTxId(): string {
     return this._wasm.unsigned_txid();
   }
 
@@ -419,15 +515,11 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
    * Get the transaction version
    * @returns The transaction version number
    */
-  get version(): number {
+  version(): number {
     return this._wasm.version();
   }
 
-  /**
-   * Get the transaction lock time
-   * @returns The transaction lock time
-   */
-  get lockTime(): number {
+  lockTime(): number {
     return this._wasm.lock_time();
   }
 
@@ -828,15 +920,11 @@ export class BitGoPsbt implements IPsbtIntrospectionWithAddress {
    * Get the number of inputs in the PSBT
    * @returns The number of inputs
    */
-  get inputCount(): number {
+  inputCount(): number {
     return this._wasm.input_count();
   }
 
-  /**
-   * Get the number of outputs in the PSBT
-   * @returns The number of outputs
-   */
-  get outputCount(): number {
+  outputCount(): number {
     return this._wasm.output_count();
   }
 

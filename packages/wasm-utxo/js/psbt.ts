@@ -1,15 +1,29 @@
 import type { PsbtInputData, PsbtOutputData, PsbtOutputDataWithAddress } from "./wasm/wasm_utxo.js";
 
-/** Common interface for PSBT introspection methods */
-export interface IPsbtIntrospection {
-  readonly inputCount: number;
-  readonly outputCount: number;
+/** Common interface for PSBT types */
+export interface IPsbt {
+  inputCount(): number;
+  outputCount(): number;
   getInputs(): PsbtInputData[];
   getOutputs(): PsbtOutputData[];
+  version(): number;
+  lockTime(): number;
+  unsignedTxId(): string;
+  addInputAtIndex(
+    index: number,
+    txid: string,
+    vout: number,
+    value: bigint,
+    script: Uint8Array,
+    sequence?: number,
+  ): number;
+  addOutputAtIndex(index: number, script: Uint8Array, value: bigint): number;
+  removeInput(index: number): void;
+  removeOutput(index: number): void;
 }
 
-/** Extended introspection with address resolution (no coin parameter needed) */
-export interface IPsbtIntrospectionWithAddress extends IPsbtIntrospection {
+/** Extended PSBT with address resolution (no coin parameter needed) */
+export interface IPsbtWithAddress extends IPsbt {
   getOutputsWithAddress(): PsbtOutputDataWithAddress[];
 }
 
