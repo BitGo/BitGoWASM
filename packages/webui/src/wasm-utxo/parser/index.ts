@@ -4,9 +4,9 @@
  * Parses PSBTs and transactions and displays them as collapsible trees.
  */
 
-import { BaseComponent, defineComponent, h, css, fragment, type Child } from "../../lib/html";
+import { BaseComponent, defineComponent, h, css, fragment } from "../../lib/html";
 import { setParams } from "../../lib/router";
-import { commonStyles } from "../../index";
+import { commonStyles } from "../../styles";
 import {
   type Node,
   type Primitive,
@@ -20,9 +20,11 @@ import {
   tryParsePsbtRaw,
   allNetworks,
 } from "@bitgo/wasm-utxo/inspect";
+import { Psbt, address } from "@bitgo/wasm-utxo";
 import { samples, type Sample } from "./samples";
 
 type ParseMode = "psbt" | "tx" | "psbt-raw";
+type NodeAction = { label: string; handler: () => void };
 
 // PSBT magic bytes: "psbt" followed by 0xff
 const PSBT_MAGIC = "70736274ff";
@@ -97,6 +99,10 @@ function possibleDecodings(input: string): Uint8Array[] {
   if (base64) decodings.push(base64);
 
   return decodings;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
 }
 
 /**
@@ -183,6 +189,7 @@ function renderTreeNode(
   expandedValues: Set<string>,
   onToggleValue: (path: string) => void,
   path: string = "root",
+  nodeActions?: Map<string, NodeAction>,
 ): HTMLElement {
   const hasChildren = node.children.length > 0;
   const isExpanded = expandedPaths.has(path);
@@ -251,6 +258,19 @@ function renderTreeNode(
       },
       h("span", { class: `tree-chevron ${isExpanded ? "expanded" : ""}` }, isExpanded ? "▼" : "►"),
       h("span", { class: "tree-label" }, labelText),
+      nodeActions?.has(path)
+        ? h(
+            "button",
+            {
+              class: "action-btn action-btn-remove",
+              onclick: (e: Event) => {
+                e.stopPropagation();
+                nodeActions.get(path)!.handler();
+              },
+            },
+            nodeActions.get(path)!.label,
+          )
+        : null,
     ),
     isExpanded
       ? h(
@@ -264,6 +284,7 @@ function renderTreeNode(
               expandedValues,
               onToggleValue,
               `${path}.${i}`,
+              nodeActions,
             ),
           ),
         )
@@ -282,6 +303,8 @@ class PsbtTxParser extends BaseComponent {
   private currentNode: Node | null = null;
   private currentNetwork: CoinName = "btc";
   private autoDetectNetwork: boolean = true;
+  private psbt: InstanceType<typeof Psbt> | null = null;
+  private nodeActions: Map<string, NodeAction> = new Map();
 
   render() {
     const featureEnabled = isInspectEnabled();
@@ -565,6 +588,65 @@ class PsbtTxParser extends BaseComponent {
         .copy-btn:hover {
           border-color: var(--accent, #58a6ff);
           color: var(--accent, #58a6ff);
+        }
+
+        .action-btn {
+          padding: 0.125rem 0.375rem;
+          font-size: 0.625rem;
+          background: transparent;
+          border: 1px solid var(--border, #30363d);
+          border-radius: 3px;
+          cursor: pointer;
+          margin-left: auto;
+          transition: border-color 0.15s, color 0.15s;
+        }
+
+        .action-btn-remove {
+          color: var(--error, #d13b54);
+        }
+
+        .action-btn-remove:hover {
+          border-color: var(--error, #d13b54);
+        }
+
+        .edit-section {
+          margin-top: 1rem;
+          padding-top: 1rem;
+          border-top: 1px solid var(--border, #30363d);
+        }
+
+        .edit-title {
+          font-size: 0.75rem;
+          color: var(--muted, #8b949e);
+          margin-bottom: 0.5rem;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+        }
+
+        .edit-form {
+          display: flex;
+          gap: 0.375rem;
+          flex-wrap: wrap;
+        }
+
+        .edit-input {
+          flex: 1;
+          min-width: 100px;
+          padding: 0.375rem 0.5rem;
+          font-size: 0.8125rem;
+          background: var(--surface, #161b22);
+          border: 1px solid var(--border, #30363d);
+          border-radius: 6px;
+          color: var(--fg, #c9d1d9);
+        }
+
+        .edit-input:focus {
+          outline: none;
+          border-color: var(--accent, #58a6ff);
+        }
+
+        .edit-input-value {
+          max-width: 120px;
         }
 
         .empty-state {
@@ -868,6 +950,7 @@ class PsbtTxParser extends BaseComponent {
               },
               "Load Sample",
             ),
+            h("div", { id: "edit-controls" }),
           ),
           // Right panel: Results
           h(
@@ -1194,7 +1277,36 @@ class PsbtTxParser extends BaseComponent {
     detectedEl.textContent = `Detected: ${typeStr}${networkStr}`;
 
     this.currentNode = node;
+
+    // Keep a mutable Psbt instance for editing (only in structured PSBT mode)
+    if (this.currentMode === "psbt" && successBytes && detectedPsbt) {
+      try {
+        this.psbt = Psbt.deserialize(successBytes);
+      } catch {
+        this.psbt = null;
+      }
+    } else {
+      this.psbt = null;
+    }
+
+    this.buildNodeActions();
+
+    // Auto-expand to outputs level when PSBT editing is active
+    if (this.psbt && this.currentNode) {
+      const txNode = this.currentNode.children.find((c) => c.label === "tx");
+      if (txNode) {
+        const txIndex = this.currentNode.children.indexOf(txNode);
+        this.expandedPaths.add(`root.${txIndex}`);
+        const outputsNode = txNode.children.find((c) => c.label === "outputs");
+        if (outputsNode) {
+          const outputsIndex = txNode.children.indexOf(outputsNode);
+          this.expandedPaths.add(`root.${txIndex}.${outputsIndex}`);
+        }
+      }
+    }
+
     this.renderTree();
+    this.renderEditControls();
   }
 
   private renderTree(): void {
@@ -1221,9 +1333,128 @@ class PsbtTxParser extends BaseComponent {
         }
         this.renderTree();
       },
+      "root",
+      this.nodeActions.size > 0 ? this.nodeActions : undefined,
     );
 
     resultsEl.replaceChildren(h("div", { class: "tree-container" }, treeEl));
+  }
+
+  /**
+   * Walk the parsed tree to find tx output nodes and map their paths to Remove actions.
+   */
+  private buildNodeActions(): void {
+    this.nodeActions = new Map();
+    if (!this.psbt || !this.currentNode) return;
+
+    // Find the "tx" node (first child of root psbt node), then its "outputs" child
+    const txNode = this.currentNode.children.find((c) => c.label === "tx");
+    if (!txNode) return;
+    const txIndex = this.currentNode.children.indexOf(txNode);
+    const outputsNode = txNode.children.find((c) => c.label === "outputs");
+    if (!outputsNode) return;
+    const outputsIndex = txNode.children.indexOf(outputsNode);
+
+    for (let i = 0; i < outputsNode.children.length; i++) {
+      const path = `root.${txIndex}.${outputsIndex}.${i}`;
+      this.nodeActions.set(path, {
+        label: "Remove",
+        handler: () => this.removeOutput(i),
+      });
+    }
+  }
+
+  private renderEditControls(): void {
+    const el = this.$("#edit-controls");
+    if (!el) return;
+
+    if (!this.psbt) {
+      el.replaceChildren();
+      return;
+    }
+
+    el.replaceChildren(
+      h(
+        "div",
+        { class: "edit-section" },
+        h("div", { class: "edit-title" }, "Edit Outputs"),
+        h(
+          "div",
+          { class: "edit-form" },
+          h("input", {
+            id: "add-address",
+            type: "text",
+            placeholder: "Address",
+            class: "edit-input",
+          }),
+          h("input", {
+            id: "add-value",
+            type: "text",
+            placeholder: "Value (sat)",
+            class: "edit-input edit-input-value",
+          }),
+          h("button", { class: "btn", onclick: () => this.addOutput() }, "Add Output"),
+        ),
+        h("div", { id: "edit-error" }),
+      ),
+    );
+  }
+
+  private removeOutput(index: number): void {
+    if (!this.psbt) return;
+    this.psbt.removeOutput(index);
+    this.applyPsbtEdit();
+  }
+
+  private addOutput(): void {
+    if (!this.psbt) return;
+    const addr = this.$<HTMLInputElement>("#add-address")?.value.trim();
+    const valueStr = this.$<HTMLInputElement>("#add-value")?.value.trim();
+    const errorEl = this.$("#edit-error");
+
+    if (!addr || !valueStr) {
+      if (errorEl) {
+        errorEl.replaceChildren(
+          h(
+            "div",
+            { class: "error-message" },
+            !addr ? "Enter an address" : "Enter a value in satoshis",
+          ),
+        );
+      }
+      return;
+    }
+
+    if (errorEl) errorEl.replaceChildren();
+
+    try {
+      const script = address.toOutputScriptWithCoin(addr, this.currentNetwork);
+      this.psbt.addOutput(script, BigInt(valueStr));
+      const addrInput = this.$<HTMLInputElement>("#add-address");
+      const valInput = this.$<HTMLInputElement>("#add-value");
+      if (addrInput) addrInput.value = "";
+      if (valInput) valInput.value = "";
+      this.applyPsbtEdit();
+    } catch (e) {
+      if (errorEl) {
+        errorEl.replaceChildren(h("div", { class: "error-message" }, `${e}`));
+      }
+    }
+  }
+
+  /**
+   * After a PSBT mutation, re-serialize and re-parse to refresh the tree.
+   */
+  private applyPsbtEdit(): void {
+    if (!this.psbt) return;
+    const bytes = this.psbt.serialize();
+    const b64 = toBase64(bytes);
+    const input = this.$<HTMLTextAreaElement>("#data-input");
+    if (input) {
+      input.value = b64;
+      setParams({ data: b64 });
+    }
+    this.parse(b64);
   }
 
   private expandAll(): void {
@@ -1264,6 +1495,10 @@ class PsbtTxParser extends BaseComponent {
       );
     }
     this.currentNode = null;
+    this.psbt = null;
+    this.nodeActions = new Map();
+    const editEl = this.$("#edit-controls");
+    if (editEl) editEl.replaceChildren();
   }
 
   private share(): void {
