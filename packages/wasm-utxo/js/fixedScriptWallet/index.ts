@@ -17,6 +17,7 @@ export { ChainCode, chainCodes, assertChainCode, type Scope } from "./chains.js"
 // Bitcoin-like PSBT (for all non-Zcash networks)
 export {
   BitGoPsbt,
+  getWalletKeysFromPsbt,
   type NetworkName,
   type ScriptId,
   type ParsedInput,

@@ -19,6 +19,11 @@ impl WasmRootWalletKeys {
     pub(crate) fn inner(&self) -> &RootWalletKeys {
         &self.inner
     }
+
+    /// Create from an inner RootWalletKeys
+    pub(crate) fn from_inner(inner: RootWalletKeys) -> Self {
+        Self { inner }
+    }
 }
 
 #[wasm_bindgen]

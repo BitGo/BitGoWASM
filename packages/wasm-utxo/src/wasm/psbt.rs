@@ -225,6 +225,15 @@ pub fn get_outputs_from_psbt(psbt: &Psbt) -> Result<JsValue, WasmUtxoError> {
     outputs.try_to_js_value()
 }
 
+/// Get global xpubs from a PSBT as an array of WasmBIP32 instances
+pub fn get_global_xpubs_from_psbt(psbt: &Psbt) -> JsValue {
+    let arr = js_sys::Array::new();
+    for xpub in psbt.xpub.keys() {
+        arr.push(&WasmBIP32::from_xpub_internal(*xpub).into());
+    }
+    arr.into()
+}
+
 /// Get all PSBT outputs with resolved address strings
 pub fn get_outputs_with_address_from_psbt(
     psbt: &Psbt,
@@ -672,6 +681,12 @@ impl WrapPsbt {
         let network = crate::Network::from_coin_name(coin)
             .ok_or_else(|| WasmUtxoError::new(&format!("Unknown coin: {}", coin)))?;
         get_outputs_with_address_from_psbt(&self.0, network)
+    }
+
+    /// Get global xpubs from the PSBT as an array of WasmBIP32 instances.
+    #[wasm_bindgen(js_name = getGlobalXpubs)]
+    pub fn get_global_xpubs(&self) -> JsValue {
+        get_global_xpubs_from_psbt(&self.0)
     }
 
     /// Get partial signatures for an input

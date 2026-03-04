@@ -1,4 +1,5 @@
 import type { PsbtInputData, PsbtOutputData, PsbtOutputDataWithAddress } from "./wasm/wasm_utxo.js";
+import type { BIP32 } from "./bip32.js";
 
 /** Common interface for PSBT types */
 export interface IPsbt {
@@ -6,6 +7,7 @@ export interface IPsbt {
   outputCount(): number;
   getInputs(): PsbtInputData[];
   getOutputs(): PsbtOutputData[];
+  getGlobalXpubs(): BIP32[];
   version(): number;
   lockTime(): number;
   unsignedTxId(): string;

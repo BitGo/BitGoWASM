@@ -1292,6 +1292,22 @@ impl BitGoPsbt {
         }
     }
 
+    /// Returns the global xpubs from the PSBT, or None if the PSBT has no global xpubs.
+    ///
+    /// # Panics
+    /// Panics if the PSBT has global xpubs but not exactly 3.
+    pub fn get_global_xpubs(&self) -> Option<crate::fixed_script_wallet::XpubTriple> {
+        let xpubs: Vec<_> = self.psbt().xpub.keys().copied().collect();
+        if xpubs.is_empty() {
+            return None;
+        }
+        Some(
+            xpubs
+                .try_into()
+                .expect("expected exactly 3 global xpubs in PSBT"),
+        )
+    }
+
     /// Set version information in the PSBT's proprietary fields
     ///
     /// This embeds the wasm-utxo version and git hash into the PSBT's global
@@ -3001,6 +3017,71 @@ impl BitGoPsbt {
             virtual_size: virtual_size as u32,
         })
     }
+}
+
+/// All 6 orderings of a 3-element array, used to brute-force the
+/// [user, backup, bitgo] assignment from an unordered xpub triple.
+const XPUB_TRIPLE_PERMUTATIONS: [[usize; 3]; 6] = [
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [2, 1, 0],
+];
+
+/// Sort an xpub triple into `[user, backup, bitgo]` order by trying all permutations
+/// against the PSBT's wallet inputs.
+///
+/// For each permutation, constructs `RootWalletKeys` and validates every non-replay-protection
+/// input against it. The first permutation where all inputs pass validation is returned.
+/// Works for all script types including p2tr.
+pub fn to_wallet_keys(
+    psbt: &BitGoPsbt,
+    xpubs: crate::fixed_script_wallet::XpubTriple,
+) -> Result<crate::fixed_script_wallet::RootWalletKeys, String> {
+    use crate::fixed_script_wallet::RootWalletKeys;
+
+    let inner_psbt = psbt.psbt();
+
+    // Collect non-replay-protection inputs (those with derivation info)
+    let wallet_inputs: Vec<_> = inner_psbt
+        .unsigned_tx
+        .input
+        .iter()
+        .zip(inner_psbt.inputs.iter())
+        .filter(|(_tx_input, psbt_input)| {
+            !psbt_input.bip32_derivation.is_empty() || !psbt_input.tap_key_origins.is_empty()
+        })
+        .collect();
+
+    if wallet_inputs.is_empty() {
+        return Err("no wallet inputs found in PSBT".to_string());
+    }
+
+    for perm in &XPUB_TRIPLE_PERMUTATIONS {
+        let permuted = [xpubs[perm[0]], xpubs[perm[1]], xpubs[perm[2]]];
+        let wallet_keys = RootWalletKeys::new(permuted);
+
+        let all_match = wallet_inputs.iter().all(|(tx_input, psbt_input)| {
+            let output_script = psbt_wallet_input::get_output_script_and_value(
+                psbt_input,
+                tx_input.previous_output,
+            );
+            match output_script {
+                Ok((script, _value)) => {
+                    psbt_wallet_input::assert_wallet_input(&wallet_keys, psbt_input, script).is_ok()
+                }
+                Err(_) => false,
+            }
+        });
+
+        if all_match {
+            return Ok(wallet_keys);
+        }
+    }
+
+    Err("no permutation of xpubs matches the PSBT wallet inputs".to_string())
 }
 
 #[cfg(test)]
@@ -4811,5 +4892,79 @@ mod tests {
         let version_info = WasmUtxoVersionInfo::from_bytes(value).unwrap();
         assert!(!version_info.version.is_empty());
         assert!(!version_info.git_hash.is_empty());
+    }
+
+    #[test]
+    fn test_get_global_xpubs() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+
+        let xpubs = get_test_wallet_keys("test_global_xpubs");
+        let wallet_keys = RootWalletKeys::new(xpubs);
+        let psbt = BitGoPsbt::new(Network::Bitcoin, &wallet_keys, Some(2), Some(0));
+
+        let global = psbt.get_global_xpubs().expect("should have global xpubs");
+        // The xpubs may be in BTreeMap order, not insertion order
+        let mut sorted_input: Vec<_> = xpubs.iter().map(|x| x.to_string()).collect();
+        sorted_input.sort();
+        let mut sorted_output: Vec<_> = global.iter().map(|x| x.to_string()).collect();
+        sorted_output.sort();
+        assert_eq!(sorted_input, sorted_output);
+    }
+
+    #[test]
+    fn test_to_wallet_keys_canonical_order() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use miniscript::bitcoin::hashes::Hash;
+
+        let xpubs = get_test_wallet_keys("test_to_wallet_keys");
+        let wallet_keys = RootWalletKeys::new(xpubs);
+        let mut psbt = BitGoPsbt::new(Network::Bitcoin, &wallet_keys, Some(2), Some(0));
+
+        let txid = Txid::all_zeros();
+        psbt.add_wallet_input(
+            txid,
+            0,
+            100_000,
+            &wallet_keys,
+            ScriptId {
+                chain: 10,
+                index: 0,
+            },
+            WalletInputOptions::default(),
+        )
+        .expect("add_wallet_input");
+
+        let result = to_wallet_keys(&psbt, xpubs).expect("should find correct order");
+        assert_eq!(result.xpubs, xpubs);
+    }
+
+    #[test]
+    fn test_to_wallet_keys_shuffled_order() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use miniscript::bitcoin::hashes::Hash;
+
+        let xpubs = get_test_wallet_keys("test_to_wallet_keys_shuffled");
+        let wallet_keys = RootWalletKeys::new(xpubs);
+        let mut psbt = BitGoPsbt::new(Network::Bitcoin, &wallet_keys, Some(2), Some(0));
+
+        let txid = Txid::all_zeros();
+        psbt.add_wallet_input(
+            txid,
+            0,
+            100_000,
+            &wallet_keys,
+            ScriptId {
+                chain: 10,
+                index: 0,
+            },
+            WalletInputOptions::default(),
+        )
+        .expect("add_wallet_input");
+
+        // Shuffle the xpubs: [bitgo, user, backup] instead of [user, backup, bitgo]
+        let shuffled = [xpubs[2], xpubs[0], xpubs[1]];
+        let result = to_wallet_keys(&psbt, shuffled).expect("should find correct order");
+        // Result should be sorted back to [user, backup, bitgo]
+        assert_eq!(result.xpubs, xpubs);
     }
 }
