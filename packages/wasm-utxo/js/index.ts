@@ -119,6 +119,19 @@ declare module "./wasm/wasm_utxo.js" {
     // Extraction methods
     extractTransaction(): WasmTransaction;
 
+    // Mutation methods
+    addInputAtIndex(
+      index: number,
+      txid: string,
+      vout: number,
+      value: bigint,
+      script: Uint8Array,
+      sequence?: number,
+    ): number;
+    addOutputAtIndex(index: number, script: Uint8Array, value: bigint): number;
+    removeInput(index: number): void;
+    removeOutput(index: number): void;
+
     // Metadata methods
     unsignedTxId(): string;
     lockTime(): number;
@@ -130,8 +143,4 @@ export { WrapDescriptor as Descriptor } from "./wasm/wasm_utxo.js";
 export { WrapMiniscript as Miniscript } from "./wasm/wasm_utxo.js";
 export { WrapPsbt as Psbt } from "./wasm/wasm_utxo.js";
 export { DashTransaction, Transaction, ZcashTransaction } from "./transaction.js";
-export {
-  hasPsbtMagic,
-  type IPsbtIntrospection,
-  type IPsbtIntrospectionWithAddress,
-} from "./psbt.js";
+export { hasPsbtMagic, type IPsbt, type IPsbtWithAddress } from "./psbt.js";

@@ -41,16 +41,18 @@ export class Transaction implements ITransaction {
    * @param sequence - Optional sequence number (default: 0xFFFFFFFF)
    * @returns The index of the newly added input
    */
+  addInputAtIndex(index: number, txid: string, vout: number, sequence?: number): number {
+    return this._wasm.add_input_at_index(index, txid, vout, sequence);
+  }
+
   addInput(txid: string, vout: number, sequence?: number): number {
     return this._wasm.add_input(txid, vout, sequence);
   }
 
-  /**
-   * Add an output to the transaction
-   * @param script - Output script (scriptPubKey)
-   * @param value - Value in satoshis
-   * @returns The index of the newly added output
-   */
+  addOutputAtIndex(index: number, script: Uint8Array, value: bigint): number {
+    return this._wasm.add_output_at_index(index, script, value);
+  }
+
   addOutput(script: Uint8Array, value: bigint): number {
     return this._wasm.add_output(script, value);
   }

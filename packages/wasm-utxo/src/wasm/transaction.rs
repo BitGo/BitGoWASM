@@ -43,40 +43,72 @@ impl WasmTransaction {
     ///
     /// # Returns
     /// The index of the newly added input
-    pub fn add_input(
+    pub fn add_input_at_index(
         &mut self,
+        index: usize,
         txid: &str,
         vout: u32,
         sequence: Option<u32>,
     ) -> Result<usize, WasmUtxoError> {
         use miniscript::bitcoin::{transaction::Sequence, OutPoint, ScriptBuf, TxIn, Txid};
         use std::str::FromStr;
+        if index > self.tx.input.len() {
+            return Err(WasmUtxoError::new(&format!(
+                "Input index {} out of bounds (have {} inputs)",
+                index,
+                self.tx.input.len()
+            )));
+        }
         let txid = Txid::from_str(txid)
             .map_err(|e| WasmUtxoError::new(&format!("Invalid txid: {}", e)))?;
-        self.tx.input.push(TxIn {
-            previous_output: OutPoint { txid, vout },
-            script_sig: ScriptBuf::new(),
-            sequence: sequence.map(Sequence).unwrap_or(Sequence::MAX),
-            witness: Default::default(),
-        });
-        Ok(self.tx.input.len() - 1)
+        self.tx.input.insert(
+            index,
+            TxIn {
+                previous_output: OutPoint { txid, vout },
+                script_sig: ScriptBuf::new(),
+                sequence: sequence.map(Sequence).unwrap_or(Sequence::MAX),
+                witness: Default::default(),
+            },
+        );
+        Ok(index)
     }
 
-    /// Add an output to the transaction
-    ///
-    /// # Arguments
-    /// * `script` - The output script (scriptPubKey)
-    /// * `value` - The value in satoshis
-    ///
-    /// # Returns
-    /// The index of the newly added output
-    pub fn add_output(&mut self, script: &[u8], value: u64) -> usize {
+    pub fn add_input(
+        &mut self,
+        txid: &str,
+        vout: u32,
+        sequence: Option<u32>,
+    ) -> Result<usize, WasmUtxoError> {
+        self.add_input_at_index(self.tx.input.len(), txid, vout, sequence)
+    }
+
+    pub fn add_output_at_index(
+        &mut self,
+        index: usize,
+        script: &[u8],
+        value: u64,
+    ) -> Result<usize, WasmUtxoError> {
         use miniscript::bitcoin::{Amount, ScriptBuf, TxOut};
-        self.tx.output.push(TxOut {
-            value: Amount::from_sat(value),
-            script_pubkey: ScriptBuf::from(script.to_vec()),
-        });
-        self.tx.output.len() - 1
+        if index > self.tx.output.len() {
+            return Err(WasmUtxoError::new(&format!(
+                "Output index {} out of bounds (have {} outputs)",
+                index,
+                self.tx.output.len()
+            )));
+        }
+        self.tx.output.insert(
+            index,
+            TxOut {
+                value: Amount::from_sat(value),
+                script_pubkey: ScriptBuf::from(script.to_vec()),
+            },
+        );
+        Ok(index)
+    }
+
+    pub fn add_output(&mut self, script: &[u8], value: u64) -> usize {
+        self.add_output_at_index(self.tx.output.len(), script, value)
+            .expect("insert at len should never fail")
     }
 
     /// Deserialize a transaction from bytes

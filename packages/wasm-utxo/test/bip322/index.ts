@@ -38,8 +38,8 @@ describe("BIP-0322", function () {
       });
 
       assert.strictEqual(inputIndex, 0, "First input should have index 0");
-      assert.strictEqual(psbt.version, 0, "BIP-0322 PSBTs must have version 0");
-      assert.strictEqual(psbt.lockTime, 0, "BIP-0322 PSBTs must have lockTime 0");
+      assert.strictEqual(psbt.version(), 0, "BIP-0322 PSBTs must have version 0");
+      assert.strictEqual(psbt.lockTime(), 0, "BIP-0322 PSBTs must have lockTime 0");
     });
 
     it("should add a valid BIP-0322 input for p2wsh", function () {
@@ -52,7 +52,7 @@ describe("BIP-0322", function () {
       });
 
       assert.strictEqual(inputIndex, 0);
-      assert.strictEqual(psbt.version, 0);
+      assert.strictEqual(psbt.version(), 0);
     });
 
     it("should add multiple BIP-0322 inputs", function () {
@@ -77,7 +77,7 @@ describe("BIP-0322", function () {
       assert.strictEqual(idx0, 0);
       assert.strictEqual(idx1, 1);
       assert.strictEqual(idx2, 2);
-      assert.strictEqual(psbt.version, 0);
+      assert.strictEqual(psbt.version(), 0);
     });
 
     it("should throw for non-version-0 PSBT", function () {

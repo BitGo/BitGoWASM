@@ -9,6 +9,7 @@ pub mod inspect;
 pub mod message;
 mod networks;
 pub mod paygo;
+pub mod psbt_ops;
 #[cfg(test)]
 mod test_utils;
 pub mod zcash;

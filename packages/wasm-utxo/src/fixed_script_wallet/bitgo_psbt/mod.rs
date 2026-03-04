@@ -572,28 +572,25 @@ impl BitGoPsbt {
     ///
     /// # Returns
     /// The index of the newly added input
-    pub fn add_input(
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_input_at_index(
         &mut self,
+        index: usize,
         txid: Txid,
         vout: u32,
         value: u64,
         script: miniscript::bitcoin::ScriptBuf,
         sequence: Option<u32>,
         prev_tx: Option<miniscript::bitcoin::Transaction>,
-    ) -> usize {
+    ) -> Result<usize, String> {
         use miniscript::bitcoin::{transaction::Sequence, Amount, OutPoint, TxIn, TxOut};
 
-        let psbt = self.psbt_mut();
-
-        // Create the transaction input
         let tx_in = TxIn {
             previous_output: OutPoint { txid, vout },
             script_sig: miniscript::bitcoin::ScriptBuf::new(),
             sequence: Sequence(sequence.unwrap_or(0xFFFFFFFE)),
             witness: miniscript::bitcoin::Witness::default(),
         };
-
-        // Create the PSBT input with witness_utxo populated
         let psbt_input = miniscript::bitcoin::psbt::Input {
             witness_utxo: Some(TxOut {
                 value: Amount::from_sat(value),
@@ -603,11 +600,21 @@ impl BitGoPsbt {
             ..Default::default()
         };
 
-        // Add to the PSBT
-        psbt.unsigned_tx.input.push(tx_in);
-        psbt.inputs.push(psbt_input);
+        crate::psbt_ops::insert_input(self.psbt_mut(), index, tx_in, psbt_input)
+    }
 
-        psbt.inputs.len() - 1
+    pub fn add_input(
+        &mut self,
+        txid: Txid,
+        vout: u32,
+        value: u64,
+        script: miniscript::bitcoin::ScriptBuf,
+        sequence: Option<u32>,
+        prev_tx: Option<miniscript::bitcoin::Transaction>,
+    ) -> usize {
+        let index = self.psbt().inputs.len();
+        self.add_input_at_index(index, txid, vout, value, script, sequence, prev_tx)
+            .expect("insert at len should never fail")
     }
 
     /// Add a replay protection input (p2shP2pk) to the PSBT
@@ -624,14 +631,15 @@ impl BitGoPsbt {
     ///
     /// # Returns
     /// The index of the newly added input
-    pub fn add_replay_protection_input(
+    pub fn add_replay_protection_input_at_index(
         &mut self,
+        index: usize,
         pubkey: miniscript::bitcoin::CompressedPublicKey,
         txid: Txid,
         vout: u32,
         value: u64,
         options: ReplayProtectionOptions,
-    ) -> usize {
+    ) -> Result<usize, String> {
         use crate::fixed_script_wallet::wallet_scripts::ScriptP2shP2pk;
         use miniscript::bitcoin::consensus::Decodable;
         use miniscript::bitcoin::psbt::{Input, PsbtSighashType};
@@ -640,14 +648,11 @@ impl BitGoPsbt {
         };
 
         let network = self.network();
-        let psbt = self.psbt_mut();
 
-        // Create the p2shP2pk script
         let script = ScriptP2shP2pk::new(pubkey);
         let output_script = script.output_script();
         let redeem_script = script.redeem_script;
 
-        // Create the transaction input
         let tx_in = TxIn {
             previous_output: OutPoint { txid, vout },
             script_sig: miniscript::bitcoin::ScriptBuf::new(),
@@ -655,28 +660,23 @@ impl BitGoPsbt {
             witness: miniscript::bitcoin::Witness::default(),
         };
 
-        // Determine sighash type: use provided value or default based on network
         // Networks with SIGHASH_FORKID use SIGHASH_ALL | SIGHASH_FORKID (0x41)
-        let sighash_type = options.sighash_type.unwrap_or_else(|| {
-            match network.mainnet() {
+        let sighash_type = options
+            .sighash_type
+            .unwrap_or_else(|| match network.mainnet() {
                 Network::BitcoinCash
                 | Network::Ecash
                 | Network::BitcoinSV
-                | Network::BitcoinGold => {
-                    PsbtSighashType::from_u32(0x41) // SIGHASH_ALL | SIGHASH_FORKID
-                }
-                _ => PsbtSighashType::from_u32(0x01), // SIGHASH_ALL
-            }
-        });
+                | Network::BitcoinGold => PsbtSighashType::from_u32(0x41),
+                _ => PsbtSighashType::from_u32(0x01),
+            });
 
-        // Create the PSBT input
         let mut psbt_input = Input {
             redeem_script: Some(redeem_script),
             sighash_type: Some(sighash_type),
             ..Default::default()
         };
 
-        // Set utxo: either non_witness_utxo (full tx) or witness_utxo (output only)
         if let Some(tx_bytes) = options.prev_tx {
             let tx = Transaction::consensus_decode(&mut &tx_bytes[..])
                 .expect("Failed to decode prev_tx");
@@ -688,11 +688,20 @@ impl BitGoPsbt {
             });
         }
 
-        // Add to the PSBT
-        psbt.unsigned_tx.input.push(tx_in);
-        psbt.inputs.push(psbt_input);
+        crate::psbt_ops::insert_input(self.psbt_mut(), index, tx_in, psbt_input)
+    }
 
-        psbt.inputs.len() - 1
+    pub fn add_replay_protection_input(
+        &mut self,
+        pubkey: miniscript::bitcoin::CompressedPublicKey,
+        txid: Txid,
+        vout: u32,
+        value: u64,
+        options: ReplayProtectionOptions,
+    ) -> usize {
+        let index = self.psbt().inputs.len();
+        self.add_replay_protection_input_at_index(index, pubkey, txid, vout, value, options)
+            .expect("insert at len should never fail")
     }
 
     /// Add an output to the PSBT
@@ -703,32 +712,48 @@ impl BitGoPsbt {
     ///
     /// # Returns
     /// The index of the newly added output
-    pub fn add_output(&mut self, script: miniscript::bitcoin::ScriptBuf, value: u64) -> usize {
+    pub fn add_output_at_index(
+        &mut self,
+        index: usize,
+        script: miniscript::bitcoin::ScriptBuf,
+        value: u64,
+    ) -> Result<usize, String> {
         use miniscript::bitcoin::{Amount, TxOut};
 
-        let psbt = self.psbt_mut();
-
-        // Create the transaction output
         let tx_out = TxOut {
             value: Amount::from_sat(value),
             script_pubkey: script,
         };
 
-        // Create the PSBT output
-        let psbt_output = miniscript::bitcoin::psbt::Output::default();
-
-        // Add to the PSBT
-        psbt.unsigned_tx.output.push(tx_out);
-        psbt.outputs.push(psbt_output);
-
-        psbt.outputs.len() - 1
+        crate::psbt_ops::insert_output(
+            self.psbt_mut(),
+            index,
+            tx_out,
+            miniscript::bitcoin::psbt::Output::default(),
+        )
     }
 
-    pub fn add_output_with_address(&mut self, address: &str, value: u64) -> Result<usize, String> {
+    pub fn add_output(&mut self, script: miniscript::bitcoin::ScriptBuf, value: u64) -> usize {
+        let index = self.psbt().outputs.len();
+        self.add_output_at_index(index, script, value)
+            .expect("insert at len should never fail")
+    }
+
+    pub fn add_output_with_address_at_index(
+        &mut self,
+        index: usize,
+        address: &str,
+        value: u64,
+    ) -> Result<usize, String> {
         let script =
             crate::address::networks::to_output_script_with_network(address, self.network())
                 .map_err(|e| e.to_string())?;
-        Ok(self.add_output(script, value))
+        self.add_output_at_index(index, script, value)
+    }
+
+    pub fn add_output_with_address(&mut self, address: &str, value: u64) -> Result<usize, String> {
+        let index = self.psbt().outputs.len();
+        self.add_output_with_address_at_index(index, address, value)
     }
 
     /// Add a wallet input with full PSBT metadata
@@ -746,8 +771,10 @@ impl BitGoPsbt {
     ///
     /// # Returns
     /// The index of the newly added input
-    pub fn add_wallet_input(
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_wallet_input_at_index(
         &mut self,
+        index: usize,
         txid: Txid,
         vout: u32,
         value: u64,
@@ -767,26 +794,21 @@ impl BitGoPsbt {
         let psbt = self.psbt_mut();
 
         let chain = script_id.chain;
-        let index = script_id.index;
+        let derivation_index = script_id.index;
 
-        // Parse chain
         let chain_enum = Chain::try_from(chain)?;
 
-        // Derive wallet keys for this chain/index
         let derived_keys = wallet_keys
-            .derive_for_chain_and_index(chain, index)
+            .derive_for_chain_and_index(chain, derivation_index)
             .map_err(|e| format!("Failed to derive keys: {}", e))?;
         let pub_triple = to_pub_triple(&derived_keys);
 
-        // Create wallet scripts
         let script_support = network.output_script_support();
         let scripts = WalletScripts::new(&pub_triple, chain_enum, &script_support)
             .map_err(|e| format!("Failed to create wallet scripts: {}", e))?;
 
-        // Get the output script
         let output_script = scripts.output_script();
 
-        // Create the transaction input
         let tx_in = TxIn {
             previous_output: OutPoint { txid, vout },
             script_sig: miniscript::bitcoin::ScriptBuf::new(),
@@ -794,53 +816,43 @@ impl BitGoPsbt {
             witness: miniscript::bitcoin::Witness::default(),
         };
 
-        // Create the PSBT input
         let mut psbt_input = Input::default();
 
-        // Determine if segwit based on chain type (all types except P2sh are segwit)
         let is_segwit = chain_enum.script_type != OutputScriptType::P2sh;
 
         if let (false, Some(tx_bytes)) = (is_segwit, options.prev_tx) {
-            // Non-segwit with prev_tx: use non_witness_utxo
             psbt_input.non_witness_utxo = Some(
                 miniscript::bitcoin::consensus::deserialize(tx_bytes)
                     .map_err(|e| format!("Failed to deserialize previous transaction: {}", e))?,
             );
         } else {
-            // Segwit or non-segwit without prev_tx: use witness_utxo
             psbt_input.witness_utxo = Some(TxOut {
                 value: Amount::from_sat(value),
                 script_pubkey: output_script.clone(),
             });
         }
 
-        // Set sighash type based on network
         let sighash_type = get_default_sighash_type(network, chain_enum);
         psbt_input.sighash_type = Some(sighash_type);
 
-        // Populate script-type-specific metadata
         match &scripts {
             WalletScripts::P2sh(script) => {
-                // bip32_derivation for all 3 keys
-                psbt_input.bip32_derivation = create_bip32_derivation(wallet_keys, chain, index);
-                // redeem_script
+                psbt_input.bip32_derivation =
+                    create_bip32_derivation(wallet_keys, chain, derivation_index);
                 psbt_input.redeem_script = Some(script.redeem_script.clone());
             }
             WalletScripts::P2shP2wsh(script) => {
-                // bip32_derivation for all 3 keys
-                psbt_input.bip32_derivation = create_bip32_derivation(wallet_keys, chain, index);
-                // witness_script and redeem_script
+                psbt_input.bip32_derivation =
+                    create_bip32_derivation(wallet_keys, chain, derivation_index);
                 psbt_input.witness_script = Some(script.witness_script.clone());
                 psbt_input.redeem_script = Some(script.redeem_script.clone());
             }
             WalletScripts::P2wsh(script) => {
-                // bip32_derivation for all 3 keys
-                psbt_input.bip32_derivation = create_bip32_derivation(wallet_keys, chain, index);
-                // witness_script
+                psbt_input.bip32_derivation =
+                    create_bip32_derivation(wallet_keys, chain, derivation_index);
                 psbt_input.witness_script = Some(script.witness_script.clone());
             }
             WalletScripts::P2trLegacy(script) | WalletScripts::P2trMusig2(script) => {
-                // For taproot, sign_path is required
                 let sign_path = options.sign_path.ok_or_else(|| {
                     "sign_path is required for p2tr/p2trMusig2 inputs".to_string()
                 })?;
@@ -851,8 +863,6 @@ impl BitGoPsbt {
                 let is_backup_flow = sign_path.signer.is_backup() || sign_path.cosigner.is_backup();
 
                 if !is_musig2 || is_backup_flow {
-                    // Script path spending (p2tr or p2trMusig2 with backup)
-                    // Get the leaf script for signer/cosigner pair
                     let signer_keys = [pub_triple[signer_idx], pub_triple[cosigner_idx]];
                     let leaf_script =
                         crate::fixed_script_wallet::wallet_scripts::build_p2tr_ns_script(
@@ -860,7 +870,6 @@ impl BitGoPsbt {
                         );
                     let leaf_hash = TapLeafHash::from_script(&leaf_script, LeafVersion::TapScript);
 
-                    // Find the control block for this leaf
                     let control_block = script
                         .spend_info
                         .control_block(&(leaf_script.clone(), LeafVersion::TapScript))
@@ -868,45 +877,36 @@ impl BitGoPsbt {
                             "Could not find control block for leaf script".to_string()
                         })?;
 
-                    // Set tap_leaf_script
                     psbt_input.tap_scripts.insert(
                         control_block.clone(),
                         (leaf_script.clone(), LeafVersion::TapScript),
                     );
 
-                    // Set tap_bip32_derivation for signer and cosigner
                     psbt_input.tap_key_origins = create_tap_bip32_derivation(
                         wallet_keys,
                         chain,
-                        index,
+                        derivation_index,
                         &[signer_idx, cosigner_idx],
                         Some(leaf_hash),
                     );
                 } else {
-                    // Key path spending (p2trMusig2 with user/bitgo)
                     let internal_key = script.spend_info.internal_key();
                     let merkle_root = script.spend_info.merkle_root();
 
-                    // Set tap_internal_key
                     psbt_input.tap_internal_key = Some(internal_key);
-
-                    // Set tap_merkle_root
                     psbt_input.tap_merkle_root = merkle_root;
 
-                    // Set tap_bip32_derivation for signer and cosigner (no leaf hashes for key path)
                     psbt_input.tap_key_origins = create_tap_bip32_derivation(
                         wallet_keys,
                         chain,
-                        index,
+                        derivation_index,
                         &[signer_idx, cosigner_idx],
                         None,
                     );
 
-                    // Set musig2 participant pubkeys (proprietary field)
-                    let user_key = pub_triple[0]; // user is index 0
-                    let bitgo_key = pub_triple[2]; // bitgo is index 2
+                    let user_key = pub_triple[0];
+                    let bitgo_key = pub_triple[2];
 
-                    // Create musig2 participants
                     let tap_output_key = script.spend_info.output_key().to_x_only_public_key();
                     let musig2_participants = Musig2Participants {
                         tap_output_key,
@@ -914,18 +914,26 @@ impl BitGoPsbt {
                         participant_pub_keys: [user_key, bitgo_key],
                     };
 
-                    // Add to proprietary keys
                     let (key, value) = musig2_participants.to_key_value().to_key_value();
                     psbt_input.proprietary.insert(key, value);
                 }
             }
         }
 
-        // Add to PSBT
-        psbt.unsigned_tx.input.push(tx_in);
-        psbt.inputs.push(psbt_input);
+        crate::psbt_ops::insert_input(psbt, index, tx_in, psbt_input)
+    }
 
-        Ok(psbt.inputs.len() - 1)
+    pub fn add_wallet_input(
+        &mut self,
+        txid: Txid,
+        vout: u32,
+        value: u64,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        script_id: psbt_wallet_input::ScriptId,
+        options: WalletInputOptions,
+    ) -> Result<usize, String> {
+        let index = self.psbt().inputs.len();
+        self.add_wallet_input_at_index(index, txid, vout, value, wallet_keys, script_id, options)
     }
 
     /// Add a wallet output with full PSBT metadata
@@ -941,10 +949,12 @@ impl BitGoPsbt {
     ///
     /// # Returns
     /// The index of the newly added output
-    pub fn add_wallet_output(
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_wallet_output_at_index(
         &mut self,
+        index: usize,
         chain: u32,
-        index: u32,
+        derivation_index: u32,
         value: u64,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
     ) -> Result<usize, String> {
@@ -959,79 +969,81 @@ impl BitGoPsbt {
         let network = self.network();
         let psbt = self.psbt_mut();
 
-        // Parse chain
         let chain_enum = Chain::try_from(chain)?;
 
-        // Derive wallet keys for this chain/index
         let derived_keys = wallet_keys
-            .derive_for_chain_and_index(chain, index)
+            .derive_for_chain_and_index(chain, derivation_index)
             .map_err(|e| format!("Failed to derive keys: {}", e))?;
         let pub_triple = to_pub_triple(&derived_keys);
 
-        // Create wallet scripts
         let script_support = network.output_script_support();
         let scripts = WalletScripts::new(&pub_triple, chain_enum, &script_support)
             .map_err(|e| format!("Failed to create wallet scripts: {}", e))?;
 
-        // Get the output script
         let output_script = scripts.output_script();
 
-        // Create the transaction output
         let tx_out = TxOut {
             value: Amount::from_sat(value),
             script_pubkey: output_script,
         };
 
-        // Create the PSBT output with metadata
         let mut psbt_output = Output::default();
 
-        // Populate script-type-specific metadata
         match &scripts {
             WalletScripts::P2sh(script) => {
-                // bip32_derivation for all 3 keys
-                psbt_output.bip32_derivation = create_bip32_derivation(wallet_keys, chain, index);
-                // redeem_script
+                psbt_output.bip32_derivation =
+                    create_bip32_derivation(wallet_keys, chain, derivation_index);
                 psbt_output.redeem_script = Some(script.redeem_script.clone());
             }
             WalletScripts::P2shP2wsh(script) => {
-                // bip32_derivation for all 3 keys
-                psbt_output.bip32_derivation = create_bip32_derivation(wallet_keys, chain, index);
-                // witness_script and redeem_script
+                psbt_output.bip32_derivation =
+                    create_bip32_derivation(wallet_keys, chain, derivation_index);
                 psbt_output.witness_script = Some(script.witness_script.clone());
                 psbt_output.redeem_script = Some(script.redeem_script.clone());
             }
             WalletScripts::P2wsh(script) => {
-                // bip32_derivation for all 3 keys
-                psbt_output.bip32_derivation = create_bip32_derivation(wallet_keys, chain, index);
-                // witness_script
+                psbt_output.bip32_derivation =
+                    create_bip32_derivation(wallet_keys, chain, derivation_index);
                 psbt_output.witness_script = Some(script.witness_script.clone());
             }
             WalletScripts::P2trLegacy(script) | WalletScripts::P2trMusig2(script) => {
                 let is_musig2 = matches!(scripts, WalletScripts::P2trMusig2(_));
 
-                // Set tap_internal_key
                 let internal_key = script.spend_info.internal_key();
                 psbt_output.tap_internal_key = Some(internal_key);
 
-                // Set tap_tree for the output
                 psbt_output.tap_tree = Some(build_tap_tree_for_output(&pub_triple, is_musig2));
 
-                // Set tap_bip32_derivation with correct leaf hashes for each key
                 psbt_output.tap_key_origins = create_tap_bip32_derivation_for_output(
                     wallet_keys,
                     chain,
-                    index,
+                    derivation_index,
                     &pub_triple,
                     is_musig2,
                 );
             }
         }
 
-        // Add to PSBT
-        psbt.unsigned_tx.output.push(tx_out);
-        psbt.outputs.push(psbt_output);
+        crate::psbt_ops::insert_output(psbt, index, tx_out, psbt_output)
+    }
 
-        Ok(psbt.outputs.len() - 1)
+    pub fn add_wallet_output(
+        &mut self,
+        chain: u32,
+        index: u32,
+        value: u64,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+    ) -> Result<usize, String> {
+        let insert_index = self.psbt().outputs.len();
+        self.add_wallet_output_at_index(insert_index, chain, index, value, wallet_keys)
+    }
+
+    pub fn remove_input(&mut self, index: usize) -> Result<(), String> {
+        crate::psbt_ops::remove_input(self.psbt_mut(), index)
+    }
+
+    pub fn remove_output(&mut self, index: usize) -> Result<(), String> {
+        crate::psbt_ops::remove_output(self.psbt_mut(), index)
     }
 
     pub fn network(&self) -> Network {

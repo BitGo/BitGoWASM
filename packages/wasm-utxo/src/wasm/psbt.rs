@@ -288,9 +288,10 @@ impl WrapPsbt {
     ///
     /// # Returns
     /// The index of the newly added input
-    #[wasm_bindgen(js_name = addInput)]
-    pub fn add_input(
+    #[wasm_bindgen(js_name = addInputAtIndex)]
+    pub fn add_input_at_index(
         &mut self,
+        index: usize,
         txid: &str,
         vout: u32,
         value: u64,
@@ -307,7 +308,6 @@ impl WrapPsbt {
             sequence: Sequence(sequence.unwrap_or(0xFFFFFFFE)),
             witness: miniscript::bitcoin::Witness::default(),
         };
-
         let psbt_input = psbt::Input {
             witness_utxo: Some(TxOut {
                 value: Amount::from_sat(value),
@@ -316,10 +316,20 @@ impl WrapPsbt {
             ..Default::default()
         };
 
-        self.0.unsigned_tx.input.push(tx_in);
-        self.0.inputs.push(psbt_input);
+        crate::psbt_ops::insert_input(&mut self.0, index, tx_in, psbt_input)
+            .map_err(|e| JsError::new(&e))
+    }
 
-        Ok(self.0.inputs.len() - 1)
+    #[wasm_bindgen(js_name = addInput)]
+    pub fn add_input(
+        &mut self,
+        txid: &str,
+        vout: u32,
+        value: u64,
+        script: &[u8],
+        sequence: Option<u32>,
+    ) -> Result<usize, JsError> {
+        self.add_input_at_index(self.0.inputs.len(), txid, vout, value, script, sequence)
     }
 
     /// Add an output to the PSBT
@@ -330,21 +340,37 @@ impl WrapPsbt {
     ///
     /// # Returns
     /// The index of the newly added output
-    #[wasm_bindgen(js_name = addOutput)]
-    pub fn add_output(&mut self, script: &[u8], value: u64) -> usize {
+    #[wasm_bindgen(js_name = addOutputAtIndex)]
+    pub fn add_output_at_index(
+        &mut self,
+        index: usize,
+        script: &[u8],
+        value: u64,
+    ) -> Result<usize, JsError> {
         let script = ScriptBuf::from_bytes(script.to_vec());
-
         let tx_out = TxOut {
             value: Amount::from_sat(value),
             script_pubkey: script,
         };
 
-        let psbt_output = psbt::Output::default();
+        crate::psbt_ops::insert_output(&mut self.0, index, tx_out, psbt::Output::default())
+            .map_err(|e| JsError::new(&e))
+    }
 
-        self.0.unsigned_tx.output.push(tx_out);
-        self.0.outputs.push(psbt_output);
+    #[wasm_bindgen(js_name = addOutput)]
+    pub fn add_output(&mut self, script: &[u8], value: u64) -> usize {
+        self.add_output_at_index(self.0.outputs.len(), script, value)
+            .expect("insert at len should never fail")
+    }
 
-        self.0.outputs.len() - 1
+    #[wasm_bindgen(js_name = removeInput)]
+    pub fn remove_input(&mut self, index: usize) -> Result<(), JsError> {
+        crate::psbt_ops::remove_input(&mut self.0, index).map_err(|e| JsError::new(&e))
+    }
+
+    #[wasm_bindgen(js_name = removeOutput)]
+    pub fn remove_output(&mut self, index: usize) -> Result<(), JsError> {
+        crate::psbt_ops::remove_output(&mut self.0, index).map_err(|e| JsError::new(&e))
     }
 
     /// Get the unsigned transaction bytes

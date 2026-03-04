@@ -35,8 +35,8 @@ describe("finalize and extract transaction", function () {
 
         // Verify the deserialized PSBT has the same unsigned txid
         assert.strictEqual(
-          deserialized.unsignedTxid(),
-          fullsignedBitgoPsbt.unsignedTxid(),
+          deserialized.unsignedTxId(),
+          fullsignedBitgoPsbt.unsignedTxId(),
           "Deserialized PSBT should have same unsigned txid after round-trip",
         );
 
@@ -46,8 +46,8 @@ describe("finalize and extract transaction", function () {
         // Verify functional equivalence by deserializing again and checking txid
         const redeserialized = fixedScriptWallet.BitGoPsbt.fromBytes(reserialized, networkName);
         assert.strictEqual(
-          redeserialized.unsignedTxid(),
-          fullsignedBitgoPsbt.unsignedTxid(),
+          redeserialized.unsignedTxId(),
+          fullsignedBitgoPsbt.unsignedTxId(),
           "PSBT should maintain consistency through multiple serialize/deserialize cycles",
         );
       });
