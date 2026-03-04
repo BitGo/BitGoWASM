@@ -75,9 +75,16 @@
     "build:ts": "npm run build:ts-esm && npm run build:ts-cjs",
     "build:package-json": "echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
     "build": "npm run build:wasm && npm run build:ts && npm run build:package-json",
-    "check-fmt": "prettier --check . && cargo fmt -- --check",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix"
+    "check-fmt": "npm run lint:prettier && npm run lint:rustfmt",
+    "lint:prettier": "prettier --check .",
+    "lint:eslint": "eslint .",
+    "lint:rustfmt": "cargo fmt -- --check",
+    "lint:clippy": "cargo clippy --all-targets --all-features -- -D warnings",
+    "lint": "npm run lint:prettier && npm run lint:eslint && npm run lint:rustfmt && npm run lint:clippy",
+    "lint:prettier:fix": "prettier --write .",
+    "lint:eslint:fix": "eslint . --fix",
+    "lint:rustfmt:fix": "cargo fmt",
+    "lint:fix": "npm run lint:prettier:fix && npm run lint:eslint:fix && npm run lint:rustfmt:fix"
   },
   "devDependencies": {
     "@bitgo/unspents": "^0.50.13",

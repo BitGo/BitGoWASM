@@ -205,7 +205,11 @@ describe("PSBT reconstruction", function () {
           );
         }
         // LockTime is typically 0 for these fixtures
-        assert.strictEqual(originalPsbt.lockTime(), 0, "lockTime should be 0 for unsigned fixtures");
+        assert.strictEqual(
+          originalPsbt.lockTime(),
+          0,
+          "lockTime should be 0 for unsigned fixtures",
+        );
       });
 
       it("should include sequence in parsed inputs", function () {
