@@ -55,6 +55,14 @@ export class RootWalletKeys {
   private constructor(private _wasm: WasmRootWalletKeys) {}
 
   /**
+   * Create a RootWalletKeys instance from a WasmRootWalletKeys instance (internal use)
+   * @internal
+   */
+  static fromWasm(wasm: WasmRootWalletKeys): RootWalletKeys {
+    return new RootWalletKeys(wasm);
+  }
+
+  /**
    * Create a RootWalletKeys from various input formats
    * @param keys - Can be a triple of xpub strings, an IWalletKeys object, or another RootWalletKeys instance
    * @returns A RootWalletKeys instance

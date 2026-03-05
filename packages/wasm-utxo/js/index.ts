@@ -106,6 +106,7 @@ declare module "./wasm/wasm_utxo.js" {
     getInputs(): PsbtInputData[];
     getOutputs(): PsbtOutputData[];
     getOutputsWithAddress(coin: import("./coinName.js").CoinName): PsbtOutputDataWithAddress[];
+    getGlobalXpubs(): WasmBIP32[];
     getPartialSignatures(inputIndex: number): Array<{
       pubkey: Uint8Array;
       signature: Uint8Array;

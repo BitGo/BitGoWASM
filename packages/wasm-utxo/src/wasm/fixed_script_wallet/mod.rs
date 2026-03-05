@@ -224,7 +224,28 @@ impl FixedScriptWalletNamespace {
 
         result.into()
     }
+
+    /// Sort an xpub triple into [user, backup, bitgo] order by validating
+    /// against the PSBT's wallet inputs. Returns a RootWalletKeys with the
+    /// correct ordering.
+    #[wasm_bindgen]
+    pub fn to_wallet_keys(
+        psbt: &BitGoPsbt,
+        user_or_a: &WasmBIP32,
+        backup_or_b: &WasmBIP32,
+        bitgo_or_c: &WasmBIP32,
+    ) -> Result<WasmRootWalletKeys, WasmUtxoError> {
+        let xpubs = [
+            user_or_a.to_xpub()?,
+            backup_or_b.to_xpub()?,
+            bitgo_or_c.to_xpub()?,
+        ];
+        let wallet_keys = crate::fixed_script_wallet::bitgo_psbt::to_wallet_keys(&psbt.psbt, xpubs)
+            .map_err(|e| WasmUtxoError::new(&e))?;
+        Ok(WasmRootWalletKeys::from_inner(wallet_keys))
+    }
 }
+
 #[wasm_bindgen]
 pub struct BitGoPsbt {
     pub(crate) psbt: crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt,
@@ -728,6 +749,11 @@ impl BitGoPsbt {
     /// uses the network it was created/deserialized with to resolve addresses.
     pub fn get_outputs_with_address(&self) -> Result<JsValue, WasmUtxoError> {
         crate::wasm::psbt::get_outputs_with_address_from_psbt(self.psbt.psbt(), self.psbt.network())
+    }
+
+    /// Returns the global xpubs from the PSBT as an array of WasmBIP32 instances.
+    pub fn get_global_xpubs(&self) -> JsValue {
+        crate::wasm::psbt::get_global_xpubs_from_psbt(self.psbt.psbt())
     }
 
     /// Parse transaction with wallet keys to identify wallet inputs/outputs

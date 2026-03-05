@@ -1,5 +1,7 @@
 import {
   BitGoPsbt as WasmBitGoPsbt,
+  FixedScriptWalletNamespace,
+  WasmBIP32,
   type PsbtInputData,
   type PsbtOutputData,
   type PsbtOutputDataWithAddress,
@@ -972,4 +974,32 @@ export class BitGoPsbt implements IPsbtWithAddress {
   getOutputsWithAddress(): PsbtOutputDataWithAddress[] {
     return this._wasm.get_outputs_with_address() as PsbtOutputDataWithAddress[];
   }
+
+  /**
+   * Returns the unordered global xpubs from this PSBT as BIP32 instances.
+   */
+  getGlobalXpubs(): BIP32[] {
+    const result = this._wasm.get_global_xpubs() as WasmBIP32[];
+    return result.map((w) => BIP32.fromWasm(w));
+  }
+}
+
+/**
+ * Extract sorted wallet keys from a PSBT's global xpub fields.
+ *
+ * This should only be used in exceptional circumstances where the real wallet
+ * keys are not available — for example, legacy cold wallets where the PSBT
+ * was built with derived keys (from coldDerivationSeed) but the caller only
+ * has root xpubs. Prefer passing wallet keys explicitly wherever possible.
+ *
+ * @returns Sorted [user, backup, bitgo] RootWalletKeys
+ */
+export function getWalletKeysFromPsbt(psbt: BitGoPsbt, xpubs: BIP32[]): RootWalletKeys {
+  const wasmKeys = FixedScriptWalletNamespace.to_wallet_keys(
+    psbt.wasm,
+    xpubs[0].wasm,
+    xpubs[1].wasm,
+    xpubs[2].wasm,
+  );
+  return RootWalletKeys.fromWasm(wasmKeys);
 }
