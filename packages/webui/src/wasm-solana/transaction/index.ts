@@ -7,7 +7,7 @@
 
 import { BaseComponent, defineComponent, h, css, fragment, type Child } from "../../lib/html";
 import { setParams } from "../../lib/router";
-import { commonStyles } from "../../index";
+import { commonStyles } from "../../styles";
 import {
   Transaction,
   parseTransaction,

@@ -15,7 +15,8 @@
     "build:wasm": "bash scripts/build-wasm.sh",
     "build": "npm run build:wasm && npm run extract-samples && webpack --mode production --progress --config ./webpack.config.js",
     "typecheck": "tsc --noEmit",
-    "test": "echo \"Error: no test specified\"",
+    "test": "echo 'playwright tests disabled on CI (run npm run test:e2e locally)'",
+    "test:e2e": "playwright test",
     "dev": "npm run build:wasm && npm run extract-samples && webpack serve --mode development --progress --hot --config ./webpack.config.js",
     "fmt": "prettier --write .",
     "check-fmt": "prettier --check '{src,webpack}/**/*.{tsx,ts,js}'",
@@ -33,6 +34,7 @@
     "newtype-ts": "^0.3.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "css-loader": "^7.1.2",
     "gh-pages": "^6.1.1",
     "html-webpack-plugin": "^5.6.0",

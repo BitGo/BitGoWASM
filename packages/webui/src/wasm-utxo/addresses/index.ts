@@ -7,7 +7,7 @@
 
 import { BaseComponent, defineComponent, h, css, fragment, type Child } from "../../lib/html";
 import { setParams } from "../../lib/router";
-import { commonStyles } from "../../index";
+import { commonStyles } from "../../styles";
 import { address, type CoinName, type AddressFormat } from "@bitgo/wasm-utxo";
 
 const { toOutputScriptWithCoin, fromOutputScriptWithCoin } = address;
