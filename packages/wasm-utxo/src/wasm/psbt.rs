@@ -297,7 +297,6 @@ impl WrapPsbt {
     ///
     /// # Returns
     /// The index of the newly added input
-    #[wasm_bindgen(js_name = addInputAtIndex)]
     pub fn add_input_at_index(
         &mut self,
         index: usize,
@@ -329,7 +328,6 @@ impl WrapPsbt {
             .map_err(|e| JsError::new(&e))
     }
 
-    #[wasm_bindgen(js_name = addInput)]
     pub fn add_input(
         &mut self,
         txid: &str,
@@ -349,7 +347,6 @@ impl WrapPsbt {
     ///
     /// # Returns
     /// The index of the newly added output
-    #[wasm_bindgen(js_name = addOutputAtIndex)]
     pub fn add_output_at_index(
         &mut self,
         index: usize,
@@ -366,18 +363,15 @@ impl WrapPsbt {
             .map_err(|e| JsError::new(&e))
     }
 
-    #[wasm_bindgen(js_name = addOutput)]
     pub fn add_output(&mut self, script: &[u8], value: u64) -> usize {
         self.add_output_at_index(self.0.outputs.len(), script, value)
             .expect("insert at len should never fail")
     }
 
-    #[wasm_bindgen(js_name = removeInput)]
     pub fn remove_input(&mut self, index: usize) -> Result<(), JsError> {
         crate::psbt_ops::remove_input(&mut self.0, index).map_err(|e| JsError::new(&e))
     }
 
-    #[wasm_bindgen(js_name = removeOutput)]
     pub fn remove_output(&mut self, index: usize) -> Result<(), JsError> {
         crate::psbt_ops::remove_output(&mut self.0, index).map_err(|e| JsError::new(&e))
     }
@@ -386,7 +380,6 @@ impl WrapPsbt {
     ///
     /// # Returns
     /// The serialized unsigned transaction
-    #[wasm_bindgen(js_name = getUnsignedTx)]
     pub fn get_unsigned_tx(&self) -> Vec<u8> {
         use miniscript::bitcoin::consensus::Encodable;
         let mut buf = Vec::new();
@@ -397,7 +390,6 @@ impl WrapPsbt {
         buf
     }
 
-    #[wasm_bindgen(js_name = updateInputWithDescriptor)]
     pub fn update_input_with_descriptor(
         &mut self,
         input_index: usize,
@@ -417,7 +409,6 @@ impl WrapPsbt {
         }
     }
 
-    #[wasm_bindgen(js_name = updateOutputWithDescriptor)]
     pub fn update_output_with_descriptor(
         &mut self,
         output_index: usize,
@@ -437,7 +428,6 @@ impl WrapPsbt {
         }
     }
 
-    #[wasm_bindgen(js_name = signWithXprv)]
     pub fn sign_with_xprv(&mut self, xprv: String) -> Result<JsValue, WasmUtxoError> {
         let key = bip32::Xpriv::from_str(&xprv).map_err(|_| WasmUtxoError::new("Invalid xprv"))?;
         self.0
@@ -448,7 +438,6 @@ impl WrapPsbt {
             .and_then(|r| r.try_to_js_value())
     }
 
-    #[wasm_bindgen(js_name = signWithPrv)]
     pub fn sign_with_prv(&mut self, prv: Vec<u8>) -> Result<JsValue, WasmUtxoError> {
         let privkey = PrivateKey::from_slice(&prv, miniscript::bitcoin::network::Network::Bitcoin)
             .map_err(|_| WasmUtxoError::new("Invalid private key"))?;
@@ -471,7 +460,6 @@ impl WrapPsbt {
     ///
     /// # Returns
     /// A SigningKeysMap converted to JsValue (object mapping input indices to signing keys)
-    #[wasm_bindgen(js_name = signAll)]
     pub fn sign_all(&mut self, key: &WasmBIP32) -> Result<JsValue, WasmUtxoError> {
         let xpriv = key.to_xpriv()?;
         self.0
@@ -492,7 +480,6 @@ impl WrapPsbt {
     ///
     /// # Returns
     /// A SigningKeysMap converted to JsValue (object mapping input indices to signing keys)
-    #[wasm_bindgen(js_name = signAllWithEcpair)]
     pub fn sign_all_with_ecpair(&mut self, key: &WasmECPair) -> Result<JsValue, WasmUtxoError> {
         let privkey = key.get_private_key()?;
         let secp = Secp256k1::new();
@@ -519,7 +506,6 @@ impl WrapPsbt {
     ///
     /// # Returns
     /// `true` if a valid signature exists for the key, `false` otherwise
-    #[wasm_bindgen(js_name = verifySignatureWithKey)]
     pub fn verify_signature_with_key(
         &self,
         input_index: usize,
@@ -614,7 +600,6 @@ impl WrapPsbt {
         Ok(false)
     }
 
-    #[wasm_bindgen(js_name = finalize)]
     pub fn finalize_mut(&mut self) -> Result<(), WasmUtxoError> {
         self.0
             .finalize_mut(&Secp256k1::verification_only())
@@ -631,7 +616,6 @@ impl WrapPsbt {
     /// # Returns
     /// - `Ok(WasmTransaction)` containing the extracted transaction
     /// - `Err(WasmUtxoError)` if the PSBT is not fully finalized or extraction fails
-    #[wasm_bindgen(js_name = extractTransaction)]
     pub fn extract_transaction(
         &self,
     ) -> Result<crate::wasm::transaction::WasmTransaction, WasmUtxoError> {
@@ -642,56 +626,32 @@ impl WrapPsbt {
         Ok(crate::wasm::transaction::WasmTransaction::from_tx(tx))
     }
 
-    /// Get the number of inputs in the PSBT
-    #[wasm_bindgen(js_name = inputCount)]
     pub fn input_count(&self) -> usize {
-        self.0.inputs.len()
+        crate::psbt_ops::PsbtAccess::input_count(self)
     }
 
-    /// Get the number of outputs in the PSBT
-    #[wasm_bindgen(js_name = outputCount)]
     pub fn output_count(&self) -> usize {
-        self.0.outputs.len()
+        crate::psbt_ops::PsbtAccess::output_count(self)
     }
 
-    /// Get all PSBT inputs as an array of PsbtInputData
-    ///
-    /// Returns an array with witness_utxo, bip32_derivation, and tap_bip32_derivation
-    /// for each input. This is useful for introspecting the PSBT structure.
-    #[wasm_bindgen(js_name = getInputs)]
     pub fn get_inputs(&self) -> Result<JsValue, WasmUtxoError> {
         get_inputs_from_psbt(&self.0)
     }
 
-    /// Get all PSBT outputs as an array of PsbtOutputData
-    ///
-    /// Returns an array with script, value, bip32_derivation, and tap_bip32_derivation
-    /// for each output. This is useful for introspecting the PSBT structure.
-    #[wasm_bindgen(js_name = getOutputs)]
     pub fn get_outputs(&self) -> Result<JsValue, WasmUtxoError> {
         get_outputs_from_psbt(&self.0)
     }
 
-    /// Get all PSBT outputs with resolved address strings.
-    ///
-    /// Like `getOutputs()` but each element also includes an `address` field
-    /// derived from the output script using the given coin name (e.g. "btc", "tbtc").
-    #[wasm_bindgen(js_name = getOutputsWithAddress)]
     pub fn get_outputs_with_address(&self, coin: &str) -> Result<JsValue, WasmUtxoError> {
         let network = crate::Network::from_coin_name(coin)
             .ok_or_else(|| WasmUtxoError::new(&format!("Unknown coin: {}", coin)))?;
         get_outputs_with_address_from_psbt(&self.0, network)
     }
 
-    /// Get global xpubs from the PSBT as an array of WasmBIP32 instances.
-    #[wasm_bindgen(js_name = getGlobalXpubs)]
     pub fn get_global_xpubs(&self) -> JsValue {
         get_global_xpubs_from_psbt(&self.0)
     }
 
-    /// Get partial signatures for an input
-    /// Returns array of { pubkey: Uint8Array, signature: Uint8Array }
-    #[wasm_bindgen(js_name = getPartialSignatures)]
     pub fn get_partial_signatures(&self, input_index: usize) -> Result<JsValue, WasmUtxoError> {
         use crate::wasm::try_into_js_value::{collect_partial_signatures, TryIntoJsValue};
 
@@ -703,8 +663,6 @@ impl WrapPsbt {
         signatures.try_to_js_value()
     }
 
-    /// Check if an input has any partial signatures
-    #[wasm_bindgen(js_name = hasPartialSignatures)]
     pub fn has_partial_signatures(&self, input_index: usize) -> Result<bool, JsError> {
         let input =
             self.0.inputs.get(input_index).ok_or_else(|| {
@@ -716,30 +674,18 @@ impl WrapPsbt {
             || input.tap_key_sig.is_some())
     }
 
-    /// Get the unsigned transaction ID as a hex string
-    #[wasm_bindgen(js_name = unsignedTxId)]
     pub fn unsigned_tx_id(&self) -> String {
-        self.0.unsigned_tx.compute_txid().to_string()
+        crate::psbt_ops::PsbtAccess::unsigned_tx_id(self)
     }
 
-    /// Get the transaction lock time
-    #[wasm_bindgen(js_name = lockTime)]
     pub fn lock_time(&self) -> u32 {
-        self.0.unsigned_tx.lock_time.to_consensus_u32()
+        crate::psbt_ops::PsbtAccess::lock_time(self)
     }
 
-    /// Get the transaction version
-    #[wasm_bindgen(js_name = version)]
     pub fn version(&self) -> i32 {
-        self.0.unsigned_tx.version.0
+        crate::psbt_ops::PsbtAccess::version(self)
     }
 
-    /// Validate a signature at a specific input against a pubkey
-    /// Returns true if the signature is valid
-    ///
-    /// This method handles both ECDSA (legacy/SegWit) and Schnorr (Taproot) signatures.
-    /// The pubkey should be provided as bytes (33 bytes for compressed ECDSA, 32 bytes for x-only Schnorr).
-    #[wasm_bindgen(js_name = validateSignatureAtInput)]
     pub fn validate_signature_at_input(
         &self,
         input_index: usize,
@@ -830,6 +776,15 @@ impl WrapPsbt {
 
         // No matching signature found
         Ok(false)
+    }
+}
+
+impl crate::psbt_ops::PsbtAccess for WrapPsbt {
+    fn psbt(&self) -> &Psbt {
+        &self.0
+    }
+    fn psbt_mut(&mut self) -> &mut Psbt {
+        &mut self.0
     }
 }
 

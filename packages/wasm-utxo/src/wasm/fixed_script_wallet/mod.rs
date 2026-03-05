@@ -687,14 +687,12 @@ impl BitGoPsbt {
         }
     }
 
-    /// Get the transaction version
     pub fn version(&self) -> i32 {
-        self.psbt.psbt().unsigned_tx.version.0
+        crate::psbt_ops::PsbtAccess::version(&self.psbt)
     }
 
-    /// Get the transaction lock time
     pub fn lock_time(&self) -> u32 {
-        self.psbt.psbt().unsigned_tx.lock_time.to_consensus_u32()
+        crate::psbt_ops::PsbtAccess::lock_time(&self.psbt)
     }
 
     /// Get the Zcash version group ID (returns None for non-Zcash PSBTs)
@@ -717,41 +715,26 @@ impl BitGoPsbt {
         }
     }
 
-    /// Get the number of inputs in the PSBT
     pub fn input_count(&self) -> usize {
-        self.psbt.psbt().inputs.len()
+        crate::psbt_ops::PsbtAccess::input_count(&self.psbt)
     }
 
-    /// Get the number of outputs in the PSBT
     pub fn output_count(&self) -> usize {
-        self.psbt.psbt().outputs.len()
+        crate::psbt_ops::PsbtAccess::output_count(&self.psbt)
     }
 
-    /// Get all PSBT inputs as an array of PsbtInputData
-    ///
-    /// Returns an array with witness_utxo, bip32_derivation, and tap_bip32_derivation
-    /// for each input.
     pub fn get_inputs(&self) -> Result<JsValue, WasmUtxoError> {
         crate::wasm::psbt::get_inputs_from_psbt(self.psbt.psbt())
     }
 
-    /// Get all PSBT outputs as an array of PsbtOutputData
-    ///
-    /// Returns an array with script, value, bip32_derivation, and tap_bip32_derivation
-    /// for each output.
     pub fn get_outputs(&self) -> Result<JsValue, WasmUtxoError> {
         crate::wasm::psbt::get_outputs_from_psbt(self.psbt.psbt())
     }
 
-    /// Get all PSBT outputs with resolved address strings.
-    ///
-    /// Unlike the generic WrapPsbt which requires a coin parameter, BitGoPsbt
-    /// uses the network it was created/deserialized with to resolve addresses.
     pub fn get_outputs_with_address(&self) -> Result<JsValue, WasmUtxoError> {
         crate::wasm::psbt::get_outputs_with_address_from_psbt(self.psbt.psbt(), self.psbt.network())
     }
 
-    /// Returns the global xpubs from the PSBT as an array of WasmBIP32 instances.
     pub fn get_global_xpubs(&self) -> JsValue {
         crate::wasm::psbt::get_global_xpubs_from_psbt(self.psbt.psbt())
     }

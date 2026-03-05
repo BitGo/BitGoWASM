@@ -1,5 +1,34 @@
 use miniscript::bitcoin::{psbt, Psbt, TxIn, TxOut};
 
+/// Shared accessor trait for types that wrap a `Psbt`.
+///
+/// Provides default implementations for common introspection methods so that
+/// both `WrapPsbt` and `BitGoPsbt` can reuse the same logic.
+pub trait PsbtAccess {
+    fn psbt(&self) -> &Psbt;
+    fn psbt_mut(&mut self) -> &mut Psbt;
+
+    fn input_count(&self) -> usize {
+        self.psbt().inputs.len()
+    }
+
+    fn output_count(&self) -> usize {
+        self.psbt().outputs.len()
+    }
+
+    fn version(&self) -> i32 {
+        self.psbt().unsigned_tx.version.0
+    }
+
+    fn lock_time(&self) -> u32 {
+        self.psbt().unsigned_tx.lock_time.to_consensus_u32()
+    }
+
+    fn unsigned_tx_id(&self) -> String {
+        self.psbt().unsigned_tx.compute_txid().to_string()
+    }
+}
+
 fn check_bounds(index: usize, len: usize, name: &str) -> Result<(), String> {
     if index > len {
         return Err(format!(
