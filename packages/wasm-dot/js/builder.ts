@@ -74,7 +74,7 @@ import type { TransactionIntent, BuildContext } from "./types";
  */
 export function buildTransaction(intent: TransactionIntent, context: BuildContext): DotTransaction {
   const inner = BuilderNamespace.buildTransaction(intent, context);
-  return DotTransaction.fromInner(inner as any);
+  return DotTransaction.fromInner(inner);
 }
 
 // Re-export types for convenience
