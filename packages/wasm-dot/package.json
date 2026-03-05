@@ -45,6 +45,10 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
     "@types/mocha": "^10.0.7",
