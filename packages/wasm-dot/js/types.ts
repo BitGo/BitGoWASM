@@ -11,7 +11,7 @@
 // =============================================================================
 
 /**
- * Chain material metadata required for transaction encoding/decoding
+ * Chain material metadata required for transaction encoding/decoding.
  */
 export interface Material {
   /** Chain genesis hash (e.g., "0x91b171bb158e2d...") */

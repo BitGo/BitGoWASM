@@ -2,7 +2,6 @@
   "name": "@bitgo/wasm-dot",
   "description": "WebAssembly wrapper for Polkadot/DOT cryptographic operations",
   "version": "0.0.1",
-  "private": true,
   "type": "module",
   "repository": {
     "type": "git",
