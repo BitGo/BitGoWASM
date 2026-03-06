@@ -5,9 +5,9 @@
  * Follows wallet-platform pattern: buildTransaction(intent, context)
  */
 
-import { BuilderNamespace } from "./wasm/wasm_dot";
-import { DotTransaction } from "./transaction";
-import type { TransactionIntent, BuildContext } from "./types";
+import { BuilderNamespace } from "./wasm/wasm_dot.js";
+import { DotTransaction } from "./transaction.js";
+import type { TransactionIntent, BuildContext } from "./types.js";
 
 /**
  * Build a DOT transaction from an intent and context.
@@ -78,4 +78,4 @@ export function buildTransaction(intent: TransactionIntent, context: BuildContex
 }
 
 // Re-export types for convenience
-export type { TransactionIntent, BuildContext } from "./types";
+export type { TransactionIntent, BuildContext } from "./types.js";
