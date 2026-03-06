@@ -14,7 +14,7 @@ import {
   MaterialJs,
   ValidityJs,
   ParseContextJs,
-} from "./wasm/wasm_dot";
+} from "./wasm/wasm_dot.js";
 
 // Export WASM classes for advanced usage
 export {
@@ -27,7 +27,7 @@ export {
 };
 
 // Re-export all public API
-export * from "./types";
-export * from "./transaction";
-export * from "./parser";
-export * from "./builder";
+export * from "./types.js";
+export * from "./transaction.js";
+export * from "./parser.js";
+export * from "./builder.js";

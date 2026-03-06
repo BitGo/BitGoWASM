@@ -2,9 +2,9 @@
  * TypeScript wrapper for WasmTransaction
  */
 
-import { WasmTransaction, MaterialJs, ValidityJs, ParseContextJs } from "./wasm/wasm_dot";
-import type { Material, Validity, Era } from "./types";
-import { AddressFormat } from "./types";
+import { WasmTransaction, MaterialJs, ValidityJs, ParseContextJs } from "./wasm/wasm_dot.js";
+import type { Material, Validity, Era } from "./types.js";
+import { AddressFormat } from "./types.js";
 
 /**
  * DOT Transaction wrapper
