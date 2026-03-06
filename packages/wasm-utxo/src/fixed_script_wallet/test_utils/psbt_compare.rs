@@ -481,7 +481,7 @@ mod tests {
         use crate::fixed_script_wallet::test_utils::fixtures;
 
         let fixture = fixtures::load_psbt_fixture_with_format(
-            "bitcoin",
+            "btc",
             fixtures::SignatureState::Unsigned,
             fixtures::TxFormat::Psbt,
         )
@@ -504,7 +504,7 @@ mod tests {
         use crate::fixed_script_wallet::test_utils::fixtures;
 
         let fixture = fixtures::load_psbt_fixture_with_format(
-            "bitcoin",
+            "btc",
             fixtures::SignatureState::Unsigned,
             fixtures::TxFormat::Psbt,
         )
@@ -521,14 +521,14 @@ mod tests {
         use crate::fixed_script_wallet::test_utils::fixtures;
 
         let unsigned = fixtures::load_psbt_fixture_with_format(
-            "bitcoin",
+            "btc",
             fixtures::SignatureState::Unsigned,
             fixtures::TxFormat::Psbt,
         )
         .expect("Failed to load unsigned fixture");
 
         let fullsigned = fixtures::load_psbt_fixture_with_format(
-            "bitcoin",
+            "btc",
             fixtures::SignatureState::Fullsigned,
             fixtures::TxFormat::Psbt,
         )

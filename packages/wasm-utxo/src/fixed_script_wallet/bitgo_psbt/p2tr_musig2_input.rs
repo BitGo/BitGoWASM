@@ -1296,7 +1296,8 @@ mod tests {
     use super::*;
     use crate::fixed_script_wallet::test_utils::fixtures;
     use crate::fixed_script_wallet::test_utils::fixtures::{
-        load_psbt_fixture_with_format, ScriptType, SignatureState, TxFormat,
+        load_psbt_fixture_with_format_and_namespace, FixtureNamespace, ScriptType, SignatureState,
+        TxFormat,
     };
     use crate::Network;
 
@@ -1312,8 +1313,13 @@ mod tests {
     fn get_musig2_fixture_data(
         signature_state: SignatureState,
     ) -> Result<Musig2FixtureData, String> {
-        let fixture = load_psbt_fixture_with_format("bitcoin", signature_state, TxFormat::Psbt)
-            .expect("Failed to load fixture");
+        let fixture = load_psbt_fixture_with_format_and_namespace(
+            "bitcoin",
+            signature_state,
+            TxFormat::Psbt,
+            FixtureNamespace::UtxolibCompat,
+        )
+        .expect("Failed to load fixture");
 
         let (input_index, input_fixture) = fixture
             .find_input_with_script_type(ScriptType::P2trMusig2TaprootKeypath)
@@ -1363,7 +1369,7 @@ mod tests {
             fixture,
             musig2_input,
             musig2_input_index,
-            fixture_keypath_input,
+            fixture_keypath_input: _,
             fixture_keypath_final_input,
         } = musig2_fixture_data;
 
@@ -1388,18 +1394,12 @@ mod tests {
         assert_eq!(fixture_witness_bytes[1], 0x40, "Expected 64-byte signature");
         let fixture_signature = &fixture_witness_bytes[2..66];
 
-        // Get tap merkle root from fixture
+        // Get tap merkle root from PSBT input (more reliable than fixture JSON)
         use crate::bitcoin::sighash::SighashCache;
-        use crate::bitcoin::taproot::TapNodeHash;
 
-        let tap_tree_root_bytes =
-            <Vec<u8> as hex::FromHex>::from_hex(&fixture_keypath_input.tap_merkle_root)
-                .expect("Failed to decode tap merkle root");
-        let tap_tree_root_array: [u8; 32] = tap_tree_root_bytes
-            .as_slice()
-            .try_into()
-            .expect("Invalid tap merkle root length");
-        let tap_tree_root = TapNodeHash::from_byte_array(tap_tree_root_array);
+        let tap_tree_root = psbt.inputs[*musig2_input_index]
+            .tap_merkle_root
+            .expect("Expected tap_merkle_root in PSBT input");
 
         // Collect all prevouts for sighash computation
         let prevouts = collect_prevouts(&psbt).expect("Failed to collect prevouts");
@@ -1463,8 +1463,9 @@ mod tests {
     #[test]
     fn test_state_machine_api_produces_valid_signature() {
         // Load fixtures using PsbtStages to get wallet keys
-        let psbt_stages = fixtures::PsbtStages::load(crate::Network::Bitcoin, TxFormat::Psbt)
-            .expect("Failed to load PSBT stages");
+        let psbt_stages =
+            fixtures::PsbtStages::load_utxolib_compat(crate::Network::Bitcoin, TxFormat::Psbt)
+                .expect("Failed to load PSBT stages");
 
         // Find MuSig2 keypath input
         let (input_index, _input_fixture) = psbt_stages
@@ -1497,8 +1498,9 @@ mod tests {
         // This test validates that both APIs can produce valid signatures on the same input
 
         // Load fixtures using PsbtStages to get wallet keys
-        let psbt_stages = fixtures::PsbtStages::load(crate::Network::Bitcoin, TxFormat::Psbt)
-            .expect("Failed to load PSBT stages");
+        let psbt_stages =
+            fixtures::PsbtStages::load_utxolib_compat(crate::Network::Bitcoin, TxFormat::Psbt)
+                .expect("Failed to load PSBT stages");
 
         let (input_index, _) = psbt_stages
             .unsigned
@@ -1549,8 +1551,9 @@ mod tests {
         use miniscript::bitcoin::psbt::PsbtSighashType;
 
         // Load fixtures using PsbtStages to get wallet keys
-        let psbt_stages = fixtures::PsbtStages::load(crate::Network::Bitcoin, TxFormat::Psbt)
-            .expect("Failed to load PSBT stages");
+        let psbt_stages =
+            fixtures::PsbtStages::load_utxolib_compat(crate::Network::Bitcoin, TxFormat::Psbt)
+                .expect("Failed to load PSBT stages");
 
         // Find MuSig2 keypath input
         let (input_index, _input_fixture) = psbt_stages
@@ -1681,8 +1684,9 @@ mod tests {
         use crate::bitcoin::sighash::TapSighashType;
 
         // Load fixtures using PsbtStages to get wallet keys
-        let psbt_stages = fixtures::PsbtStages::load(crate::Network::Bitcoin, TxFormat::Psbt)
-            .expect("Failed to load PSBT stages");
+        let psbt_stages =
+            fixtures::PsbtStages::load_utxolib_compat(crate::Network::Bitcoin, TxFormat::Psbt)
+                .expect("Failed to load PSBT stages");
 
         // Find MuSig2 keypath input
         let (input_index, _input_fixture) = psbt_stages

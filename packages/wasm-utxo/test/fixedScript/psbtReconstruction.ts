@@ -1,5 +1,4 @@
 import assert from "node:assert";
-import * as utxolib from "@bitgo/utxo-lib";
 import { fixedScriptWallet } from "../../js/index.js";
 import {
   BitGoPsbt,
@@ -15,7 +14,8 @@ import {
   getPsbtBuffer,
   type Fixture,
 } from "./fixtureUtil.js";
-import { getFixtureNetworks } from "./networkSupport.util.js";
+import { mainnetCoinNames } from "./networkSupport.util.js";
+import { createOtherWalletKeys } from "./generateFixture.js";
 
 // Zcash Sapling consensus branch ID for test fixtures
 const ZCASH_SAPLING_BRANCH_ID = 0x76b809bb;
@@ -37,23 +37,6 @@ function getSignPathFromScriptType(scriptType: InputScriptType): SignPath | unde
 }
 
 /**
- * Get "other wallet keys" for testing outputs from different wallet
- * Uses the same seed as utxo-lib tests: "too many secrets"
- */
-function getOtherWalletKeys(): RootWalletKeys {
-  const otherWalletKeys = utxolib.testutil.getKeyTriple("too many secrets");
-  const neuteredKeys = otherWalletKeys.map((key) => key.neutered()) as [
-    utxolib.BIP32Interface,
-    utxolib.BIP32Interface,
-    utxolib.BIP32Interface,
-  ];
-  return fixedScriptWallet.RootWalletKeys.from({
-    triple: neuteredKeys,
-    derivationPrefixes: ["0/0", "0/0", "0/0"],
-  });
-}
-
-/**
  * Reverse a hex string by bytes (for txid conversion)
  * Bitcoin txids in fixtures are in internal byte order (reversed)
  */
@@ -62,20 +45,18 @@ function reverseHex(hex: string): string {
 }
 
 describe("PSBT reconstruction", function () {
-  getFixtureNetworks().forEach((network) => {
-    const networkName = utxolib.getNetworkName(network);
-
+  mainnetCoinNames.forEach((networkName) => {
     describe(`network: ${networkName}`, function () {
       let fixture: Fixture;
       let originalPsbt: BitGoPsbt;
       let rootWalletKeys: RootWalletKeys;
       let otherWalletKeys: RootWalletKeys;
 
-      before(function () {
-        fixture = loadPsbtFixture(networkName, "unsigned");
+      before(async function () {
+        fixture = await loadPsbtFixture(networkName, "unsigned");
         originalPsbt = fixedScriptWallet.BitGoPsbt.fromBytes(getPsbtBuffer(fixture), networkName);
         rootWalletKeys = loadWalletKeysFromFixture(fixture);
-        otherWalletKeys = getOtherWalletKeys();
+        otherWalletKeys = createOtherWalletKeys();
       });
 
       it("should reconstruct PSBT from parsed data with matching unsigned txid", function () {
@@ -90,7 +71,7 @@ describe("PSBT reconstruction", function () {
 
         // Create empty PSBT with same version/locktime
         let reconstructed: BitGoPsbt;
-        if (networkName === "zcash" || networkName === "zcashTest") {
+        if (networkName === "zec" || networkName === "tzec") {
           const zcashPsbt = ZcashBitGoPsbt.fromBytes(getPsbtBuffer(fixture), networkName);
           reconstructed = ZcashBitGoPsbt.createEmptyWithConsensusBranchId(
             networkName,
@@ -193,7 +174,7 @@ describe("PSBT reconstruction", function () {
         assert.strictEqual(typeof originalPsbt.version(), "number", "version should be a number");
         assert.strictEqual(typeof originalPsbt.lockTime(), "number", "lockTime should be a number");
         // Version depends on network: Zcash uses version 4 (Sapling) or 5 (NU5), others use 1 or 2
-        if (network === utxolib.networks.zcash) {
+        if (networkName === "zec") {
           assert.ok(
             originalPsbt.version() === 4 || originalPsbt.version() === 5,
             `Zcash version should be 4 or 5, got ${originalPsbt.version()}`,
@@ -235,7 +216,7 @@ describe("PSBT reconstruction", function () {
 
       it("should create equivalent PSBTs using block height vs explicit branch ID (Zcash only)", function () {
         // Skip for non-Zcash networks
-        if (networkName !== "zcash" && networkName !== "zcashTest") {
+        if (networkName !== "zec" && networkName !== "tzec") {
           this.skip();
         }
 
@@ -249,7 +230,7 @@ describe("PSBT reconstruction", function () {
         const zcashPsbt = ZcashBitGoPsbt.fromBytes(getPsbtBuffer(fixture), networkName);
 
         // Sapling activation heights: mainnet=419200, testnet=280000
-        const saplingHeight = networkName === "zcash" ? 419200 : 280000;
+        const saplingHeight = networkName === "zec" ? 419200 : 280000;
 
         // Create PSBT using explicit branch ID (advanced approach)
         const psbtWithBranchId = ZcashBitGoPsbt.createEmptyWithConsensusBranchId(
@@ -350,9 +331,9 @@ describe("PSBT reconstruction", function () {
         );
       });
 
-      it("should extract transaction with valid getId() after finalization", function () {
+      it("should extract transaction with valid getId() after finalization", async function () {
         // Load fullsigned fixture for this network
-        const fullsignedFixture = loadPsbtFixture(networkName, "fullsigned");
+        const fullsignedFixture = await loadPsbtFixture(networkName, "fullsigned");
         const psbt = fixedScriptWallet.BitGoPsbt.fromBytes(
           getPsbtBuffer(fullsignedFixture),
           networkName,

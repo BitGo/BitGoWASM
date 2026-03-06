@@ -8,7 +8,7 @@
 //! use wasm_miniscript::fixed_script_wallet::test_utils::fixtures::*;
 //!
 //! // Load a fixture by network and signature state
-//! let fixture = load_psbt_fixture("bitcoin", SignatureState::Fullsigned)
+//! let fixture = load_psbt_fixture("btc", SignatureState::Fullsigned)
 //!     .expect("Failed to load fixture");
 //!
 //! // Parse the PSBT from base64
@@ -121,7 +121,8 @@ pub struct WitnessUtxo {
 pub struct Bip32Derivation {
     pub pubkey: String,
     pub path: String,
-    pub master_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -141,10 +142,12 @@ pub struct TapLeafScript {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TapBip32Derivation {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub leaf_hashes: Vec<String>,
     pub pubkey: String,
     pub path: String,
-    pub master_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -308,7 +311,8 @@ pub struct P2shInput {
     pub witness_utxo: Option<WitnessUtxo>,
     pub sighash_type: u32,
     pub bip32_derivation: Vec<Bip32Derivation>,
-    pub redeem_script: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redeem_script: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub partial_sig: Vec<PartialSig>,
 }
@@ -320,8 +324,10 @@ pub struct P2shP2wshInput {
     pub witness_utxo: WitnessUtxo,
     pub sighash_type: u32,
     pub bip32_derivation: Vec<Bip32Derivation>,
-    pub witness_script: String,
-    pub redeem_script: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness_script: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redeem_script: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub partial_sig: Vec<PartialSig>,
 }
@@ -333,7 +339,8 @@ pub struct P2wshInput {
     pub witness_utxo: WitnessUtxo,
     pub sighash_type: u32,
     pub bip32_derivation: Vec<Bip32Derivation>,
-    pub witness_script: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness_script: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub partial_sig: Vec<PartialSig>,
 }
@@ -344,6 +351,7 @@ pub struct P2trScriptPathInput {
     pub unknown_key_vals: Option<Vec<UnknownKeyVal>>,
     pub witness_utxo: WitnessUtxo,
     pub sighash_type: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tap_leaf_script: Vec<TapLeafScript>,
     pub tap_bip32_derivation: Vec<TapBip32Derivation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -356,8 +364,10 @@ pub struct P2trMusig2KeyPathInput {
     pub unknown_key_vals: Option<Vec<UnknownKeyVal>>,
     pub witness_utxo: WitnessUtxo,
     pub sighash_type: u32,
-    pub tap_internal_key: String,
-    pub tap_merkle_root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tap_internal_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tap_merkle_root: Option<String>,
     pub tap_bip32_derivation: Vec<TapBip32Derivation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub musig2_participants: Option<Musig2Participants>,
@@ -371,7 +381,8 @@ pub struct P2trMusig2KeyPathInput {
 #[serde(rename_all = "camelCase")]
 pub struct P2shP2pkInput {
     pub unknown_key_vals: Option<Vec<UnknownKeyVal>>,
-    pub redeem_script: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redeem_script: Option<String>,
     /// Skipped for PSBT-LITE format
     pub non_witness_utxo: Option<String>,
     /// Present for PSBT-LITE format
@@ -553,23 +564,44 @@ pub struct PsbtStages {
 }
 
 impl PsbtStages {
+    /// Load native (AcidTest-generated) fixtures using CoinName filenames.
     pub fn load(network: Network, tx_format: TxFormat) -> Result<Self, String> {
-        let unsigned = load_psbt_fixture_with_format(
-            network.to_utxolib_name(),
+        Self::load_with_namespace(network, tx_format, FixtureNamespace::Native)
+    }
+
+    /// Load utxolib-compat fixtures using utxolib network names.
+    pub fn load_utxolib_compat(network: Network, tx_format: TxFormat) -> Result<Self, String> {
+        Self::load_with_namespace(network, tx_format, FixtureNamespace::UtxolibCompat)
+    }
+
+    fn load_with_namespace(
+        network: Network,
+        tx_format: TxFormat,
+        namespace: FixtureNamespace,
+    ) -> Result<Self, String> {
+        let network_name = match namespace {
+            FixtureNamespace::UtxolibCompat => network.to_utxolib_name(),
+            FixtureNamespace::Native => network.to_coin_name(),
+        };
+        let unsigned = load_psbt_fixture_with_format_and_namespace(
+            network_name,
             SignatureState::Unsigned,
             tx_format,
+            namespace,
         )
         .expect("Failed to load unsigned fixture");
-        let halfsigned = load_psbt_fixture_with_format(
-            network.to_utxolib_name(),
+        let halfsigned = load_psbt_fixture_with_format_and_namespace(
+            network_name,
             SignatureState::Halfsigned,
             tx_format,
+            namespace,
         )
         .expect("Failed to load halfsigned fixture");
-        let fullsigned = load_psbt_fixture_with_format(
-            network.to_utxolib_name(),
+        let fullsigned = load_psbt_fixture_with_format_and_namespace(
+            network_name,
             SignatureState::Fullsigned,
             tx_format,
+            namespace,
         )
         .expect("Failed to load fullsigned fixture");
         let wallet_keys_unsigned = unsigned
@@ -731,7 +763,7 @@ pub struct OutputScriptFixture {
 /// ```rust,no_run
 /// use wasm_miniscript::fixed_script_wallet::test_utils::fixtures::*;
 ///
-/// let contents = load_fixture("fixed-script/psbt.bitcoin.fullsigned.json")
+/// let contents = load_fixture("fixed-script/psbt.btc.fullsigned.json")
 ///     .expect("Failed to load fixture");
 /// ```
 pub fn load_fixture(path: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -773,23 +805,23 @@ impl TxFormat {
     }
 }
 
-/// Load a PSBT fixture from a JSON file
-///
-/// # Arguments
-/// * `network_name` - The network name (e.g., "bitcoin", "litecoin", "dogecoin")
-/// * `signature_state` - The signature state of the PSBT
-///
-/// # Example
-/// ```rust,no_run
-/// use wasm_miniscript::fixed_script_wallet::test_utils::fixtures::*;
-///
-/// let fixture = load_psbt_fixture("bitcoin", SignatureState::Fullsigned)
-///     .expect("Failed to load fixture");
-/// ```
-pub fn load_psbt_fixture_with_format(
+/// Fixture namespace: utxolib-compat (old rich format) or native (AcidTest-generated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureNamespace {
+    /// Old utxo-lib generated fixtures with rich per-input metadata.
+    /// Uses utxolib network names (bitcoin, litecoin, etc.).
+    UtxolibCompat,
+    /// New AcidTest-generated fixtures with simpler format.
+    /// Uses CoinName filenames (btc, ltc, etc.).
+    Native,
+}
+
+/// Load a PSBT fixture from a JSON file in the given namespace.
+pub fn load_psbt_fixture_with_format_and_namespace(
     network_name: &str,
     signature_state: SignatureState,
     tx_format: TxFormat,
+    namespace: FixtureNamespace,
 ) -> Result<PsbtFixture, Box<dyn std::error::Error>> {
     let filename = format!(
         "{}.{}.{}.json",
@@ -797,11 +829,28 @@ pub fn load_psbt_fixture_with_format(
         network_name,
         signature_state.as_str()
     );
-    let path = format!("fixed-script/{}", filename);
+    let path = match namespace {
+        FixtureNamespace::UtxolibCompat => format!("fixed-script/utxolib-compat/{}", filename),
+        FixtureNamespace::Native => format!("fixed-script/{}", filename),
+    };
     let contents =
-        load_fixture(&path).unwrap_or_else(|_| panic!("Failed to load fixture: {}", filename));
+        load_fixture(&path).unwrap_or_else(|_| panic!("Failed to load fixture: {}", path));
     let fixture: PsbtFixture = serde_json::from_str(&contents)?;
     Ok(fixture)
+}
+
+/// Load a native PSBT fixture (AcidTest-generated, CoinName filenames).
+pub fn load_psbt_fixture_with_format(
+    network_name: &str,
+    signature_state: SignatureState,
+    tx_format: TxFormat,
+) -> Result<PsbtFixture, Box<dyn std::error::Error>> {
+    load_psbt_fixture_with_format_and_namespace(
+        network_name,
+        signature_state,
+        tx_format,
+        FixtureNamespace::Native,
+    )
 }
 
 pub fn load_psbt_fixture(
@@ -811,18 +860,11 @@ pub fn load_psbt_fixture(
     load_psbt_fixture_with_format(network_name, signature_state, TxFormat::Psbt)
 }
 
-pub fn load_psbt_lite_fixture(
-    network_name: &str,
-    signature_state: SignatureState,
-) -> Result<PsbtFixture, Box<dyn std::error::Error>> {
-    load_psbt_fixture_with_format(network_name, signature_state, TxFormat::PsbtLite)
-}
-
 pub fn load_psbt_fixture_with_network(
     network: Network,
     signature_state: SignatureState,
 ) -> Result<PsbtFixture, Box<dyn std::error::Error>> {
-    load_psbt_fixture(network.to_utxolib_name(), signature_state)
+    load_psbt_fixture(network.to_coin_name(), signature_state)
 }
 
 /// Load a PSBT fixture from JSON string
@@ -922,9 +964,11 @@ impl P2shInput {
         let generated_output = scripts.redeem_script.to_p2sh().to_hex_string();
         assert_hex_eq(&generated_output, output_script, "Output script")?;
 
-        // Compare redeem script
-        let redeem_script_hex = scripts.redeem_script.to_hex_string();
-        assert_hex_eq(&redeem_script_hex, &self.redeem_script, "Redeem script")?;
+        // Compare redeem script (when present in fixture)
+        if let Some(expected) = &self.redeem_script {
+            let redeem_script_hex = scripts.redeem_script.to_hex_string();
+            assert_hex_eq(&redeem_script_hex, expected, "Redeem script")?;
+        }
 
         validate_sighash_type_fixture(self.sighash_type, network)
     }
@@ -942,13 +986,17 @@ impl P2shP2wshInput {
         let generated_output = scripts.redeem_script.to_p2sh().to_hex_string();
         assert_hex_eq(&generated_output, output_script, "Output script")?;
 
-        // Compare redeem script
-        let redeem_script_hex = scripts.redeem_script.to_hex_string();
-        assert_hex_eq(&redeem_script_hex, &self.redeem_script, "Redeem script")?;
+        // Compare redeem script (when present in fixture)
+        if let Some(expected) = &self.redeem_script {
+            let redeem_script_hex = scripts.redeem_script.to_hex_string();
+            assert_hex_eq(&redeem_script_hex, expected, "Redeem script")?;
+        }
 
-        // Compare witness script
-        let witness_script_hex = scripts.witness_script.to_hex_string();
-        assert_hex_eq(&witness_script_hex, &self.witness_script, "Witness script")?;
+        // Compare witness script (when present in fixture)
+        if let Some(expected) = &self.witness_script {
+            let witness_script_hex = scripts.witness_script.to_hex_string();
+            assert_hex_eq(&witness_script_hex, expected, "Witness script")?;
+        }
 
         validate_sighash_type_fixture(self.sighash_type, network)
     }
@@ -966,9 +1014,11 @@ impl P2wshInput {
         let generated_output = scripts.witness_script.to_p2wsh().to_hex_string();
         assert_hex_eq(&generated_output, output_script, "Output script")?;
 
-        // Compare witness script
-        let witness_script_hex = scripts.witness_script.to_hex_string();
-        assert_hex_eq(&witness_script_hex, &self.witness_script, "Witness script")?;
+        // Compare witness script (when present in fixture)
+        if let Some(expected) = &self.witness_script {
+            let witness_script_hex = scripts.witness_script.to_hex_string();
+            assert_hex_eq(&witness_script_hex, expected, "Witness script")?;
+        }
 
         validate_sighash_type_fixture(self.sighash_type, network)
     }
@@ -1040,17 +1090,21 @@ impl P2trMusig2KeyPathInput {
         spend_info: &crate::bitcoin::taproot::TaprootSpendInfo,
         network: Network,
     ) -> Result<(), String> {
-        // Compare internal key
-        let internal_key_hex = hex::encode(spend_info.internal_key().serialize());
-        assert_hex_eq(&internal_key_hex, &self.tap_internal_key, "Internal key")?;
+        // Compare internal key (when present in fixture)
+        if let Some(expected) = &self.tap_internal_key {
+            let internal_key_hex = hex::encode(spend_info.internal_key().serialize());
+            assert_hex_eq(&internal_key_hex, expected, "Internal key")?;
+        }
 
-        // Compare merkle root
-        let merkle_root = spend_info
-            .merkle_root()
-            .ok_or_else(|| "Expected merkle root to exist".to_string())?;
-        let merkle_root_bytes: &[u8] = merkle_root.as_ref();
-        let merkle_root_hex = hex::encode(merkle_root_bytes);
-        assert_hex_eq(&merkle_root_hex, &self.tap_merkle_root, "Merkle root")?;
+        // Compare merkle root (when present in fixture)
+        if let Some(expected) = &self.tap_merkle_root {
+            let merkle_root = spend_info
+                .merkle_root()
+                .ok_or_else(|| "Expected merkle root to exist".to_string())?;
+            let merkle_root_bytes: &[u8] = merkle_root.as_ref();
+            let merkle_root_hex = hex::encode(merkle_root_bytes);
+            assert_hex_eq(&merkle_root_hex, expected, "Merkle root")?;
+        }
 
         validate_sighash_type_fixture(self.sighash_type, network)
     }
@@ -1399,8 +1453,8 @@ mod tests {
     #[test]
     fn test_load_fixture_helper() {
         // Test loading a fixture file
-        let contents = load_fixture("fixed-script/psbt.bitcoin.fullsigned.json")
-            .expect("Failed to load fixture");
+        let contents =
+            load_fixture("fixed-script/psbt.btc.fullsigned.json").expect("Failed to load fixture");
         assert!(!contents.is_empty());
         assert!(contents.contains("walletKeys"));
         assert!(contents.contains("psbtBase64"));
@@ -1422,12 +1476,15 @@ mod tests {
     }
 
     #[test]
-    fn test_load_bitcoin_fullsigned_fixture() {
-        // Example of loading a fixture file
-        let fixture = load_psbt_fixture("bitcoin", SignatureState::Fullsigned)
-            .expect("Failed to load fixture");
+    fn test_load_utxolib_compat_fixture() {
+        let fixture = load_psbt_fixture_with_format_and_namespace(
+            "bitcoin",
+            SignatureState::Fullsigned,
+            TxFormat::Psbt,
+            FixtureNamespace::UtxolibCompat,
+        )
+        .expect("Failed to load fixture");
 
-        // Verify structure
         assert_eq!(fixture.wallet_keys.len(), 3);
         assert!(!fixture.psbt_base64.is_empty());
         assert_eq!(fixture.inputs.len(), 7);
@@ -1435,36 +1492,32 @@ mod tests {
         assert_eq!(fixture.outputs.len(), 8);
         assert_eq!(fixture.psbt_outputs.len(), 8);
 
-        // Decode PSBT
         let psbt = decode_psbt_from_fixture(&fixture).expect("Failed to decode PSBT");
         assert_eq!(psbt.inputs.len(), 7);
         assert_eq!(psbt.outputs.len(), 8);
     }
 
     #[test]
-    fn test_load_different_signature_states() {
-        // Test unsigned
-        let unsigned = load_psbt_fixture("bitcoin", SignatureState::Unsigned)
-            .expect("Failed to load unsigned fixture");
-        assert_eq!(unsigned.inputs.len(), 7);
-        assert_eq!(unsigned.psbt_inputs.len(), 7);
-
-        // Test halfsigned
-        let halfsigned = load_psbt_fixture("bitcoin", SignatureState::Halfsigned)
-            .expect("Failed to load halfsigned fixture");
-        assert_eq!(halfsigned.inputs.len(), 7);
-        assert_eq!(halfsigned.psbt_inputs.len(), 7);
-
-        // Test fullsigned
-        let fullsigned = load_psbt_fixture("bitcoin", SignatureState::Fullsigned)
-            .expect("Failed to load fullsigned fixture");
-        assert_eq!(fullsigned.inputs.len(), 7);
-        assert_eq!(fullsigned.psbt_inputs.len(), 7);
+    fn test_load_utxolib_compat_signature_states() {
+        for state in [
+            SignatureState::Unsigned,
+            SignatureState::Halfsigned,
+            SignatureState::Fullsigned,
+        ] {
+            let fixture = load_psbt_fixture_with_format_and_namespace(
+                "bitcoin",
+                state,
+                TxFormat::Psbt,
+                FixtureNamespace::UtxolibCompat,
+            )
+            .expect("Failed to load fixture");
+            assert_eq!(fixture.inputs.len(), 7);
+            assert_eq!(fixture.psbt_inputs.len(), 7);
+        }
     }
 
     #[test]
-    fn test_load_different_networks() {
-        // Test various networks
+    fn test_load_utxolib_compat_networks() {
         for network in &[
             "bitcoin",
             "litecoin",
@@ -1474,6 +1527,28 @@ mod tests {
             "dash",
             "bitcoingold",
         ] {
+            let fixture = load_psbt_fixture_with_format_and_namespace(
+                network,
+                SignatureState::Fullsigned,
+                TxFormat::Psbt,
+                FixtureNamespace::UtxolibCompat,
+            )
+            .unwrap_or_else(|_| panic!("Failed to load {} fixture", network));
+            assert_eq!(fixture.wallet_keys.len(), 3);
+        }
+    }
+
+    #[test]
+    fn test_load_native_fixture() {
+        let fixture =
+            load_psbt_fixture("btc", SignatureState::Fullsigned).expect("Failed to load fixture");
+        assert_eq!(fixture.wallet_keys.len(), 3);
+        assert!(!fixture.psbt_base64.is_empty());
+    }
+
+    #[test]
+    fn test_load_native_networks() {
+        for network in &["btc", "ltc", "doge", "bch", "bcha", "dash", "btg"] {
             let fixture = load_psbt_fixture(network, SignatureState::Fullsigned)
                 .unwrap_or_else(|_| panic!("Failed to load {} fixture", network));
             assert_eq!(fixture.wallet_keys.len(), 3);
@@ -1503,8 +1578,13 @@ mod tests {
 
     #[test]
     fn test_find_input_with_script_type() {
-        let fixture = load_psbt_fixture("bitcoin", SignatureState::Fullsigned)
-            .expect("Failed to load fixture");
+        let fixture = load_psbt_fixture_with_format_and_namespace(
+            "bitcoin",
+            SignatureState::Fullsigned,
+            TxFormat::Psbt,
+            FixtureNamespace::UtxolibCompat,
+        )
+        .expect("Failed to load fixture");
 
         // Test finding P2SH input
         let (index, input) = fixture
@@ -1523,8 +1603,13 @@ mod tests {
 
     #[test]
     fn test_find_finalized_input_with_script_type() {
-        let fixture = load_psbt_fixture("bitcoin", SignatureState::Fullsigned)
-            .expect("Failed to load fixture");
+        let fixture = load_psbt_fixture_with_format_and_namespace(
+            "bitcoin",
+            SignatureState::Fullsigned,
+            TxFormat::Psbt,
+            FixtureNamespace::UtxolibCompat,
+        )
+        .expect("Failed to load fixture");
 
         // Test finding P2SH finalized input
         let (index, input) = fixture
@@ -1541,8 +1626,13 @@ mod tests {
         assert!(matches!(input, PsbtFinalInputFixture::P2trMusig2KeyPath(_)));
 
         // Test with unsigned fixture (should return error)
-        let unsigned_fixture = load_psbt_fixture("bitcoin", SignatureState::Unsigned)
-            .expect("Failed to load unsigned fixture");
+        let unsigned_fixture = load_psbt_fixture_with_format_and_namespace(
+            "bitcoin",
+            SignatureState::Unsigned,
+            TxFormat::Psbt,
+            FixtureNamespace::UtxolibCompat,
+        )
+        .expect("Failed to load unsigned fixture");
         let result = unsigned_fixture.find_finalized_input_with_script_type(ScriptType::P2sh);
         assert!(result.is_err());
         assert_eq!(

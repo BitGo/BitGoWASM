@@ -3115,10 +3115,11 @@ mod tests {
     });
 
     fn test_parse_with_format(format: fixtures::TxFormat, network: Network) {
-        let fixture = fixtures::load_psbt_fixture_with_format(
+        let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
             network.to_utxolib_name(),
             fixtures::SignatureState::Unsigned,
             format,
+            fixtures::FixtureNamespace::UtxolibCompat,
         )
         .unwrap();
         match fixture.to_bitgo_psbt(network) {
@@ -3241,10 +3242,11 @@ mod tests {
     }
 
     fn test_round_trip_with_format(format: fixtures::TxFormat, network: Network) {
-        let fixture = fixtures::load_psbt_fixture_with_format(
+        let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
             network.to_utxolib_name(),
             fixtures::SignatureState::Unsigned,
             format,
+            fixtures::FixtureNamespace::UtxolibCompat,
         )
         .unwrap();
 
@@ -3670,7 +3672,7 @@ mod tests {
         network: Network,
         tx_format: fixtures::TxFormat,
     ) -> Result<(), String> {
-        let psbt_stages = fixtures::PsbtStages::load(network, tx_format)?;
+        let psbt_stages = fixtures::PsbtStages::load_utxolib_compat(network, tx_format)?;
         let psbt_input_stages =
             fixtures::PsbtInputStages::from_psbt_stages(&psbt_stages, script_type);
 
@@ -3838,10 +3840,11 @@ mod tests {
     );
 
     crate::test_psbt_fixtures!(test_extract_transaction, network, format, {
-        let fixture = fixtures::load_psbt_fixture_with_format(
+        let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
             network.to_utxolib_name(),
             fixtures::SignatureState::Fullsigned,
             format,
+            fixtures::FixtureNamespace::UtxolibCompat,
         )
         .expect("Failed to load fixture");
         let mut bitgo_psbt = fixture
@@ -3895,10 +3898,11 @@ mod tests {
         }
 
         // Load halfsigned fixture
-        let fixture = fixtures::load_psbt_fixture_with_format(
+        let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
             network.to_utxolib_name(),
             fixtures::SignatureState::Halfsigned,
             format,
+            fixtures::FixtureNamespace::UtxolibCompat,
         )
         .map_err(|e| format!("Failed to load halfsigned fixture: {}", e))?;
 
@@ -4225,10 +4229,11 @@ mod tests {
 
     crate::test_psbt_fixtures!(test_parse_transaction_with_wallet_keys, network, format, {
         // Load fixture and get PSBT
-        let fixture = fixtures::load_psbt_fixture_with_format(
+        let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
             network.to_utxolib_name(),
             fixtures::SignatureState::Unsigned,
             format,
+            fixtures::FixtureNamespace::UtxolibCompat,
         )
         .expect("Failed to load fixture");
 
@@ -4363,9 +4368,11 @@ mod tests {
     #[test]
     fn test_serialize_zcash_psbt() {
         // Test that Zcash PSBTs can be serialized
-        let fixture = fixtures::load_psbt_fixture_with_network(
-            Network::Zcash,
+        let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
+            "zcash",
             fixtures::SignatureState::Unsigned,
+            fixtures::TxFormat::Psbt,
+            fixtures::FixtureNamespace::UtxolibCompat,
         )
         .unwrap();
         let original_bytes = BASE64_STANDARD
@@ -4385,10 +4392,11 @@ mod tests {
         use crate::fixed_script_wallet::ReplayProtection;
 
         // Load fixture with specified format
-        let fixture = fixtures::load_psbt_fixture_with_format(
+        let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
             network.to_utxolib_name(),
             fixtures::SignatureState::Unsigned,
             format,
+            fixtures::FixtureNamespace::UtxolibCompat,
         )
         .expect("Failed to load fixture");
 
