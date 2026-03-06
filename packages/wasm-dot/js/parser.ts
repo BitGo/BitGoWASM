@@ -7,9 +7,9 @@
  * Use parseTransaction() when you need decoded data.
  */
 
-import { ParserNamespace, MaterialJs, ParseContextJs } from "./wasm/wasm_dot";
-import type { DotTransaction } from "./transaction";
-import type { ParseContext, ParsedTransaction } from "./types";
+import { ParserNamespace, MaterialJs, ParseContextJs } from "./wasm/wasm_dot.js";
+import type { DotTransaction } from "./transaction.js";
+import type { ParseContext, ParsedTransaction } from "./types.js";
 
 /**
  * Parse a DOT transaction into structured data.
