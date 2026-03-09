@@ -14,6 +14,7 @@
 pub mod address;
 pub mod builder;
 pub mod error;
+pub mod metadata_constants;
 pub mod parser;
 pub mod transaction;
 pub mod types;
@@ -22,6 +23,7 @@ pub mod wasm;
 // Re-export main types for convenience
 pub use address::{decode_ss58, encode_ss58, validate_address};
 pub use error::WasmDotError;
+pub use metadata_constants::get_proxy_deposit_cost;
 pub use parser::{parse_transaction, ParsedTransaction};
 pub use transaction::Transaction;
 pub use types::{Material, ParseContext, Validity};

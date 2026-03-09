@@ -68,6 +68,21 @@ impl ParserNamespace {
         let parsed = parse_from_transaction(tx.inner(), ctx.as_ref())?;
         to_js_value(&parsed)
     }
+
+    /// Get the proxy deposit cost from runtime metadata.
+    ///
+    /// Returns `ProxyDepositBase + ProxyDepositFactor` from the Proxy pallet
+    /// as a decimal string (for BigInt conversion).
+    ///
+    /// This matches the legacy account-lib `getAddProxyCost()` / `getRemoveProxyCost()`.
+    ///
+    /// @param metadataHex - Runtime metadata hex string (0x-prefixed or bare)
+    /// @returns Proxy deposit cost as decimal string
+    #[wasm_bindgen(js_name = getProxyDepositCost)]
+    pub fn get_proxy_deposit_cost(metadata_hex: &str) -> Result<String, JsValue> {
+        let cost = crate::metadata_constants::get_proxy_deposit_cost(metadata_hex)?;
+        Ok(cost.to_string())
+    }
 }
 
 /// Convert ParsedTransaction to JsValue using serde_wasm_bindgen (JSON-compatible mode).

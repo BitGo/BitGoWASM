@@ -40,6 +40,22 @@ export function parseTransaction(tx: DotTransaction, context?: ParseContext): Pa
 }
 
 /**
+ * Get the proxy deposit cost from runtime metadata.
+ *
+ * Returns `ProxyDepositBase + ProxyDepositFactor` from the Proxy pallet,
+ * which represents the cost of adding or removing a proxy.
+ *
+ * This replaces the legacy account-lib `getAddProxyCost()` / `getRemoveProxyCost()`
+ * without requiring any polkadot-js dependencies.
+ *
+ * @param metadataHex - Runtime metadata as a hex string (0x-prefixed or bare)
+ * @returns Proxy deposit cost in planck as bigint
+ */
+export function getProxyDepositCost(metadataHex: string): bigint {
+  return BigInt(ParserNamespace.getProxyDepositCost(metadataHex));
+}
+
+/**
  * Create a ParseContextJs from ParseContext
  */
 function createParseContext(ctx: ParseContext): ParseContextJs {
