@@ -11,6 +11,7 @@ import {
   WasmTransaction,
   ParserNamespace,
   BuilderNamespace,
+  AddressNamespace,
   MaterialJs,
   ValidityJs,
   ParseContextJs,
@@ -21,6 +22,7 @@ export {
   WasmTransaction,
   ParserNamespace,
   BuilderNamespace,
+  AddressNamespace,
   MaterialJs,
   ValidityJs,
   ParseContextJs,
@@ -31,3 +33,4 @@ export * from "./types.js";
 export * from "./transaction.js";
 export * from "./parser.js";
 export * from "./builder.js";
+export * from "./address.js";
