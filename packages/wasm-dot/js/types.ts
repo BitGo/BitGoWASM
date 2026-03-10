@@ -221,13 +221,22 @@ export interface ParsedTransaction {
 }
 
 /**
- * SS58 address format prefixes
+ * SS58 address format prefixes.
+ * Using a numeric union type rather than an enum so that callers can pass
+ * the raw SS58 prefix number directly without a cast.
  */
-export enum AddressFormat {
+export type AddressFormat = 0 | 2 | 42;
+
+/**
+ * Named constants for common SS58 address formats.
+ * All existing call sites using AddressFormat.Polkadot / .Kusama / .Substrate
+ * continue to work unchanged.
+ */
+export const AddressFormat = {
   /** Polkadot mainnet (prefix 0, addresses start with '1') */
-  Polkadot = 0,
+  Polkadot: 0,
   /** Kusama (prefix 2) */
-  Kusama = 2,
+  Kusama: 2,
   /** Substrate generic (prefix 42, addresses start with '5') */
-  Substrate = 42,
-}
+  Substrate: 42,
+} as const satisfies Record<string, AddressFormat>;
