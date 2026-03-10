@@ -78,7 +78,7 @@ export class DotTransaction {
   }
 
   /**
-   * Get the transaction ID (hash) if signed
+   * Get the transaction ID (Blake2-256 hash of transaction bytes)
    */
   get id(): string | undefined {
     return this._wasm.id ?? undefined;

@@ -253,19 +253,27 @@ impl Transaction {
         Ok(result)
     }
 
-    /// Get transaction ID (Blake2-256 hash of signed transaction)
+    /// Get transaction ID (Blake2-256 hash of transaction bytes)
+    ///
+    /// For signed transactions, hashes the fully serialized extrinsic.
+    /// For unsigned transactions, hashes the raw bytes as a stable identifier.
     pub fn id(&self) -> Option<String> {
         use blake2::{digest::consts::U32, Blake2b, Digest};
 
-        if self.is_signed && self.signature.is_some() {
-            let bytes = self.to_bytes().ok()?;
-            let mut hasher = Blake2b::<U32>::new();
-            hasher.update(&bytes);
-            let hash = hasher.finalize();
-            Some(format!("0x{}", hex::encode(hash)))
+        let bytes = if self.is_signed && self.signature.is_some() {
+            self.to_bytes().ok()?
         } else {
-            None
+            self.raw_bytes.clone()
+        };
+
+        if bytes.is_empty() {
+            return None;
         }
+
+        let mut hasher = Blake2b::<U32>::new();
+        hasher.update(&bytes);
+        let hash = hasher.finalize();
+        Some(format!("0x{}", hex::encode(hash)))
     }
 
     /// Get the signable payload for this transaction
@@ -733,6 +741,25 @@ fn decode_era_bytes(bytes: &[u8]) -> Result<(Era, usize), WasmDotError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_unsigned_tx_id_returns_blake2b_hash() {
+        // Minimal unsigned extrinsic: compact length + version 0x04 + era(immortal) + nonce(0) + tip(0) + call_data
+        // length=6 (compact 0x18), version=0x04, era=0x00, nonce=0x00, tip=0x00, call=0xFF
+        let raw = vec![0x18, 0x04, 0x00, 0x00, 0x00, 0xFF];
+        let tx = Transaction::from_bytes(&raw, None, None).unwrap();
+
+        assert!(!tx.is_signed());
+        let id = tx.id();
+        assert!(id.is_some(), "unsigned tx should have an id");
+        let id = id.unwrap();
+        assert!(id.starts_with("0x"), "id should be 0x-prefixed hex");
+        assert_eq!(id.len(), 66, "blake2b-256 hash = 0x + 64 hex chars");
+
+        // Same bytes should produce the same hash
+        let tx2 = Transaction::from_bytes(&raw, None, None).unwrap();
+        assert_eq!(tx.id(), tx2.id(), "same bytes should produce same id");
+    }
 
     #[test]
     fn test_era_encoding_roundtrip() {
