@@ -1,9 +1,12 @@
 /**
  * TypeScript type definitions for wasm-dot
  *
- * Follows wallet-platform pattern: buildTransaction(intent, context)
- * - intent: what to do (transfer, stake, etc.) - single operation
+ * buildTransaction(intent, context)
+ * - intent: business-level intent (payment, stake, unstake, etc.)
  * - context: how to build it (sender, nonce, material, validity)
+ *
+ * The crate handles intent composition internally. For example, a stake
+ * intent with a proxy address produces a batchAll(bond, addProxy) extrinsic.
  */
 
 // =============================================================================
@@ -54,9 +57,9 @@ export interface ParseContext {
   material: Material;
   /** Sender address (optional, helps with decoding) */
   sender?: string;
-  /** Reference block hash (not in extrinsic bytes — pass-through for consumers) */
+  /** Reference block hash (not in extrinsic bytes, pass-through for consumers) */
   referenceBlock?: string;
-  /** Block number when transaction becomes valid (not in extrinsic bytes — pass-through for consumers) */
+  /** Block number when transaction becomes valid (not in extrinsic bytes, pass-through for consumers) */
   blockNumber?: number;
 }
 
@@ -65,9 +68,7 @@ export interface ParseContext {
 // =============================================================================
 
 /**
- * Build context - contains all non-intent data needed to build a transaction
- *
- * Matches wallet-platform's material + nonce + validity pattern.
+ * Build context: contains all non-intent data needed to build a transaction.
  */
 export interface BuildContext {
   /** Sender address (SS58 encoded) */
@@ -89,46 +90,54 @@ export interface BuildContext {
 // =============================================================================
 
 /**
- * Transaction intent - a single operation to perform
+ * Business-level transaction intent.
  *
- * Discriminated union using the `type` field.
- * For multiple operations, use the `batch` intent type.
+ * Discriminated union using the `type` field. The crate handles composing
+ * these into the correct Polkadot extrinsic calls, including automatic
+ * batching when multiple calls are needed (e.g., stake with proxy).
  */
 export type TransactionIntent =
-  | TransferIntent
-  | TransferAllIntent
+  | PaymentIntent
+  | ConsolidateIntent
   | StakeIntent
   | UnstakeIntent
-  | WithdrawUnbondedIntent
-  | ChillIntent
-  | AddProxyIntent
-  | RemoveProxyIntent
-  | BatchIntent;
+  | ClaimIntent
+  | FillNonceIntent;
 
-export interface TransferIntent {
-  type: "transfer";
+/** Transfer DOT to a recipient */
+export interface PaymentIntent {
+  type: "payment";
   /** Recipient address (SS58) */
   to: string;
   /** Amount in planck */
   amount: bigint;
-  /** Use transferKeepAlive (default: true) */
+  /** Use transferKeepAlive to prevent reaping (default: true) */
   keepAlive?: boolean;
 }
 
-export interface TransferAllIntent {
-  type: "transferAll";
+/** Sweep all DOT to a recipient (transferAll) */
+export interface ConsolidateIntent {
+  type: "consolidate";
   /** Recipient address (SS58) */
   to: string;
-  /** Keep account alive after transfer */
+  /** Keep sender account alive after transfer (default: true) */
   keepAlive?: boolean;
 }
 
+/**
+ * Stake DOT.
+ *
+ * - With `proxyAddress`: new stake, produces batchAll(bond, addProxy)
+ * - Without `proxyAddress`: top-up, produces bondExtra
+ */
 export interface StakeIntent {
   type: "stake";
   /** Amount to stake in planck */
   amount: bigint;
-  /** Where to send staking rewards */
+  /** Reward destination (default: Staked / compound) */
   payee?: StakePayee;
+  /** Proxy address for new stake. Absent means top-up (bondExtra). */
+  proxyAddress?: string;
 }
 
 export type StakePayee =
@@ -137,48 +146,33 @@ export type StakePayee =
   | { type: "controller" }
   | { type: "account"; address: string };
 
+/**
+ * Unstake DOT.
+ *
+ * - `stopStaking=true` + `proxyAddress`: full unstake, produces
+ *   batchAll(removeProxy, chill, unbond)
+ * - `stopStaking=false`: partial unstake, produces unbond
+ */
 export interface UnstakeIntent {
   type: "unstake";
   /** Amount to unstake in planck */
   amount: bigint;
+  /** Full unstake (remove proxy + chill) or partial (just unbond). Default: false */
+  stopStaking?: boolean;
+  /** Proxy address to remove (required when stopStaking=true) */
+  proxyAddress?: string;
 }
 
-export interface WithdrawUnbondedIntent {
-  type: "withdrawUnbonded";
-  /** Number of slashing spans (usually 0) */
+/** Claim (withdraw unbonded) DOT after the unbonding period */
+export interface ClaimIntent {
+  type: "claim";
+  /** Number of slashing spans (default: 0) */
   slashingSpans?: number;
 }
 
-export interface ChillIntent {
-  type: "chill";
-}
-
-export interface AddProxyIntent {
-  type: "addProxy";
-  /** Delegate address (SS58) */
-  delegate: string;
-  /** Proxy type (Any, NonTransfer, Staking, etc.) */
-  proxyType: string;
-  /** Delay in blocks */
-  delay?: number;
-}
-
-export interface RemoveProxyIntent {
-  type: "removeProxy";
-  /** Delegate address (SS58) */
-  delegate: string;
-  /** Proxy type */
-  proxyType: string;
-  /** Delay in blocks */
-  delay?: number;
-}
-
-export interface BatchIntent {
-  type: "batch";
-  /** List of intents to execute */
-  calls: TransactionIntent[];
-  /** Use batchAll (atomic) instead of batch (default: true) */
-  atomic?: boolean;
+/** Zero-value self-transfer to advance the account nonce */
+export interface FillNonceIntent {
+  type: "fillNonce";
 }
 
 // =============================================================================

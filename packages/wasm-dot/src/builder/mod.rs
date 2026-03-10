@@ -1,7 +1,8 @@
 //! Transaction building from intents
 //!
-//! Build DOT transactions from high-level intent descriptions.
-//! Follows wallet-platform pattern: buildTransaction(intent, context)
+//! Build DOT transactions from high-level business intent descriptions.
+//! Accepts intents like Payment, Stake, Unstake (not low-level calls)
+//! and handles composition into the correct extrinsic calls.
 
 mod calls;
 pub mod types;
@@ -9,14 +10,16 @@ pub mod types;
 use crate::error::WasmDotError;
 use crate::transaction::{encode_era, Transaction};
 use crate::types::{Era, Validity};
-use calls::encode_call;
+use calls::encode_intent;
 use parity_scale_codec::{Compact, Encode};
 use subxt_core::metadata::Metadata;
 use types::{BuildContext, TransactionIntent};
 
-/// Build a transaction from an intent and context
+/// Build a transaction from a business-level intent and context.
 ///
-/// This is the main entry point, matching wallet-platform's pattern.
+/// The intent describes *what* to do (payment, stake, etc.) and the context
+/// provides *how* to build it (sender, nonce, material, validity).
+/// Multi-call intents (e.g., stake with proxy) are batched automatically.
 pub fn build_transaction(
     intent: TransactionIntent,
     context: BuildContext,
@@ -24,8 +27,8 @@ pub fn build_transaction(
     // Decode metadata once
     let metadata = decode_metadata(&context.material.metadata)?;
 
-    // Build call data using metadata
-    let call_data = encode_call(&intent, &metadata)?;
+    // Compose intent into calls and encode (batching if needed)
+    let call_data = encode_intent(&intent, &context.sender, &metadata)?;
 
     // Calculate era from validity
     let era = compute_era(&context.validity);
