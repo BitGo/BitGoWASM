@@ -1,9 +1,12 @@
 //! Call encoding using subxt dynamic API
 //!
-//! Clean, readable call building - similar to txwrapper-polkadot's methods.balances.transferKeepAlive()
+//! Two entry points:
+//! - `encode_intent()`: public — accepts a business-level `TransactionIntent`,
+//!   composes it into calls, and encodes (batching if needed)
+//! - `encode_call()`: internal — encodes a single `CallIntent` to call data bytes
 
 use crate::address::decode_ss58;
-use crate::builder::types::{StakePayee, TransactionIntent};
+use crate::builder::types::{intent_to_calls, CallIntent, StakePayee, TransactionIntent};
 use crate::error::WasmDotError;
 use subxt_core::{
     ext::scale_value::{Composite, Value},
@@ -11,13 +14,30 @@ use subxt_core::{
     tx::payload::{dynamic, Payload},
 };
 
-/// Encode a transaction intent to call data bytes
-pub fn encode_call(
+/// Encode a business-level intent to call data bytes.
+///
+/// Handles composition: single-call intents are encoded directly,
+/// multi-call intents (e.g., stake with proxy) are wrapped in batchAll.
+pub fn encode_intent(
     intent: &TransactionIntent,
+    sender: &str,
     metadata: &Metadata,
 ) -> Result<Vec<u8>, WasmDotError> {
-    let payload = match intent {
-        TransactionIntent::Transfer {
+    let calls = intent_to_calls(intent, sender)?;
+
+    match calls.len() {
+        0 => Err(WasmDotError::InvalidInput(
+            "Intent produced no calls".to_string(),
+        )),
+        1 => encode_call(&calls[0], metadata),
+        _ => encode_batch(&calls, metadata),
+    }
+}
+
+/// Encode a single call-level intent to call data bytes.
+fn encode_call(call: &CallIntent, metadata: &Metadata) -> Result<Vec<u8>, WasmDotError> {
+    let payload = match call {
+        CallIntent::Transfer {
             to,
             amount,
             keep_alive,
@@ -29,26 +49,24 @@ pub fn encode_call(
             };
             balances(method, to, *amount)?
         }
-        TransactionIntent::TransferAll { to, keep_alive } => transfer_all(to, *keep_alive)?,
-        TransactionIntent::Stake { amount, payee } => staking_bond(*amount, payee)?,
-        TransactionIntent::Unstake { amount } => staking_unbond(*amount),
-        TransactionIntent::WithdrawUnbonded { slashing_spans } => {
+        CallIntent::TransferAll { to, keep_alive } => transfer_all(to, *keep_alive)?,
+        CallIntent::Bond { amount, payee } => staking_bond(*amount, payee)?,
+        CallIntent::BondExtra { amount } => staking_bond_extra(*amount),
+        CallIntent::Unbond { amount } => staking_unbond(*amount),
+        CallIntent::WithdrawUnbonded { slashing_spans } => {
             staking_withdraw_unbonded(*slashing_spans)
         }
-        TransactionIntent::Chill => staking_chill(),
-        TransactionIntent::AddProxy {
+        CallIntent::Chill => staking_chill(),
+        CallIntent::AddProxy {
             delegate,
             proxy_type,
             delay,
         } => proxy_add(delegate, proxy_type, *delay)?,
-        TransactionIntent::RemoveProxy {
+        CallIntent::RemoveProxy {
             delegate,
             proxy_type,
             delay,
         } => proxy_remove(delegate, proxy_type, *delay)?,
-        TransactionIntent::Batch { calls, atomic } => {
-            return encode_batch(calls, *atomic, metadata);
-        }
     };
 
     payload
@@ -116,6 +134,14 @@ fn staking_bond(
     ))
 }
 
+fn staking_bond_extra(amount: u64) -> subxt_core::tx::payload::DynamicPayload {
+    dynamic(
+        "Staking",
+        "bond_extra",
+        named([("max_additional", Value::u128(amount as u128))]),
+    )
+}
+
 fn staking_unbond(amount: u64) -> subxt_core::tx::payload::DynamicPayload {
     dynamic(
         "Staking",
@@ -179,44 +205,21 @@ fn proxy_remove(
 // Utility pallet (batch)
 // =============================================================================
 
-/// Encode a batch - like txwrapper's methods.utility.batch({ calls })
-fn encode_batch(
-    intents: &[TransactionIntent],
-    atomic: bool,
-    metadata: &Metadata,
-) -> Result<Vec<u8>, WasmDotError> {
+/// Encode multiple calls as a batchAll (atomic batch).
+fn encode_batch(calls: &[CallIntent], metadata: &Metadata) -> Result<Vec<u8>, WasmDotError> {
     use parity_scale_codec::{Compact, Encode};
 
-    if intents.is_empty() {
-        return Err(WasmDotError::InvalidInput(
-            "Batch cannot be empty".to_string(),
-        ));
-    }
-
-    // Reject nested batches
-    if intents
+    let encoded_calls: Result<Vec<_>, _> = calls
         .iter()
-        .any(|i| matches!(i, TransactionIntent::Batch { .. }))
-    {
-        return Err(WasmDotError::InvalidInput(
-            "Nested batch not supported".to_string(),
-        ));
-    }
-
-    // Encode each call (same as txwrapper's unsigned.method)
-    let calls: Result<Vec<_>, _> = intents
-        .iter()
-        .map(|intent| encode_call(intent, metadata))
+        .map(|call| encode_call(call, metadata))
         .collect();
-    let calls = calls?;
+    let encoded_calls = encoded_calls?;
 
-    // Build batch: [pallet][method][calls...]
-    let method = if atomic { "batch_all" } else { "batch" };
-    let (pallet_idx, call_idx) = get_call_index(metadata, "Utility", method)?;
+    let (pallet_idx, call_idx) = get_call_index(metadata, "Utility", "batch_all")?;
 
     let mut result = vec![pallet_idx, call_idx];
-    Compact(calls.len() as u32).encode_to(&mut result);
-    for call in calls {
+    Compact(encoded_calls.len() as u32).encode_to(&mut result);
+    for call in encoded_calls {
         result.extend(call);
     }
     Ok(result)
