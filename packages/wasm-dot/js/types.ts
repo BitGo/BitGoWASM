@@ -98,6 +98,7 @@ export type TransactionIntent =
   | TransferIntent
   | TransferAllIntent
   | StakeIntent
+  | BondExtraIntent
   | UnstakeIntent
   | WithdrawUnbondedIntent
   | ChillIntent
@@ -136,6 +137,12 @@ export type StakePayee =
   | { type: "stash" }
   | { type: "controller" }
   | { type: "account"; address: string };
+
+export interface BondExtraIntent {
+  type: "bondExtra";
+  /** Additional amount to bond in planck */
+  amount: bigint;
+}
 
 export interface UnstakeIntent {
   type: "unstake";

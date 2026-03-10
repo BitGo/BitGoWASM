@@ -40,6 +40,11 @@ pub enum TransactionIntent {
         #[serde(default)]
         payee: StakePayee,
     },
+    /// Bond extra DOT to existing stake
+    BondExtra {
+        /// Additional amount to bond in planck (accepts JS BigInt natively)
+        amount: u64,
+    },
     /// Unstake (unbond) DOT
     Unstake {
         /// Amount to unstake in planck (accepts JS BigInt natively)
@@ -170,6 +175,22 @@ mod tests {
                 assert_eq!(amount, 5_000_000_000_000);
             }
             _ => panic!("Expected Stake"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_bond_extra_intent() {
+        let json = r#"{
+            "type": "bondExtra",
+            "amount": 2000000000000
+        }"#;
+
+        let intent: TransactionIntent = serde_json::from_str(json).unwrap();
+        match intent {
+            TransactionIntent::BondExtra { amount } => {
+                assert_eq!(amount, 2_000_000_000_000);
+            }
+            _ => panic!("Expected BondExtra"),
         }
     }
 

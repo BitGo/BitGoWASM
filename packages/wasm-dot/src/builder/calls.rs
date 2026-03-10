@@ -31,6 +31,7 @@ pub fn encode_call(
         }
         TransactionIntent::TransferAll { to, keep_alive } => transfer_all(to, *keep_alive)?,
         TransactionIntent::Stake { amount, payee } => staking_bond(*amount, payee)?,
+        TransactionIntent::BondExtra { amount } => staking_bond_extra(*amount),
         TransactionIntent::Unstake { amount } => staking_unbond(*amount),
         TransactionIntent::WithdrawUnbonded { slashing_spans } => {
             staking_withdraw_unbonded(*slashing_spans)
@@ -114,6 +115,14 @@ fn staking_bond(
             ("payee", payee_value),
         ]),
     ))
+}
+
+fn staking_bond_extra(amount: u64) -> subxt_core::tx::payload::DynamicPayload {
+    dynamic(
+        "Staking",
+        "bond_extra",
+        named([("max_additional", Value::u128(amount as u128))]),
+    )
 }
 
 fn staking_unbond(amount: u64) -> subxt_core::tx::payload::DynamicPayload {
