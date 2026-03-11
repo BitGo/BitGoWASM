@@ -193,6 +193,7 @@ describe("mps", function () {
   });
 
   describe("dsg", function () {
+    const otherIndex = [1, 0];
     let shares: Array<mps.Share>;
 
     before("performs dkg", function () {
@@ -223,7 +224,7 @@ describe("mps", function () {
     );
 
     it("performs round 0", function () {
-      for (let i = 0; i < 3; i++) {
+      for (const i of [0, 2]) {
         mps.dsg_round0_process(shares[i].share, "m", message);
       }
     });
@@ -231,59 +232,43 @@ describe("mps", function () {
     let results1: Array<mps.MsgState>;
 
     before("performs round 0", function () {
-      results1 = [0, 1, 2].map((i) => mps.dsg_round0_process(shares[i].share, "m", message));
+      results1 = [0, 2].map((i) => mps.dsg_round0_process(shares[i].share, "m", message));
     });
 
     it("performs round 1", function () {
-      for (let i = 0; i < 3; i++) {
-        mps.dsg_round1_process(
-          otherIndices[i].map((i) => results1[i].msg),
-          results1[i].state,
-        );
+      for (let i = 0; i < 2; i++) {
+        mps.dsg_round1_process(results1[otherIndex[i]].msg, results1[i].state);
       }
     });
 
     let results2: Array<mps.MsgState>;
 
     before("performs round 1", function () {
-      results2 = [0, 1, 2].map((i) =>
-        mps.dsg_round1_process(
-          otherIndices[i].map((i) => results1[i].msg),
-          results1[i].state,
-        ),
+      results2 = [0, 1].map((i) =>
+        mps.dsg_round1_process(results1[otherIndex[i]].msg, results1[i].state),
       );
     });
 
     it("performs round 2", function () {
-      for (let i = 0; i < 3; i++) {
-        mps.dsg_round2_process(
-          otherIndices[i].map((i) => results2[i].msg),
-          results2[i].state,
-        );
+      for (let i = 0; i < 2; i++) {
+        mps.dsg_round2_process(results2[otherIndex[i]].msg, results2[i].state);
       }
     });
 
     let results3: Array<mps.MsgState>;
 
     before("performs round 2", function () {
-      results3 = [0, 1, 2].map((i) =>
-        mps.dsg_round2_process(
-          otherIndices[i].map((i) => results2[i].msg),
-          results2[i].state,
-        ),
+      results3 = [0, 1].map((i) =>
+        mps.dsg_round2_process(results2[otherIndex[i]].msg, results2[i].state),
       );
     });
 
     it("performs round 3", function () {
-      const signatures = [0, 1, 2].map((i) =>
-        mps.dsg_round3_process(
-          otherIndices[i].map((i) => results3[i].msg),
-          results3[i].state,
-        ),
+      const signatures = [0, 1].map((i) =>
+        mps.dsg_round3_process(results3[otherIndex[i]].msg, results3[i].state),
       );
-      for (let i = 0; i < 3; i++) {
-        assert(sodium.crypto_sign_verify_detached(signatures[i], message, shares[i].pk));
-      }
+      assert(sodium.crypto_sign_verify_detached(signatures[0], message, shares[0].pk));
+      assert(sodium.crypto_sign_verify_detached(signatures[1], message, shares[2].pk));
     });
   });
 });

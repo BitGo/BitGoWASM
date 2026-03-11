@@ -253,20 +253,15 @@ mod mps {
     /// Process round 1 of DSG protocol.
     /// round1_messages: Public messages from other parties.
     /// state: Private state result from round 0.
-    pub fn dsg_round1_process(
-        round1_messages: &[Vec<u8>; 2],
-        state: &[u8],
-    ) -> Result<MsgState, MpsError> {
+    pub fn dsg_round1_process(round1_message: &[u8], state: &[u8]) -> Result<MsgState, MpsError> {
         // Parse state
         let state: DsgStateR1 =
             bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
-        let i0_msg1: SignMsg1 = bincode::deserialize(round1_messages[0].as_slice())
-            .map_err(|_| MpsError::DeserializationError)?;
-        let i1_msg1: SignMsg1 = bincode::deserialize(round1_messages[1].as_slice())
-            .map_err(|_| MpsError::DeserializationError)?;
-        let msgs = vec![i0_msg1, i1_msg1, state.msg];
+        let i0_msg1: SignMsg1 =
+            bincode::deserialize(round1_message).map_err(|_| MpsError::DeserializationError)?;
+        let msgs = vec![i0_msg1, state.msg];
 
         // Process all round1 messages together
         let (p2, msg2) = state
@@ -289,20 +284,15 @@ mod mps {
     /// Process round 2 of DSG protocol.
     /// round2_messages: Public messages from other parties.
     /// state: Private state result from round 1.
-    pub fn dsg_round2_process(
-        round2_messages: &[Vec<u8>; 2],
-        state: &[u8],
-    ) -> Result<MsgState, MpsError> {
+    pub fn dsg_round2_process(round2_message: &[u8], state: &[u8]) -> Result<MsgState, MpsError> {
         // Parse state
         let state: DsgStateR2 =
             bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
-        let i0_msg2: SignMsg2<EdwardsPoint> = bincode::deserialize(round2_messages[0].as_slice())
-            .map_err(|_| MpsError::DeserializationError)?;
-        let i1_msg2: SignMsg2<EdwardsPoint> = bincode::deserialize(round2_messages[1].as_slice())
-            .map_err(|_| MpsError::DeserializationError)?;
-        let msgs = vec![i0_msg2, i1_msg2, state.msg];
+        let i0_msg2: SignMsg2<EdwardsPoint> =
+            bincode::deserialize(round2_message).map_err(|_| MpsError::DeserializationError)?;
+        let msgs = vec![i0_msg2, state.msg];
 
         // Process all round2 messages together
         let party = state
@@ -328,20 +318,15 @@ mod mps {
     /// Process round 3 of DSG protocol.
     /// round3_messages: Public messages from other parties.
     /// state: Private state result from round 2.
-    pub fn dsg_round3_process(
-        round3_messages: &[Vec<u8>; 2],
-        state: &[u8],
-    ) -> Result<Vec<u8>, MpsError> {
+    pub fn dsg_round3_process(round3_message: &[u8], state: &[u8]) -> Result<Vec<u8>, MpsError> {
         // Parse state
         let state: DsgStateR3 =
             bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
-        let i0_msg3: SignMsg3<EdwardsPoint> = bincode::deserialize(round3_messages[0].as_slice())
-            .map_err(|_| MpsError::DeserializationError)?;
-        let i1_msg3: SignMsg3<EdwardsPoint> = bincode::deserialize(round3_messages[1].as_slice())
-            .map_err(|_| MpsError::DeserializationError)?;
-        let msgs = vec![i0_msg3, i1_msg3, state.msg];
+        let i0_msg3: SignMsg3<EdwardsPoint> =
+            bincode::deserialize(round3_message).map_err(|_| MpsError::DeserializationError)?;
+        let msgs = vec![i0_msg3, state.msg];
 
         // Process all round2 messages together
         let (signature, _) = state
@@ -512,11 +497,6 @@ mod tests {
             dkg_p0_1.state.as_slice(),
         )
         .unwrap();
-        let dkg_p1_share = mps::dkg_round2_process(
-            &[dkg_p0_1.msg.clone(), dkg_p2_1.msg.clone()],
-            dkg_p1_1.state.as_slice(),
-        )
-        .unwrap();
         let dkg_p2_share = mps::dkg_round2_process(
             &[dkg_p0_1.msg.clone(), dkg_p1_1.msg.clone()],
             dkg_p2_1.state.as_slice(),
@@ -529,69 +509,30 @@ mod tests {
         // Process DSG round 0
         let dsg_p0_0 =
             mps::dsg_round0_process(dkg_p0_share.share.as_slice(), "m".to_string(), msg).unwrap();
-        let dsg_p1_0 =
-            mps::dsg_round0_process(dkg_p1_share.share.as_slice(), "m".to_string(), msg).unwrap();
         let dsg_p2_0 =
             mps::dsg_round0_process(dkg_p2_share.share.as_slice(), "m".to_string(), msg).unwrap();
 
         // Process DSG round 1
-        let dsg_p0_1 = mps::dsg_round1_process(
-            &[dsg_p1_0.msg.clone(), dsg_p2_0.msg.clone()],
-            dsg_p0_0.state.as_slice(),
-        )
-        .unwrap();
-        let dsg_p1_1 = mps::dsg_round1_process(
-            &[dsg_p0_0.msg.clone(), dsg_p2_0.msg.clone()],
-            dsg_p1_0.state.as_slice(),
-        )
-        .unwrap();
-        let dsg_p2_1 = mps::dsg_round1_process(
-            &[dsg_p0_0.msg.clone(), dsg_p1_0.msg.clone()],
-            dsg_p2_0.state.as_slice(),
-        )
-        .unwrap();
+        let dsg_p0_1 =
+            mps::dsg_round1_process(dsg_p2_0.msg.as_slice(), dsg_p0_0.state.as_slice()).unwrap();
+        let dsg_p2_1 =
+            mps::dsg_round1_process(dsg_p0_0.msg.as_slice(), dsg_p2_0.state.as_slice()).unwrap();
 
         // Process DSG round 2
-        let dsg_p0_2 = mps::dsg_round2_process(
-            &[dsg_p1_1.msg.clone(), dsg_p2_1.msg.clone()],
-            dsg_p0_1.state.as_slice(),
-        )
-        .unwrap();
-        let dsg_p1_2 = mps::dsg_round2_process(
-            &[dsg_p0_1.msg.clone(), dsg_p2_1.msg.clone()],
-            dsg_p1_1.state.as_slice(),
-        )
-        .unwrap();
-        let dsg_p2_2 = mps::dsg_round2_process(
-            &[dsg_p0_1.msg.clone(), dsg_p1_1.msg.clone()],
-            dsg_p2_1.state.as_slice(),
-        )
-        .unwrap();
+        let dsg_p0_2 =
+            mps::dsg_round2_process(dsg_p2_1.msg.as_slice(), dsg_p0_1.state.as_slice()).unwrap();
+        let dsg_p2_2 =
+            mps::dsg_round2_process(dsg_p0_1.msg.as_slice(), dsg_p2_1.state.as_slice()).unwrap();
 
         // Process DSG round 3
-        let dsg_p0_sig = mps::dsg_round3_process(
-            &[dsg_p1_2.msg.clone(), dsg_p2_2.msg.clone()],
-            dsg_p0_2.state.as_slice(),
-        )
-        .unwrap();
-        let dsg_p1_sig = mps::dsg_round3_process(
-            &[dsg_p0_2.msg.clone(), dsg_p2_2.msg.clone()],
-            dsg_p1_2.state.as_slice(),
-        )
-        .unwrap();
-        let dsg_p2_sig = mps::dsg_round3_process(
-            &[dsg_p0_2.msg.clone(), dsg_p1_2.msg.clone()],
-            dsg_p2_2.state.as_slice(),
-        )
-        .unwrap();
+        let dsg_p0_sig =
+            mps::dsg_round3_process(dsg_p2_2.msg.as_slice(), dsg_p0_2.state.as_slice()).unwrap();
+        let dsg_p2_sig =
+            mps::dsg_round3_process(dsg_p0_2.msg.as_slice(), dsg_p2_2.state.as_slice()).unwrap();
 
         assert_eq!(
             dsg_p2_sig, dsg_p0_sig,
             "Party 0 signature differs from party 2 signature"
-        );
-        assert_eq!(
-            dsg_p2_sig, dsg_p1_sig,
-            "Party 1 signature differs from party 2 signature"
         );
 
         // Verify signature
@@ -600,13 +541,6 @@ mod tests {
             .verify(
                 msg,
                 &Signature::from_bytes(dsg_p0_sig.as_slice().try_into().unwrap()),
-            )
-            .unwrap();
-        VerifyingKey::from_bytes(&dkg_p1_share.pk)
-            .unwrap()
-            .verify(
-                msg,
-                &Signature::from_bytes(dsg_p1_sig.as_slice().try_into().unwrap()),
             )
             .unwrap();
         VerifyingKey::from_bytes(&dkg_p2_share.pk)
@@ -760,15 +694,8 @@ pub fn dsg_round0_process(
 }
 
 #[wasm_bindgen]
-pub fn dsg_round1_process(round1_messages: Array, state: &[u8]) -> Result<MsgState, String> {
-    let result = mps::dsg_round1_process(
-        &[
-            js_sys::Uint8Array::from(round1_messages.get(0)).to_vec(),
-            js_sys::Uint8Array::from(round1_messages.get(1)).to_vec(),
-        ],
-        state,
-    )
-    .map_err(|e| e.to_string())?;
+pub fn dsg_round1_process(round1_message: &[u8], state: &[u8]) -> Result<MsgState, String> {
+    let result = mps::dsg_round1_process(round1_message, state).map_err(|e| e.to_string())?;
 
     Ok(MsgState {
         msg: result.msg,
@@ -777,15 +704,8 @@ pub fn dsg_round1_process(round1_messages: Array, state: &[u8]) -> Result<MsgSta
 }
 
 #[wasm_bindgen]
-pub fn dsg_round2_process(round2_messages: Array, state: &[u8]) -> Result<MsgState, String> {
-    let result = mps::dsg_round2_process(
-        &[
-            js_sys::Uint8Array::from(round2_messages.get(0)).to_vec(),
-            js_sys::Uint8Array::from(round2_messages.get(1)).to_vec(),
-        ],
-        state,
-    )
-    .map_err(|e| e.to_string())?;
+pub fn dsg_round2_process(round2_message: &[u8], state: &[u8]) -> Result<MsgState, String> {
+    let result = mps::dsg_round2_process(round2_message, state).map_err(|e| e.to_string())?;
 
     Ok(MsgState {
         msg: result.msg,
@@ -794,15 +714,8 @@ pub fn dsg_round2_process(round2_messages: Array, state: &[u8]) -> Result<MsgSta
 }
 
 #[wasm_bindgen]
-pub fn dsg_round3_process(round2_messages: Array, state: &[u8]) -> Result<Vec<u8>, String> {
-    let result = mps::dsg_round3_process(
-        &[
-            js_sys::Uint8Array::from(round2_messages.get(0)).to_vec(),
-            js_sys::Uint8Array::from(round2_messages.get(1)).to_vec(),
-        ],
-        state,
-    )
-    .map_err(|e| e.to_string())?;
+pub fn dsg_round3_process(round2_message: &[u8], state: &[u8]) -> Result<Vec<u8>, String> {
+    let result = mps::dsg_round3_process(round2_message, state).map_err(|e| e.to_string())?;
 
     Ok(result.to_vec())
 }
