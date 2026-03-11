@@ -64,3 +64,54 @@ export function isTestnet(name: CoinName): boolean {
 export function isCoinName(v: string): v is CoinName {
   return (coinNames as readonly string[]).includes(v);
 }
+
+import type { UtxolibName } from "./utxolibCompat.js";
+
+/** Convert a CoinName or UtxolibName to CoinName */
+export function toCoinName(name: CoinName | UtxolibName): CoinName {
+  switch (name) {
+    case "bitcoin":
+      return "btc";
+    case "testnet":
+      return "tbtc";
+    case "bitcoinTestnet4":
+      return "tbtc4";
+    case "bitcoinPublicSignet":
+      return "tbtcsig";
+    case "bitcoinBitGoSignet":
+      return "tbtcbgsig";
+    case "bitcoincash":
+      return "bch";
+    case "bitcoincashTestnet":
+      return "tbch";
+    case "ecash":
+      return "bcha";
+    case "ecashTest":
+      return "tbcha";
+    case "bitcoingold":
+      return "btg";
+    case "bitcoingoldTestnet":
+      return "tbtg";
+    case "bitcoinsv":
+      return "bsv";
+    case "bitcoinsvTestnet":
+      return "tbsv";
+    case "dashTest":
+      return "tdash";
+    case "dogecoin":
+      return "doge";
+    case "dogecoinTest":
+      return "tdoge";
+    case "litecoin":
+      return "ltc";
+    case "litecoinTest":
+      return "tltc";
+    case "zcash":
+      return "zec";
+    case "zcashTest":
+      return "tzec";
+    default:
+      // CoinName values pass through (including "dash" which is both CoinName and UtxolibName)
+      return name;
+  }
+}

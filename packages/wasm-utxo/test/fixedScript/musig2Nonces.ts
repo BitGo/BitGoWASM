@@ -4,14 +4,14 @@ import { loadPsbtFixture, getBitGoPsbt, type Fixture } from "./fixtureUtil.js";
 
 describe("MuSig2 nonce management", function () {
   describe("Bitcoin mainnet", function () {
-    const networkName = "bitcoin";
+    const networkName = "btc";
     let fixture: Fixture;
     let userKey: BIP32;
     let backupKey: BIP32;
     let bitgoKey: BIP32;
 
-    before(function () {
-      fixture = loadPsbtFixture(networkName, "unsigned");
+    before(async function () {
+      fixture = await loadPsbtFixture(networkName, "unsigned");
       userKey = BIP32.fromBase58(fixture.walletKeys[0]);
       backupKey = BIP32.fromBase58(fixture.walletKeys[1]);
       bitgoKey = BIP32.fromBase58(fixture.walletKeys[2]);
@@ -93,7 +93,7 @@ describe("MuSig2 nonce management", function () {
     });
 
     it("should reject custom session ID on mainnet (security)", function () {
-      const unsignedBitgoPsbt = getBitGoPsbt(fixture, "bitcoin");
+      const unsignedBitgoPsbt = getBitGoPsbt(fixture, "btc");
       // Custom session ID should be rejected on mainnet for security
       const customSessionId = new Uint8Array(32).fill(1);
 

@@ -35,12 +35,19 @@ mod tests {
 
     use super::*;
     use crate::bitcoin::secp256k1::Secp256k1;
-    use crate::fixed_script_wallet::test_utils::fixtures::{load_psbt_fixture, SignatureState};
+    use crate::fixed_script_wallet::test_utils::fixtures::{
+        load_psbt_fixture_with_format_and_namespace, FixtureNamespace, SignatureState, TxFormat,
+    };
 
     #[test]
     fn test_p2sh_p2pk_script_generation_from_fixture() {
-        let fixture = load_psbt_fixture("bitcoin", SignatureState::Fullsigned)
-            .expect("Failed to load fixture");
+        let fixture = load_psbt_fixture_with_format_and_namespace(
+            "bitcoin",
+            SignatureState::Fullsigned,
+            TxFormat::Psbt,
+            FixtureNamespace::UtxolibCompat,
+        )
+        .expect("Failed to load fixture");
 
         // Find the p2shP2pk input in the fixture
         let p2shp2pk_input = fixture
@@ -72,12 +79,14 @@ mod tests {
         // Build the p2sh-p2pk script
         let script = ScriptP2shP2pk::new(pubkey);
 
-        // Verify the redeem script matches
-        assert_eq!(
-            script.redeem_script.to_hex_string(),
-            *expected_redeem_script,
-            "Redeem script mismatch"
-        );
+        // Verify the redeem script matches (when present in fixture)
+        if let Some(expected) = expected_redeem_script {
+            assert_eq!(
+                script.redeem_script.to_hex_string(),
+                *expected,
+                "Redeem script mismatch"
+            );
+        }
 
         // Verify the output script (p2sh wrapped) matches the fixture
         // Get the output script from the non-witness UTXO
