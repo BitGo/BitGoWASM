@@ -1,5 +1,4 @@
 import { AddressNamespace } from "./wasm/wasm_dot.js";
-import { AddressFormat } from "./types.js";
 
 /**
  * Result of decoding an SS58 address
@@ -13,11 +12,11 @@ export interface DecodedAddress {
  * Encode a public key to SS58 address format.
  *
  * @param publicKey - 32-byte Ed25519 public key
- * @param format - Address format (Polkadot, Kusama, or Substrate)
+ * @param prefix - Network prefix (e.g. 0 = Polkadot, 2 = Kusama, 42 = Substrate)
  * @returns SS58-encoded address string
  */
-export function encodeSs58(publicKey: Uint8Array, format: AddressFormat): string {
-  return AddressNamespace.encodeSs58(publicKey, format);
+export function encodeSs58(publicKey: Uint8Array, prefix: number): string {
+  return AddressNamespace.encodeSs58(publicKey, prefix);
 }
 
 /**
@@ -34,9 +33,9 @@ export function decodeSs58(address: string): DecodedAddress {
  * Validate an SS58 address.
  *
  * @param address - SS58-encoded address string
- * @param format - Optional expected address format to check against
- * @returns true if the address is valid (and matches format if provided)
+ * @param prefix - Optional expected network prefix to check against
+ * @returns true if the address is valid (and matches prefix if provided)
  */
-export function validateAddress(address: string, format?: AddressFormat): boolean {
-  return AddressNamespace.validateAddress(address, format);
+export function validateAddress(address: string, prefix?: number): boolean {
+  return AddressNamespace.validateAddress(address, prefix);
 }
