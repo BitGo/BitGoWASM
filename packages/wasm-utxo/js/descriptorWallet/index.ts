@@ -45,5 +45,8 @@ export * from "./VirtualSize.js";
 // PSBT utilities
 export * from "./psbt/index.js";
 
+// PSBT wrapper
+export { Psbt, type SignPsbtResult } from "./Psbt.js";
+
 // Pattern matching
 export * from "./parse/PatternMatcher.js";

@@ -32,10 +32,6 @@ export type DescriptorPkType = "derivable" | "definite" | "string";
 
 export type ScriptContext = "tap" | "segwitv0" | "legacy";
 
-export type SignPsbtResult = {
-  [inputIndex: number]: [pubkey: string][];
-};
-
 declare module "./wasm/wasm_utxo.js" {
   interface WrapDescriptor {
     /** These are not the same types of nodes as in the ast module */
@@ -90,58 +86,10 @@ declare module "./wasm/wasm_utxo.js" {
   interface PsbtOutputDataWithAddress extends PsbtOutputData {
     address: string;
   }
-
-  interface WrapPsbt {
-    // Signing methods (legacy - kept for backwards compatibility)
-    signWithXprv(this: WrapPsbt, xprv: string): SignPsbtResult;
-    signWithPrv(this: WrapPsbt, prv: Uint8Array): SignPsbtResult;
-
-    // Signing methods (new - using WasmBIP32/WasmECPair)
-    signAll(this: WrapPsbt, key: WasmBIP32): SignPsbtResult;
-    signAllWithEcpair(this: WrapPsbt, key: WasmECPair): SignPsbtResult;
-
-    // Introspection methods
-    inputCount(): number;
-    outputCount(): number;
-    getInputs(): PsbtInputData[];
-    getOutputs(): PsbtOutputData[];
-    getOutputsWithAddress(coin: import("./coinName.js").CoinName): PsbtOutputDataWithAddress[];
-    getGlobalXpubs(): WasmBIP32[];
-    getPartialSignatures(inputIndex: number): Array<{
-      pubkey: Uint8Array;
-      signature: Uint8Array;
-    }>;
-    hasPartialSignatures(inputIndex: number): boolean;
-
-    // Validation methods
-    validateSignatureAtInput(inputIndex: number, pubkey: Uint8Array): boolean;
-    verifySignatureWithKey(inputIndex: number, key: WasmBIP32): boolean;
-
-    // Extraction methods
-    extractTransaction(): WasmTransaction;
-
-    // Mutation methods
-    addInputAtIndex(
-      index: number,
-      txid: string,
-      vout: number,
-      value: bigint,
-      script: Uint8Array,
-      sequence?: number,
-    ): number;
-    addOutputAtIndex(index: number, script: Uint8Array, value: bigint): number;
-    removeInput(index: number): void;
-    removeOutput(index: number): void;
-
-    // Metadata methods
-    unsignedTxId(): string;
-    lockTime(): number;
-    version(): number;
-  }
 }
 
 export { WrapDescriptor as Descriptor } from "./wasm/wasm_utxo.js";
 export { WrapMiniscript as Miniscript } from "./wasm/wasm_utxo.js";
-export { WrapPsbt as Psbt } from "./wasm/wasm_utxo.js";
+export { Psbt } from "./descriptorWallet/Psbt.js";
 export { DashTransaction, Transaction, ZcashTransaction } from "./transaction.js";
 export { hasPsbtMagic, type IPsbt, type IPsbtWithAddress } from "./psbt.js";

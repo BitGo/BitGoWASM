@@ -1273,11 +1273,7 @@ impl BitGoPsbt {
     /// This works for both BitcoinLike and Zcash PSBTs, returning a reference
     /// to the inner Bitcoin-compatible PSBT structure.
     pub fn psbt(&self) -> &Psbt {
-        match self {
-            BitGoPsbt::BitcoinLike(ref psbt, _network) => psbt,
-            BitGoPsbt::Dash(ref dash_psbt, _network) => &dash_psbt.psbt,
-            BitGoPsbt::Zcash(ref zcash_psbt, _network) => &zcash_psbt.psbt,
-        }
+        crate::psbt_ops::PsbtAccess::psbt(self)
     }
 
     /// Get a mutable reference to the underlying PSBT
@@ -1285,11 +1281,7 @@ impl BitGoPsbt {
     /// This works for both BitcoinLike and Zcash PSBTs, returning a reference
     /// to the inner Bitcoin-compatible PSBT structure.
     pub fn psbt_mut(&mut self) -> &mut Psbt {
-        match self {
-            BitGoPsbt::BitcoinLike(ref mut psbt, _network) => psbt,
-            BitGoPsbt::Dash(ref mut dash_psbt, _network) => &mut dash_psbt.psbt,
-            BitGoPsbt::Zcash(ref mut zcash_psbt, _network) => &mut zcash_psbt.psbt,
-        }
+        crate::psbt_ops::PsbtAccess::psbt_mut(self)
     }
 
     /// Returns the global xpubs from the PSBT, or None if the PSBT has no global xpubs.
@@ -3016,6 +3008,23 @@ impl BitGoPsbt {
             miner_fee,
             virtual_size: virtual_size as u32,
         })
+    }
+}
+
+impl crate::psbt_ops::PsbtAccess for BitGoPsbt {
+    fn psbt(&self) -> &Psbt {
+        match self {
+            BitGoPsbt::BitcoinLike(ref psbt, _) => psbt,
+            BitGoPsbt::Dash(ref dash_psbt, _) => &dash_psbt.psbt,
+            BitGoPsbt::Zcash(ref zcash_psbt, _) => &zcash_psbt.psbt,
+        }
+    }
+    fn psbt_mut(&mut self) -> &mut Psbt {
+        match self {
+            BitGoPsbt::BitcoinLike(ref mut psbt, _) => psbt,
+            BitGoPsbt::Dash(ref mut dash_psbt, _) => &mut dash_psbt.psbt,
+            BitGoPsbt::Zcash(ref mut zcash_psbt, _) => &mut zcash_psbt.psbt,
+        }
     }
 }
 
