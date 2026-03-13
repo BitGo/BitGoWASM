@@ -91,6 +91,12 @@ export interface PaymentIntent extends BaseIntent {
   recipients?: Array<{
     address?: { address: string };
     amount?: { value: bigint; symbol?: string };
+    /** Mint address (base58) — if set, this is an SPL token transfer */
+    tokenAddress?: string;
+    /** Token program ID (defaults to SPL Token Program) */
+    tokenProgramId?: string;
+    /** Decimal places for the token (required for transfer_checked) */
+    decimalPlaces?: number;
   }>;
 }
 

@@ -165,6 +165,39 @@ fn build_transaction_from_instructions(
 // Intent Builders
 // =============================================================================
 
+/// Derive the Associated Token Account address for `owner` + `mint` under `token_program`.
+fn derive_ata(owner: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
+    let ata_program: Pubkey = SPL_ATA_PROGRAM_ID.parse().unwrap();
+    let seeds = &[owner.as_ref(), token_program.as_ref(), mint.as_ref()];
+    let (ata, _bump) = Pubkey::find_program_address(seeds, &ata_program);
+    ata
+}
+
+/// Build a `CreateIdempotent` ATA instruction (no-op if ATA already exists).
+fn create_ata_idempotent_ix(
+    fee_payer: &Pubkey,
+    ata: &Pubkey,
+    owner: &Pubkey,
+    mint: &Pubkey,
+    system_program: &Pubkey,
+    token_program: &Pubkey,
+) -> Instruction {
+    let ata_program: Pubkey = SPL_ATA_PROGRAM_ID.parse().unwrap();
+    // Discriminator byte 1 = CreateIdempotent (0 = Create)
+    Instruction::new_with_bytes(
+        ata_program,
+        &[1],
+        vec![
+            AccountMeta::new(*fee_payer, true),
+            AccountMeta::new(*ata, false),
+            AccountMeta::new_readonly(*owner, false),
+            AccountMeta::new_readonly(*mint, false),
+            AccountMeta::new_readonly(*system_program, false),
+            AccountMeta::new_readonly(*token_program, false),
+        ],
+    )
+}
+
 fn build_payment(
     intent_json: &serde_json::Value,
     params: &BuildParams,
@@ -177,6 +210,9 @@ fn build_payment(
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid feePayer"))?;
 
+    let system_program: Pubkey = SYSTEM_PROGRAM_ID.parse().unwrap();
+    let default_token_program: Pubkey = SPL_TOKEN_PROGRAM_ID.parse().unwrap();
+
     let mut instructions = Vec::new();
 
     for recipient in intent.recipients {
@@ -185,18 +221,85 @@ fn build_payment(
             .as_ref()
             .map(|a| &a.address)
             .ok_or_else(|| WasmSolanaError::new("Recipient missing address"))?;
-        let amount = recipient
+        let amount_wrapper = recipient
             .amount
             .as_ref()
-            .map(|a| &a.value)
             .ok_or_else(|| WasmSolanaError::new("Recipient missing amount"))?;
 
         let to_pubkey: Pubkey = address.parse().map_err(|_| {
             WasmSolanaError::new(&format!("Invalid recipient address: {}", address))
         })?;
-        let lamports: u64 = *amount;
 
-        instructions.push(system_ix::transfer(&fee_payer, &to_pubkey, lamports));
+        // Detect token transfer: tokenAddress must be set explicitly by the caller.
+        // The caller (e.g. bgms) is responsible for resolving the token name to a mint
+        // address via @bitgo/statics before passing to buildFromIntent.
+        let mint_str = recipient.token_address.as_deref();
+
+        if let Some(mint_str) = mint_str {
+            // SPL token transfer
+            let mint: Pubkey = mint_str
+                .parse()
+                .map_err(|_| WasmSolanaError::new(&format!("Invalid token mint: {}", mint_str)))?;
+
+            let token_program: Pubkey = recipient
+                .token_program_id
+                .as_deref()
+                .map(|p| {
+                    p.parse()
+                        .map_err(|_| WasmSolanaError::new("Invalid tokenProgramId"))
+                })
+                .transpose()?
+                .unwrap_or(default_token_program);
+
+            let decimals = recipient
+                .decimal_places
+                .ok_or_else(|| WasmSolanaError::new("Token transfer requires decimalPlaces"))?;
+
+            // Derive ATAs for sender (fee_payer) and recipient
+            let sender_ata = derive_ata(&fee_payer, &mint, &token_program);
+            let recipient_ata = derive_ata(&to_pubkey, &mint, &token_program);
+
+            // 1. CreateIdempotent ATA for the recipient (safe to always include)
+            instructions.push(create_ata_idempotent_ix(
+                &fee_payer,
+                &recipient_ata,
+                &to_pubkey,
+                &mint,
+                &system_program,
+                &token_program,
+            ));
+
+            // 2. transfer_checked
+            // Pack the instruction data via spl_token types (avoids solana crate version mismatch)
+            // then build the Instruction manually with solana_sdk types.
+            use spl_token::instruction::TokenInstruction;
+            let data = TokenInstruction::TransferChecked {
+                amount: amount_wrapper.value,
+                decimals,
+            }
+            .pack();
+
+            // Accounts: source(w), mint(r), destination(w), authority(signer)
+            let transfer_ix = Instruction::new_with_bytes(
+                token_program,
+                &data,
+                vec![
+                    AccountMeta::new(sender_ata, false),
+                    AccountMeta::new_readonly(mint, false),
+                    AccountMeta::new(recipient_ata, false),
+                    AccountMeta::new_readonly(fee_payer, true),
+                ],
+            );
+
+            instructions.push(transfer_ix);
+        } else {
+            // Native SOL transfer
+            instructions.push(system_ix::transfer(
+                &fee_payer,
+                &to_pubkey,
+                amount_wrapper.value,
+            ));
+        }
     }
 
     Ok((instructions, vec![]))

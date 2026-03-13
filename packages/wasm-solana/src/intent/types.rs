@@ -112,6 +112,15 @@ pub struct BaseIntent {
 pub struct Recipient {
     pub address: Option<AddressWrapper>,
     pub amount: Option<AmountWrapper>,
+    /// Mint address (base58) — if set, this is an SPL token transfer
+    #[serde(default)]
+    pub token_address: Option<String>,
+    /// Token program ID (defaults to SPL Token Program)
+    #[serde(default)]
+    pub token_program_id: Option<String>,
+    /// Decimal places for the token (required for transfer_checked)
+    #[serde(default)]
+    pub decimal_places: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
