@@ -424,6 +424,156 @@ describe("buildFromIntent", function () {
     });
   });
 
+  describe("payment intent — SPL token transfer", function () {
+    // USDC mint address on mainnet
+    const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const recipient = "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH";
+
+    it("should build an SPL token transfer with tokenAddress + decimalPlaces", function () {
+      const intent = {
+        intentType: "payment",
+        recipients: [
+          {
+            address: { address: recipient },
+            amount: { value: 1000000n, symbol: "sol:usdc" },
+            tokenAddress: usdcMint,
+            decimalPlaces: 6,
+          },
+        ],
+      };
+
+      const result = buildFromIntent(intent, {
+        feePayer,
+        nonce: { type: "blockhash", value: blockhash },
+      });
+
+      assert(result.transaction instanceof Transaction, "Should return Transaction object");
+      assert.equal(result.generatedKeypairs.length, 0, "Should not generate keypairs");
+
+      const parsed = parseTransaction(result.transaction);
+
+      const createAta = parsed.instructionsData.find(
+        (i: any) => i.type === "CreateAssociatedTokenAccount",
+      );
+      assert(createAta, "Should have CreateAssociatedTokenAccount instruction");
+
+      const tokenTransfer = parsed.instructionsData.find((i: any) => i.type === "TokenTransfer");
+      assert(tokenTransfer, "Should have TokenTransfer instruction");
+      assert.equal((tokenTransfer as any).tokenAddress, usdcMint, "Token mint should match");
+      assert.equal((tokenTransfer as any).amount, BigInt(1000000), "Token amount should match");
+    });
+
+    it("should build native SOL transfer (regression — no token fields)", function () {
+      const intent = {
+        intentType: "payment",
+        recipients: [
+          {
+            address: { address: recipient },
+            amount: { value: 1000000n },
+          },
+        ],
+      };
+
+      const result = buildFromIntent(intent, {
+        feePayer,
+        nonce: { type: "blockhash", value: blockhash },
+      });
+
+      const parsed = parseTransaction(result.transaction);
+
+      const transfer = parsed.instructionsData.find((i: any) => i.type === "Transfer");
+      assert(transfer, "Should have native SOL Transfer instruction");
+
+      const tokenTransfer = parsed.instructionsData.find((i: any) => i.type === "TokenTransfer");
+      assert(!tokenTransfer, "Should NOT have TokenTransfer instruction");
+    });
+
+    it("should error when decimalPlaces is missing for a token transfer", function () {
+      const intent = {
+        intentType: "payment",
+        recipients: [
+          {
+            address: { address: recipient },
+            amount: { value: 1000000n },
+            tokenAddress: usdcMint,
+            // decimalPlaces intentionally omitted
+          },
+        ],
+      };
+
+      assert.throws(() => {
+        buildFromIntent(intent, {
+          feePayer,
+          nonce: { type: "blockhash", value: blockhash },
+        });
+      }, /Token transfer requires decimalPlaces/);
+    });
+
+    it("should build mixed payment (native SOL + SPL token recipients)", function () {
+      const intent = {
+        intentType: "payment",
+        recipients: [
+          {
+            address: { address: recipient },
+            amount: { value: 2000000n },
+          },
+          {
+            address: { address: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN" },
+            amount: { value: 100000n },
+            tokenAddress: usdcMint,
+            decimalPlaces: 6,
+          },
+        ],
+      };
+
+      const result = buildFromIntent(intent, {
+        feePayer,
+        nonce: { type: "blockhash", value: blockhash },
+      });
+
+      const parsed = parseTransaction(result.transaction);
+
+      const solTransfer = parsed.instructionsData.find((i: any) => i.type === "Transfer");
+      assert(solTransfer, "Should have native SOL Transfer instruction");
+
+      const tokenTransfer = parsed.instructionsData.find((i: any) => i.type === "TokenTransfer");
+      assert(tokenTransfer, "Should have SPL TokenTransfer instruction");
+    });
+
+    it("parse round-trip: build token transfer then verify parsed output", function () {
+      const intent = {
+        intentType: "payment",
+        recipients: [
+          {
+            address: { address: recipient },
+            amount: { value: 1234567n },
+            tokenAddress: usdcMint,
+            decimalPlaces: 6,
+          },
+        ],
+      };
+
+      const { transaction } = buildFromIntent(intent, {
+        feePayer,
+        nonce: { type: "blockhash", value: blockhash },
+      });
+
+      // Parse round-trip via bytes
+      const bytes = transaction.toBytes();
+      const txFromBytes = Transaction.fromBytes(bytes);
+      const parsed = parseTransaction(txFromBytes);
+
+      const tokenTransfer = parsed.instructionsData.find((i: any) => i.type === "TokenTransfer");
+      assert(tokenTransfer, "Parsed output should have TokenTransfer");
+      assert.equal((tokenTransfer as any).tokenAddress, usdcMint, "Mint should survive round-trip");
+      assert.equal(
+        (tokenTransfer as any).amount,
+        BigInt(1234567),
+        "Amount should survive round-trip",
+      );
+    });
+  });
+
   describe("error handling", function () {
     it("should reject invalid intent type", function () {
       const intent = {
