@@ -134,6 +134,14 @@ export function addBip322Input(psbt: BitGoPsbt, params: AddBip322InputParams): n
 }
 
 /**
+ * Get the BIP322 message stored at a PSBT input index.
+ * Returns null if no message is stored.
+ */
+export function getBip322Message(psbt: BitGoPsbt, inputIndex: number): string | null {
+  return Bip322Namespace.get_bip322_message(psbt.wasm, inputIndex) ?? null;
+}
+
+/**
  * Verify a single input of a BIP-0322 transaction proof
  *
  * This verifies that the specified input correctly proves control of the
