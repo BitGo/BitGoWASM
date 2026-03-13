@@ -4,7 +4,8 @@
 //! with BitGo fixed-script wallets.
 
 use crate::fixed_script_wallet::bitgo_psbt::{
-    create_bip32_derivation, create_tap_bip32_derivation, BitGoPsbt,
+    create_bip32_derivation, create_tap_bip32_derivation, find_kv, BitGoKeyValue, BitGoPsbt,
+    ProprietaryKeySubtype,
 };
 use crate::fixed_script_wallet::wallet_scripts::{
     build_multisig_script_2_of_3, build_p2tr_ns_script, ScriptP2tr,
@@ -194,7 +195,36 @@ pub fn add_bip322_input(
         }
     }
 
+    // Store the BIP322 message as a proprietary field for later extraction
+    let (prop_key, prop_value) = BitGoKeyValue::new(
+        ProprietaryKeySubtype::Bip322Message,
+        vec![],
+        message.as_bytes().to_vec(),
+    )
+    .to_key_value();
+    inner_psbt.inputs[input_index]
+        .proprietary
+        .insert(prop_key, prop_value);
+
     Ok(input_index)
+}
+
+/// Extract the BIP322 message stored in a PSBT input's proprietary fields.
+/// Returns None if no message is stored at that index.
+pub fn get_bip322_message(psbt: &BitGoPsbt, input_index: usize) -> Result<Option<String>, String> {
+    let input = psbt
+        .psbt()
+        .inputs
+        .get(input_index)
+        .ok_or_else(|| format!("Input index {} out of bounds", input_index))?;
+
+    let mut iter = find_kv(ProprietaryKeySubtype::Bip322Message, &input.proprietary);
+    match iter.next() {
+        Some(kv) => String::from_utf8(kv.value)
+            .map(Some)
+            .map_err(|e| format!("Invalid UTF-8 in BIP322 message: {e}")),
+        None => Ok(None),
+    }
 }
 
 /// Verify a single input of a BIP-0322 transaction proof

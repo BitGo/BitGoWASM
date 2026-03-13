@@ -91,6 +91,41 @@ describe("BIP-0322", function () {
         });
       }, /BIP-0322 PSBT must have version 0/);
     });
+
+    it("should store and retrieve BIP322 message via proprietary field", function () {
+      const psbt = fixedScriptWallet.BitGoPsbt.createEmpty("testnet", walletKeys, { version: 0 });
+
+      bip322.addBip322Input(psbt, {
+        message: "Hello, BitGo!",
+        scriptId: { chain: 10, index: 0 },
+        rootWalletKeys: walletKeys,
+      });
+
+      assert.strictEqual(bip322.getBip322Message(psbt, 0), "Hello, BitGo!");
+    });
+
+    it("should store different messages for multiple inputs", function () {
+      const psbt = fixedScriptWallet.BitGoPsbt.createEmpty("testnet", walletKeys, { version: 0 });
+
+      bip322.addBip322Input(psbt, {
+        message: "Message A",
+        scriptId: { chain: 10, index: 0 },
+        rootWalletKeys: walletKeys,
+      });
+      bip322.addBip322Input(psbt, {
+        message: "Message B",
+        scriptId: { chain: 10, index: 1 },
+        rootWalletKeys: walletKeys,
+      });
+
+      assert.strictEqual(bip322.getBip322Message(psbt, 0), "Message A");
+      assert.strictEqual(bip322.getBip322Message(psbt, 1), "Message B");
+    });
+
+    it("should throw for input index out of bounds in getBip322Message", function () {
+      const psbt = fixedScriptWallet.BitGoPsbt.createEmpty("testnet", walletKeys, { version: 0 });
+      assert.throws(() => bip322.getBip322Message(psbt, 0), /out of bounds/);
+    });
   });
 
   describe("sign and verify per-input", function () {

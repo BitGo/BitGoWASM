@@ -204,6 +204,17 @@ impl Bip322Namespace {
         Ok(indices.into_iter().map(|i| i as u32).collect())
     }
 
+    /// Get the BIP322 message stored at a PSBT input index.
+    /// Returns null if no message is stored.
+    #[wasm_bindgen]
+    pub fn get_bip322_message(
+        psbt: &super::fixed_script_wallet::BitGoPsbt,
+        input_index: u32,
+    ) -> Result<Option<String>, WasmUtxoError> {
+        bitgo_psbt::get_bip322_message(&psbt.psbt, input_index as usize)
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
     /// Verify a single input of a BIP-0322 transaction proof using pubkeys directly
     ///
     /// # Arguments
