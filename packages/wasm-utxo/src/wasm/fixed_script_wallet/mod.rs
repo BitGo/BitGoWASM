@@ -421,10 +421,8 @@ impl BitGoPsbt {
                 as u32;
             let value_js = js_sys::Reflect::get(&item, &"value".into())
                 .map_err(|_| WasmUtxoError::new("Missing 'value' field on unspent"))?;
-            let value = js_sys::BigInt::from(value_js)
-                .as_f64()
-                .ok_or_else(|| WasmUtxoError::new("'value' must be a bigint"))?
-                as u64;
+            let value = u64::try_from(js_sys::BigInt::unchecked_from_js(value_js))
+                .map_err(|_| WasmUtxoError::new("'value' must be a bigint convertible to u64"))?;
             parsed_unspents.push(ScriptIdWithValue {
                 chain,
                 index,
