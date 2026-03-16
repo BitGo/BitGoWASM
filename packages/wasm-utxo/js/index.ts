@@ -116,5 +116,11 @@ declare module "./wasm/wasm_utxo.js" {
 export { WrapDescriptor as Descriptor } from "./wasm/wasm_utxo.js";
 export { WrapMiniscript as Miniscript } from "./wasm/wasm_utxo.js";
 export { Psbt } from "./descriptorWallet/Psbt.js";
-export { DashTransaction, Transaction, ZcashTransaction, type ITransaction } from "./transaction.js";
+export {
+  DashTransaction,
+  Transaction,
+  ZcashTransaction,
+  type ITransaction,
+  type ITransactionCommon,
+} from "./transaction.js";
 export { hasPsbtMagic, type IPsbt, type IPsbtWithAddress } from "./psbt.js";

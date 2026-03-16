@@ -1,15 +1,10 @@
 import type { PsbtInputData, PsbtOutputData, PsbtOutputDataWithAddress } from "./wasm/wasm_utxo.js";
 import type { BIP32 } from "./bip32.js";
+import type { ITransactionCommon } from "./transaction.js";
 
 /** Common interface for PSBT types */
-export interface IPsbt {
-  inputCount(): number;
-  outputCount(): number;
-  getInputs(): PsbtInputData[];
-  getOutputs(): PsbtOutputData[];
+export interface IPsbt extends ITransactionCommon<PsbtInputData, PsbtOutputData> {
   getGlobalXpubs(): BIP32[];
-  version(): number;
-  lockTime(): number;
   unsignedTxId(): string;
   addInputAtIndex(
     index: number,

@@ -8,18 +8,20 @@ import {
 } from "./wasm/wasm_utxo.js";
 import type { CoinName } from "./coinName.js";
 
-/**
- * Common interface for all transaction types
- */
-export interface ITransaction {
-  toBytes(): Uint8Array;
-  getId(): string;
+/** Common read-only interface shared by transactions and PSBTs */
+export interface ITransactionCommon<TInput, TOutput> {
   inputCount(): number;
   outputCount(): number;
-  get version(): number;
-  get lockTime(): number;
-  getInputs(): TxInputData[];
-  getOutputs(): TxOutputData[];
+  version(): number;
+  lockTime(): number;
+  getInputs(): TInput[];
+  getOutputs(): TOutput[];
+}
+
+/** Common interface for all transaction types */
+export interface ITransaction extends ITransactionCommon<TxInputData, TxOutputData> {
+  toBytes(): Uint8Array;
+  getId(): string;
   getOutputsWithAddress(coin: CoinName): TxOutputDataWithAddress[];
 }
 
@@ -105,11 +107,11 @@ export class Transaction implements ITransaction {
     return this._wasm.output_count();
   }
 
-  get version(): number {
+  version(): number {
     return this._wasm.version();
   }
 
-  get lockTime(): number {
+  lockTime(): number {
     return this._wasm.lock_time();
   }
 
@@ -172,11 +174,11 @@ export class ZcashTransaction implements ITransaction {
     return this._wasm.output_count();
   }
 
-  get version(): number {
+  version(): number {
     return this._wasm.version();
   }
 
-  get lockTime(): number {
+  lockTime(): number {
     return this._wasm.lock_time();
   }
 
@@ -239,11 +241,11 @@ export class DashTransaction implements ITransaction {
     return this._wasm.output_count();
   }
 
-  get version(): number {
+  version(): number {
     return this._wasm.version();
   }
 
-  get lockTime(): number {
+  lockTime(): number {
     return this._wasm.lock_time();
   }
 
