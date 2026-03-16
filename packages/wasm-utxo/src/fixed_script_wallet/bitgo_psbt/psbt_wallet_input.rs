@@ -665,6 +665,14 @@ pub struct ScriptId {
     pub index: u32,
 }
 
+/// ScriptId with value — used by `from_half_signed_legacy_transaction`
+#[derive(Debug, Clone, Copy)]
+pub struct ScriptIdWithValue {
+    pub chain: u32,
+    pub index: u32,
+    pub value: u64,
+}
+
 /// Identifies a key in the wallet triple (user, backup, bitgo)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignerKey {

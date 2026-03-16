@@ -498,6 +498,86 @@ impl BitGoPsbt {
         }
     }
 
+    /// Convert a half-signed legacy transaction to a psbt-lite.
+    ///
+    /// This is the inverse of `get_half_signed_legacy_format()`. It parses the
+    /// legacy transaction, extracts partial signatures from scriptSig/witness,
+    /// creates a PSBT with proper wallet metadata (bip32Derivation, scripts,
+    /// witnessUtxo), and inserts the extracted signatures.
+    ///
+    /// Only supports p2sh, p2shP2wsh, and p2wsh inputs (not taproot).
+    pub fn from_half_signed_legacy_transaction(
+        tx_bytes: &[u8],
+        network: Network,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        unspents: &[psbt_wallet_input::ScriptIdWithValue],
+    ) -> Result<Self, String> {
+        use miniscript::bitcoin::consensus::Decodable;
+        use miniscript::bitcoin::{PublicKey, Transaction};
+
+        let tx = Transaction::consensus_decode(&mut &tx_bytes[..])
+            .map_err(|e| format!("Failed to decode transaction: {}", e))?;
+
+        if tx.input.len() != unspents.len() {
+            return Err(format!(
+                "Input count mismatch: tx has {} inputs, got {} unspents",
+                tx.input.len(),
+                unspents.len()
+            ));
+        }
+
+        let version = tx.version.0;
+        let lock_time = tx.lock_time.to_consensus_u32();
+
+        let mut psbt = Self::new(network, wallet_keys, Some(version), Some(lock_time));
+
+        // Extract signatures before adding inputs (we need the raw tx_in data)
+        let partial_sigs: Vec<legacy_txformat::LegacyPartialSig> = tx
+            .input
+            .iter()
+            .enumerate()
+            .map(|(i, tx_in)| {
+                legacy_txformat::unsign_legacy_input(tx_in)
+                    .map_err(|e| format!("Input {}: {}", i, e))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Add wallet inputs (populates bip32Derivation, scripts, witnessUtxo)
+        for (i, (tx_in, unspent)) in tx.input.iter().zip(unspents.iter()).enumerate() {
+            let script_id = psbt_wallet_input::ScriptId {
+                chain: unspent.chain,
+                index: unspent.index,
+            };
+            psbt.add_wallet_input(
+                tx_in.previous_output.txid,
+                tx_in.previous_output.vout,
+                unspent.value,
+                wallet_keys,
+                script_id,
+                psbt_wallet_input::WalletInputOptions {
+                    sign_path: None,
+                    sequence: Some(tx_in.sequence.0),
+                    prev_tx: None, // psbt-lite: no nonWitnessUtxo
+                },
+            )
+            .map_err(|e| format!("Input {}: failed to add wallet input: {}", i, e))?;
+
+            // Insert the extracted partial signature
+            let sig = &partial_sigs[i];
+            let pubkey = PublicKey::from(sig.pubkey);
+            psbt.psbt_mut().inputs[i]
+                .partial_sigs
+                .insert(pubkey, sig.sig);
+        }
+
+        // Add outputs (plain script+value, no wallet metadata)
+        for tx_out in &tx.output {
+            psbt.add_output(tx_out.script_pubkey.clone(), tx_out.value.to_sat());
+        }
+
+        Ok(psbt)
+    }
+
     fn new_internal(
         network: Network,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
@@ -4060,6 +4140,213 @@ mod tests {
             .unwrap();
         },
         // Skip networks without segwit
+        ignore: [BitcoinCash, Ecash, BitcoinGold, Dogecoin, Zcash]
+    );
+
+    /// Round-trip test: PSBT -> legacy half-signed -> PSBT
+    fn test_round_trip_legacy_for_script_type(
+        network: Network,
+        format: fixtures::TxFormat,
+        script_type: fixtures::ScriptType,
+    ) -> Result<(), String> {
+        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ScriptIdWithValue;
+
+        let is_p2ms = matches!(
+            script_type,
+            fixtures::ScriptType::P2sh
+                | fixtures::ScriptType::P2shP2wsh
+                | fixtures::ScriptType::P2wsh
+        );
+        if !is_p2ms {
+            return Ok(());
+        }
+
+        let output_script_support = network.output_script_support();
+        if !script_type.is_supported_by(&output_script_support) {
+            return Ok(());
+        }
+
+        let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
+            network.to_utxolib_name(),
+            fixtures::SignatureState::Halfsigned,
+            format,
+            fixtures::FixtureNamespace::UtxolibCompat,
+        )
+        .map_err(|e| format!("Failed to load fixture: {}", e))?;
+
+        let bitgo_psbt = fixture
+            .to_bitgo_psbt(network)
+            .map_err(|e| format!("Failed to parse PSBT: {}", e))?;
+
+        let wallet_keys = fixture
+            .get_wallet_xprvs()
+            .map_err(|e| format!("Failed to get wallet keys: {}", e))?
+            .to_root_wallet_keys();
+
+        let psbt = bitgo_psbt.psbt();
+
+        // Check all inputs are p2ms with exactly 1 signature
+        let suitable = psbt.inputs.iter().all(|input| {
+            use crate::fixed_script_wallet::wallet_scripts::parse_multisig_script_2_of_3;
+            let ms = input
+                .witness_script
+                .as_ref()
+                .or(input.redeem_script.as_ref());
+            let is_2of3 = ms
+                .map(|s| parse_multisig_script_2_of_3(s).is_ok())
+                .unwrap_or(false);
+            is_2of3 && input.partial_sigs.len() == 1
+        });
+        if !suitable {
+            return Ok(());
+        }
+
+        // Step 1: Extract to legacy
+        let legacy_bytes = bitgo_psbt
+            .extract_half_signed_legacy_tx()
+            .map_err(|e| format!("extract_half_signed_legacy_tx failed: {}", e))?;
+
+        // Step 2: Build unspents from bip32 derivation paths in the PSBT
+        // The derivation path is m/<chain>/<index>
+        let unspents: Vec<ScriptIdWithValue> = psbt
+            .inputs
+            .iter()
+            .enumerate()
+            .map(|(i, input)| {
+                let (_, path) = input
+                    .bip32_derivation
+                    .values()
+                    .next()
+                    .ok_or_else(|| format!("Input {} has no bip32 derivation", i))?;
+                let components: Vec<_> = path.into_iter().collect();
+                if components.len() < 2 {
+                    return Err(format!("Input {} derivation path too short", i));
+                }
+                let chain = u32::from(*components[components.len() - 2]);
+                let index = u32::from(*components[components.len() - 1]);
+                let value = input
+                    .witness_utxo
+                    .as_ref()
+                    .ok_or_else(|| format!("Input {} has no witnessUtxo", i))?
+                    .value
+                    .to_sat();
+                Ok(ScriptIdWithValue {
+                    chain,
+                    index,
+                    value,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        // Step 3: Convert back to PSBT
+        let reconverted = BitGoPsbt::from_half_signed_legacy_transaction(
+            &legacy_bytes,
+            network,
+            &wallet_keys,
+            &unspents,
+        )
+        .map_err(|e| format!("from_half_signed_legacy_transaction failed: {}", e))?;
+
+        // Verify: same number of inputs/outputs
+        let orig_psbt = bitgo_psbt.psbt();
+        let new_psbt = reconverted.psbt();
+        assert_eq!(orig_psbt.inputs.len(), new_psbt.inputs.len());
+        assert_eq!(
+            orig_psbt.unsigned_tx.output.len(),
+            new_psbt.unsigned_tx.output.len()
+        );
+
+        // Verify: partial_sigs preserved
+        for (i, (orig_input, new_input)) in orig_psbt
+            .inputs
+            .iter()
+            .zip(new_psbt.inputs.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                orig_input.partial_sigs.len(),
+                new_input.partial_sigs.len(),
+                "Input {} partial_sigs count mismatch",
+                i
+            );
+            for (pubkey, orig_sig) in &orig_input.partial_sigs {
+                let new_sig = new_input
+                    .partial_sigs
+                    .get(pubkey)
+                    .unwrap_or_else(|| panic!("Input {} missing sig for pubkey", i));
+                assert_eq!(
+                    orig_sig.to_vec(),
+                    new_sig.to_vec(),
+                    "Input {} signature mismatch",
+                    i
+                );
+            }
+        }
+
+        // Verify: unsigned tx matches (same txid)
+        let orig_txid = orig_psbt.unsigned_tx.compute_txid();
+        let new_txid = new_psbt.unsigned_tx.compute_txid();
+        assert_eq!(orig_txid, new_txid, "txid mismatch");
+
+        // Verify: psbt-lite (witnessUtxo present, no nonWitnessUtxo)
+        for (i, input) in new_psbt.inputs.iter().enumerate() {
+            assert!(
+                input.witness_utxo.is_some(),
+                "Input {} missing witnessUtxo",
+                i
+            );
+            assert!(
+                input.non_witness_utxo.is_none(),
+                "Input {} has nonWitnessUtxo (should be psbt-lite)",
+                i
+            );
+        }
+
+        Ok(())
+    }
+
+    crate::test_psbt_fixtures!(
+        test_round_trip_legacy_p2sh,
+        network,
+        format,
+        {
+            test_round_trip_legacy_for_script_type(
+                network,
+                format,
+                fixtures::ScriptType::P2sh,
+            )
+            .unwrap();
+        },
+        ignore: [Zcash]
+    );
+
+    crate::test_psbt_fixtures!(
+        test_round_trip_legacy_p2shp2wsh,
+        network,
+        format,
+        {
+            test_round_trip_legacy_for_script_type(
+                network,
+                format,
+                fixtures::ScriptType::P2shP2wsh,
+            )
+            .unwrap();
+        },
+        ignore: [BitcoinCash, Ecash, BitcoinGold, Dogecoin, Zcash]
+    );
+
+    crate::test_psbt_fixtures!(
+        test_round_trip_legacy_p2wsh,
+        network,
+        format,
+        {
+            test_round_trip_legacy_for_script_type(
+                network,
+                format,
+                fixtures::ScriptType::P2wsh,
+            )
+            .unwrap();
+        },
         ignore: [BitcoinCash, Ecash, BitcoinGold, Dogecoin, Zcash]
     );
 

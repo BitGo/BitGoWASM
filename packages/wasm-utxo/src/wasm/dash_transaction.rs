@@ -1,4 +1,6 @@
 use crate::error::WasmUtxoError;
+use crate::wasm::transaction::{tx_inputs_from, tx_outputs_from, tx_outputs_with_address_from};
+use crate::wasm::try_into_js_value::TryIntoJsValue;
 use wasm_bindgen::prelude::*;
 
 /// Dash transaction wrapper that supports Dash special transactions (EVO) by preserving extra payload.
@@ -52,5 +54,35 @@ impl WasmDashTransaction {
         let hash = sha256d::Hash::hash(&tx_bytes);
         let txid = Txid::from_raw_hash(hash);
         Ok(txid.to_string())
+    }
+
+    pub fn input_count(&self) -> usize {
+        self.parts.transaction.input.len()
+    }
+
+    pub fn output_count(&self) -> usize {
+        self.parts.transaction.output.len()
+    }
+
+    pub fn version(&self) -> i32 {
+        self.parts.transaction.version.0
+    }
+
+    pub fn lock_time(&self) -> u32 {
+        self.parts.transaction.lock_time.to_consensus_u32()
+    }
+
+    pub fn get_inputs(&self) -> Result<JsValue, WasmUtxoError> {
+        tx_inputs_from(&self.parts.transaction).try_to_js_value()
+    }
+
+    pub fn get_outputs(&self) -> Result<JsValue, WasmUtxoError> {
+        tx_outputs_from(&self.parts.transaction).try_to_js_value()
+    }
+
+    pub fn get_outputs_with_address(&self, coin: &str) -> Result<JsValue, WasmUtxoError> {
+        let network = crate::Network::from_coin_name(coin)
+            .ok_or_else(|| WasmUtxoError::new(&format!("Unknown coin: {}", coin)))?;
+        tx_outputs_with_address_from(&self.parts.transaction, network)?.try_to_js_value()
     }
 }

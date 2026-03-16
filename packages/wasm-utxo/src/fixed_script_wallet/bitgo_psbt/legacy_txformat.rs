@@ -7,9 +7,10 @@
 use crate::fixed_script_wallet::wallet_scripts::parse_multisig_script_2_of_3;
 use miniscript::bitcoin::blockdata::opcodes::all::OP_PUSHBYTES_0;
 use miniscript::bitcoin::blockdata::script::Builder;
+use miniscript::bitcoin::ecdsa::Signature as EcdsaSig;
 use miniscript::bitcoin::psbt::Psbt;
 use miniscript::bitcoin::script::PushBytesBuf;
-use miniscript::bitcoin::{Transaction, Witness};
+use miniscript::bitcoin::{CompressedPublicKey, ScriptBuf, Transaction, TxIn, Witness};
 
 /// Build a half-signed transaction in legacy format from a PSBT.
 ///
@@ -146,4 +147,107 @@ pub fn build_half_signed_legacy_tx(psbt: &Psbt) -> Result<Transaction, String> {
     }
 
     Ok(tx)
+}
+
+/// A partial signature extracted from a legacy half-signed input.
+pub struct LegacyPartialSig {
+    pub pubkey: CompressedPublicKey,
+    pub sig: EcdsaSig,
+}
+
+/// Determines whether a legacy input uses segwit (witness data) and whether it
+/// has a p2sh wrapper (scriptSig pushing a redeem script).
+///
+/// Returns `(is_p2sh, is_segwit, multisig_script)`.
+fn classify_legacy_input(tx_in: &TxIn) -> Result<(bool, bool, ScriptBuf), String> {
+    let has_witness = !tx_in.witness.is_empty();
+    let has_script_sig = !tx_in.script_sig.is_empty();
+
+    if has_witness {
+        // Segwit: witness contains [empty, sig0?, sig1?, sig2?, witnessScript]
+        let witness_items: Vec<&[u8]> = tx_in.witness.iter().collect();
+        if witness_items.len() < 5 {
+            return Err(format!(
+                "Expected at least 5 witness items, got {}",
+                witness_items.len()
+            ));
+        }
+        let multisig_script = ScriptBuf::from(witness_items.last().unwrap().to_vec());
+        let is_p2sh = has_script_sig; // p2shP2wsh has scriptSig, p2wsh does not
+        Ok((is_p2sh, true, multisig_script))
+    } else if has_script_sig {
+        // p2sh only: scriptSig = [OP_0, sig0?, sig1?, sig2?, redeemScript]
+        // Parse the scriptSig instructions to extract the redeemScript (last push)
+        let instructions: Vec<_> = tx_in
+            .script_sig
+            .instructions()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to parse scriptSig: {}", e))?;
+        if instructions.len() < 5 {
+            return Err(format!(
+                "Expected at least 5 scriptSig items, got {}",
+                instructions.len()
+            ));
+        }
+        let last = instructions.last().unwrap();
+        let multisig_bytes = match last {
+            miniscript::bitcoin::script::Instruction::PushBytes(bytes) => bytes.as_bytes(),
+            _ => return Err("Last scriptSig item is not a push".to_string()),
+        };
+        Ok((true, false, ScriptBuf::from(multisig_bytes.to_vec())))
+    } else {
+        Err("Input has neither witness nor scriptSig".to_string())
+    }
+}
+
+/// Extract a partial signature from a legacy half-signed input.
+///
+/// This is the inverse of the signature placement in `build_half_signed_legacy_tx`.
+/// It parses the scriptSig/witness to find the single signature and its position
+/// in the 2-of-3 multisig, then returns the corresponding pubkey and signature.
+pub fn unsign_legacy_input(tx_in: &TxIn) -> Result<LegacyPartialSig, String> {
+    let (_, is_segwit, multisig_script) = classify_legacy_input(tx_in)?;
+
+    let pubkeys = parse_multisig_script_2_of_3(&multisig_script)?;
+
+    // Extract the 3 signature slots (index 1..=3, skipping the leading OP_0/empty)
+    let sig_slots: Vec<Vec<u8>> = if is_segwit {
+        let items: Vec<&[u8]> = tx_in.witness.iter().collect();
+        // witness = [empty, sig0?, sig1?, sig2?, witnessScript]
+        items[1..=3].iter().map(|s| s.to_vec()).collect()
+    } else {
+        // scriptSig = [OP_0, sig0?, sig1?, sig2?, redeemScript]
+        let instructions: Vec<_> = tx_in
+            .script_sig
+            .instructions()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to parse scriptSig: {}", e))?;
+        // instructions[0] = OP_0, [1..=3] = sigs, [4] = redeemScript
+        instructions[1..=3]
+            .iter()
+            .map(|inst| match inst {
+                miniscript::bitcoin::script::Instruction::PushBytes(bytes) => {
+                    bytes.as_bytes().to_vec()
+                }
+                miniscript::bitcoin::script::Instruction::Op(_) => vec![],
+            })
+            .collect()
+    };
+
+    // Find the non-empty signature slot
+    let mut found_sig = None;
+    for (i, slot) in sig_slots.iter().enumerate() {
+        if !slot.is_empty() {
+            if found_sig.is_some() {
+                return Err("Expected exactly 1 signature, found multiple".to_string());
+            }
+            let sig = EcdsaSig::from_slice(slot)
+                .map_err(|e| format!("Failed to parse signature at position {}: {}", i, e))?;
+            let pubkey = CompressedPublicKey::from_slice(&pubkeys[i].to_bytes())
+                .map_err(|e| format!("Failed to convert pubkey: {}", e))?;
+            found_sig = Some(LegacyPartialSig { pubkey, sig });
+        }
+    }
+
+    found_sig.ok_or_else(|| "No signature found in input".to_string())
 }

@@ -126,6 +126,12 @@ export type ParseOutputsOptions = {
   payGoPubkeys?: ECPairArg[];
 };
 
+export type HydrationUnspent = {
+  chain: number;
+  index: number;
+  value: bigint;
+};
+
 export class BitGoPsbt implements IPsbtWithAddress {
   protected constructor(protected _wasm: WasmBitGoPsbt) {}
 
@@ -182,6 +188,34 @@ export class BitGoPsbt implements IPsbtWithAddress {
    */
   static fromBytes(bytes: Uint8Array, network: NetworkName): BitGoPsbt {
     const wasm = WasmBitGoPsbt.from_bytes(bytes, network);
+    return new BitGoPsbt(wasm);
+  }
+
+  /**
+   * Convert a half-signed legacy transaction to a psbt-lite.
+   *
+   * Extracts partial signatures from scriptSig/witness and creates a PSBT
+   * with proper wallet metadata (bip32Derivation, scripts, witnessUtxo).
+   * Only supports p2sh, p2shP2wsh, and p2wsh inputs (not taproot).
+   *
+   * @param txBytes - The serialized half-signed legacy transaction
+   * @param network - Network name
+   * @param walletKeys - The wallet's root keys
+   * @param unspents - Chain, index, and value for each input
+   */
+  static fromHalfSignedLegacyTransaction(
+    txBytes: Uint8Array,
+    network: NetworkName,
+    walletKeys: WalletKeysArg,
+    unspents: HydrationUnspent[],
+  ): BitGoPsbt {
+    const keys = RootWalletKeys.from(walletKeys);
+    const wasm = WasmBitGoPsbt.from_half_signed_legacy_transaction(
+      txBytes,
+      network,
+      keys.wasm,
+      unspents,
+    );
     return new BitGoPsbt(wasm);
   }
 

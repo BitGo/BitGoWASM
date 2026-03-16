@@ -1,7 +1,87 @@
+use crate::address::networks::{from_output_script_with_network_and_format, AddressFormat};
 use crate::error::WasmUtxoError;
+use crate::wasm::try_into_js_value::TryIntoJsValue;
 use miniscript::bitcoin::consensus::{Decodable, Encodable};
 use miniscript::bitcoin::Transaction;
 use wasm_bindgen::prelude::*;
+
+// ============================================================================
+// Transaction Introspection Types
+// ============================================================================
+
+#[derive(Debug, Clone)]
+pub struct TxOutPoint {
+    pub txid: String,
+    pub vout: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct TxInputData {
+    pub previous_output: TxOutPoint,
+    pub sequence: u32,
+    pub script_sig: Vec<u8>,
+    pub witness: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TxOutputData {
+    pub script: Vec<u8>,
+    pub value: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TxOutputDataWithAddress {
+    pub script: Vec<u8>,
+    pub value: u64,
+    pub address: String,
+}
+
+pub(crate) fn tx_inputs_from(tx: &Transaction) -> Vec<TxInputData> {
+    tx.input
+        .iter()
+        .map(|inp| TxInputData {
+            previous_output: TxOutPoint {
+                txid: inp.previous_output.txid.to_string(),
+                vout: inp.previous_output.vout,
+            },
+            sequence: inp.sequence.0,
+            script_sig: inp.script_sig.to_bytes(),
+            witness: inp.witness.iter().map(|w| w.to_vec()).collect(),
+        })
+        .collect()
+}
+
+pub(crate) fn tx_outputs_from(tx: &Transaction) -> Vec<TxOutputData> {
+    tx.output
+        .iter()
+        .map(|out| TxOutputData {
+            script: out.script_pubkey.to_bytes(),
+            value: out.value.to_sat(),
+        })
+        .collect()
+}
+
+pub(crate) fn tx_outputs_with_address_from(
+    tx: &Transaction,
+    network: crate::Network,
+) -> Result<Vec<TxOutputDataWithAddress>, WasmUtxoError> {
+    tx.output
+        .iter()
+        .map(|out| {
+            let address = from_output_script_with_network_and_format(
+                &out.script_pubkey,
+                network,
+                AddressFormat::Default,
+            )
+            .map_err(|e| WasmUtxoError::new(&e.to_string()))?;
+            Ok(TxOutputDataWithAddress {
+                script: out.script_pubkey.to_bytes(),
+                value: out.value.to_sat(),
+                address,
+            })
+        })
+        .collect()
+}
 
 /// A Bitcoin-like transaction (for all networks except Zcash)
 ///
@@ -162,6 +242,36 @@ impl WasmTransaction {
     pub fn get_txid(&self) -> String {
         self.tx.compute_txid().to_string()
     }
+
+    pub fn input_count(&self) -> usize {
+        self.tx.input.len()
+    }
+
+    pub fn output_count(&self) -> usize {
+        self.tx.output.len()
+    }
+
+    pub fn version(&self) -> i32 {
+        self.tx.version.0
+    }
+
+    pub fn lock_time(&self) -> u32 {
+        self.tx.lock_time.to_consensus_u32()
+    }
+
+    pub fn get_inputs(&self) -> Result<JsValue, WasmUtxoError> {
+        tx_inputs_from(&self.tx).try_to_js_value()
+    }
+
+    pub fn get_outputs(&self) -> Result<JsValue, WasmUtxoError> {
+        tx_outputs_from(&self.tx).try_to_js_value()
+    }
+
+    pub fn get_outputs_with_address(&self, coin: &str) -> Result<JsValue, WasmUtxoError> {
+        let network = crate::Network::from_coin_name(coin)
+            .ok_or_else(|| WasmUtxoError::new(&format!("Unknown coin: {}", coin)))?;
+        tx_outputs_with_address_from(&self.tx, network)?.try_to_js_value()
+    }
 }
 
 /// A Zcash transaction with network-specific fields
@@ -230,5 +340,35 @@ impl WasmZcashTransaction {
         let hash = sha256d::Hash::hash(&tx_bytes);
         let txid = Txid::from_raw_hash(hash);
         Ok(txid.to_string())
+    }
+
+    pub fn input_count(&self) -> usize {
+        self.parts.transaction.input.len()
+    }
+
+    pub fn output_count(&self) -> usize {
+        self.parts.transaction.output.len()
+    }
+
+    pub fn version(&self) -> i32 {
+        self.parts.transaction.version.0
+    }
+
+    pub fn lock_time(&self) -> u32 {
+        self.parts.transaction.lock_time.to_consensus_u32()
+    }
+
+    pub fn get_inputs(&self) -> Result<JsValue, WasmUtxoError> {
+        tx_inputs_from(&self.parts.transaction).try_to_js_value()
+    }
+
+    pub fn get_outputs(&self) -> Result<JsValue, WasmUtxoError> {
+        tx_outputs_from(&self.parts.transaction).try_to_js_value()
+    }
+
+    pub fn get_outputs_with_address(&self, coin: &str) -> Result<JsValue, WasmUtxoError> {
+        let network = crate::Network::from_coin_name(coin)
+            .ok_or_else(|| WasmUtxoError::new(&format!("Unknown coin: {}", coin)))?;
+        tx_outputs_with_address_from(&self.parts.transaction, network)?.try_to_js_value()
     }
 }

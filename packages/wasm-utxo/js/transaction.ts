@@ -1,4 +1,12 @@
-import { WasmDashTransaction, WasmTransaction, WasmZcashTransaction } from "./wasm/wasm_utxo.js";
+import {
+  WasmDashTransaction,
+  WasmTransaction,
+  WasmZcashTransaction,
+  type TxInputData,
+  type TxOutputData,
+  type TxOutputDataWithAddress,
+} from "./wasm/wasm_utxo.js";
+import type { CoinName } from "./coinName.js";
 
 /**
  * Common interface for all transaction types
@@ -6,6 +14,13 @@ import { WasmDashTransaction, WasmTransaction, WasmZcashTransaction } from "./wa
 export interface ITransaction {
   toBytes(): Uint8Array;
   getId(): string;
+  inputCount(): number;
+  outputCount(): number;
+  get version(): number;
+  get lockTime(): number;
+  getInputs(): TxInputData[];
+  getOutputs(): TxOutputData[];
+  getOutputsWithAddress(coin: CoinName): TxOutputDataWithAddress[];
 }
 
 /**
@@ -27,9 +42,7 @@ export class Transaction implements ITransaction {
     return new Transaction(WasmTransaction.from_bytes(bytes));
   }
 
-  /**
-   * @internal Create from WASM instance directly (avoids re-parsing bytes)
-   */
+  /** @internal Create from WASM instance directly (avoids re-parsing bytes) */
   static fromWasm(wasm: WasmTransaction): Transaction {
     return new Transaction(wasm);
   }
@@ -84,9 +97,35 @@ export class Transaction implements ITransaction {
     return this._wasm.get_vsize();
   }
 
-  /**
-   * @internal
-   */
+  inputCount(): number {
+    return this._wasm.input_count();
+  }
+
+  outputCount(): number {
+    return this._wasm.output_count();
+  }
+
+  get version(): number {
+    return this._wasm.version();
+  }
+
+  get lockTime(): number {
+    return this._wasm.lock_time();
+  }
+
+  getInputs(): TxInputData[] {
+    return this._wasm.get_inputs() as TxInputData[];
+  }
+
+  getOutputs(): TxOutputData[] {
+    return this._wasm.get_outputs() as TxOutputData[];
+  }
+
+  getOutputsWithAddress(coin: CoinName): TxOutputDataWithAddress[] {
+    return this._wasm.get_outputs_with_address(coin) as TxOutputDataWithAddress[];
+  }
+
+  /** @internal */
   get wasm(): WasmTransaction {
     return this._wasm;
   }
@@ -104,9 +143,7 @@ export class ZcashTransaction implements ITransaction {
     return new ZcashTransaction(WasmZcashTransaction.from_bytes(bytes));
   }
 
-  /**
-   * @internal Create from WASM instance directly (avoids re-parsing bytes)
-   */
+  /** @internal Create from WASM instance directly (avoids re-parsing bytes) */
   static fromWasm(wasm: WasmZcashTransaction): ZcashTransaction {
     return new ZcashTransaction(wasm);
   }
@@ -127,9 +164,35 @@ export class ZcashTransaction implements ITransaction {
     return this._wasm.get_txid();
   }
 
-  /**
-   * @internal
-   */
+  inputCount(): number {
+    return this._wasm.input_count();
+  }
+
+  outputCount(): number {
+    return this._wasm.output_count();
+  }
+
+  get version(): number {
+    return this._wasm.version();
+  }
+
+  get lockTime(): number {
+    return this._wasm.lock_time();
+  }
+
+  getInputs(): TxInputData[] {
+    return this._wasm.get_inputs() as TxInputData[];
+  }
+
+  getOutputs(): TxOutputData[] {
+    return this._wasm.get_outputs() as TxOutputData[];
+  }
+
+  getOutputsWithAddress(coin: CoinName): TxOutputDataWithAddress[] {
+    return this._wasm.get_outputs_with_address(coin) as TxOutputDataWithAddress[];
+  }
+
+  /** @internal */
   get wasm(): WasmZcashTransaction {
     return this._wasm;
   }
@@ -147,9 +210,7 @@ export class DashTransaction implements ITransaction {
     return new DashTransaction(WasmDashTransaction.from_bytes(bytes));
   }
 
-  /**
-   * @internal Create from WASM instance directly (avoids re-parsing bytes)
-   */
+  /** @internal Create from WASM instance directly (avoids re-parsing bytes) */
   static fromWasm(wasm: WasmDashTransaction): DashTransaction {
     return new DashTransaction(wasm);
   }
@@ -170,9 +231,35 @@ export class DashTransaction implements ITransaction {
     return this._wasm.get_txid();
   }
 
-  /**
-   * @internal
-   */
+  inputCount(): number {
+    return this._wasm.input_count();
+  }
+
+  outputCount(): number {
+    return this._wasm.output_count();
+  }
+
+  get version(): number {
+    return this._wasm.version();
+  }
+
+  get lockTime(): number {
+    return this._wasm.lock_time();
+  }
+
+  getInputs(): TxInputData[] {
+    return this._wasm.get_inputs() as TxInputData[];
+  }
+
+  getOutputs(): TxOutputData[] {
+    return this._wasm.get_outputs() as TxOutputData[];
+  }
+
+  getOutputsWithAddress(coin: CoinName): TxOutputDataWithAddress[] {
+    return this._wasm.get_outputs_with_address(coin) as TxOutputDataWithAddress[];
+  }
+
+  /** @internal */
   get wasm(): WasmDashTransaction {
     return this._wasm;
   }
