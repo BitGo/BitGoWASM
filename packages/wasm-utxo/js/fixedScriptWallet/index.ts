@@ -31,6 +31,7 @@ export {
   type AddWalletOutputOptions,
   type ParseTransactionOptions,
   type ParseOutputsOptions,
+  type HydrationUnspent,
 } from "./BitGoPsbt.js";
 
 // Zcash-specific PSBT subclass

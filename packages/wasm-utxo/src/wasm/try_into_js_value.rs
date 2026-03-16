@@ -415,6 +415,49 @@ impl TryIntoJsValue for crate::inscriptions::InscriptionRevealData {
 // PSBT Introspection Types TryIntoJsValue implementations
 // ============================================================================
 
+// ============================================================================
+// Transaction Introspection Types TryIntoJsValue implementations
+// ============================================================================
+
+impl TryIntoJsValue for crate::wasm::transaction::TxOutPoint {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "txid" => self.txid.clone(),
+            "vout" => self.vout
+        )
+    }
+}
+
+impl TryIntoJsValue for crate::wasm::transaction::TxInputData {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "previousOutput" => self.previous_output.clone(),
+            "sequence" => self.sequence,
+            "scriptSig" => self.script_sig.clone(),
+            "witness" => self.witness.clone()
+        )
+    }
+}
+
+impl TryIntoJsValue for crate::wasm::transaction::TxOutputData {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "script" => self.script.clone(),
+            "value" => self.value
+        )
+    }
+}
+
+impl TryIntoJsValue for crate::wasm::transaction::TxOutputDataWithAddress {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "script" => self.script.clone(),
+            "value" => self.value,
+            "address" => self.address.clone()
+        )
+    }
+}
+
 impl TryIntoJsValue for crate::wasm::psbt::Bip32Derivation {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
         js_obj!(

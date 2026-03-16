@@ -86,10 +86,41 @@ declare module "./wasm/wasm_utxo.js" {
   interface PsbtOutputDataWithAddress extends PsbtOutputData {
     address: string;
   }
+
+  /** Outpoint referencing a previous transaction output */
+  interface TxOutPoint {
+    txid: string;
+    vout: number;
+  }
+
+  /** Raw transaction input data returned by Transaction.getInputs() */
+  interface TxInputData {
+    previousOutput: TxOutPoint;
+    sequence: number;
+    scriptSig: Uint8Array;
+    witness: Uint8Array[];
+  }
+
+  /** Raw transaction output data returned by Transaction.getOutputs() */
+  interface TxOutputData {
+    script: Uint8Array;
+    value: bigint;
+  }
+
+  /** Transaction output data with resolved address */
+  interface TxOutputDataWithAddress extends TxOutputData {
+    address: string;
+  }
 }
 
 export { WrapDescriptor as Descriptor } from "./wasm/wasm_utxo.js";
 export { WrapMiniscript as Miniscript } from "./wasm/wasm_utxo.js";
 export { Psbt } from "./descriptorWallet/Psbt.js";
-export { DashTransaction, Transaction, ZcashTransaction } from "./transaction.js";
+export {
+  DashTransaction,
+  Transaction,
+  ZcashTransaction,
+  type ITransaction,
+  type ITransactionCommon,
+} from "./transaction.js";
 export { hasPsbtMagic, type IPsbt, type IPsbtWithAddress } from "./psbt.js";

@@ -386,6 +386,67 @@ impl BitGoPsbt {
         })
     }
 
+    /// Convert a half-signed legacy transaction to a psbt-lite.
+    ///
+    /// # Arguments
+    /// * `tx_bytes` - The serialized half-signed legacy transaction
+    /// * `network` - Network name (utxolib or coin name)
+    /// * `wallet_keys` - The wallet's root keys
+    /// * `unspents` - Array of `{ chain: number, index: number, value: bigint }` for each input
+    pub fn from_half_signed_legacy_transaction(
+        tx_bytes: &[u8],
+        network: &str,
+        wallet_keys: &WasmRootWalletKeys,
+        unspents: JsValue,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ScriptIdWithValue;
+
+        let network = parse_network(network)?;
+        let wallet_keys = wallet_keys.inner();
+
+        // Parse the unspents array from JsValue
+        let arr = js_sys::Array::from(&unspents);
+        let mut parsed_unspents = Vec::with_capacity(arr.length() as usize);
+        for i in 0..arr.length() {
+            let item = arr.get(i);
+            let chain = js_sys::Reflect::get(&item, &"chain".into())
+                .map_err(|_| WasmUtxoError::new("Missing 'chain' field on unspent"))?
+                .as_f64()
+                .ok_or_else(|| WasmUtxoError::new("'chain' must be a number"))?
+                as u32;
+            let index = js_sys::Reflect::get(&item, &"index".into())
+                .map_err(|_| WasmUtxoError::new("Missing 'index' field on unspent"))?
+                .as_f64()
+                .ok_or_else(|| WasmUtxoError::new("'index' must be a number"))?
+                as u32;
+            let value_js = js_sys::Reflect::get(&item, &"value".into())
+                .map_err(|_| WasmUtxoError::new("Missing 'value' field on unspent"))?;
+            let value = js_sys::BigInt::from(value_js)
+                .as_f64()
+                .ok_or_else(|| WasmUtxoError::new("'value' must be a bigint"))?
+                as u64;
+            parsed_unspents.push(ScriptIdWithValue {
+                chain,
+                index,
+                value,
+            });
+        }
+
+        let psbt =
+            crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::from_half_signed_legacy_transaction(
+                tx_bytes,
+                network,
+                wallet_keys,
+                &parsed_unspents,
+            )
+            .map_err(|e| WasmUtxoError::new(&e))?;
+
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
     /// Add an input to the PSBT
     ///
     /// # Arguments
