@@ -139,7 +139,13 @@ pub struct AmountWrapper {
     pub symbol: Option<String>,
 }
 
-/// Deserialize amount from either string or number (for JS BigInt compatibility)
+/// Deserialize amount from either string or number (for JS BigInt compatibility).
+///
+/// Negative values are clamped to 0 rather than rejected. The staking service can
+/// send negative `remainingStakingAmount` when the unstake amount exceeds the current
+/// balance. Callers already guard with `> 0` checks (e.g. build.rs partial unstake),
+/// so clamping is safe and avoids a deserialization error that would prevent the
+/// intent from being processed at all.
 fn deserialize_amount<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -166,14 +172,19 @@ where
         where
             E: de::Error,
         {
-            u64::try_from(v).map_err(|_| de::Error::custom("negative amount"))
+            Ok(u64::try_from(v).unwrap_or(0))
         }
 
         fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
         where
             E: de::Error,
         {
-            v.parse().map_err(de::Error::custom)
+            // Try u64 first, fall back to i64 parse and clamp negatives to 0
+            v.parse::<u64>().or_else(|_| {
+                v.parse::<i64>()
+                    .map(|n| u64::try_from(n).unwrap_or(0))
+                    .map_err(de::Error::custom)
+            })
         }
     }
 
