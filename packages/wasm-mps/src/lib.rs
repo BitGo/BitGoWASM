@@ -244,7 +244,7 @@ mod mps {
     fn internal_dkg_round2_process<G>(
         round2_messages: &[Vec<u8>; 2],
         state: &[u8],
-    ) -> Result<(Keyshare<G>, G), MpsError>
+    ) -> Result<Keyshare<G>, MpsError>
     where
         G: GroupElem + Serialize + for<'de> Deserialize<'de>,
         G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
@@ -265,7 +265,7 @@ mod mps {
             .process(vec![i0_msg2, i1_msg2, state.msg.clone()])
             .map_err(|_| MpsError::ProtocolError)?;
 
-        Ok((share.clone(), share.public_key))
+        Ok(share)
     }
 
     /// Process round 2 of DKG protocol.
@@ -275,10 +275,10 @@ mod mps {
         round2_messages: &[Vec<u8>; 2],
         state: &[u8],
     ) -> Result<Share, MpsError> {
-        let (share, pk) = internal_dkg_round2_process::<EdwardsPoint>(round2_messages, state)?;
+        let share = internal_dkg_round2_process::<EdwardsPoint>(round2_messages, state)?;
         Ok(Share {
             share: bincode::serialize(&share).map_err(|_| MpsError::SerializationError)?,
-            pk: pk.compress().to_bytes(),
+            pk: share.public_key.compress().to_bytes(),
         })
     }
 
