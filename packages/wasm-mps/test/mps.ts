@@ -21,8 +21,8 @@ describe("mps", function () {
 
   describe("dkg", function () {
     it("performs round 0", function () {
-      for (let i = 0; i < 3; i++) {
-        mps.dkg_round0_process(
+      for (let i = 0; i < keypairs.length; i++) {
+        mps.ed25519_dkg_round0_process(
           i,
           keypairs[i].privateKey,
           otherIndices[i].map((i) => keypairs[i].publicKey),
@@ -35,7 +35,7 @@ describe("mps", function () {
 
     before("performs round 0", function () {
       results1 = [0, 1, 2].map((i) =>
-        mps.dkg_round0_process(
+        mps.ed25519_dkg_round0_process(
           i,
           keypairs[i].privateKey,
           otherIndices[i].map((i) => keypairs[i].publicKey),
@@ -45,8 +45,8 @@ describe("mps", function () {
     });
 
     it("performs round 1", function () {
-      for (let i = 0; i < 3; i++) {
-        mps.dkg_round1_process(
+      for (let i = 0; i < results1.length; i++) {
+        mps.ed25519_dkg_round1_process(
           otherIndices[i].map((i) => results1[i].msg),
           results1[i].state,
         );
@@ -57,7 +57,7 @@ describe("mps", function () {
 
     before("performs round 1", function () {
       results2 = [0, 1, 2].map((i) =>
-        mps.dkg_round1_process(
+        mps.ed25519_dkg_round1_process(
           otherIndices[i].map((i) => results1[i].msg),
           results1[i].state,
         ),
@@ -66,7 +66,7 @@ describe("mps", function () {
 
     it("performs round 2", function () {
       const results3 = [0, 1, 2].map((i) =>
-        mps.dkg_round2_process(
+        mps.ed25519_dkg_round2_process(
           otherIndices[i].map((i) => results2[i].msg),
           results2[i].state,
         ),
@@ -89,7 +89,7 @@ describe("mps", function () {
       describe("round0_process", function () {
         it("does not panic on bad party size", function () {
           shouldThrow(() =>
-            mps.dkg_round0_process(
+            mps.ed25519_dkg_round0_process(
               "255",
               Buffer.alloc(32),
               [Buffer.alloc(32), Buffer.alloc(32)],
@@ -100,7 +100,7 @@ describe("mps", function () {
 
         it("does not panic on bad encryption key", function () {
           shouldThrow(() =>
-            mps.dkg_round0_process(
+            mps.ed25519_dkg_round0_process(
               0,
               "encryption key",
               [Buffer.alloc(32), Buffer.alloc(32)],
@@ -108,7 +108,7 @@ describe("mps", function () {
             ),
           );
           shouldThrow(() =>
-            mps.dkg_round0_process(
+            mps.ed25519_dkg_round0_process(
               0,
               Buffer.alloc(0),
               [Buffer.alloc(32), Buffer.alloc(32)],
@@ -119,17 +119,34 @@ describe("mps", function () {
 
         it("does not panic on bad decryption keys", function () {
           shouldThrow(() =>
-            mps.dkg_round0_process(0, Buffer.alloc(0), "decryption keys", crypto.randomBytes(32)),
-          );
-          shouldThrow(() => mps.dkg_round0_process(0, Buffer.alloc(0), [], crypto.randomBytes(32)));
-          shouldThrow(() =>
-            mps.dkg_round0_process(0, Buffer.alloc(0), ["decryption key"], crypto.randomBytes(32)),
-          );
-          shouldThrow(() =>
-            mps.dkg_round0_process(0, Buffer.alloc(0), [Buffer.alloc(0)], crypto.randomBytes(32)),
+            mps.ed25519_dkg_round0_process(
+              0,
+              Buffer.alloc(0),
+              "decryption keys",
+              crypto.randomBytes(32),
+            ),
           );
           shouldThrow(() =>
-            mps.dkg_round0_process(
+            mps.ed25519_dkg_round0_process(0, Buffer.alloc(0), [], crypto.randomBytes(32)),
+          );
+          shouldThrow(() =>
+            mps.ed25519_dkg_round0_process(
+              0,
+              Buffer.alloc(0),
+              ["decryption key"],
+              crypto.randomBytes(32),
+            ),
+          );
+          shouldThrow(() =>
+            mps.ed25519_dkg_round0_process(
+              0,
+              Buffer.alloc(0),
+              [Buffer.alloc(0)],
+              crypto.randomBytes(32),
+            ),
+          );
+          shouldThrow(() =>
+            mps.ed25519_dkg_round0_process(
               0,
               Buffer.alloc(0),
               [Buffer.alloc(32), Buffer.alloc(0)],
@@ -140,7 +157,7 @@ describe("mps", function () {
 
         it("does not panic on bad seed", function () {
           shouldThrow(() =>
-            mps.dkg_round0_process(
+            mps.ed25519_dkg_round0_process(
               0,
               Buffer.alloc(0),
               [Buffer.alloc(32), Buffer.alloc(32)],
@@ -148,7 +165,7 @@ describe("mps", function () {
             ),
           );
           shouldThrow(() =>
-            mps.dkg_round0_process(
+            mps.ed25519_dkg_round0_process(
               0,
               Buffer.alloc(0),
               [Buffer.alloc(32), Buffer.alloc(32)],
@@ -160,32 +177,36 @@ describe("mps", function () {
 
       describe("round1_process", function () {
         it("does not panic on bad messages", function () {
-          shouldThrow(() => mps.dkg_round1_process("messages", Buffer.alloc(1224)));
-          shouldThrow(() => mps.dkg_round1_process([], Buffer.alloc(1224)));
-          shouldThrow(() => mps.dkg_round1_process(["message"], Buffer.alloc(1224)));
-          shouldThrow(() => mps.dkg_round1_process([Buffer.alloc(0), Buffer.alloc(1224)]));
+          shouldThrow(() => mps.ed25519_dkg_round1_process("messages", Buffer.alloc(1224)));
+          shouldThrow(() => mps.ed25519_dkg_round1_process([], Buffer.alloc(1224)));
+          shouldThrow(() => mps.ed25519_dkg_round1_process(["message"], Buffer.alloc(1224)));
+          shouldThrow(() => mps.ed25519_dkg_round1_process([Buffer.alloc(0), Buffer.alloc(1224)]));
         });
 
         it("does not panic on bad state", function () {
-          shouldThrow(() => mps.dkg_round1_process([Buffer.alloc(65), Buffer.alloc(65)], "state"));
           shouldThrow(() =>
-            mps.dkg_round1_process([Buffer.alloc(65), Buffer.alloc(65)], Buffer.alloc(0)),
+            mps.ed25519_dkg_round1_process([Buffer.alloc(65), Buffer.alloc(65)], "state"),
+          );
+          shouldThrow(() =>
+            mps.ed25519_dkg_round1_process([Buffer.alloc(65), Buffer.alloc(65)], Buffer.alloc(0)),
           );
         });
       });
 
       describe("round2_process", function () {
         it("does not panic on bad messages", function () {
-          shouldThrow(() => mps.dkg_round2_process("messages", Buffer.alloc(1224)));
-          shouldThrow(() => mps.dkg_round2_process([], Buffer.alloc(1224)));
-          shouldThrow(() => mps.dkg_round2_process(["message"], Buffer.alloc(1224)));
-          shouldThrow(() => mps.dkg_round2_process([Buffer.alloc(0), Buffer.alloc(1224)]));
+          shouldThrow(() => mps.ed25519_dkg_round2_process("messages", Buffer.alloc(1224)));
+          shouldThrow(() => mps.ed25519_dkg_round2_process([], Buffer.alloc(1224)));
+          shouldThrow(() => mps.ed25519_dkg_round2_process(["message"], Buffer.alloc(1224)));
+          shouldThrow(() => mps.ed25519_dkg_round2_process([Buffer.alloc(0), Buffer.alloc(1224)]));
         });
 
         it("does not panic on bad state", function () {
-          shouldThrow(() => mps.dkg_round2_process([Buffer.alloc(65), Buffer.alloc(65)], "state"));
           shouldThrow(() =>
-            mps.dkg_round2_process([Buffer.alloc(65), Buffer.alloc(65)], Buffer.alloc(0)),
+            mps.ed25519_dkg_round2_process([Buffer.alloc(65), Buffer.alloc(65)], "state"),
+          );
+          shouldThrow(() =>
+            mps.ed25519_dkg_round2_process([Buffer.alloc(65), Buffer.alloc(65)], Buffer.alloc(0)),
           );
         });
       });
@@ -198,7 +219,7 @@ describe("mps", function () {
 
     before("performs dkg", function () {
       const results1 = [0, 1, 2].map((i) =>
-        mps.dkg_round0_process(
+        mps.ed25519_dkg_round0_process(
           i,
           keypairs[i].privateKey,
           otherIndices[i].map((i) => keypairs[i].publicKey),
@@ -206,13 +227,13 @@ describe("mps", function () {
         ),
       );
       const results2 = [0, 1, 2].map((i) =>
-        mps.dkg_round1_process(
+        mps.ed25519_dkg_round1_process(
           otherIndices[i].map((i) => results1[i].msg),
           results1[i].state,
         ),
       );
       shares = [0, 1, 2].map((i) =>
-        mps.dkg_round2_process(
+        mps.ed25519_dkg_round2_process(
           otherIndices[i].map((i) => results2[i].msg),
           results2[i].state,
         ),
@@ -225,19 +246,19 @@ describe("mps", function () {
 
     it("performs round 0", function () {
       for (const i of [0, 2]) {
-        mps.dsg_round0_process(shares[i].share, "m", message);
+        mps.ed25519_dsg_round0_process(shares[i].share, "m", message);
       }
     });
 
     let results1: Array<mps.MsgState>;
 
     before("performs round 0", function () {
-      results1 = [0, 2].map((i) => mps.dsg_round0_process(shares[i].share, "m", message));
+      results1 = [0, 2].map((i) => mps.ed25519_dsg_round0_process(shares[i].share, "m", message));
     });
 
     it("performs round 1", function () {
-      for (let i = 0; i < 2; i++) {
-        mps.dsg_round1_process(results1[otherIndex[i]].msg, results1[i].state);
+      for (let i = 0; i < results1.length; i++) {
+        mps.ed25519_dsg_round1_process(results1[otherIndex[i]].msg, results1[i].state);
       }
     });
 
@@ -245,13 +266,13 @@ describe("mps", function () {
 
     before("performs round 1", function () {
       results2 = [0, 1].map((i) =>
-        mps.dsg_round1_process(results1[otherIndex[i]].msg, results1[i].state),
+        mps.ed25519_dsg_round1_process(results1[otherIndex[i]].msg, results1[i].state),
       );
     });
 
     it("performs round 2", function () {
-      for (let i = 0; i < 2; i++) {
-        mps.dsg_round2_process(results2[otherIndex[i]].msg, results2[i].state);
+      for (let i = 0; i < results2.length; i++) {
+        mps.ed25519_dsg_round2_process(results2[otherIndex[i]].msg, results2[i].state);
       }
     });
 
@@ -259,13 +280,13 @@ describe("mps", function () {
 
     before("performs round 2", function () {
       results3 = [0, 1].map((i) =>
-        mps.dsg_round2_process(results2[otherIndex[i]].msg, results2[i].state),
+        mps.ed25519_dsg_round2_process(results2[otherIndex[i]].msg, results2[i].state),
       );
     });
 
     it("performs round 3", function () {
       const signatures = [0, 1].map((i) =>
-        mps.dsg_round3_process(results3[otherIndex[i]].msg, results3[i].state),
+        mps.ed25519_dsg_round3_process(results3[otherIndex[i]].msg, results3[i].state),
       );
       assert(sodium.crypto_sign_verify_detached(signatures[0], message, shares[0].pk));
       assert(sodium.crypto_sign_verify_detached(signatures[1], message, shares[2].pk));

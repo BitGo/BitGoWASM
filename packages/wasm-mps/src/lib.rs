@@ -3,7 +3,10 @@
 mod mps {
 
     use multi_party_schnorr::{
-        common::traits::Round,
+        common::{
+            ser::Serializable,
+            traits::{GroupElem, Round, ScalarReduce},
+        },
         curve25519_dalek::EdwardsPoint,
         keygen::{
             KeygenMsg1, KeygenMsg2, KeygenParty, Keyshare, R0 as DkgR0, R1 as DkgR1, R2 as DkgR2,
@@ -13,6 +16,7 @@ mod mps {
             PartialSign, SignerParty, R0 as DsgR0, R1 as DsgR1, R2 as DsgR2,
         },
     };
+    use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use thiserror::Error;
 
@@ -33,38 +37,68 @@ mod mps {
     }
 
     /// Internal DKG state used for round 1.
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct DkgStateR1 {
+    #[derive(Serialize, Deserialize)]
+    struct DkgStateR1<G>
+    where
+        G: GroupElem,
+        G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
+    {
         pub msg: KeygenMsg1,
-        pub party: KeygenParty<DkgR1<EdwardsPoint>, EdwardsPoint>,
+
+        #[serde(bound(
+            serialize = "KeygenParty<DkgR1<G>, G>: Serialize",
+            deserialize = "KeygenParty<DkgR1<G>, G>: Deserialize<'de>"
+        ))]
+        pub party: KeygenParty<DkgR1<G>, G>,
     }
 
     /// Internal DKG state used for round 2.
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct DkgStateR2 {
-        pub msg: KeygenMsg2<EdwardsPoint>,
-        pub party: KeygenParty<DkgR2, EdwardsPoint>,
+    #[derive(Serialize, Deserialize)]
+    struct DkgStateR2<G>
+    where
+        G: GroupElem,
+        G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
+    {
+        pub msg: KeygenMsg2<G>,
+
+        #[serde(bound(
+            serialize = "KeygenParty<DkgR2, G>: Serialize",
+            deserialize = "KeygenParty<DkgR2, G>: Deserialize<'de>"
+        ))]
+        pub party: KeygenParty<DkgR2, G>,
     }
 
     /// Internal DSG state used for round 1.
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct DsgStateR1 {
+    #[derive(Serialize, Deserialize)]
+    struct DsgStateR1<G>
+    where
+        G: GroupElem,
+        G::Scalar: Serializable,
+    {
         pub msg: SignMsg1,
-        pub party: SignerParty<DsgR1<EdwardsPoint>, EdwardsPoint>,
+        pub party: SignerParty<DsgR1<G>, G>,
     }
 
     /// Internal DSG state used for round 2.
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct DsgStateR2 {
-        pub msg: SignMsg2<EdwardsPoint>,
-        pub party: SignerParty<DsgR2<EdwardsPoint>, EdwardsPoint>,
+    #[derive(Serialize, Deserialize)]
+    struct DsgStateR2<G>
+    where
+        G: GroupElem,
+        G::Scalar: Serializable,
+    {
+        pub msg: SignMsg2<G>,
+        pub party: SignerParty<DsgR2<G>, G>,
     }
 
     /// Internal DSG state used for round 3.
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct DsgStateR3 {
-        pub msg: SignMsg3<EdwardsPoint>,
-        pub party: PartialSign<EdwardsPoint>,
+    #[derive(Serialize, Deserialize)]
+    struct DsgStateR3<G>
+    where
+        G: GroupElem,
+        G::Scalar: Serializable,
+    {
+        pub msg: SignMsg3<G>,
+        pub party: PartialSign<G>,
     }
 
     /// Result from processing that includes a public messages for other
@@ -80,17 +114,16 @@ mod mps {
         pub pk: [u8; 32],
     }
 
-    /// Process round 0 of DKG protocol.
-    /// party_id: Party identifier / index.
-    /// decryption_key: Private Curve25519 key.
-    /// encryption_keys: Public Curve25519 keys of other parties.
-    /// seed: PRNG seed for entropy.
-    pub fn dkg_round0_process(
+    fn internal_dkg_round0_process<G>(
         party_id: u8,
         decryption_key: &[u8; 32],
         encryption_keys: &[Vec<u8>; 2],
         seed: &[u8; 32],
-    ) -> Result<MsgState, MpsError> {
+    ) -> Result<MsgState, MpsError>
+    where
+        G: GroupElem + Serialize,
+        G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
+    {
         if party_id >= 3 {
             return Err(MpsError::InvalidInput);
         }
@@ -119,7 +152,7 @@ mod mps {
         public_keys.push((party_id, secret_key.public_key()));
 
         // Create KeygenParty
-        let p0 = KeygenParty::<DkgR0, EdwardsPoint>::new(
+        let p0 = KeygenParty::<DkgR0, G>::new(
             2, // threshold
             3, // total parties
             party_id,
@@ -147,15 +180,30 @@ mod mps {
         })
     }
 
-    /// Process round 1 of DKG protocol.
-    /// round1_messages: Public messages from other parties.
-    /// state: Private state result from from round 0.
-    pub fn dkg_round1_process(
+    /// Process round 0 of DKG protocol for Ed25519.
+    /// party_id: Party identifier / index.
+    /// decryption_key: Private Curve25519 key.
+    /// encryption_keys: Public Curve25519 keys of other parties.
+    /// seed: PRNG seed for entropy.
+    pub fn ed25519_dkg_round0_process(
+        party_id: u8,
+        decryption_key: &[u8; 32],
+        encryption_keys: &[Vec<u8>; 2],
+        seed: &[u8; 32],
+    ) -> Result<MsgState, MpsError> {
+        internal_dkg_round0_process::<EdwardsPoint>(party_id, decryption_key, encryption_keys, seed)
+    }
+
+    fn internal_dkg_round1_process<G>(
         round1_messages: &[Vec<u8>; 2],
         state: &[u8],
-    ) -> Result<MsgState, MpsError> {
+    ) -> Result<MsgState, MpsError>
+    where
+        G: GroupElem + Serialize,
+        G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
+    {
         // Parse state
-        let state: DkgStateR1 =
+        let state: DkgStateR1<G> =
             bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
@@ -183,21 +231,32 @@ mod mps {
         })
     }
 
-    /// Process round 2 of DKG protocol.
-    /// round2_messages: Public messages from other parties.
-    /// state: Private state result from round 1.
-    pub fn dkg_round2_process(
+    /// Process round 1 of DKG protocol.
+    /// round1_messages: Public messages from other parties.
+    /// state: Private state result from from round 0.
+    pub fn ed25519_dkg_round1_process(
+        round1_messages: &[Vec<u8>; 2],
+        state: &[u8],
+    ) -> Result<MsgState, MpsError> {
+        internal_dkg_round1_process::<EdwardsPoint>(round1_messages, state)
+    }
+
+    fn internal_dkg_round2_process<G>(
         round2_messages: &[Vec<u8>; 2],
         state: &[u8],
-    ) -> Result<Share, MpsError> {
+    ) -> Result<(Keyshare<G>, G), MpsError>
+    where
+        G: GroupElem + Serialize + for<'de> Deserialize<'de>,
+        G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
+    {
         // Deserialize round2 messages from other parties
-        let i0_msg2: KeygenMsg2<EdwardsPoint> = bincode::deserialize(round2_messages[0].as_slice())
+        let i0_msg2: KeygenMsg2<G> = bincode::deserialize(round2_messages[0].as_slice())
             .map_err(|_| MpsError::DeserializationError)?;
-        let i1_msg2: KeygenMsg2<EdwardsPoint> = bincode::deserialize(round2_messages[1].as_slice())
+        let i1_msg2: KeygenMsg2<G> = bincode::deserialize(round2_messages[1].as_slice())
             .map_err(|_| MpsError::DeserializationError)?;
 
         // Deserialize state
-        let state: DkgStateR2 =
+        let state: DkgStateR2<G> =
             bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
 
         // Generate share
@@ -206,9 +265,40 @@ mod mps {
             .process(vec![i0_msg2, i1_msg2, state.msg.clone()])
             .map_err(|_| MpsError::ProtocolError)?;
 
+        Ok((share.clone(), share.public_key))
+    }
+
+    /// Process round 2 of DKG protocol.
+    /// round2_messages: Public messages from other parties.
+    /// state: Private state result from round 1.
+    pub fn ed25519_dkg_round2_process(
+        round2_messages: &[Vec<u8>; 2],
+        state: &[u8],
+    ) -> Result<Share, MpsError> {
+        let (share, pk) = internal_dkg_round2_process::<EdwardsPoint>(round2_messages, state)?;
         Ok(Share {
             share: bincode::serialize(&share).map_err(|_| MpsError::SerializationError)?,
-            pk: share.public_key.compress().to_bytes(),
+            pk: pk.compress().to_bytes(),
+        })
+    }
+
+    fn internal_dsg_round0_process<G>(p0: SignerParty<DsgR0, G>) -> Result<MsgState, MpsError>
+    where
+        G: GroupElem + Serialize,
+        G::Scalar: Serializable,
+    {
+        // Generate message
+        let (p1, msg1) = p0.process(()).map_err(|_| MpsError::ProtocolError)?;
+
+        // Create the state for storage between rounds
+        let state = DsgStateR1 {
+            msg: msg1.clone(),
+            party: p1,
+        };
+
+        Ok(MsgState {
+            msg: bincode::serialize(&msg1).map_err(|_| MpsError::SerializationError)?,
+            state: bincode::serialize(&state).map_err(|_| MpsError::SerializationError)?,
         })
     }
 
@@ -216,7 +306,7 @@ mod mps {
     /// share: Signing share from DKG.
     /// derivation_path: Key derivation path.
     /// message: Message to sign.
-    pub fn dsg_round0_process(
+    pub fn ed25519_dsg_round0_process(
         share: &[u8],
         derivation_path: String,
         message: &[u8],
@@ -235,27 +325,19 @@ mod mps {
             &mut rand::thread_rng(),
         );
 
-        // Generate message
-        let (p1, msg1) = p0.process(()).map_err(|_| MpsError::ProtocolError)?;
-
-        // Create the state for storage between rounds
-        let state = DsgStateR1 {
-            msg: msg1.clone(),
-            party: p1,
-        };
-
-        Ok(MsgState {
-            msg: bincode::serialize(&msg1).map_err(|_| MpsError::SerializationError)?,
-            state: bincode::serialize(&state).map_err(|_| MpsError::SerializationError)?,
-        })
+        internal_dsg_round0_process(p0)
     }
 
-    /// Process round 1 of DSG protocol.
-    /// round1_messages: Public messages from other parties.
-    /// state: Private state result from round 0.
-    pub fn dsg_round1_process(round1_message: &[u8], state: &[u8]) -> Result<MsgState, MpsError> {
+    fn internal_dsg_round1_process<G>(
+        round1_message: &[u8],
+        state: &[u8],
+    ) -> Result<MsgState, MpsError>
+    where
+        G: GroupElem + Serialize + for<'de> Deserialize<'de>,
+        G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
+    {
         // Parse state
-        let state: DsgStateR1 =
+        let state: DsgStateR1<G> =
             bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
@@ -281,12 +363,25 @@ mod mps {
         })
     }
 
+    /// Process round 1 of DSG protocol.
+    /// round1_messages: Public messages from other parties.
+    /// state: Private state result from round 0.
+    pub fn ed25519_dsg_round1_process(
+        round1_message: &[u8],
+        state: &[u8],
+    ) -> Result<MsgState, MpsError> {
+        internal_dsg_round1_process::<EdwardsPoint>(round1_message, state)
+    }
+
     /// Process round 2 of DSG protocol.
     /// round2_messages: Public messages from other parties.
     /// state: Private state result from round 1.
-    pub fn dsg_round2_process(round2_message: &[u8], state: &[u8]) -> Result<MsgState, MpsError> {
+    pub fn ed25519_dsg_round2_process(
+        round2_message: &[u8],
+        state: &[u8],
+    ) -> Result<MsgState, MpsError> {
         // Parse state
-        let state: DsgStateR2 =
+        let state: DsgStateR2<EdwardsPoint> =
             bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
@@ -318,9 +413,12 @@ mod mps {
     /// Process round 3 of DSG protocol.
     /// round3_messages: Public messages from other parties.
     /// state: Private state result from round 2.
-    pub fn dsg_round3_process(round3_message: &[u8], state: &[u8]) -> Result<Vec<u8>, MpsError> {
+    pub fn ed25519_dsg_round3_process(
+        round3_message: &[u8],
+        state: &[u8],
+    ) -> Result<Vec<u8>, MpsError> {
         // Parse state
-        let state: DsgStateR3 =
+        let state: DsgStateR3<EdwardsPoint> =
             bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
@@ -347,7 +445,7 @@ mod tests {
 
     /// Test full DGK protocol.
     #[test]
-    fn test_dkg() {
+    fn test_ed25519_dkg() {
         // Generate key pairs and seeds for all parties
         let mut prv_keys = Vec::new();
         let mut pub_keys = Vec::new();
@@ -362,7 +460,7 @@ mod tests {
         }
 
         // Parties generate their round 0 messages
-        let p0_0 = mps::dkg_round0_process(
+        let p0_0 = mps::ed25519_dkg_round0_process(
             0,
             &prv_keys[0].to_bytes(),
             &[
@@ -372,7 +470,7 @@ mod tests {
             &seeds[0],
         )
         .unwrap();
-        let p1_0 = mps::dkg_round0_process(
+        let p1_0 = mps::ed25519_dkg_round0_process(
             1,
             &prv_keys[1].to_bytes(),
             &[
@@ -382,7 +480,7 @@ mod tests {
             &seeds[1],
         )
         .unwrap();
-        let p2_0 = mps::dkg_round0_process(
+        let p2_0 = mps::ed25519_dkg_round0_process(
             2,
             &prv_keys[2].to_bytes(),
             &[
@@ -394,26 +492,38 @@ mod tests {
         .unwrap();
 
         // Parties generate their round 1 messages
-        let p0_1 =
-            mps::dkg_round1_process(&[p1_0.msg.clone(), p2_0.msg.clone()], p0_0.state.as_slice())
-                .unwrap();
-        let p1_1 =
-            mps::dkg_round1_process(&[p0_0.msg.clone(), p2_0.msg.clone()], p1_0.state.as_slice())
-                .unwrap();
-        let p2_1 =
-            mps::dkg_round1_process(&[p0_0.msg.clone(), p1_0.msg.clone()], p2_0.state.as_slice())
-                .unwrap();
+        let p0_1 = mps::ed25519_dkg_round1_process(
+            &[p1_0.msg.clone(), p2_0.msg.clone()],
+            p0_0.state.as_slice(),
+        )
+        .unwrap();
+        let p1_1 = mps::ed25519_dkg_round1_process(
+            &[p0_0.msg.clone(), p2_0.msg.clone()],
+            p1_0.state.as_slice(),
+        )
+        .unwrap();
+        let p2_1 = mps::ed25519_dkg_round1_process(
+            &[p0_0.msg.clone(), p1_0.msg.clone()],
+            p2_0.state.as_slice(),
+        )
+        .unwrap();
 
         // Parties generate their key shares
-        let p0_share =
-            mps::dkg_round2_process(&[p1_1.msg.clone(), p2_1.msg.clone()], p0_1.state.as_slice())
-                .unwrap();
-        let p1_share =
-            mps::dkg_round2_process(&[p0_1.msg.clone(), p2_1.msg.clone()], p1_1.state.as_slice())
-                .unwrap();
-        let p2_share =
-            mps::dkg_round2_process(&[p0_1.msg.clone(), p1_1.msg.clone()], p2_1.state.as_slice())
-                .unwrap();
+        let p0_share = mps::ed25519_dkg_round2_process(
+            &[p1_1.msg.clone(), p2_1.msg.clone()],
+            p0_1.state.as_slice(),
+        )
+        .unwrap();
+        let p1_share = mps::ed25519_dkg_round2_process(
+            &[p0_1.msg.clone(), p2_1.msg.clone()],
+            p1_1.state.as_slice(),
+        )
+        .unwrap();
+        let p2_share = mps::ed25519_dkg_round2_process(
+            &[p0_1.msg.clone(), p1_1.msg.clone()],
+            p2_1.state.as_slice(),
+        )
+        .unwrap();
 
         // Assert generated public keys are equal
         assert_eq!(
@@ -428,7 +538,7 @@ mod tests {
 
     /// Test full DSG protocol.
     #[test]
-    fn test_dsg() {
+    fn test_ed25519_dsg() {
         // Generate signing shares
         let mut prv_keys = Vec::new();
         let mut pub_keys = Vec::new();
@@ -443,7 +553,7 @@ mod tests {
         }
 
         // Parties generate their round 0 messages
-        let dkg_p0_0 = mps::dkg_round0_process(
+        let dkg_p0_0 = mps::ed25519_dkg_round0_process(
             0,
             &prv_keys[0].to_bytes(),
             &[
@@ -453,7 +563,7 @@ mod tests {
             &seeds[0],
         )
         .unwrap();
-        let dkg_p1_0 = mps::dkg_round0_process(
+        let dkg_p1_0 = mps::ed25519_dkg_round0_process(
             1,
             &prv_keys[1].to_bytes(),
             &[
@@ -463,7 +573,7 @@ mod tests {
             &seeds[1],
         )
         .unwrap();
-        let dkg_p2_0 = mps::dkg_round0_process(
+        let dkg_p2_0 = mps::ed25519_dkg_round0_process(
             2,
             &prv_keys[2].to_bytes(),
             &[
@@ -475,29 +585,29 @@ mod tests {
         .unwrap();
 
         // Parties generate their round 1 messages
-        let dkg_p0_1 = mps::dkg_round1_process(
+        let dkg_p0_1 = mps::ed25519_dkg_round1_process(
             &[dkg_p1_0.msg.clone(), dkg_p2_0.msg.clone()],
             dkg_p0_0.state.as_slice(),
         )
         .unwrap();
-        let dkg_p1_1 = mps::dkg_round1_process(
+        let dkg_p1_1 = mps::ed25519_dkg_round1_process(
             &[dkg_p0_0.msg.clone(), dkg_p2_0.msg.clone()],
             dkg_p1_0.state.as_slice(),
         )
         .unwrap();
-        let dkg_p2_1 = mps::dkg_round1_process(
+        let dkg_p2_1 = mps::ed25519_dkg_round1_process(
             &[dkg_p0_0.msg.clone(), dkg_p1_0.msg.clone()],
             dkg_p2_0.state.as_slice(),
         )
         .unwrap();
 
         // Parties generate their key shares
-        let dkg_p0_share = mps::dkg_round2_process(
+        let dkg_p0_share = mps::ed25519_dkg_round2_process(
             &[dkg_p1_1.msg.clone(), dkg_p2_1.msg.clone()],
             dkg_p0_1.state.as_slice(),
         )
         .unwrap();
-        let dkg_p2_share = mps::dkg_round2_process(
+        let dkg_p2_share = mps::ed25519_dkg_round2_process(
             &[dkg_p0_1.msg.clone(), dkg_p1_1.msg.clone()],
             dkg_p2_1.state.as_slice(),
         )
@@ -508,27 +618,35 @@ mod tests {
 
         // Process DSG round 0
         let dsg_p0_0 =
-            mps::dsg_round0_process(dkg_p0_share.share.as_slice(), "m".to_string(), msg).unwrap();
+            mps::ed25519_dsg_round0_process(dkg_p0_share.share.as_slice(), "m".to_string(), msg)
+                .unwrap();
         let dsg_p2_0 =
-            mps::dsg_round0_process(dkg_p2_share.share.as_slice(), "m".to_string(), msg).unwrap();
+            mps::ed25519_dsg_round0_process(dkg_p2_share.share.as_slice(), "m".to_string(), msg)
+                .unwrap();
 
         // Process DSG round 1
         let dsg_p0_1 =
-            mps::dsg_round1_process(dsg_p2_0.msg.as_slice(), dsg_p0_0.state.as_slice()).unwrap();
+            mps::ed25519_dsg_round1_process(dsg_p2_0.msg.as_slice(), dsg_p0_0.state.as_slice())
+                .unwrap();
         let dsg_p2_1 =
-            mps::dsg_round1_process(dsg_p0_0.msg.as_slice(), dsg_p2_0.state.as_slice()).unwrap();
+            mps::ed25519_dsg_round1_process(dsg_p0_0.msg.as_slice(), dsg_p2_0.state.as_slice())
+                .unwrap();
 
         // Process DSG round 2
         let dsg_p0_2 =
-            mps::dsg_round2_process(dsg_p2_1.msg.as_slice(), dsg_p0_1.state.as_slice()).unwrap();
+            mps::ed25519_dsg_round2_process(dsg_p2_1.msg.as_slice(), dsg_p0_1.state.as_slice())
+                .unwrap();
         let dsg_p2_2 =
-            mps::dsg_round2_process(dsg_p0_1.msg.as_slice(), dsg_p2_1.state.as_slice()).unwrap();
+            mps::ed25519_dsg_round2_process(dsg_p0_1.msg.as_slice(), dsg_p2_1.state.as_slice())
+                .unwrap();
 
         // Process DSG round 3
         let dsg_p0_sig =
-            mps::dsg_round3_process(dsg_p2_2.msg.as_slice(), dsg_p0_2.state.as_slice()).unwrap();
+            mps::ed25519_dsg_round3_process(dsg_p2_2.msg.as_slice(), dsg_p0_2.state.as_slice())
+                .unwrap();
         let dsg_p2_sig =
-            mps::dsg_round3_process(dsg_p0_2.msg.as_slice(), dsg_p2_2.state.as_slice()).unwrap();
+            mps::ed25519_dsg_round3_process(dsg_p0_2.msg.as_slice(), dsg_p2_2.state.as_slice())
+                .unwrap();
 
         assert_eq!(
             dsg_p2_sig, dsg_p0_sig,
@@ -617,7 +735,7 @@ impl MsgShare {
 }
 
 #[wasm_bindgen]
-pub fn dkg_round0_process(
+pub fn ed25519_dkg_round0_process(
     party_id: u8,
     decryption_key: &[u8],
     encryption_keys: Array,
@@ -627,7 +745,7 @@ pub fn dkg_round0_process(
         .try_into()
         .map_err(|_| "Deserialization Error")?;
     let seed_32: [u8; 32] = seed[..32].try_into().map_err(|_| "Deserialization Error")?;
-    let result = mps::dkg_round0_process(
+    let result = mps::ed25519_dkg_round0_process(
         party_id,
         &decryption_key_32,
         &[
@@ -645,8 +763,11 @@ pub fn dkg_round0_process(
 }
 
 #[wasm_bindgen]
-pub fn dkg_round1_process(round1_messages: Array, state: &[u8]) -> Result<MsgState, String> {
-    let result = mps::dkg_round1_process(
+pub fn ed25519_dkg_round1_process(
+    round1_messages: Array,
+    state: &[u8],
+) -> Result<MsgState, String> {
+    let result = mps::ed25519_dkg_round1_process(
         &[
             js_sys::Uint8Array::from(round1_messages.get(0)).to_vec(),
             js_sys::Uint8Array::from(round1_messages.get(1)).to_vec(),
@@ -662,8 +783,8 @@ pub fn dkg_round1_process(round1_messages: Array, state: &[u8]) -> Result<MsgSta
 }
 
 #[wasm_bindgen]
-pub fn dkg_round2_process(round2_messages: Array, state: &[u8]) -> Result<Share, String> {
-    let result = mps::dkg_round2_process(
+pub fn ed25519_dkg_round2_process(round2_messages: Array, state: &[u8]) -> Result<Share, String> {
+    let result = mps::ed25519_dkg_round2_process(
         &[
             js_sys::Uint8Array::from(round2_messages.get(0)).to_vec(),
             js_sys::Uint8Array::from(round2_messages.get(1)).to_vec(),
@@ -679,13 +800,24 @@ pub fn dkg_round2_process(round2_messages: Array, state: &[u8]) -> Result<Share,
 }
 
 #[wasm_bindgen]
-pub fn dsg_round0_process(
+pub fn ed25519_dsg_round0_process(
     share: &[u8],
     derivation_path: String,
     message: &[u8],
 ) -> Result<MsgState, String> {
+    let result = mps::ed25519_dsg_round0_process(share, derivation_path, message)
+        .map_err(|e| e.to_string())?;
+
+    Ok(MsgState {
+        msg: result.msg,
+        state: result.state,
+    })
+}
+
+#[wasm_bindgen]
+pub fn ed25519_dsg_round1_process(round1_message: &[u8], state: &[u8]) -> Result<MsgState, String> {
     let result =
-        mps::dsg_round0_process(share, derivation_path, message).map_err(|e| e.to_string())?;
+        mps::ed25519_dsg_round1_process(round1_message, state).map_err(|e| e.to_string())?;
 
     Ok(MsgState {
         msg: result.msg,
@@ -694,8 +826,9 @@ pub fn dsg_round0_process(
 }
 
 #[wasm_bindgen]
-pub fn dsg_round1_process(round1_message: &[u8], state: &[u8]) -> Result<MsgState, String> {
-    let result = mps::dsg_round1_process(round1_message, state).map_err(|e| e.to_string())?;
+pub fn ed25519_dsg_round2_process(round2_message: &[u8], state: &[u8]) -> Result<MsgState, String> {
+    let result =
+        mps::ed25519_dsg_round2_process(round2_message, state).map_err(|e| e.to_string())?;
 
     Ok(MsgState {
         msg: result.msg,
@@ -704,18 +837,9 @@ pub fn dsg_round1_process(round1_message: &[u8], state: &[u8]) -> Result<MsgStat
 }
 
 #[wasm_bindgen]
-pub fn dsg_round2_process(round2_message: &[u8], state: &[u8]) -> Result<MsgState, String> {
-    let result = mps::dsg_round2_process(round2_message, state).map_err(|e| e.to_string())?;
-
-    Ok(MsgState {
-        msg: result.msg,
-        state: result.state,
-    })
-}
-
-#[wasm_bindgen]
-pub fn dsg_round3_process(round2_message: &[u8], state: &[u8]) -> Result<Vec<u8>, String> {
-    let result = mps::dsg_round3_process(round2_message, state).map_err(|e| e.to_string())?;
+pub fn ed25519_dsg_round3_process(round2_message: &[u8], state: &[u8]) -> Result<Vec<u8>, String> {
+    let result =
+        mps::ed25519_dsg_round3_process(round2_message, state).map_err(|e| e.to_string())?;
 
     Ok(result.to_vec())
 }
