@@ -484,18 +484,16 @@ fn build_jito_stake(
     let mut instructions = Vec::new();
 
     // Optionally create ATA for pool mint (JitoSOL) if requested
+    // Use CreateIdempotent (&[1]) so the instruction is a no-op if the ATA already exists,
+    // avoiding "Provided owner is not allowed" errors when trustedTokens DB is out of sync.
     if config.create_associated_token_account == Some(true) {
-        instructions.push(Instruction::new_with_bytes(
-            ata_program,
-            &[],
-            vec![
-                AccountMeta::new(*fee_payer, true),
-                AccountMeta::new(destination_pool_account, false),
-                AccountMeta::new_readonly(*fee_payer, false),
-                AccountMeta::new_readonly(pool_mint, false),
-                AccountMeta::new_readonly(system_program, false),
-                AccountMeta::new_readonly(token_program, false),
-            ],
+        instructions.push(create_ata_idempotent_ix(
+            fee_payer,
+            &destination_pool_account,
+            fee_payer,
+            &pool_mint,
+            &system_program,
+            &token_program,
         ));
     }
 
@@ -967,26 +965,21 @@ fn build_enable_token(
     let ata_program: Pubkey = SPL_ATA_PROGRAM_ID.parse().unwrap();
     let system_program: Pubkey = SYSTEM_PROGRAM_ID.parse().unwrap();
 
-    use solana_sdk::instruction::AccountMeta;
-
     // Build one instruction per token
+    // Use CreateIdempotent so the instruction is a no-op if the ATA already exists.
     let instructions: Vec<Instruction> = token_pairs
         .iter()
         .map(|(mint, token_program)| {
             let seeds = &[owner.as_ref(), token_program.as_ref(), mint.as_ref()];
             let (ata, _bump) = Pubkey::find_program_address(seeds, &ata_program);
 
-            Instruction::new_with_bytes(
-                ata_program,
-                &[],
-                vec![
-                    AccountMeta::new(fee_payer, true),
-                    AccountMeta::new(ata, false),
-                    AccountMeta::new_readonly(owner, false),
-                    AccountMeta::new_readonly(*mint, false),
-                    AccountMeta::new_readonly(system_program, false),
-                    AccountMeta::new_readonly(*token_program, false),
-                ],
+            create_ata_idempotent_ix(
+                &fee_payer,
+                &ata,
+                &owner,
+                mint,
+                &system_program,
+                token_program,
             )
         })
         .collect();
