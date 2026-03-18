@@ -1050,6 +1050,8 @@ fn build_consolidate(
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid receiveAddress (sender)"))?;
 
+    let default_token_program: Pubkey = SPL_TOKEN_PROGRAM_ID.parse().unwrap();
+
     let mut instructions = Vec::new();
 
     for recipient in intent.recipients {
@@ -1058,19 +1060,73 @@ fn build_consolidate(
             .as_ref()
             .map(|a| &a.address)
             .ok_or_else(|| WasmSolanaError::new("Recipient missing address"))?;
-        let amount = recipient
+        let amount_wrapper = recipient
             .amount
             .as_ref()
-            .map(|a| &a.value)
             .ok_or_else(|| WasmSolanaError::new("Recipient missing amount"))?;
 
         let to_pubkey: Pubkey = address.parse().map_err(|_| {
             WasmSolanaError::new(&format!("Invalid recipient address: {}", address))
         })?;
-        let lamports: u64 = *amount;
 
-        // Transfer from sender (child address), not fee_payer
-        instructions.push(system_ix::transfer(&sender, &to_pubkey, lamports));
+        let mint_str = recipient.token_address.as_deref();
+
+        if let Some(mint_str) = mint_str {
+            // SPL token transfer: sender (child address) is the authority over its own ATA.
+            // The destination ATA is passed in directly by the caller — do NOT re-derive it.
+            let mint: Pubkey = mint_str
+                .parse()
+                .map_err(|_| WasmSolanaError::new(&format!("Invalid token mint: {}", mint_str)))?;
+
+            let token_program: Pubkey = recipient
+                .token_program_id
+                .as_deref()
+                .map(|p| {
+                    p.parse()
+                        .map_err(|_| WasmSolanaError::new("Invalid tokenProgramId"))
+                })
+                .transpose()?
+                .unwrap_or(default_token_program);
+
+            let decimals = recipient
+                .decimal_places
+                .ok_or_else(|| WasmSolanaError::new("Token transfer requires decimalPlaces"))?;
+
+            // Source ATA: derive from sender (child address) + mint
+            let sender_ata = derive_ata(&sender, &mint, &token_program);
+
+            // Destination ATA: passed in as-is (already exists on wallet root, caller provides it)
+            let dest_ata = to_pubkey;
+
+            use spl_token::instruction::TokenInstruction;
+            let data = TokenInstruction::TransferChecked {
+                amount: amount_wrapper.value,
+                decimals,
+            }
+            .pack();
+
+            // Accounts: source(w), mint(r), destination(w), authority(signer)
+            // sender is both signer and owner of the source ATA
+            let transfer_ix = Instruction::new_with_bytes(
+                token_program,
+                &data,
+                vec![
+                    AccountMeta::new(sender_ata, false),
+                    AccountMeta::new_readonly(mint, false),
+                    AccountMeta::new(dest_ata, false),
+                    AccountMeta::new_readonly(sender, true),
+                ],
+            );
+
+            instructions.push(transfer_ix);
+        } else {
+            // Native SOL transfer from sender (child address), not fee_payer
+            instructions.push(system_ix::transfer(
+                &sender,
+                &to_pubkey,
+                amount_wrapper.value,
+            ));
+        }
     }
 
     Ok((instructions, vec![]))
@@ -1422,6 +1478,149 @@ mod tests {
                 .to_string()
                 .contains("Missing recipients"),
             "Error should mention missing recipients"
+        );
+    }
+
+    #[test]
+    fn test_build_consolidate_native_sol() {
+        // Child address consolidates native SOL to root
+        let child_address = "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH";
+        let root_address = "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB";
+
+        let intent = serde_json::json!({
+            "intentType": "consolidate",
+            "receiveAddress": child_address,
+            "recipients": [{
+                "address": { "address": root_address },
+                "amount": { "value": "5000000" }
+            }]
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_ok(), "Failed: {:?}", result);
+        let result = result.unwrap();
+        assert!(result.generated_keypairs.is_empty());
+
+        // Should have 1 system transfer instruction
+        let msg = result.transaction.message();
+        assert_eq!(
+            msg.instructions.len(),
+            1,
+            "Native SOL consolidate should have 1 instruction"
+        );
+    }
+
+    #[test]
+    fn test_build_consolidate_with_token_recipients() {
+        // Child address consolidates SPL tokens to root's ATA.
+        // The destination ATA is passed in directly by the caller — not re-derived.
+        let child_address = "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH";
+        // USDC mint
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        // Root wallet's USDC ATA (pre-existing, passed in by caller)
+        let root_ata = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
+
+        let intent = serde_json::json!({
+            "intentType": "consolidate",
+            "receiveAddress": child_address,
+            "recipients": [{
+                "address": { "address": root_ata },
+                "amount": { "value": "1000000" },
+                "tokenAddress": mint,
+                "decimalPlaces": 6
+            }]
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_ok(), "Failed: {:?}", result);
+        let result = result.unwrap();
+        assert!(result.generated_keypairs.is_empty());
+
+        // Should have 1 transfer_checked instruction (no create ATA — dest already exists)
+        let msg = result.transaction.message();
+        assert_eq!(
+            msg.instructions.len(),
+            1,
+            "Token consolidate should have 1 transfer_checked instruction"
+        );
+
+        // The instruction should use the SPL Token program
+        let token_program: Pubkey = SPL_TOKEN_PROGRAM_ID.parse().unwrap();
+        let ix = &msg.instructions[0];
+        let program_id = msg.account_keys[ix.program_id_index as usize];
+        assert_eq!(
+            program_id, token_program,
+            "Instruction should use SPL Token program"
+        );
+
+        // Verify account count: source ATA, mint, dest ATA, authority (sender/child) = 4
+        assert_eq!(
+            ix.accounts.len(),
+            4,
+            "transfer_checked should have 4 accounts"
+        );
+    }
+
+    #[test]
+    fn test_build_consolidate_token_missing_decimal_places() {
+        let child_address = "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH";
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let root_ata = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
+
+        let intent = serde_json::json!({
+            "intentType": "consolidate",
+            "receiveAddress": child_address,
+            "recipients": [{
+                "address": { "address": root_ata },
+                "amount": { "value": "1000000" },
+                "tokenAddress": mint
+                // decimalPlaces intentionally omitted
+            }]
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_err(), "Should fail without decimalPlaces");
+        assert!(
+            result.unwrap_err().to_string().contains("decimalPlaces"),
+            "Error should mention decimalPlaces"
+        );
+    }
+
+    #[test]
+    fn test_build_consolidate_mixed_recipients() {
+        // One native SOL recipient and one token recipient
+        let child_address = "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH";
+        let root_address = "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB";
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let root_ata = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
+
+        let intent = serde_json::json!({
+            "intentType": "consolidate",
+            "receiveAddress": child_address,
+            "recipients": [
+                {
+                    "address": { "address": root_address },
+                    "amount": { "value": "5000000" }
+                },
+                {
+                    "address": { "address": root_ata },
+                    "amount": { "value": "2000000" },
+                    "tokenAddress": mint,
+                    "decimalPlaces": 6
+                }
+            ]
+        });
+
+        let result = build_from_intent(&intent, &test_params());
+        assert!(result.is_ok(), "Failed: {:?}", result);
+        let result = result.unwrap();
+
+        // Should have 2 instructions: 1 system transfer + 1 transfer_checked
+        let msg = result.transaction.message();
+        assert_eq!(
+            msg.instructions.len(),
+            2,
+            "Mixed consolidate should have 2 instructions"
         );
     }
 }

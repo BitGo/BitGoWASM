@@ -51,7 +51,7 @@ export interface DurableNonce {
 
 /** Parameters for building a transaction from intent */
 export interface BuildFromIntentParams {
-  /** Fee payer address (wallet root) */
+  /** Fee payer address — typically the wallet root, but for consolidation this is the child address being swept */
   feePayer: string;
   /** Nonce source - blockhash or durable nonce */
   nonce: NonceSource;
@@ -175,10 +175,16 @@ export interface ConsolidateIntent extends BaseIntent {
   intentType: "consolidate";
   /** The child address to consolidate from (sender) */
   receiveAddress: string;
-  /** Recipients (root address for SOL, ATAs for tokens) */
+  /** Recipients (root address for native SOL, wallet ATAs for tokens) */
   recipients?: Array<{
     address?: { address: string };
-    amount?: { value: bigint };
+    amount?: { value: bigint; symbol?: string };
+    /** Mint address (base58) — if set, this is an SPL token transfer */
+    tokenAddress?: string;
+    /** Token program ID (defaults to SPL Token Program) */
+    tokenProgramId?: string;
+    /** Decimal places for the token (required for transfer_checked) */
+    decimalPlaces?: number;
   }>;
 }
 
