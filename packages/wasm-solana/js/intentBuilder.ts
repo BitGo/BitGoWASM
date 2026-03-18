@@ -85,19 +85,22 @@ export interface BaseIntent {
   memo?: string;
 }
 
+/** A recipient in a transaction — native SOL or SPL token transfer */
+export interface Recipient {
+  address?: { address: string };
+  amount?: { value: bigint; symbol?: string };
+  /** Mint address (base58) — if set, this is an SPL token transfer */
+  tokenAddress?: string;
+  /** Token program ID (defaults to SPL Token Program) */
+  tokenProgramId?: string;
+  /** Decimal places for the token (required for transfer_checked) */
+  decimalPlaces?: number;
+}
+
 /** Payment intent */
 export interface PaymentIntent extends BaseIntent {
   intentType: "payment";
-  recipients?: Array<{
-    address?: { address: string };
-    amount?: { value: bigint; symbol?: string };
-    /** Mint address (base58) — if set, this is an SPL token transfer */
-    tokenAddress?: string;
-    /** Token program ID (defaults to SPL Token Program) */
-    tokenProgramId?: string;
-    /** Decimal places for the token (required for transfer_checked) */
-    decimalPlaces?: number;
-  }>;
+  recipients?: Recipient[];
 }
 
 /** Stake intent */
@@ -176,16 +179,7 @@ export interface ConsolidateIntent extends BaseIntent {
   /** The child address to consolidate from (sender) */
   receiveAddress: string;
   /** Recipients (root address for native SOL, wallet ATAs for tokens) */
-  recipients?: Array<{
-    address?: { address: string };
-    amount?: { value: bigint; symbol?: string };
-    /** Mint address (base58) — if set, this is an SPL token transfer */
-    tokenAddress?: string;
-    /** Token program ID (defaults to SPL Token Program) */
-    tokenProgramId?: string;
-    /** Decimal places for the token (required for transfer_checked) */
-    decimalPlaces?: number;
-  }>;
+  recipients?: Recipient[];
 }
 
 /** Authorize intent - pre-built transaction message */

@@ -41,6 +41,7 @@ export type {
   CustomTxKey,
   SolanaIntent,
   StakePoolConfig,
+  Recipient,
   BuildFromIntentParams,
   BuildFromIntentResult,
   GeneratedKeypair,
