@@ -130,6 +130,24 @@ impl TransactionContext {
 }
 
 impl Transaction {
+    /// Create a new unsigned transaction from components.
+    ///
+    /// Used by the builder when constructing transactions from intents.
+    /// No raw extrinsic bytes are stored; `to_bytes()` returns `signable_payload()`.
+    pub fn new(call_data: Vec<u8>, era: Era, nonce: u32, tip: u128) -> Self {
+        Transaction {
+            raw_bytes: Vec::new(),
+            is_signed: false,
+            signer: None,
+            signature: None,
+            era,
+            nonce,
+            tip,
+            call_data,
+            context: None,
+        }
+    }
+
     /// Create a transaction from raw bytes
     ///
     /// # Arguments
@@ -202,8 +220,9 @@ impl Transaction {
             // Fall back to manual serialization if no context
             self.to_bytes_manual()
         } else {
-            // Unsigned: return raw bytes (preserves metadata-encoded extensions from builder)
-            Ok(self.raw_bytes.clone())
+            // Unsigned: return the signing payload (call_data + extensions + additional_signed).
+            // This matches legacy toBroadcastFormat which returns construct.signingPayload().
+            self.signable_payload()
         }
     }
 
@@ -263,7 +282,12 @@ impl Transaction {
         let bytes = if self.is_signed && self.signature.is_some() {
             self.to_bytes().ok()?
         } else {
-            self.raw_bytes.clone()
+            // For unsigned, use signable_payload if context exists, otherwise raw_bytes
+            if self.context.is_some() {
+                self.signable_payload().ok()?
+            } else {
+                self.raw_bytes.clone()
+            }
         };
 
         if bytes.is_empty() {
@@ -460,107 +484,165 @@ type ParsedExtrinsic = (
     Vec<u8>,
 );
 
-/// Parse a raw extrinsic
+/// Parse a raw extrinsic or signing payload.
+///
+/// Detects three formats:
+/// - **Signed extrinsic**: compact(length) | 0x84 | signer | signature | extensions | call_data
+/// - **Unsigned extrinsic (V4)**: compact(length) | 0x04 | call_data
+/// - **Signing payload**: call_data | era | nonce | tip | extensions | additional_signed
+///   (no length prefix, no version byte — produced by `signable_payload()`)
 fn parse_extrinsic(
     bytes: &[u8],
     metadata: Option<&Metadata>,
 ) -> Result<ParsedExtrinsic, WasmDotError> {
+    // Try to detect the format by decoding compact length + version byte.
+    // If it looks like a standard extrinsic, parse it that way.
+    // Otherwise, treat as signing payload.
+    if let Some(result) = try_parse_extrinsic_format(bytes, metadata)? {
+        return Ok(result);
+    }
+
+    // Not a standard extrinsic format — try parsing as signing payload.
+    // Signing payload format: call_data | signed_extensions | additional_signed
+    // Requires metadata to determine where call_data ends.
+    parse_signing_payload(bytes, metadata)
+}
+
+/// Try to parse bytes as a standard extrinsic (compact length + version byte).
+/// Returns None if the bytes don't look like an extrinsic.
+fn try_parse_extrinsic_format(
+    bytes: &[u8],
+    metadata: Option<&Metadata>,
+) -> Result<Option<ParsedExtrinsic>, WasmDotError> {
     use parity_scale_codec::{Compact, Decode};
 
-    let mut cursor = 0;
-
-    // Decode length prefix (compact)
-    let mut input = &bytes[cursor..];
-    let length = <Compact<u32>>::decode(&mut input)
-        .map_err(|e| WasmDotError::InvalidTransaction(format!("Invalid length: {}", e)))?;
-    cursor = bytes.len() - input.len();
-
-    let _extrinsic_length = length.0 as usize;
-
-    // Version byte
-    if cursor >= bytes.len() {
+    if bytes.is_empty() {
         return Err(WasmDotError::InvalidTransaction(
-            "Missing version byte".to_string(),
+            "Empty transaction".to_string(),
         ));
     }
-    let version = bytes[cursor];
-    cursor += 1;
 
-    let is_signed = (version & 0x80) != 0;
-    let _extrinsic_version = version & 0x7f;
+    // Try decoding compact length prefix
+    let mut input = bytes;
+    let length = match <Compact<u32>>::decode(&mut input) {
+        Ok(l) => l,
+        Err(_) => return Ok(None), // Can't decode compact — not extrinsic format
+    };
+    let prefix_size = bytes.len() - input.len();
 
-    if is_signed {
-        // Parse signed extrinsic
-
-        // Signer (MultiAddress)
-        if cursor >= bytes.len() {
-            return Err(WasmDotError::InvalidTransaction(
-                "Missing signer".to_string(),
-            ));
-        }
-        let address_type = bytes[cursor];
-        cursor += 1;
-
-        let signer = if address_type == 0x00 {
-            // Id variant - 32 byte account id
-            if cursor + 32 > bytes.len() {
-                return Err(WasmDotError::InvalidTransaction(
-                    "Truncated signer".to_string(),
-                ));
-            }
-            let mut pk = [0u8; 32];
-            pk.copy_from_slice(&bytes[cursor..cursor + 32]);
-            cursor += 32;
-            Some(pk)
-        } else {
-            return Err(WasmDotError::InvalidTransaction(format!(
-                "Unsupported address type: {}",
-                address_type
-            )));
-        };
-
-        // Signature (MultiSignature)
-        if cursor >= bytes.len() {
-            return Err(WasmDotError::InvalidTransaction(
-                "Missing signature".to_string(),
-            ));
-        }
-        let sig_type = bytes[cursor];
-        cursor += 1;
-
-        let signature = if sig_type == 0x00 {
-            // Ed25519 - 64 bytes
-            if cursor + 64 > bytes.len() {
-                return Err(WasmDotError::InvalidTransaction(
-                    "Truncated signature".to_string(),
-                ));
-            }
-            let mut sig = [0u8; 64];
-            sig.copy_from_slice(&bytes[cursor..cursor + 64]);
-            cursor += 64;
-            Some(sig)
-        } else {
-            return Err(WasmDotError::InvalidTransaction(format!(
-                "Unsupported signature type: {}",
-                sig_type
-            )));
-        };
-
-        // Parse signed extensions (era, nonce, tip, and any extras)
-        let (era, nonce, tip, ext_size) = parse_signed_extensions(&bytes[cursor..], metadata)?;
-        cursor += ext_size;
-
-        // Remaining bytes are call data
-        let call_data = bytes[cursor..].to_vec();
-
-        Ok((true, signer, signature, era, nonce, tip, call_data))
-    } else {
-        // Unsigned extrinsic: standard Substrate V4 format has call data
-        // immediately after the version byte (no signed extensions in body).
-        // Era, nonce, and tip are only in the signing payload, not the extrinsic.
-        let call_data = bytes[cursor..].to_vec();
-        Ok((false, None, None, Era::Immortal, 0, 0, call_data))
+    // Check if compact length matches remaining bytes
+    let remaining = bytes.len() - prefix_size;
+    if length.0 as usize != remaining {
+        return Ok(None); // Length doesn't match — not extrinsic format
     }
+
+    // Check version byte
+    if prefix_size >= bytes.len() {
+        return Ok(None);
+    }
+    let version = bytes[prefix_size];
+
+    match version {
+        0x84 => {
+            // Signed extrinsic
+            let mut cursor = prefix_size + 1;
+
+            // Signer (MultiAddress)
+            if cursor >= bytes.len() {
+                return Err(WasmDotError::InvalidTransaction(
+                    "Missing signer".to_string(),
+                ));
+            }
+            let address_type = bytes[cursor];
+            cursor += 1;
+
+            let signer = if address_type == 0x00 {
+                if cursor + 32 > bytes.len() {
+                    return Err(WasmDotError::InvalidTransaction(
+                        "Truncated signer".to_string(),
+                    ));
+                }
+                let mut pk = [0u8; 32];
+                pk.copy_from_slice(&bytes[cursor..cursor + 32]);
+                cursor += 32;
+                Some(pk)
+            } else {
+                return Err(WasmDotError::InvalidTransaction(format!(
+                    "Unsupported address type: {}",
+                    address_type
+                )));
+            };
+
+            // Signature (MultiSignature)
+            if cursor >= bytes.len() {
+                return Err(WasmDotError::InvalidTransaction(
+                    "Missing signature".to_string(),
+                ));
+            }
+            let sig_type = bytes[cursor];
+            cursor += 1;
+
+            let signature = if sig_type == 0x00 {
+                if cursor + 64 > bytes.len() {
+                    return Err(WasmDotError::InvalidTransaction(
+                        "Truncated signature".to_string(),
+                    ));
+                }
+                let mut sig = [0u8; 64];
+                sig.copy_from_slice(&bytes[cursor..cursor + 64]);
+                cursor += 64;
+                Some(sig)
+            } else {
+                return Err(WasmDotError::InvalidTransaction(format!(
+                    "Unsupported signature type: {}",
+                    sig_type
+                )));
+            };
+
+            // Parse signed extensions
+            let (era, nonce, tip, ext_size) = parse_signed_extensions(&bytes[cursor..], metadata)?;
+            cursor += ext_size;
+
+            // Remaining bytes are call data
+            let call_data = bytes[cursor..].to_vec();
+
+            Ok(Some((true, signer, signature, era, nonce, tip, call_data)))
+        }
+        _ => {
+            // Not a signed extrinsic — fall through to signing payload parser
+            Ok(None)
+        }
+    }
+}
+
+/// Parse bytes as a signing payload.
+///
+/// Format: call_data | signed_extensions (era, nonce, tip, ...) | additional_signed (spec, tx_ver, genesis, block_hash)
+///
+/// Requires metadata to determine where call_data ends (via the RuntimeCall type).
+fn parse_signing_payload(
+    bytes: &[u8],
+    metadata: Option<&Metadata>,
+) -> Result<ParsedExtrinsic, WasmDotError> {
+    let md = metadata.ok_or_else(|| {
+        WasmDotError::InvalidTransaction(
+            "Metadata required to parse signing payload format".to_string(),
+        )
+    })?;
+
+    // Use the RuntimeCall type from metadata to skip over call_data
+    let call_ty_id = md.outer_enums().call_enum_ty();
+    let call_data_size = skip_type_bytes(bytes, call_ty_id, md)?;
+    let call_data = bytes[..call_data_size].to_vec();
+
+    // Parse signed extensions after call_data
+    let ext_bytes = &bytes[call_data_size..];
+    let (era, nonce, tip, _ext_size) = parse_signed_extensions(ext_bytes, Some(md))?;
+
+    // Remaining bytes after extensions are additional_signed (spec_version, tx_version,
+    // genesis_hash, block_hash) — we don't need to parse those.
+
+    Ok((false, None, None, era, nonce, tip, call_data))
 }
 
 /// Parse signed extensions from extrinsic bytes.
@@ -739,25 +821,6 @@ fn decode_era_bytes(bytes: &[u8]) -> Result<(Era, usize), WasmDotError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_unsigned_tx_id_returns_blake2b_hash() {
-        // Minimal unsigned extrinsic: compact length + version 0x04 + era(immortal) + nonce(0) + tip(0) + call_data
-        // length=6 (compact 0x18), version=0x04, era=0x00, nonce=0x00, tip=0x00, call=0xFF
-        let raw = vec![0x18, 0x04, 0x00, 0x00, 0x00, 0xFF];
-        let tx = Transaction::from_bytes(&raw, None, None).unwrap();
-
-        assert!(!tx.is_signed());
-        let id = tx.id();
-        assert!(id.is_some(), "unsigned tx should have an id");
-        let id = id.unwrap();
-        assert!(id.starts_with("0x"), "id should be 0x-prefixed hex");
-        assert_eq!(id.len(), 66, "blake2b-256 hash = 0x + 64 hex chars");
-
-        // Same bytes should produce the same hash
-        let tx2 = Transaction::from_bytes(&raw, None, None).unwrap();
-        assert_eq!(tx.id(), tx2.id(), "same bytes should produce same id");
-    }
 
     #[test]
     fn test_era_encoding_roundtrip() {

@@ -11,8 +11,6 @@ use crate::error::WasmDotError;
 use crate::transaction::Transaction;
 use crate::types::{Era, Validity};
 use calls::encode_intent;
-use parity_scale_codec::{Compact, Encode};
-use subxt_core::metadata::Metadata;
 use types::{BuildContext, TransactionIntent};
 
 /// Build a transaction from a business-level intent and context.
@@ -33,24 +31,11 @@ pub fn build_transaction(
     // Calculate era from validity
     let era = compute_era(&context.validity);
 
-    // Build unsigned extrinsic: compact(length) | 0x04 | call_data
-    let unsigned_bytes = build_unsigned_extrinsic(
-        &call_data,
-        &era,
-        context.nonce,
-        context.tip as u128,
-        &metadata,
-    )?;
-
-    // Create transaction from bytes — pass metadata so parser uses metadata-aware decoding
-    let mut tx = Transaction::from_bytes(&unsigned_bytes, None, Some(&metadata))?;
+    // Create transaction directly from components (no extrinsic encoding needed).
+    // to_bytes() on unsigned transactions returns signable_payload(), which is the
+    // signing payload format: call_data | era | nonce | tip | extensions | additional_signed.
+    let mut tx = Transaction::new(call_data, era, context.nonce, context.tip as u128);
     tx.set_context(context.material, context.validity, &context.reference_block)?;
-
-    // Set era/nonce/tip from build context (not parsed from unsigned extrinsic body,
-    // since standard format doesn't include signed extensions in the body)
-    tx.set_era(era);
-    tx.set_nonce(context.nonce);
-    tx.set_tip(context.tip as u128);
 
     Ok(tx)
 }
@@ -67,38 +52,6 @@ fn compute_era(validity: &Validity) -> Era {
         let phase = validity.first_valid % period;
         Era::Mortal { period, phase }
     }
-}
-
-/// Build unsigned extrinsic bytes in standard Substrate V4 format.
-///
-/// Format: `compact(length) | 0x04 | call_data`
-///
-/// Signed extensions (era, nonce, tip) are NOT included in the unsigned
-/// extrinsic body. They belong only in the signing payload, which is
-/// computed separately by `signable_payload()` via subxt-core.
-///
-/// This matches the format that polkadot-js, txwrapper, and all standard
-/// Substrate tools expect for unsigned extrinsics.
-fn build_unsigned_extrinsic(
-    call_data: &[u8],
-    _era: &Era,
-    _nonce: u32,
-    _tip: u128,
-    _metadata: &Metadata,
-) -> Result<Vec<u8>, WasmDotError> {
-    let mut body = Vec::new();
-
-    // Version byte: 0x04 = unsigned, version 4
-    body.push(0x04);
-
-    // Call data immediately after version byte
-    body.extend_from_slice(call_data);
-
-    // Length prefix (compact encoded)
-    let mut result = Compact(body.len() as u32).encode();
-    result.extend_from_slice(&body);
-
-    Ok(result)
 }
 
 #[cfg(test)]
