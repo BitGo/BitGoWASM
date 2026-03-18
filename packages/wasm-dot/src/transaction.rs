@@ -555,13 +555,11 @@ fn parse_extrinsic(
 
         Ok((true, signer, signature, era, nonce, tip, call_data))
     } else {
-        // Unsigned extrinsic: same extension layout as signed, minus signer/signature.
-        let (era, nonce, tip, ext_size) = parse_signed_extensions(&bytes[cursor..], metadata)?;
-        cursor += ext_size;
-
-        // Remaining bytes are call data
+        // Unsigned extrinsic: standard Substrate V4 format has call data
+        // immediately after the version byte (no signed extensions in body).
+        // Era, nonce, and tip are only in the signing payload, not the extrinsic.
         let call_data = bytes[cursor..].to_vec();
-        Ok((false, None, None, era, nonce, tip, call_data))
+        Ok((false, None, None, Era::Immortal, 0, 0, call_data))
     }
 }
 
