@@ -2,18 +2,18 @@
 //!
 //! Parses raw extrinsic bytes into structured data.
 //!
-//! Supports two modes of pallet/method resolution:
-//! - **Dynamic (metadata-based)**: Uses runtime metadata to resolve pallet and call names
-//!   from their indices. This is the preferred approach as it handles runtime upgrades
-//!   and chain-specific index differences automatically.
-//! - **Hardcoded fallback**: Uses a static mapping of known pallet/method indices.
-//!   Used when no metadata is provided in the parsing context.
+//! Supports two modes of call_data decoding:
+//! - **Metadata-driven (generic)**: Uses `scale_value::scale::decode_as_type()` with the
+//!   runtime metadata type registry to decode any call generically. No per-method parsers needed.
+//! - **Hardcoded fallback**: When no metadata is provided, resolves pallet/method names from
+//!   a static mapping and returns raw hex args (cannot decode without type info).
 
 use crate::address::encode_ss58;
 use crate::error::WasmDotError;
 use crate::transaction::Transaction;
 use crate::types::{AddressFormat, Era, ParseContext};
 use serde::{Deserialize, Serialize};
+use subxt_core::ext::scale_value::{Composite, Primitive, Value, ValueDef, Variant};
 
 /// Maximum nesting depth for batch/proxy recursive parsing.
 /// Substrate limits nesting on-chain, so 10 is generous.
@@ -128,25 +128,535 @@ fn build_parsed_transaction(
 // Re-use the central decode_metadata from transaction.rs
 use crate::transaction::decode_metadata;
 
-/// Resolve pallet and call names from metadata using indices.
+/// Parse call data into method info.
 ///
-/// Returns `(pallet_name, call_name)` in JS-friendly format:
-/// - Pallet names are lowercased (e.g., "Balances" -> "balances")
-/// - Call names are converted from snake_case to camelCase
-///   (e.g., "transfer_keep_alive" -> "transferKeepAlive")
-fn resolve_call_from_metadata(
+/// When metadata is provided, uses generic metadata-driven decoding via
+/// `scale_value::scale::decode_as_type()`. Falls back to hardcoded name
+/// resolution with raw hex args when no metadata is available.
+fn parse_call_data(
+    call_data: &[u8],
+    address_prefix: u16,
+    metadata: Option<&subxt_core::metadata::Metadata>,
+) -> Result<ParsedMethod, WasmDotError> {
+    if call_data.len() < 2 {
+        return Err(WasmDotError::InvalidTransaction(
+            "call data too short".to_string(),
+        ));
+    }
+
+    if let Some(md) = metadata {
+        // Full generic decoding via type registry
+        decode_call_data_from_metadata(call_data, address_prefix, md)
+    } else {
+        // Fallback: names from hardcoded mapping, args as raw hex
+        let (pallet, name) = resolve_call_hardcoded(call_data[0], call_data[1]);
+        Ok(ParsedMethod {
+            pallet: pallet.to_string(),
+            name: name.to_string(),
+            pallet_index: call_data[0],
+            method_index: call_data[1],
+            args: serde_json::json!({ "raw": format!("0x{}", hex::encode(&call_data[2..])) }),
+        })
+    }
+}
+
+// =============================================================================
+// Metadata-driven generic decoding
+// =============================================================================
+
+/// Decode call_data bytes using metadata type registry.
+/// Returns ParsedMethod with fully decoded args as JSON.
+fn decode_call_data_from_metadata(
+    call_data: &[u8],
+    address_prefix: u16,
     metadata: &subxt_core::metadata::Metadata,
+) -> Result<ParsedMethod, WasmDotError> {
+    let call_ty_id = metadata.outer_enums().call_enum_ty();
+    let mut cursor = call_data;
+    let decoded = subxt_core::ext::scale_value::scale::decode_as_type(
+        &mut cursor,
+        call_ty_id,
+        metadata.types(),
+    )
+    .map_err(|e| WasmDotError::ScaleDecodeError(format!("failed to decode call_data: {}", e)))?;
+
+    value_to_parsed_method(
+        &decoded,
+        call_data[0],
+        call_data[1],
+        address_prefix,
+        metadata,
+        0,
+    )
+}
+
+/// Convert a decoded RuntimeCall Value into a ParsedMethod.
+///
+/// The Value tree structure is:
+/// ```text
+/// Variant("PalletName") {
+///     values: Named([
+///         ("method_name", Variant("method_name") {
+///             values: Named([("arg1", ...), ("arg2", ...)])
+///         })
+///     ])
+/// }
+/// ```
+fn value_to_parsed_method(
+    value: &Value<u32>,
     pallet_index: u8,
     method_index: u8,
-) -> Option<(String, String)> {
-    let pallet = metadata.pallet_by_index(pallet_index)?;
-    let variant = pallet.call_variant_by_index(method_index)?;
+    address_prefix: u16,
+    metadata: &subxt_core::metadata::Metadata,
+    depth: usize,
+) -> Result<ParsedMethod, WasmDotError> {
+    if depth > MAX_NESTING_DEPTH {
+        return Err(WasmDotError::InvalidTransaction(
+            "exceeded maximum nesting depth for batch/proxy calls".to_string(),
+        ));
+    }
 
-    let pallet_name = pallet.name().to_lowercase();
-    let call_name = snake_to_camel(&variant.name);
+    // Outer variant = pallet name
+    let outer = match &value.value {
+        ValueDef::Variant(v) => v,
+        _ => {
+            return Err(WasmDotError::ScaleDecodeError(
+                "expected RuntimeCall to be a Variant".to_string(),
+            ))
+        }
+    };
 
-    Some((pallet_name, call_name))
+    let pallet_name = outer.name.to_lowercase();
+
+    // The pallet variant has one named field: the method call variant
+    let method_variant = match &outer.values {
+        Composite::Named(fields) if fields.len() == 1 => match &fields[0].1.value {
+            ValueDef::Variant(v) => v,
+            _ => {
+                return Err(WasmDotError::ScaleDecodeError(
+                    "expected pallet call to be a Variant".to_string(),
+                ))
+            }
+        },
+        _ => {
+            return Err(WasmDotError::ScaleDecodeError(
+                "expected pallet variant to have one named field".to_string(),
+            ))
+        }
+    };
+
+    let method_name = snake_to_camel(&method_variant.name);
+
+    // Extract args from the method variant's fields
+    let args = method_fields_to_json(&method_variant.values, address_prefix, metadata, depth)?;
+
+    Ok(ParsedMethod {
+        pallet: pallet_name,
+        name: method_name,
+        pallet_index,
+        method_index,
+        args,
+    })
 }
+
+/// Convert method variant fields into a JSON object.
+fn method_fields_to_json(
+    fields: &Composite<u32>,
+    address_prefix: u16,
+    metadata: &subxt_core::metadata::Metadata,
+    depth: usize,
+) -> Result<serde_json::Value, WasmDotError> {
+    match fields {
+        Composite::Named(named_fields) => {
+            let mut map = serde_json::Map::new();
+            for (name, val) in named_fields {
+                let json_key = field_name_to_json_key(name);
+                let json_val = value_to_json(val, address_prefix, metadata, depth)?;
+                map.insert(json_key, json_val);
+            }
+            Ok(serde_json::Value::Object(map))
+        }
+        Composite::Unnamed(vals) if vals.is_empty() => Ok(serde_json::json!({})),
+        Composite::Unnamed(_) => {
+            // Unnamed fields: build an array
+            let mut arr = Vec::new();
+            for val in fields.values() {
+                arr.push(value_to_json(val, address_prefix, metadata, depth)?);
+            }
+            Ok(serde_json::Value::Array(arr))
+        }
+    }
+}
+
+/// Convert field names to match existing JSON output format.
+/// Most field names stay as-is (snake_case), but some need special handling.
+fn field_name_to_json_key(name: &str) -> String {
+    match name {
+        // withdrawUnbonded uses camelCase "numSlashingSpans" in JSON
+        "num_slashing_spans" => "numSlashingSpans".to_string(),
+        // payoutStakers uses camelCase "validatorStash" in JSON
+        "validator_stash" => "validatorStash".to_string(),
+        // transferAll uses camelCase "keepAlive" in JSON
+        "keep_alive" => "keepAlive".to_string(),
+        // proxy.proxy uses camelCase "forceProxyType" in JSON
+        "force_proxy_type" => "forceProxyType".to_string(),
+        // bondExtra uses camelCase "maxAdditional" but we rename to "value" for consistency
+        // Actually, let's keep metadata field names as-is and handle via snake_to_camel
+        _ => name.to_string(),
+    }
+}
+
+/// Convert a decoded Value tree into serde_json::Value with post-processing.
+fn value_to_json(
+    value: &Value<u32>,
+    address_prefix: u16,
+    metadata: &subxt_core::metadata::Metadata,
+    depth: usize,
+) -> Result<serde_json::Value, WasmDotError> {
+    let type_id = value.context;
+
+    // Check if this is an AccountId32 type
+    if is_account_id_type(type_id, metadata) {
+        return extract_account_id(value, address_prefix);
+    }
+
+    // Check if this is a RuntimeCall type (for nested calls in batch/proxy)
+    if is_runtime_call_type(type_id, metadata) {
+        return runtime_call_to_json(value, address_prefix, metadata, depth);
+    }
+
+    // Check if this is a Vec<RuntimeCall> (for batch calls field)
+    if is_vec_of_runtime_call(type_id, metadata) {
+        return vec_runtime_call_to_json(value, address_prefix, metadata, depth);
+    }
+
+    match &value.value {
+        ValueDef::Primitive(p) => primitive_to_json(p, type_id, metadata),
+        ValueDef::Variant(v) => variant_to_json(v, type_id, address_prefix, metadata, depth),
+        ValueDef::Composite(c) => composite_to_json(c, address_prefix, metadata, depth),
+        ValueDef::BitSequence(_) => Ok(serde_json::Value::String("BitSequence".to_string())),
+    }
+}
+
+/// Convert a primitive value to JSON.
+/// U128 values are always serialized as strings for BigInt compatibility.
+fn primitive_to_json(
+    p: &Primitive,
+    type_id: u32,
+    metadata: &subxt_core::metadata::Metadata,
+) -> Result<serde_json::Value, WasmDotError> {
+    match p {
+        Primitive::Bool(b) => Ok(serde_json::Value::Bool(*b)),
+        Primitive::U128(n) => {
+            // Check if the underlying type is a small integer (u8, u16, u32)
+            // If so, emit as number. Otherwise emit as string for BigInt compatibility.
+            if is_small_uint_type(type_id, metadata) {
+                Ok(serde_json::Value::Number(serde_json::Number::from(
+                    *n as u64,
+                )))
+            } else {
+                Ok(serde_json::Value::String(n.to_string()))
+            }
+        }
+        Primitive::I128(n) => Ok(serde_json::Value::String(n.to_string())),
+        Primitive::String(s) => Ok(serde_json::Value::String(s.clone())),
+        Primitive::Char(c) => Ok(serde_json::Value::String(c.to_string())),
+        Primitive::U256(bytes) | Primitive::I256(bytes) => Ok(serde_json::Value::String(format!(
+            "0x{}",
+            hex::encode(bytes)
+        ))),
+    }
+}
+
+/// Check if a type_id refers to a small unsigned integer (u8, u16, u32) that should
+/// be serialized as a JSON number rather than a string.
+fn is_small_uint_type(type_id: u32, metadata: &subxt_core::metadata::Metadata) -> bool {
+    let Some(ty) = metadata.types().resolve(type_id) else {
+        return false;
+    };
+    // Check for Compact<T> wrapper: the inner type determines the size
+    if let scale_info::TypeDef::Compact(compact) = &ty.type_def {
+        return is_small_uint_type(compact.type_param.id, metadata);
+    }
+    matches!(
+        ty.type_def,
+        scale_info::TypeDef::Primitive(
+            scale_info::TypeDefPrimitive::U8
+                | scale_info::TypeDefPrimitive::U16
+                | scale_info::TypeDefPrimitive::U32
+        )
+    )
+}
+
+/// Convert a variant to JSON.
+/// Fieldless variants (like enum values) become just the variant name as a string.
+fn variant_to_json(
+    v: &Variant<u32>,
+    _type_id: u32,
+    address_prefix: u16,
+    metadata: &subxt_core::metadata::Metadata,
+    depth: usize,
+) -> Result<serde_json::Value, WasmDotError> {
+    if v.values.is_empty() {
+        // Fieldless variant: just the name (e.g., "Staked", "Staking", "Any")
+        return Ok(serde_json::Value::String(v.name.clone()));
+    }
+
+    // MultiAddress variant: flatten to just the inner value
+    // MultiAddress::Id(AccountId32) -> just the SS58 string
+    if v.name == "Id" {
+        // Check if it wraps an AccountId32
+        if let Some(inner) = single_inner_value(&v.values) {
+            if is_account_id_type(inner.context, metadata) {
+                return extract_account_id(inner, address_prefix);
+            }
+        }
+    }
+
+    // Option::Some: unwrap to inner value
+    if v.name == "Some" {
+        if let Some(inner) = single_inner_value(&v.values) {
+            return value_to_json(inner, address_prefix, metadata, depth);
+        }
+    }
+
+    // Option::None
+    if v.name == "None" && v.values.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+
+    // Generic variant with fields: convert fields to JSON
+    let fields = method_fields_to_json(&v.values, address_prefix, metadata, depth)?;
+    Ok(fields)
+}
+
+/// Convert a composite to JSON.
+fn composite_to_json(
+    c: &Composite<u32>,
+    address_prefix: u16,
+    metadata: &subxt_core::metadata::Metadata,
+    depth: usize,
+) -> Result<serde_json::Value, WasmDotError> {
+    match c {
+        Composite::Named(fields) => {
+            let mut map = serde_json::Map::new();
+            for (name, val) in fields {
+                let json_key = field_name_to_json_key(name);
+                let json_val = value_to_json(val, address_prefix, metadata, depth)?;
+                map.insert(json_key, json_val);
+            }
+            Ok(serde_json::Value::Object(map))
+        }
+        Composite::Unnamed(vals) => {
+            // Single-field unnamed composite: unwrap (handles Box<T>, newtype wrappers)
+            if vals.len() == 1 {
+                return value_to_json(&vals[0], address_prefix, metadata, depth);
+            }
+            let mut arr = Vec::new();
+            for val in vals {
+                arr.push(value_to_json(val, address_prefix, metadata, depth)?);
+            }
+            Ok(serde_json::Value::Array(arr))
+        }
+    }
+}
+
+/// Extract the single inner value from a composite (if it has exactly one field).
+fn single_inner_value(c: &Composite<u32>) -> Option<&Value<u32>> {
+    match c {
+        Composite::Named(fields) if fields.len() == 1 => Some(&fields[0].1),
+        Composite::Unnamed(vals) if vals.len() == 1 => Some(&vals[0]),
+        _ => None,
+    }
+}
+
+/// Check if a type_id refers to AccountId32 by inspecting its path in the registry.
+fn is_account_id_type(type_id: u32, metadata: &subxt_core::metadata::Metadata) -> bool {
+    metadata
+        .types()
+        .resolve(type_id)
+        .map(|ty| {
+            ty.path
+                .segments
+                .last()
+                .map(|s| s == "AccountId32")
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+/// Check if a type_id refers to the RuntimeCall enum type.
+fn is_runtime_call_type(type_id: u32, metadata: &subxt_core::metadata::Metadata) -> bool {
+    type_id == metadata.outer_enums().call_enum_ty()
+}
+
+/// Check if a type_id refers to Vec<RuntimeCall>.
+fn is_vec_of_runtime_call(type_id: u32, metadata: &subxt_core::metadata::Metadata) -> bool {
+    let Some(ty) = metadata.types().resolve(type_id) else {
+        return false;
+    };
+    if let scale_info::TypeDef::Sequence(seq) = &ty.type_def {
+        return is_runtime_call_type(seq.type_param.id, metadata);
+    }
+    false
+}
+
+/// Extract 32 bytes from an AccountId32 Value and SS58-encode.
+fn extract_account_id(
+    value: &Value<u32>,
+    address_prefix: u16,
+) -> Result<serde_json::Value, WasmDotError> {
+    // AccountId32 is decoded as an unnamed composite of 32 byte values
+    let bytes = extract_bytes_from_composite(value)?;
+    if bytes.len() != 32 {
+        return Err(WasmDotError::ScaleDecodeError(format!(
+            "AccountId32 expected 32 bytes, got {}",
+            bytes.len()
+        )));
+    }
+    let address = encode_ss58(&bytes, address_prefix)?;
+    Ok(serde_json::Value::String(address))
+}
+
+/// Extract raw bytes from a Value that represents a byte array/composite.
+fn extract_bytes_from_composite(value: &Value<u32>) -> Result<Vec<u8>, WasmDotError> {
+    match &value.value {
+        ValueDef::Composite(Composite::Unnamed(vals)) => {
+            let mut bytes = Vec::with_capacity(vals.len());
+            for v in vals {
+                match &v.value {
+                    ValueDef::Primitive(Primitive::U128(n)) => bytes.push(*n as u8),
+                    _ => {
+                        return Err(WasmDotError::ScaleDecodeError(
+                            "expected byte values in AccountId32 composite".to_string(),
+                        ))
+                    }
+                }
+            }
+            Ok(bytes)
+        }
+        _ => Err(WasmDotError::ScaleDecodeError(
+            "expected unnamed composite for AccountId32".to_string(),
+        )),
+    }
+}
+
+/// Convert a nested RuntimeCall Value into a serialized ParsedMethod JSON.
+fn runtime_call_to_json(
+    value: &Value<u32>,
+    address_prefix: u16,
+    metadata: &subxt_core::metadata::Metadata,
+    depth: usize,
+) -> Result<serde_json::Value, WasmDotError> {
+    // Extract pallet_index and method_index from the variant
+    let (pallet_index, method_index) = extract_call_indices(value, metadata)?;
+    let parsed = value_to_parsed_method(
+        value,
+        pallet_index,
+        method_index,
+        address_prefix,
+        metadata,
+        depth + 1,
+    )?;
+    serde_json::to_value(&parsed).map_err(|e| {
+        WasmDotError::InvalidTransaction(format!("failed to serialize nested call: {}", e))
+    })
+}
+
+/// Convert a Vec<RuntimeCall> Value into a JSON array of serialized ParsedMethods.
+fn vec_runtime_call_to_json(
+    value: &Value<u32>,
+    address_prefix: u16,
+    metadata: &subxt_core::metadata::Metadata,
+    depth: usize,
+) -> Result<serde_json::Value, WasmDotError> {
+    let calls = match &value.value {
+        ValueDef::Composite(Composite::Unnamed(vals)) => vals,
+        _ => {
+            return Err(WasmDotError::ScaleDecodeError(
+                "expected sequence for Vec<RuntimeCall>".to_string(),
+            ))
+        }
+    };
+
+    if calls.len() > MAX_BATCH_SIZE {
+        return Err(WasmDotError::InvalidTransaction(format!(
+            "batch call count {} exceeds maximum {}",
+            calls.len(),
+            MAX_BATCH_SIZE,
+        )));
+    }
+
+    let mut arr = Vec::with_capacity(calls.len());
+    for call_value in calls {
+        let (pallet_index, method_index) = extract_call_indices(call_value, metadata)?;
+        let parsed = value_to_parsed_method(
+            call_value,
+            pallet_index,
+            method_index,
+            address_prefix,
+            metadata,
+            depth + 1,
+        )?;
+        let json = serde_json::to_value(&parsed).map_err(|e| {
+            WasmDotError::InvalidTransaction(format!("failed to serialize batch call: {}", e))
+        })?;
+        arr.push(json);
+    }
+    Ok(serde_json::Value::Array(arr))
+}
+
+/// Extract pallet and method indices from a RuntimeCall variant by looking up metadata.
+fn extract_call_indices(
+    value: &Value<u32>,
+    metadata: &subxt_core::metadata::Metadata,
+) -> Result<(u8, u8), WasmDotError> {
+    let outer = match &value.value {
+        ValueDef::Variant(v) => v,
+        _ => {
+            return Err(WasmDotError::ScaleDecodeError(
+                "expected RuntimeCall variant".to_string(),
+            ))
+        }
+    };
+
+    // Look up pallet by name to get its index
+    let pallet = metadata.pallet_by_name(&outer.name).ok_or_else(|| {
+        WasmDotError::ScaleDecodeError(format!("pallet '{}' not found in metadata", outer.name))
+    })?;
+    let pallet_index = pallet.index();
+
+    // Get inner method variant name
+    let method_name = match &outer.values {
+        Composite::Named(fields) if fields.len() == 1 => match &fields[0].1.value {
+            ValueDef::Variant(v) => &v.name,
+            _ => {
+                return Err(WasmDotError::ScaleDecodeError(
+                    "expected method variant".to_string(),
+                ))
+            }
+        },
+        _ => {
+            return Err(WasmDotError::ScaleDecodeError(
+                "expected pallet variant with one field".to_string(),
+            ))
+        }
+    };
+
+    // Look up method index from pallet call variants
+    let method_variant = pallet.call_variant_by_name(method_name).ok_or_else(|| {
+        WasmDotError::ScaleDecodeError(format!(
+            "method '{}' not found in pallet '{}'",
+            method_name, outer.name
+        ))
+    })?;
+
+    Ok((pallet_index, method_variant.index))
+}
+
+// =============================================================================
+// Hardcoded fallback (no metadata)
+// =============================================================================
 
 /// Resolve pallet and call names using the hardcoded static mapping.
 ///
@@ -209,513 +719,6 @@ fn snake_to_camel(s: &str) -> String {
     }
 
     result
-}
-
-/// Parse call data into method info.
-///
-/// When metadata is provided, uses dynamic resolution via `pallet_by_index()` and
-/// `call_variant_by_index()`. Falls back to hardcoded mapping otherwise.
-fn parse_call_data(
-    call_data: &[u8],
-    address_prefix: u16,
-    metadata: Option<&subxt_core::metadata::Metadata>,
-) -> Result<ParsedMethod, WasmDotError> {
-    let (method, _) = parse_call_data_with_size(call_data, address_prefix, metadata, 0)?;
-    Ok(method)
-}
-
-/// Parse call data, returning the parsed method and total bytes consumed.
-/// Required for batch parsing where calls are concatenated without length prefixes.
-fn parse_call_data_with_size(
-    call_data: &[u8],
-    address_prefix: u16,
-    metadata: Option<&subxt_core::metadata::Metadata>,
-    depth: usize,
-) -> Result<(ParsedMethod, usize), WasmDotError> {
-    if depth > MAX_NESTING_DEPTH {
-        return Err(WasmDotError::InvalidTransaction(
-            "exceeded maximum nesting depth for batch/proxy calls".to_string(),
-        ));
-    }
-    if call_data.len() < 2 {
-        return Err(WasmDotError::InvalidTransaction(
-            "call data too short".to_string(),
-        ));
-    }
-
-    let pallet_index = call_data[0];
-    let method_index = call_data[1];
-    let args_data = &call_data[2..];
-
-    // Resolve pallet and method names: prefer metadata, fall back to hardcoded
-    let (pallet, name) = if let Some(md) = metadata {
-        resolve_call_from_metadata(md, pallet_index, method_index).unwrap_or_else(|| {
-            let (p, n) = resolve_call_hardcoded(pallet_index, method_index);
-            (p.to_string(), n.to_string())
-        })
-    } else {
-        let (p, n) = resolve_call_hardcoded(pallet_index, method_index);
-        (p.to_string(), n.to_string())
-    };
-
-    // Parse args based on method, getting bytes consumed
-    let (args, args_consumed) =
-        parse_method_args_with_size(&pallet, &name, args_data, address_prefix, metadata, depth)?;
-
-    Ok((
-        ParsedMethod {
-            pallet,
-            name,
-            pallet_index,
-            method_index,
-            args,
-        },
-        2 + args_consumed, // 2 bytes for pallet + method indices
-    ))
-}
-
-/// Parse method-specific arguments, returning (value, bytes_consumed).
-/// The size tracking is needed for batch parsing.
-fn parse_method_args_with_size(
-    pallet: &str,
-    method: &str,
-    args_data: &[u8],
-    address_prefix: u16,
-    metadata: Option<&subxt_core::metadata::Metadata>,
-    depth: usize,
-) -> Result<(serde_json::Value, usize), WasmDotError> {
-    match (pallet, method) {
-        // Handle both legacy name ("transfer") and metadata-resolved name ("transferAllowDeath")
-        ("balances", "transfer")
-        | ("balances", "transferAllowDeath")
-        | ("balances", "transferKeepAlive") => parse_transfer_args(args_data, address_prefix),
-        ("balances", "transferAll") => parse_transfer_all_args(args_data, address_prefix),
-        ("staking", "bond") => parse_bond_args(args_data, address_prefix),
-        ("staking", "bondExtra") | ("staking", "unbond") => parse_compact_value_args(args_data),
-        ("staking", "withdrawUnbonded") => parse_withdraw_unbonded_args(args_data),
-        ("staking", "chill") => Ok((serde_json::json!({}), 0)),
-        ("staking", "payoutStakers") => parse_payout_stakers_args(args_data, address_prefix),
-        ("proxy", "addProxy") | ("proxy", "removeProxy") => {
-            parse_proxy_args(args_data, address_prefix, metadata)
-        }
-        ("proxy", "createPure") => parse_create_pure_args(args_data, metadata),
-        ("proxy", "proxy") => parse_proxy_proxy_args(args_data, address_prefix, metadata, depth),
-        ("utility", "batch") | ("utility", "batchAll") => {
-            parse_batch_args(args_data, address_prefix, metadata, depth)
-        }
-        _ => {
-            // Unknown methods: consume all remaining bytes
-            Ok((
-                serde_json::json!({
-                    "raw": format!("0x{}", hex::encode(args_data))
-                }),
-                args_data.len(),
-            ))
-        }
-    }
-}
-
-/// Parse transfer arguments (dest, value) → (json, bytes_consumed)
-fn parse_transfer_args(
-    args: &[u8],
-    address_prefix: u16,
-) -> Result<(serde_json::Value, usize), WasmDotError> {
-    let (dest, mut cursor) = parse_multi_address(args, address_prefix)?;
-    let (value, value_size) = decode_compact(&args[cursor..])?;
-    cursor += value_size;
-
-    Ok((
-        serde_json::json!({
-            "dest": dest,
-            "value": value.to_string()
-        }),
-        cursor,
-    ))
-}
-
-/// Parse transferAll arguments (dest, keepAlive) → (json, bytes_consumed)
-fn parse_transfer_all_args(
-    args: &[u8],
-    address_prefix: u16,
-) -> Result<(serde_json::Value, usize), WasmDotError> {
-    let (dest, mut cursor) = parse_multi_address(args, address_prefix)?;
-    if cursor >= args.len() {
-        return Err(WasmDotError::InvalidTransaction(
-            "truncated transferAll args: missing keepAlive byte".to_string(),
-        ));
-    }
-    let keep_alive = args[cursor] != 0;
-    cursor += 1;
-
-    Ok((
-        serde_json::json!({
-            "dest": dest,
-            "keepAlive": keep_alive
-        }),
-        cursor,
-    ))
-}
-
-/// Parse bond arguments: value (compact u128) + payee → (json, bytes_consumed)
-///
-/// Note: older runtimes had a controller field before value, but modern
-/// Polkadot runtimes (spec >= 9420) removed it. We parse the modern format.
-fn parse_bond_args(
-    args: &[u8],
-    address_prefix: u16,
-) -> Result<(serde_json::Value, usize), WasmDotError> {
-    let mut cursor = 0;
-
-    // Value (compact u128)
-    let (value, value_size) = decode_compact(args)?;
-    cursor += value_size;
-
-    // Payee
-    let payee = if cursor < args.len() {
-        let payee_type = args[cursor];
-        cursor += 1;
-        match payee_type {
-            0 => "Staked".to_string(),
-            1 => "Stash".to_string(),
-            2 => "Controller".to_string(),
-            3 => {
-                // Account variant
-                if cursor + 32 <= args.len() {
-                    let pubkey = &args[cursor..cursor + 32];
-                    cursor += 32;
-                    encode_ss58(pubkey, address_prefix)?
-                } else {
-                    "Unknown".to_string()
-                }
-            }
-            _ => "Unknown".to_string(),
-        }
-    } else {
-        "Staked".to_string()
-    };
-
-    Ok((
-        serde_json::json!({
-            "value": value.to_string(),
-            "payee": payee
-        }),
-        cursor,
-    ))
-}
-
-/// Parse args with a single compact u128 value (used by unbond, bondExtra)
-fn parse_compact_value_args(args: &[u8]) -> Result<(serde_json::Value, usize), WasmDotError> {
-    let (value, consumed) = decode_compact(args)?;
-    Ok((
-        serde_json::json!({
-            "value": value.to_string()
-        }),
-        consumed,
-    ))
-}
-
-/// Parse withdrawUnbonded arguments: u32 numSlashingSpans (LE, not compact)
-fn parse_withdraw_unbonded_args(args: &[u8]) -> Result<(serde_json::Value, usize), WasmDotError> {
-    if args.len() < 4 {
-        return Err(WasmDotError::InvalidTransaction(
-            "truncated withdrawUnbonded args".to_string(),
-        ));
-    }
-    let num_slashing_spans = u32::from_le_bytes([args[0], args[1], args[2], args[3]]);
-    Ok((
-        serde_json::json!({
-            "numSlashingSpans": num_slashing_spans
-        }),
-        4,
-    ))
-}
-
-/// Parse payoutStakers arguments: AccountId32 (32 bytes raw, NOT MultiAddress) + u32 era (LE)
-fn parse_payout_stakers_args(
-    args: &[u8],
-    address_prefix: u16,
-) -> Result<(serde_json::Value, usize), WasmDotError> {
-    if args.len() < 36 {
-        return Err(WasmDotError::InvalidTransaction(
-            "truncated payoutStakers args".to_string(),
-        ));
-    }
-    let validator = encode_ss58(&args[0..32], address_prefix)?;
-    let era = u32::from_le_bytes([args[32], args[33], args[34], args[35]]);
-    Ok((
-        serde_json::json!({
-            "validatorStash": validator,
-            "era": era
-        }),
-        36,
-    ))
-}
-
-/// Parse addProxy/removeProxy arguments: MultiAddress delegate + u8 proxyType + u32 delay (LE)
-fn parse_proxy_args(
-    args: &[u8],
-    address_prefix: u16,
-    metadata: Option<&subxt_core::metadata::Metadata>,
-) -> Result<(serde_json::Value, usize), WasmDotError> {
-    let (delegate, mut cursor) = parse_multi_address(args, address_prefix)?;
-
-    if cursor + 5 > args.len() {
-        return Err(WasmDotError::InvalidTransaction(
-            "truncated proxy args".to_string(),
-        ));
-    }
-
-    let proxy_type = resolve_proxy_type(args[cursor], metadata);
-    cursor += 1;
-
-    let delay = u32::from_le_bytes([
-        args[cursor],
-        args[cursor + 1],
-        args[cursor + 2],
-        args[cursor + 3],
-    ]);
-    cursor += 4;
-
-    Ok((
-        serde_json::json!({
-            "delegate": delegate,
-            "proxy_type": proxy_type,
-            "delay": delay
-        }),
-        cursor,
-    ))
-}
-
-/// Parse createPure arguments: u8 proxyType + u32 delay (LE) + u16 index (LE)
-fn parse_create_pure_args(
-    args: &[u8],
-    metadata: Option<&subxt_core::metadata::Metadata>,
-) -> Result<(serde_json::Value, usize), WasmDotError> {
-    if args.len() < 7 {
-        return Err(WasmDotError::InvalidTransaction(
-            "truncated createPure args".to_string(),
-        ));
-    }
-    let proxy_type = resolve_proxy_type(args[0], metadata);
-    let delay = u32::from_le_bytes([args[1], args[2], args[3], args[4]]);
-    let index = u16::from_le_bytes([args[5], args[6]]);
-
-    Ok((
-        serde_json::json!({
-            "proxy_type": proxy_type,
-            "delay": delay,
-            "index": index
-        }),
-        7,
-    ))
-}
-
-/// Parse batch/batchAll arguments: compact(count) + concatenated call bytes
-fn parse_batch_args(
-    args: &[u8],
-    address_prefix: u16,
-    metadata: Option<&subxt_core::metadata::Metadata>,
-    depth: usize,
-) -> Result<(serde_json::Value, usize), WasmDotError> {
-    let (count, count_size) = decode_compact(args)?;
-    if count > MAX_BATCH_SIZE as u128 {
-        return Err(WasmDotError::InvalidTransaction(format!(
-            "batch call count {} exceeds maximum {}",
-            count, MAX_BATCH_SIZE,
-        )));
-    }
-    let count = count as usize;
-    let mut cursor = count_size;
-
-    let mut calls = Vec::with_capacity(count);
-    for _ in 0..count {
-        let (method, consumed) =
-            parse_call_data_with_size(&args[cursor..], address_prefix, metadata, depth + 1)?;
-        cursor += consumed;
-        calls.push(serde_json::to_value(&method).map_err(|e| {
-            WasmDotError::InvalidTransaction(format!("failed to serialize batch call: {}", e))
-        })?);
-    }
-
-    Ok((serde_json::json!({ "calls": calls }), cursor))
-}
-
-/// Parse proxy.proxy arguments: MultiAddress real + Option<u8> forceProxyType + nested call
-fn parse_proxy_proxy_args(
-    args: &[u8],
-    address_prefix: u16,
-    metadata: Option<&subxt_core::metadata::Metadata>,
-    depth: usize,
-) -> Result<(serde_json::Value, usize), WasmDotError> {
-    let (real, mut cursor) = parse_multi_address(args, address_prefix)?;
-
-    // Option<ProxyType>: 0x00 = None, 0x01 = Some(type)
-    if cursor >= args.len() {
-        return Err(WasmDotError::InvalidTransaction(
-            "truncated proxy.proxy args".to_string(),
-        ));
-    }
-
-    let force_proxy_type = if args[cursor] == 0x01 {
-        cursor += 1;
-        if cursor >= args.len() {
-            return Err(WasmDotError::InvalidTransaction(
-                "truncated proxy type".to_string(),
-            ));
-        }
-        let pt = resolve_proxy_type(args[cursor], metadata);
-        cursor += 1;
-        Some(pt)
-    } else {
-        cursor += 1; // skip the 0x00 None marker
-        None
-    };
-
-    // Remaining bytes are the nested call
-    let (call, consumed) =
-        parse_call_data_with_size(&args[cursor..], address_prefix, metadata, depth + 1)?;
-    cursor += consumed;
-
-    let call_value = serde_json::to_value(&call).map_err(|e| {
-        WasmDotError::InvalidTransaction(format!("failed to serialize proxy call: {}", e))
-    })?;
-
-    let mut result = serde_json::json!({
-        "real": real,
-        "call": call_value
-    });
-    if let Some(pt) = force_proxy_type {
-        result["forceProxyType"] = serde_json::json!(pt);
-    }
-
-    Ok((result, cursor))
-}
-
-/// Parse a MultiAddress from bytes, returns (address_string, bytes_consumed)
-fn parse_multi_address(args: &[u8], address_prefix: u16) -> Result<(String, usize), WasmDotError> {
-    if args.is_empty() {
-        return Err(WasmDotError::InvalidTransaction(
-            "empty MultiAddress".to_string(),
-        ));
-    }
-    let variant = args[0];
-    if variant == 0x00 {
-        // Id variant: 1 byte variant + 32 bytes pubkey
-        if args.len() < 33 {
-            return Err(WasmDotError::InvalidTransaction(
-                "truncated MultiAddress".to_string(),
-            ));
-        }
-        let address = encode_ss58(&args[1..33], address_prefix)?;
-        Ok((address, 33))
-    } else {
-        Err(WasmDotError::InvalidTransaction(format!(
-            "Unsupported MultiAddress variant: {}",
-            variant
-        )))
-    }
-}
-
-/// Resolve proxy type name from metadata, falling back to hardcoded Polkadot mainnet mapping.
-fn resolve_proxy_type(
-    proxy_type_byte: u8,
-    metadata: Option<&subxt_core::metadata::Metadata>,
-) -> String {
-    if let Some(md) = metadata {
-        if let Some(name) = resolve_proxy_type_from_metadata(md, proxy_type_byte) {
-            return name;
-        }
-    }
-    // Fallback: Polkadot mainnet proxy type indices
-    match proxy_type_byte {
-        0 => "Any".to_string(),
-        1 => "NonTransfer".to_string(),
-        2 => "Governance".to_string(),
-        3 => "Staking".to_string(),
-        4 => "IdentityJudgement".to_string(),
-        5 => "CancelProxy".to_string(),
-        6 => "Auction".to_string(),
-        7 => "NominationPools".to_string(),
-        _ => format!("Unknown({})", proxy_type_byte),
-    }
-}
-
-/// Look up the ProxyType enum variant name from chain metadata.
-fn resolve_proxy_type_from_metadata(
-    metadata: &subxt_core::metadata::Metadata,
-    proxy_type_byte: u8,
-) -> Option<String> {
-    let proxy_pallet = metadata.pallet_by_name("Proxy")?;
-    let call_ty_id = proxy_pallet.call_ty_id()?;
-    let call_ty = metadata.types().resolve(call_ty_id)?;
-    if let scale_info::TypeDef::Variant(ref variants) = call_ty.type_def {
-        // Find addProxy or add_proxy variant
-        let add_proxy = variants
-            .variants
-            .iter()
-            .find(|v| v.name == "add_proxy" || v.name == "addProxy")?;
-        // Find the proxy_type field
-        let pt_field = add_proxy
-            .fields
-            .iter()
-            .find(|f| f.name.as_deref() == Some("proxy_type"))?;
-        // Resolve the ProxyType enum type
-        let pt_ty = metadata.types().resolve(pt_field.ty.id)?;
-        if let scale_info::TypeDef::Variant(ref pt_variants) = pt_ty.type_def {
-            let variant = pt_variants
-                .variants
-                .iter()
-                .find(|v| v.index == proxy_type_byte)?;
-            return Some(variant.name.clone());
-        }
-    }
-    None
-}
-
-/// Decode SCALE compact encoding, returning (value, bytes_consumed)
-fn decode_compact(bytes: &[u8]) -> Result<(u128, usize), WasmDotError> {
-    if bytes.is_empty() {
-        return Err(WasmDotError::ScaleDecodeError(
-            "empty compact encoding".to_string(),
-        ));
-    }
-
-    let mode = bytes[0] & 0b11;
-    match mode {
-        0b00 => Ok(((bytes[0] >> 2) as u128, 1)),
-        0b01 => {
-            if bytes.len() < 2 {
-                return Err(WasmDotError::ScaleDecodeError(
-                    "truncated compact".to_string(),
-                ));
-            }
-            let value = u16::from_le_bytes([bytes[0], bytes[1]]) >> 2;
-            Ok((value as u128, 2))
-        }
-        0b10 => {
-            if bytes.len() < 4 {
-                return Err(WasmDotError::ScaleDecodeError(
-                    "truncated compact".to_string(),
-                ));
-            }
-            let value = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) >> 2;
-            Ok((value as u128, 4))
-        }
-        0b11 => {
-            let len = (bytes[0] >> 2) + 4;
-            if bytes.len() < 1 + len as usize {
-                return Err(WasmDotError::ScaleDecodeError(
-                    "truncated compact".to_string(),
-                ));
-            }
-            let mut value = 0u128;
-            for i in 0..len as usize {
-                value |= (bytes[1 + i] as u128) << (8 * i);
-            }
-            Ok((value, 1 + len as usize))
-        }
-        _ => unreachable!(),
-    }
 }
 
 #[cfg(test)]
@@ -805,6 +808,8 @@ mod tests {
         assert_eq!(result.name, "transferKeepAlive");
         assert_eq!(result.pallet_index, 5);
         assert_eq!(result.method_index, 3);
+        // Without metadata, args should be raw hex
+        assert!(result.args.get("raw").is_some());
     }
 
     #[test]
