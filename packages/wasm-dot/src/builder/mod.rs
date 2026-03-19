@@ -8,7 +8,7 @@ mod calls;
 pub mod types;
 
 use crate::error::WasmDotError;
-use crate::transaction::{encode_era, Transaction};
+use crate::transaction::Transaction;
 use crate::types::{Era, Validity};
 use calls::encode_intent;
 use parity_scale_codec::{Compact, Encode};
@@ -33,7 +33,7 @@ pub fn build_transaction(
     // Calculate era from validity
     let era = compute_era(&context.validity);
 
-    // Build unsigned extrinsic with signed extensions encoded per the chain's metadata
+    // Build unsigned extrinsic: compact(length) | 0x04 | call_data
     let unsigned_bytes = build_unsigned_extrinsic(
         &call_data,
         &era,
@@ -45,6 +45,12 @@ pub fn build_transaction(
     // Create transaction from bytes — pass metadata so parser uses metadata-aware decoding
     let mut tx = Transaction::from_bytes(&unsigned_bytes, None, Some(&metadata))?;
     tx.set_context(context.material, context.validity, &context.reference_block)?;
+
+    // Set era/nonce/tip from build context (not parsed from unsigned extrinsic body,
+    // since standard format doesn't include signed extensions in the body)
+    tx.set_era(era);
+    tx.set_nonce(context.nonce);
+    tx.set_tip(context.tip as u128);
 
     Ok(tx)
 }
@@ -63,65 +69,29 @@ fn compute_era(validity: &Validity) -> Era {
     }
 }
 
-/// Build unsigned extrinsic bytes with metadata-driven signed extension encoding.
+/// Build unsigned extrinsic bytes in standard Substrate V4 format.
 ///
-/// Iterates the chain's signed extension list from metadata and encodes each:
-/// - Empty types (0-size composites/tuples): skip
-/// - CheckMortality: era bytes
-/// - CheckNonce: Compact<u32>
-/// - ChargeTransactionPayment: Compact<u128> tip
-/// - ChargeAssetTxPayment: Compact<u128> tip + 0x00 (None asset_id)
-/// - CheckMetadataHash: 0x00 (Disabled mode)
-/// - Other non-empty types: encode default bytes using scale_decode to determine size
+/// Format: `compact(length) | 0x04 | call_data`
+///
+/// Signed extensions (era, nonce, tip) are NOT included in the unsigned
+/// extrinsic body. They belong only in the signing payload, which is
+/// computed separately by `signable_payload()` via subxt-core.
+///
+/// This matches the format that polkadot-js, txwrapper, and all standard
+/// Substrate tools expect for unsigned extrinsics.
 fn build_unsigned_extrinsic(
     call_data: &[u8],
-    era: &Era,
-    nonce: u32,
-    tip: u128,
-    metadata: &Metadata,
+    _era: &Era,
+    _nonce: u32,
+    _tip: u128,
+    _metadata: &Metadata,
 ) -> Result<Vec<u8>, WasmDotError> {
     let mut body = Vec::new();
 
     // Version byte: 0x04 = unsigned, version 4
     body.push(0x04);
 
-    // Encode signed extensions per metadata
-    for ext in metadata.extrinsic().signed_extensions() {
-        let id = ext.identifier();
-        let ty_id = ext.extra_ty();
-
-        if is_empty_type(metadata, ty_id) {
-            continue;
-        }
-
-        match id {
-            "CheckMortality" | "CheckEra" => {
-                body.extend_from_slice(&encode_era(era));
-            }
-            "CheckNonce" => {
-                Compact(nonce).encode_to(&mut body);
-            }
-            "ChargeTransactionPayment" => {
-                Compact(tip).encode_to(&mut body);
-            }
-            "ChargeAssetTxPayment" => {
-                // Struct: { tip: Compact<u128>, asset_id: Option<T> }
-                Compact(tip).encode_to(&mut body);
-                body.push(0x00); // None — no asset_id
-            }
-            "CheckMetadataHash" => {
-                // Mode enum: 0x00 = Disabled
-                body.push(0x00);
-            }
-            _ => {
-                // Unknown non-empty extension — encode zero bytes.
-                // This shouldn't happen for known chains but is a safety fallback.
-                encode_zero_value(&mut body, ty_id, metadata)?;
-            }
-        }
-    }
-
-    // Call data
+    // Call data immediately after version byte
     body.extend_from_slice(call_data);
 
     // Length prefix (compact encoded)
@@ -129,70 +99,6 @@ fn build_unsigned_extrinsic(
     result.extend_from_slice(&body);
 
     Ok(result)
-}
-
-/// Check if a type ID resolves to an empty (zero-size) type.
-fn is_empty_type(metadata: &Metadata, ty_id: u32) -> bool {
-    let Some(ty) = metadata.types().resolve(ty_id) else {
-        return false;
-    };
-    match &ty.type_def {
-        scale_info::TypeDef::Tuple(t) => t.fields.is_empty(),
-        scale_info::TypeDef::Composite(c) => c.fields.is_empty(),
-        _ => false,
-    }
-}
-
-/// Encode the zero/default value for a type. Used for unknown signed extensions
-/// where we don't know the semantic meaning but need to produce valid SCALE bytes.
-fn encode_zero_value(
-    buf: &mut Vec<u8>,
-    ty_id: u32,
-    metadata: &Metadata,
-) -> Result<(), WasmDotError> {
-    let Some(ty) = metadata.types().resolve(ty_id) else {
-        return Ok(()); // Unknown type — skip
-    };
-    match &ty.type_def {
-        scale_info::TypeDef::Primitive(p) => {
-            use scale_info::TypeDefPrimitive;
-            let zeros: usize = match p {
-                TypeDefPrimitive::Bool | TypeDefPrimitive::U8 | TypeDefPrimitive::I8 => 1,
-                TypeDefPrimitive::U16 | TypeDefPrimitive::I16 => 2,
-                TypeDefPrimitive::U32 | TypeDefPrimitive::I32 => 4,
-                TypeDefPrimitive::U64 | TypeDefPrimitive::I64 => 8,
-                TypeDefPrimitive::U128 | TypeDefPrimitive::I128 => 16,
-                TypeDefPrimitive::U256 | TypeDefPrimitive::I256 => 32,
-                TypeDefPrimitive::Str | TypeDefPrimitive::Char => {
-                    buf.push(0x00); // empty compact-encoded string/char
-                    return Ok(());
-                }
-            };
-            buf.extend_from_slice(&vec![0u8; zeros]);
-        }
-        scale_info::TypeDef::Compact(_) => {
-            buf.push(0x00); // Compact(0)
-        }
-        scale_info::TypeDef::Variant(v) => {
-            // Use first variant (index 0 or lowest)
-            if let Some(variant) = v.variants.first() {
-                buf.push(variant.index);
-                for field in &variant.fields {
-                    encode_zero_value(buf, field.ty.id, metadata)?;
-                }
-            }
-        }
-        scale_info::TypeDef::Composite(c) => {
-            for field in &c.fields {
-                encode_zero_value(buf, field.ty.id, metadata)?;
-            }
-        }
-        scale_info::TypeDef::Sequence(_) | scale_info::TypeDef::Array(_) => {
-            buf.push(0x00); // empty sequence
-        }
-        _ => {} // BitSequence, etc. — skip
-    }
-    Ok(())
 }
 
 #[cfg(test)]
