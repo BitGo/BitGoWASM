@@ -27,8 +27,8 @@ export class DotTransaction {
    * @param material - Chain material from the fullnode. See {@link fromHex}
    *   for why material is needed at deserialization time.
    */
-  static fromBytes(bytes: Uint8Array, material?: Material): DotTransaction {
-    const ctx = material ? createContext(material) : undefined;
+  static fromBytes(bytes: Uint8Array, material: Material): DotTransaction {
+    const ctx = createContext(material);
     const inner = new WasmTransaction(bytes, ctx);
     return new DotTransaction(inner);
   }
@@ -71,8 +71,8 @@ export class DotTransaction {
    * @param material - Chain material from the fullnode (genesisHash,
    *   chainName, specName, specVersion, txVersion, metadata)
    */
-  static fromHex(hex: string, material?: Material): DotTransaction {
-    const ctx = material ? createContext(material) : undefined;
+  static fromHex(hex: string, material: Material): DotTransaction {
+    const ctx = createContext(material);
     const inner = WasmTransaction.fromHex(hex, ctx);
     return new DotTransaction(inner);
   }
