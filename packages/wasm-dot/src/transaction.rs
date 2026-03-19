@@ -674,40 +674,19 @@ fn parse_signing_payload(
 
 /// Parse signed extensions from extrinsic bytes.
 ///
-/// When metadata is available, iterates the runtime's signed extension list
-/// and decodes each extension by its type ID. This handles runtimes with
-/// extra extensions like CheckMetadataHash or ChargeAssetTxPayment.
-///
-/// Without metadata, falls back to the hardcoded layout: era + nonce + tip.
+/// Iterates the runtime's signed extension list from metadata and decodes
+/// each extension by its type ID. This handles runtimes with extra extensions
+/// like CheckMetadataHash or ChargeAssetTxPayment. Metadata is required.
 ///
 /// Returns (era, nonce, tip, bytes_consumed).
 fn parse_signed_extensions(
     bytes: &[u8],
     metadata: Option<&Metadata>,
 ) -> Result<(Era, u32, u128, usize), WasmDotError> {
-    use parity_scale_codec::{Compact, Decode};
-
-    if let Some(md) = metadata {
-        parse_signed_extensions_from_metadata(bytes, md)
-    } else {
-        // Fallback: hardcoded era + Compact<u32> nonce + Compact<u128> tip
-        let mut cursor = 0;
-
-        let (era, era_size) = decode_era_bytes(&bytes[cursor..])?;
-        cursor += era_size;
-
-        let mut input = &bytes[cursor..];
-        let nonce = <Compact<u32>>::decode(&mut input)
-            .map_err(|e| WasmDotError::InvalidTransaction(format!("Invalid nonce: {}", e)))?;
-        cursor = bytes.len() - input.len();
-
-        let mut input = &bytes[cursor..];
-        let tip = <Compact<u128>>::decode(&mut input)
-            .map_err(|e| WasmDotError::InvalidTransaction(format!("Invalid tip: {}", e)))?;
-        cursor = bytes.len() - input.len();
-
-        Ok((era, nonce.0, tip.0, cursor))
-    }
+    let md = metadata.ok_or_else(|| {
+        WasmDotError::InvalidTransaction("Metadata required to parse signed extensions".to_string())
+    })?;
+    parse_signed_extensions_from_metadata(bytes, md)
 }
 
 /// Parse signed extensions using metadata to determine the layout.
