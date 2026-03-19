@@ -630,13 +630,40 @@ fn parse_signing_payload(
         )
     })?;
 
-    // Use the RuntimeCall type from metadata to skip over call_data
+    // Use the RuntimeCall type from metadata to skip over call_data.
+    // Try wasm-dot format first (no compact prefix), then legacy polkadot-js format
+    // which prepends compact(call_data_len) before the call_data.
     let call_ty_id = md.outer_enums().call_enum_ty();
-    let call_data_size = skip_type_bytes(bytes, call_ty_id, md)?;
-    let call_data = bytes[..call_data_size].to_vec();
+
+    let (call_data, ext_start) = match skip_type_bytes(bytes, call_ty_id, md) {
+        Ok(size) => (bytes[..size].to_vec(), size),
+        Err(_) => {
+            // Try legacy format: compact(call_data_len) | call_data | ...
+            use parity_scale_codec::{Compact, Decode};
+            let mut cursor = bytes;
+            let _len = <Compact<u32>>::decode(&mut cursor).map_err(|e| {
+                WasmDotError::InvalidTransaction(format!(
+                    "Failed to parse signing payload (tried both formats): {}",
+                    e
+                ))
+            })?;
+            let prefix_size = bytes.len() - cursor.len();
+            let call_data_size =
+                skip_type_bytes(&bytes[prefix_size..], call_ty_id, md).map_err(|e| {
+                    WasmDotError::InvalidTransaction(format!(
+                        "Failed to parse signing payload (tried both formats): {}",
+                        e
+                    ))
+                })?;
+            (
+                bytes[prefix_size..prefix_size + call_data_size].to_vec(),
+                prefix_size + call_data_size,
+            )
+        }
+    };
 
     // Parse signed extensions after call_data
-    let ext_bytes = &bytes[call_data_size..];
+    let ext_bytes = &bytes[ext_start..];
     let (era, nonce, tip, _ext_size) = parse_signed_extensions(ext_bytes, Some(md))?;
 
     // Remaining bytes after extensions are additional_signed (spec_version, tx_version,
