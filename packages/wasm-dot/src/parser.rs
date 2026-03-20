@@ -2,12 +2,8 @@
 //!
 //! Parses raw extrinsic bytes into structured data.
 //!
-//! Supports two modes of pallet/method resolution:
-//! - **Dynamic (metadata-based)**: Uses runtime metadata to resolve pallet and call names
-//!   from their indices. This is the preferred approach as it handles runtime upgrades
-//!   and chain-specific index differences automatically.
-//! - **Hardcoded fallback**: Uses a static mapping of known pallet/method indices.
-//!   Used when no metadata is provided in the parsing context.
+//! Uses runtime metadata to resolve pallet and call names from their indices.
+//! Metadata is required (enforced at the TypeScript level in `fromHex`/`fromBytes`).
 
 use crate::address::encode_ss58;
 use crate::error::WasmDotError;
@@ -148,44 +144,6 @@ fn resolve_call_from_metadata(
     Some((pallet_name, call_name))
 }
 
-/// Resolve pallet and call names using the hardcoded static mapping.
-///
-/// This is the fallback when no metadata is available. It covers known
-/// pallet indices for Polkadot, Kusama, and Westend.
-fn resolve_call_hardcoded(pallet_index: u8, method_index: u8) -> (&'static str, &'static str) {
-    match (pallet_index, method_index) {
-        // Balances pallet
-        // Polkadot: 5, Kusama: 4, Westend: 10
-        (4, 0) | (5, 0) | (10, 0) => ("balances", "transfer"),
-        (4, 3) | (5, 3) | (10, 3) => ("balances", "transferKeepAlive"),
-        (4, 4) | (5, 4) | (10, 4) => ("balances", "transferAll"),
-
-        // Staking pallet
-        // Polkadot: 7, Kusama: 6, Westend: 8
-        (6, 0) | (7, 0) | (8, 0) => ("staking", "bond"),
-        (6, 1) | (7, 1) | (8, 1) => ("staking", "bondExtra"),
-        (6, 2) | (7, 2) | (8, 2) => ("staking", "unbond"),
-        (6, 3) | (7, 3) | (8, 3) => ("staking", "withdrawUnbonded"),
-        (6, 6) | (7, 6) | (8, 6) => ("staking", "chill"),
-        (6, 18) | (7, 18) | (8, 18) => ("staking", "payoutStakers"),
-
-        // Proxy pallet
-        // Polkadot: 29, Kusama: 29, Westend: 30
-        (29, 0) | (30, 0) => ("proxy", "proxy"),
-        (29, 1) | (30, 1) => ("proxy", "addProxy"),
-        (29, 2) | (30, 2) => ("proxy", "removeProxy"),
-        (29, 4) | (30, 4) => ("proxy", "createPure"),
-
-        // Utility pallet
-        // Polkadot: 26, Kusama: 24, Westend: 16
-        (16, 0) | (24, 0) | (26, 0) => ("utility", "batch"),
-        (16, 2) | (24, 2) | (26, 2) => ("utility", "batchAll"),
-
-        // Unknown
-        _ => ("unknown", "unknown"),
-    }
-}
-
 /// Convert snake_case to camelCase.
 ///
 /// Examples:
@@ -213,8 +171,8 @@ fn snake_to_camel(s: &str) -> String {
 
 /// Parse call data into method info.
 ///
-/// When metadata is provided, uses dynamic resolution via `pallet_by_index()` and
-/// `call_variant_by_index()`. Falls back to hardcoded mapping otherwise.
+/// Uses metadata for dynamic resolution via `pallet_by_index()` and
+/// `call_variant_by_index()`. Metadata is required.
 fn parse_call_data(
     call_data: &[u8],
     address_prefix: u16,
@@ -247,16 +205,19 @@ fn parse_call_data_with_size(
     let method_index = call_data[1];
     let args_data = &call_data[2..];
 
-    // Resolve pallet and method names: prefer metadata, fall back to hardcoded
-    let (pallet, name) = if let Some(md) = metadata {
-        resolve_call_from_metadata(md, pallet_index, method_index).unwrap_or_else(|| {
-            let (p, n) = resolve_call_hardcoded(pallet_index, method_index);
-            (p.to_string(), n.to_string())
-        })
-    } else {
-        let (p, n) = resolve_call_hardcoded(pallet_index, method_index);
-        (p.to_string(), n.to_string())
-    };
+    // Resolve pallet and method names from metadata (required)
+    let md = metadata.ok_or_else(|| {
+        WasmDotError::InvalidTransaction(
+            "Metadata required to resolve pallet/method names".to_string(),
+        )
+    })?;
+    let (pallet, name) =
+        resolve_call_from_metadata(md, pallet_index, method_index).ok_or_else(|| {
+            WasmDotError::InvalidTransaction(format!(
+                "Unknown pallet index {} method index {} in metadata",
+                pallet_index, method_index
+            ))
+        })?;
 
     // Parse args based on method, getting bytes consumed
     let (args, args_consumed) =
@@ -465,7 +426,7 @@ fn parse_proxy_args(
         ));
     }
 
-    let proxy_type = resolve_proxy_type(args[cursor], metadata);
+    let proxy_type = resolve_proxy_type(args[cursor], metadata)?;
     cursor += 1;
 
     let delay = u32::from_le_bytes([
@@ -496,7 +457,7 @@ fn parse_create_pure_args(
             "truncated createPure args".to_string(),
         ));
     }
-    let proxy_type = resolve_proxy_type(args[0], metadata);
+    let proxy_type = resolve_proxy_type(args[0], metadata)?;
     let delay = u32::from_le_bytes([args[1], args[2], args[3], args[4]]);
     let index = u16::from_le_bytes([args[5], args[6]]);
 
@@ -563,7 +524,7 @@ fn parse_proxy_proxy_args(
                 "truncated proxy type".to_string(),
             ));
         }
-        let pt = resolve_proxy_type(args[cursor], metadata);
+        let pt = resolve_proxy_type(args[cursor], metadata)?;
         cursor += 1;
         Some(pt)
     } else {
@@ -616,28 +577,20 @@ fn parse_multi_address(args: &[u8], address_prefix: u16) -> Result<(String, usiz
     }
 }
 
-/// Resolve proxy type name from metadata, falling back to hardcoded Polkadot mainnet mapping.
+/// Resolve proxy type name from metadata. Metadata is required.
 fn resolve_proxy_type(
     proxy_type_byte: u8,
     metadata: Option<&subxt_core::metadata::Metadata>,
-) -> String {
-    if let Some(md) = metadata {
-        if let Some(name) = resolve_proxy_type_from_metadata(md, proxy_type_byte) {
-            return name;
-        }
-    }
-    // Fallback: Polkadot mainnet proxy type indices
-    match proxy_type_byte {
-        0 => "Any".to_string(),
-        1 => "NonTransfer".to_string(),
-        2 => "Governance".to_string(),
-        3 => "Staking".to_string(),
-        4 => "IdentityJudgement".to_string(),
-        5 => "CancelProxy".to_string(),
-        6 => "Auction".to_string(),
-        7 => "NominationPools".to_string(),
-        _ => format!("Unknown({})", proxy_type_byte),
-    }
+) -> Result<String, WasmDotError> {
+    let md = metadata.ok_or_else(|| {
+        WasmDotError::InvalidTransaction("Metadata required to resolve proxy type".to_string())
+    })?;
+    resolve_proxy_type_from_metadata(md, proxy_type_byte).ok_or_else(|| {
+        WasmDotError::InvalidTransaction(format!(
+            "Unknown proxy type index {} in metadata",
+            proxy_type_byte
+        ))
+    })
 }
 
 /// Look up the ProxyType enum variant name from chain metadata.
@@ -764,47 +717,10 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_hardcoded_polkadot_balances() {
-        assert_eq!(
-            resolve_call_hardcoded(5, 3),
-            ("balances", "transferKeepAlive")
-        );
-    }
-
-    #[test]
-    fn test_resolve_hardcoded_kusama_balances() {
-        assert_eq!(
-            resolve_call_hardcoded(4, 3),
-            ("balances", "transferKeepAlive")
-        );
-    }
-
-    #[test]
-    fn test_resolve_hardcoded_westend_balances() {
-        assert_eq!(
-            resolve_call_hardcoded(10, 3),
-            ("balances", "transferKeepAlive")
-        );
-    }
-
-    #[test]
-    fn test_resolve_hardcoded_unknown() {
-        assert_eq!(resolve_call_hardcoded(255, 255), ("unknown", "unknown"));
-    }
-
-    #[test]
-    fn test_parse_call_data_without_metadata() {
-        // Polkadot balances::transferKeepAlive (pallet=5, method=3) with a dummy address + amount
-        let mut call_data = vec![5u8, 3u8]; // pallet=5, method=3
-        call_data.push(0x00); // MultiAddress::Id variant
-        call_data.extend_from_slice(&[0u8; 32]); // dummy pubkey
-        call_data.push(0x04); // compact amount = 1
-
-        let result = parse_call_data(&call_data, 42, None).unwrap();
-        assert_eq!(result.pallet, "balances");
-        assert_eq!(result.name, "transferKeepAlive");
-        assert_eq!(result.pallet_index, 5);
-        assert_eq!(result.method_index, 3);
+    fn test_parse_call_data_without_metadata_returns_error() {
+        let call_data = vec![5u8, 3u8, 0x00];
+        let result = parse_call_data(&call_data, 42, None);
+        assert!(result.is_err());
     }
 
     #[test]
