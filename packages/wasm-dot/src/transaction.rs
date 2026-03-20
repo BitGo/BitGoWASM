@@ -220,9 +220,15 @@ impl Transaction {
             // Fall back to manual serialization if no context
             self.to_bytes_manual()
         } else {
-            // Unsigned: return the signing payload (call_data + extensions + additional_signed).
-            // This matches legacy toBroadcastFormat which returns construct.signingPayload().
-            self.signable_payload()
+            // Unsigned: return the signing payload with a compact call_data length prefix.
+            // Format: compact(call_data_len) | call_data | extensions | additional_signed
+            // This matches legacy toBroadcastFormat (construct.signingPayload from txwrapper)
+            // and is decodable by both wasm-dot and polkadot-js/txwrapper.
+            use parity_scale_codec::{Compact, Encode};
+            let payload = self.signable_payload()?;
+            let mut result = Compact(self.call_data.len() as u32).encode();
+            result.extend_from_slice(&payload);
+            Ok(result)
         }
     }
 
