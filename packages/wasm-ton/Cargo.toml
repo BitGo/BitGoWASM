@@ -1,0 +1,46 @@
+[package]
+name = "wasm-ton"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]
+# WASM bindings
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde-wasm-bindgen = "0.6"
+
+# TON crate
+tonlib-core = "0.26.7"
+
+# WASM random number generation support
+getrandom = { version = "0.2", features = ["js"] }
+
+# Hex encoding
+hex = "0.4"
+
+# Base64 encoding
+base64 = "0.22"
+
+# BigUint for jetton amounts
+num-bigint = "0.4"
+num-traits = "0.2"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+hex = "0.4"
+
+[profile.release]
+strip = true

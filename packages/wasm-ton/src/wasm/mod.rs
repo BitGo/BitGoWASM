@@ -1,0 +1,16 @@
+//! WASM bindings for wasm-ton
+//!
+//! This module contains thin wrappers with #[wasm_bindgen] that delegate
+//! to the core Rust implementations.
+
+pub mod address;
+pub mod builder;
+pub mod parser;
+pub mod transaction;
+pub mod try_into_js_value;
+
+// Re-export WASM types
+pub use address::AddressNamespace;
+pub use builder::BuilderNamespace;
+pub use parser::ParserNamespace;
+pub use transaction::WasmTransaction;
