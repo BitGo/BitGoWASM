@@ -2,37 +2,37 @@ psbt: None
 ├─ tx: None
 │  ├─ version: 2i32
 │  ├─ lock_time: 0u32
-│  ├─ txid: a74380ecd12e5c6e66f608c790daa4be6870f499581b3951cd65b4dcdfae7316 (32 bytes)
-│  ├─ ntxid: a74380ecd12e5c6e66f608c790daa4be6870f499581b3951cd65b4dcdfae7316 (32 bytes)
-│  ├─ wtxid: a74380ecd12e5c6e66f608c790daa4be6870f499581b3951cd65b4dcdfae7316 (32 bytes)
+│  ├─ txid: 1673aedfdcb465cd51391b5899f47068bea4da90c708f6666e5c2ed1ec8043a7
+│  ├─ ntxid: 1673aedfdcb465cd51391b5899f47068bea4da90c708f6666e5c2ed1ec8043a7
+│  ├─ wtxid: 1673aedfdcb465cd51391b5899f47068bea4da90c708f6666e5c2ed1ec8043a7
 │  ├─ inputs: 6u64
 │  │  ├─ input_0: None
-│  │  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
+│  │  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000
 │  │  │  ├─ prev_vout: 0u32
 │  │  │  ├─ sequence: 4294967294u32
 │  │  │  └─ script_sig:  (0 bytes)
 │  │  ├─ input_1: None
-│  │  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
+│  │  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000
 │  │  │  ├─ prev_vout: 1u32
 │  │  │  ├─ sequence: 4294967294u32
 │  │  │  └─ script_sig:  (0 bytes)
 │  │  ├─ input_2: None
-│  │  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
+│  │  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000
 │  │  │  ├─ prev_vout: 2u32
 │  │  │  ├─ sequence: 4294967294u32
 │  │  │  └─ script_sig:  (0 bytes)
 │  │  ├─ input_3: None
-│  │  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
+│  │  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000
 │  │  │  ├─ prev_vout: 3u32
 │  │  │  ├─ sequence: 4294967294u32
 │  │  │  └─ script_sig:  (0 bytes)
 │  │  ├─ input_4: None
-│  │  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
+│  │  │  ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000
 │  │  │  ├─ prev_vout: 4u32
 │  │  │  ├─ sequence: 4294967294u32
 │  │  │  └─ script_sig:  (0 bytes)
 │  │  └─ input_5: None
-│  │     ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000 (32 bytes)
+│  │     ├─ prev_txid: 0000000000000000000000000000000000000000000000000000000000000000
 │  │     ├─ prev_vout: 5u32
 │  │     ├─ sequence: 4294967294u32
 │  │     └─ script_sig:  (0 bytes)
@@ -84,7 +84,7 @@ psbt: None
 ├─ version: 0u32
 ├─ inputs: 6u64
 │  ├─ input_0: None
-│  │  ├─ non_witness_utxo: 4d1eb5dbcc8a214b5b448ce4497225c44a2963445fc5b1f5bd4526a36749677d (32 bytes)
+│  │  ├─ non_witness_utxo: 7d674967a32645bdf5b1c55f4463294ac4257249e48c445b4b218accdbb51e4d
 │  │  ├─ redeem_script: 210336ef228ffe9b8efffba052c32d334660dd1f8366cf8fe44ae5aa672b6b629095ac (35 bytes)
 │  │  │  └─ asm: OP_PUSHBYTES_33 0336ef228ffe9b8efffba052c32d334660dd1f8366cf8fe44ae5aa672b6b629095 OP_CHECKSIG
 │  │  ├─ signatures: 1u64
@@ -94,7 +94,7 @@ psbt: None
 │  │  ├─ sighash_type: 1u32
 │  │  └─ sighash_type: SIGHASH_ALL
 │  ├─ input_1: None
-│  │  ├─ non_witness_utxo: 15d5aba694f147bb8c4f12bbf60d331b183576c20bc2b779f44f35d2e3468906 (32 bytes)
+│  │  ├─ non_witness_utxo: 068946e3d2354ff479b7c20bc27635181b330df6bb124f8cbb47f194a6abd515
 │  │  ├─ redeem_script: 522102dd86907236b77a3bb7b64ce668cae4a25d48253f32e6ee0c3a34eaf89becfe142103f7b6baf47cbc61cda968fe73d78cb3bce0c88e7a9bc9abba5dac739d25b2046721033c34f9b46ff91498c3a56b8b2a8b752ecd0079337028bdd4e48045f8c6560e0253ae (105 bytes)
 │  │  │  └─ asm: OP_PUSHNUM_2 OP_PUSHBYTES_33 02dd86907236b77a3bb7b64ce668cae4a25d48253f32e6ee0c3a34eaf89becfe14 OP_PUSHBYTES_33 03f7b6baf47cbc61cda968fe73d78cb3bce0c88e7a9bc9abba5dac739d25b20467 OP_PUSHBYTES_33 033c34f9b46ff91498c3a56b8b2a8b752ecd0079337028bdd4e48045f8c6560e02 OP_PUSHNUM_3 OP_CHECKMULTISIG
 │  │  ├─ signatures: 2u64
