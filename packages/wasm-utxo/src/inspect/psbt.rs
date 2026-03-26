@@ -1,7 +1,6 @@
 /// This contains low-level parsing of PSBT into a node structure suitable for display
 use crate::address::from_output_script_with_network;
 use crate::bitcoin::consensus::Decodable;
-use crate::bitcoin::hashes::Hash;
 use crate::bitcoin::psbt::Psbt;
 use crate::bitcoin::{ScriptBuf, Transaction};
 use crate::fixed_script_wallet::bitgo_psbt::{
@@ -250,7 +249,7 @@ fn tx_input_to_node(input: &crate::bitcoin::TxIn, index: usize) -> Node {
 
     input_node.add_child(Node::new(
         "prev_txid",
-        Primitive::Buffer(input.previous_output.txid.to_byte_array().to_vec()),
+        Primitive::String(input.previous_output.txid.to_string()),
     ));
     input_node.add_child(Node::new(
         "prev_vout",
@@ -325,7 +324,7 @@ fn psbt_input_to_node(input: &crate::bitcoin::psbt::Input, index: usize, network
     if let Some(utxo) = &input.non_witness_utxo {
         input_node.add_child(Node::new(
             "non_witness_utxo",
-            Primitive::Buffer(utxo.compute_txid().to_byte_array().to_vec()),
+            Primitive::String(utxo.compute_txid().to_string()),
         ));
     }
 
@@ -483,15 +482,15 @@ pub fn tx_to_node(tx: &Transaction, network: Network) -> Node {
     ));
     tx_node.add_child(Node::new(
         "txid",
-        Primitive::Buffer(tx.compute_txid().to_byte_array().to_vec()),
+        Primitive::String(tx.compute_txid().to_string()),
     ));
     tx_node.add_child(Node::new(
         "ntxid",
-        Primitive::Buffer(tx.compute_ntxid().to_byte_array().to_vec()),
+        Primitive::String(tx.compute_ntxid().to_string()),
     ));
     tx_node.add_child(Node::new(
         "wtxid",
-        Primitive::Buffer(tx.compute_wtxid().to_byte_array().to_vec()),
+        Primitive::String(tx.compute_wtxid().to_string()),
     ));
     tx_node.add_child(tx_inputs_to_node(&tx.input));
     tx_node.add_child(tx_outputs_to_node(&tx.output, network));
@@ -529,15 +528,15 @@ pub fn zcash_tx_to_node(parts: &ZcashTransactionParts, network: Network) -> Node
     ));
     tx_node.add_child(Node::new(
         "txid",
-        Primitive::Buffer(tx.compute_txid().to_byte_array().to_vec()),
+        Primitive::String(tx.compute_txid().to_string()),
     ));
     tx_node.add_child(Node::new(
         "ntxid",
-        Primitive::Buffer(tx.compute_ntxid().to_byte_array().to_vec()),
+        Primitive::String(tx.compute_ntxid().to_string()),
     ));
     tx_node.add_child(Node::new(
         "wtxid",
-        Primitive::Buffer(tx.compute_wtxid().to_byte_array().to_vec()),
+        Primitive::String(tx.compute_wtxid().to_string()),
     ));
     tx_node.add_child(tx_inputs_to_node(&tx.input));
     tx_node.add_child(tx_outputs_to_node(&tx.output, network));
