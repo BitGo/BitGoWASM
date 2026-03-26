@@ -10,7 +10,7 @@ export * as parser from "./parser.js";
 
 // Top-level function exports for convenience
 export { encodeAddress, decodeAddress, validateAddress } from "./address.js";
-export { buildTransaction } from "./builder.js";
+export { buildTransaction, TonStakingType } from "./builder.js";
 export { parseTransaction } from "./parser.js";
 export { Transaction } from "./transaction.js";
 
@@ -25,7 +25,6 @@ export type {
   ConsolidateIntent,
   DelegateIntent,
   UndelegateIntent,
-  TonStakingType,
 } from "./builder.js";
 export type {
   TransactionType,
