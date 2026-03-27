@@ -104,12 +104,16 @@ const total = parseInt(amount) + parseInt(fee); // ❌ Loses precision
 - IDE autocomplete
 - Exhaustiveness checking in switch statements
 - Less repetitive than `enum` (no `Key = "Key"` duplication)
+- TypeScript `enum` values cause type cast issues when crossing WASM/serde boundaries. The `as const` pattern avoids this entirely.
 
 **Good:**
 
 ```typescript
 export const TransactionType = ["Send", "StakingActivate", "StakingDeactivate"] as const;
 export type TransactionType = (typeof TransactionType)[number];
+
+export const TonStakingType = ["TonWhales", "SingleNominator", "MultiNominator"] as const;
+export type TonStakingType = (typeof TonStakingType)[number];
 
 function handleTx(type: TransactionType) {
   switch (type) {
@@ -125,11 +129,16 @@ function handleTx(type: TransactionType) {
 **Bad:**
 
 ```typescript
+// ❌ TypeScript enum — causes type cast issues across WASM boundaries
+enum TransactionType {
+  Send = "Send",
+  StakingActivate = "StakingActivate",
+}
+
 // ❌ No type safety, typos not caught
 function handleTx(type: string) {
   if (type === "send") {
     // Oops, wrong case
-    // ...
   }
 }
 
@@ -259,11 +268,13 @@ parsed.addSignature(pubkey, sig); // Wrong object type
 
 - `static fromBytes(bytes: Uint8Array)` — deserialize
 - `toBytes(): Uint8Array` — serialize
-- `toBroadcastFormat(): string` — serialize to broadcast-ready format (0x-prefixed hex for Substrate, hex for UTXO, base64 for Solana)
+- `toBroadcastFormat(): Uint8Array` — serialize to broadcast-ready bytes. Default return type is `Uint8Array` (same as `toBytes()` for most chains). Callers encode to whatever string format the RPC needs: `Buffer.from(tx.toBroadcastFormat()).toString('base64')` for TON, `.toString('hex')` for UTXO, etc.
 - `getId(): string` — transaction ID / hash
 - `get wasm(): WasmType` (internal) — access underlying WASM instance
 
-`toBroadcastFormat()` is the standard name for "give me the string I submit to the network". The encoding varies by chain but the method name is consistent. Don't add `toHex()` as a separate method — if callers want hex they can do `Buffer.from(tx.toBytes()).toString('hex')`.
+`toBroadcastFormat()` returns `Uint8Array` by default, consistent with Convention #1 (prefer Uint8Array). Don't add `toHex()`, `toBase64()`, or other encoding methods. Callers handle string encoding at the boundary.
+
+**Exception:** Chains where the 0x-prefix footgun applies (Substrate/DOT) may return a hex string to avoid the `Buffer.from('0x...', 'hex')` silent truncation issue. This is the same exception as `fromHex()` — only justified for 0x-prefixed ecosystems.
 
 **Why:**
 
@@ -285,8 +296,8 @@ export class Transaction {
     return this._wasm.to_bytes();
   }
 
-  toBroadcastFormat(): string {
-    return this._wasm.to_hex(); // or to_base64(), etc.
+  toBroadcastFormat(): Uint8Array {
+    return this.toBytes(); // default: same as toBytes()
   }
 
   getId(): string {
