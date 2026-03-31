@@ -372,8 +372,71 @@ export function explainTransaction(hex, context): TransactionExplanation {
 
 ---
 
+## 9. Pass objects to WASM via serde_wasm_bindgen, not JSON strings
+
+**What:** When passing structured data (intents, build context) from TypeScript to Rust/WASM, pass the JS object directly and use `serde_wasm_bindgen::from_value()` in Rust. Do not JSON.stringify in TypeScript and `serde_json::from_str()` in Rust.
+
+**Why:** JSON stringification is an unnecessary round-trip through string serialization. It adds a `serializeIntent()` function in TypeScript that shouldn't exist, bypasses serde_wasm_bindgen's type checking, and doesn't match the sol/dot pattern.
+
+**Good:**
+
+```typescript
+// TypeScript — pass object directly
+const tx = BuilderNamespace.buildTransaction(intent, context);
+```
+
+```rust
+// Rust — deserialize from JS value
+pub fn build_transaction(intent: JsValue, context: JsValue) -> Result<WasmTransaction, WasmError> {
+    let intent: TransactionIntent = serde_wasm_bindgen::from_value(intent)?;
+    let ctx: BuildContext = serde_wasm_bindgen::from_value(context)?;
+    // ...
+}
+```
+
+**Bad:**
+
+```typescript
+// ❌ Don't serialize to JSON string in TypeScript
+function serializeIntent(intent: TonIntent): string {
+  return JSON.stringify(intent, (_, v) => (typeof v === "bigint" ? v.toString() : v));
+}
+const tx = BuilderNamespace.buildTransaction(serializeIntent(intent), context);
+```
+
+```rust
+// ❌ Don't deserialize from JSON string in Rust
+pub fn build_transaction(intent_json: &str, context: JsValue) -> Result<WasmTransaction, WasmError> {
+    let intent: TransactionIntent = serde_json::from_str(intent_json)?;
+    // ...
+}
+```
+
+**Handling BigInt:** If intent fields contain `bigint` values that `serde_wasm_bindgen` can't deserialize directly, use custom serde deserializers in Rust that accept both number and string:
+
+```rust
+// Rust — custom deserializer handles both u64 and "123" string
+fn deserialize_u64<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    struct U64Visitor;
+    impl<'de> Visitor<'de> for U64Visitor {
+        type Value = u64;
+        fn visit_u64<E>(self, v: u64) -> Result<u64, E> { Ok(v) }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<u64, E> {
+            v.parse().map_err(E::custom)
+        }
+    }
+    d.deserialize_any(U64Visitor)
+}
+```
+
+This keeps the TypeScript side clean (no serialization helpers) while handling the BigInt edge case in Rust.
+
+**See:** `packages/wasm-solana/src/intent/types.rs`, `packages/wasm-dot/src/builder/types.rs`
+
+---
+
 ## Summary
 
-These 8 conventions define how BitGoWasm packages structure their APIs. They're architectural patterns enforced in code reviews — not general software practices or build requirements.
+These 9 conventions define how BitGoWasm packages structure their APIs. They're architectural patterns enforced in code reviews — not general software practices or build requirements.
 
 When in doubt, look at wasm-solana and wasm-utxo — they're the reference implementations. Following these patterns from the start prevents review churn and keeps all packages consistent.
