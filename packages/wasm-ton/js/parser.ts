@@ -49,13 +49,3 @@ export interface ParsedTransaction {
 export function parseTransaction(tx: Transaction): ParsedTransaction {
   return ParserNamespace.parseFromTransaction(tx.wasm) as ParsedTransaction;
 }
-
-/**
- * Parse raw BOC bytes into structured data.
- *
- * @param bytes - Raw BOC bytes
- * @returns A ParsedTransaction
- */
-export function parseTransactionBytes(bytes: Uint8Array): ParsedTransaction {
-  return ParserNamespace.parseTransaction(bytes) as ParsedTransaction;
-}

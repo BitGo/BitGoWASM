@@ -11,7 +11,7 @@ export * as builder from "./builder.js";
 
 // Top-level function exports
 export { encodeAddress, encode, decode, validate } from "./address.js";
-export { Transaction, transactionFromBytes } from "./transaction.js";
+export { Transaction } from "./transaction.js";
 export { parseTransaction } from "./parser.js";
 export { buildTransaction } from "./builder.js";
 
