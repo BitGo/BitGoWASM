@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "module": "ES2022",
+    "target": "ES2022",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "allowJs": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "composite": true,
+    "rootDir": ".",
+    "outDir": "./dist/esm",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": ["./js/**/*.ts"],
+  "exclude": ["node_modules", "./js/wasm/**/*", "test/**/*"]
+}
