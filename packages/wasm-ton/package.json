@@ -2,7 +2,6 @@
   "name": "@bitgo/wasm-ton",
   "description": "WebAssembly wrapper for TON cryptographic operations",
   "version": "0.0.1",
-  "private": true,
   "type": "module",
   "repository": {
     "type": "git",
@@ -10,7 +9,9 @@
   },
   "license": "MIT",
   "files": [
-    "dist"
+    "dist/esm/js/**/*",
+    "dist/cjs/js/**/*",
+    "dist/cjs/package.json"
   ],
   "exports": {
     ".": {
