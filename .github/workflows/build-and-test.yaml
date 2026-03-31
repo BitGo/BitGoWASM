@@ -44,6 +44,7 @@ jobs:
             packages/wasm-mps
             packages/wasm-solana
             packages/wasm-dot
+            packages/wasm-ton
           cache-on-failure: true
 
       - name: Setup Node
@@ -99,6 +100,8 @@ jobs:
             packages/wasm-solana/js/wasm/
             packages/wasm-dot/dist/
             packages/wasm-dot/js/wasm/
+            packages/wasm-ton/dist/
+            packages/wasm-ton/js/wasm/
           retention-days: 1
 
       - name: Upload webui artifact
@@ -114,7 +117,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [wasm-bip32, wasm-mps, wasm-utxo, wasm-solana, wasm-dot]
+        package: [wasm-bip32, wasm-mps, wasm-utxo, wasm-solana, wasm-dot, wasm-ton]
         include:
           - package: wasm-utxo
             needs-wasm-pack: true
@@ -129,6 +132,9 @@ jobs:
             needs-wasm-pack: false
             has-wasm-pack-tests: false
           - package: wasm-dot
+            needs-wasm-pack: false
+            has-wasm-pack-tests: false
+          - package: wasm-ton
             needs-wasm-pack: false
             has-wasm-pack-tests: false
     steps:
@@ -261,6 +267,16 @@ jobs:
           path: |
             packages/wasm-dot/pkg/
             packages/wasm-dot/dist/
+          retention-days: 1
+
+      - name: Upload wasm-ton build artifacts
+        if: inputs.upload-artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-ton-build
+          path: |
+            packages/wasm-ton/pkg/
+            packages/wasm-ton/dist/
           retention-days: 1
 
   # This job provides a stable "test / Test" status check for branch protection.
