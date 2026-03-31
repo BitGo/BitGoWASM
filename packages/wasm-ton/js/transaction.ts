@@ -77,10 +77,3 @@ export class Transaction {
     return this._wasm;
   }
 }
-
-/**
- * Convenience function to create a Transaction from bytes.
- */
-export function transactionFromBytes(bytes: Uint8Array): Transaction {
-  return Transaction.fromBytes(bytes);
-}
