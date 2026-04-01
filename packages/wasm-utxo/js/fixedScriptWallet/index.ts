@@ -34,21 +34,14 @@ export {
   type HydrationUnspent,
 } from "./BitGoPsbt.js";
 
+export { BitGoKeySubtype, type PsbtKvKey } from "./BitGoKeySubtype.js";
+
 // Zcash-specific PSBT subclass
 export {
   ZcashBitGoPsbt,
   type ZcashNetworkName,
   type CreateEmptyZcashOptions,
 } from "./ZcashBitGoPsbt.js";
-
-// PSBT introspection types (re-exported for consumer convenience)
-export type {
-  PsbtBip32Derivation,
-  PsbtInputData,
-  PsbtOutputData,
-  PsbtOutputDataWithAddress,
-  PsbtWitnessUtxo,
-} from "../wasm/wasm_utxo.js";
 
 import type { ScriptType } from "./scriptType.js";
 

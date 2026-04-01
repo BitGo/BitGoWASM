@@ -9,6 +9,7 @@ mod inscriptions;
 mod inspect;
 mod message;
 mod miniscript;
+mod package_info;
 mod psbt;
 mod recursive_tap_tree;
 mod replay_protection;
@@ -28,6 +29,7 @@ pub use fixed_script_wallet::{BitGoPsbt, FixedScriptWalletNamespace, WasmDimensi
 pub use inscriptions::InscriptionsNamespace;
 pub use message::MessageNamespace;
 pub use miniscript::WrapMiniscript;
+pub use package_info::WasmUtxoNamespace;
 pub use psbt::WrapPsbt;
 pub use replay_protection::WasmReplayProtection;
 pub use transaction::{WasmTransaction, WasmZcashTransaction};

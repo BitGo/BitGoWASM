@@ -401,6 +401,15 @@ impl TryIntoJsValue for crate::inscriptions::TapLeafScript {
     }
 }
 
+impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::WasmUtxoVersionInfo {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "version" => self.version.clone(),
+            "gitHash" => self.git_hash.clone()
+        )
+    }
+}
+
 impl TryIntoJsValue for crate::inscriptions::InscriptionRevealData {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
         js_obj!(

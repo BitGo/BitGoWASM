@@ -14,6 +14,7 @@ import { type ECPairArg, ECPair } from "../ecpair.js";
 import type { UtxolibName } from "../utxolibCompat.js";
 import type { CoinName } from "../coinName.js";
 import type { InputScriptType } from "./scriptType.js";
+import type { PsbtKvKey } from "./BitGoKeySubtype.js";
 import {
   Transaction,
   DashTransaction,
@@ -557,6 +558,36 @@ export class BitGoPsbt implements IPsbtWithAddress {
 
   lockTime(): number {
     return this._wasm.lock_time();
+  }
+
+  /** Set an arbitrary KV pair on the PSBT global map. */
+  setKV(key: PsbtKvKey, value: Uint8Array): void {
+    this._wasm.set_kv(key, value);
+  }
+
+  /** Get a KV value from the PSBT global map. Returns `undefined` if not present. */
+  getKV(key: PsbtKvKey): Uint8Array | undefined {
+    return this._wasm.get_kv(key) ?? undefined;
+  }
+
+  /** Set an arbitrary KV pair on a specific PSBT input. */
+  setInputKV(index: number, key: PsbtKvKey, value: Uint8Array): void {
+    this._wasm.set_input_kv(index, key, value);
+  }
+
+  /** Get a KV value from a specific PSBT input. Returns `undefined` if not present. */
+  getInputKV(index: number, key: PsbtKvKey): Uint8Array | undefined {
+    return this._wasm.get_input_kv(index, key) ?? undefined;
+  }
+
+  /** Set an arbitrary KV pair on a specific PSBT output. */
+  setOutputKV(index: number, key: PsbtKvKey, value: Uint8Array): void {
+    this._wasm.set_output_kv(index, key, value);
+  }
+
+  /** Get a KV value from a specific PSBT output. Returns `undefined` if not present. */
+  getOutputKV(index: number, key: PsbtKvKey): Uint8Array | undefined {
+    return this._wasm.get_output_kv(index, key) ?? undefined;
   }
 
   /**

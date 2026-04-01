@@ -1,4 +1,4 @@
-use miniscript::bitcoin::{psbt, Psbt, TxIn, TxOut};
+use miniscript::bitcoin::{psbt, psbt::raw, Psbt, TxIn, TxOut};
 
 /// Shared accessor trait for types that wrap a `Psbt`.
 ///
@@ -26,6 +26,156 @@ pub trait PsbtAccess {
 
     fn unsigned_tx_id(&self) -> String {
         self.psbt().unsigned_tx.compute_txid().to_string()
+    }
+
+    // -------------------------------------------------------------------------
+    // Global KV accessors
+    // -------------------------------------------------------------------------
+
+    fn set_global_unknown_kv(&mut self, key: raw::Key, value: Vec<u8>) {
+        self.psbt_mut().unknown.insert(key, value);
+    }
+
+    fn get_global_unknown_kv(&self, key: &raw::Key) -> Option<Vec<u8>> {
+        self.psbt().unknown.get(key).cloned()
+    }
+
+    fn set_global_proprietary_kv(&mut self, key: raw::ProprietaryKey, value: Vec<u8>) {
+        self.psbt_mut().proprietary.insert(key, value);
+    }
+
+    fn get_global_proprietary_kv(&self, key: &raw::ProprietaryKey) -> Option<Vec<u8>> {
+        self.psbt().proprietary.get(key).cloned()
+    }
+
+    // -------------------------------------------------------------------------
+    // Per-input KV accessors
+    // -------------------------------------------------------------------------
+
+    fn set_input_unknown_kv(
+        &mut self,
+        index: usize,
+        key: raw::Key,
+        value: Vec<u8>,
+    ) -> Result<(), String> {
+        let len = self.psbt().inputs.len();
+        if index >= len {
+            return Err(format!(
+                "input index {index} out of bounds (have {len} inputs)"
+            ));
+        }
+        self.psbt_mut().inputs[index].unknown.insert(key, value);
+        Ok(())
+    }
+
+    fn get_input_unknown_kv(
+        &self,
+        index: usize,
+        key: &raw::Key,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let len = self.psbt().inputs.len();
+        if index >= len {
+            return Err(format!(
+                "input index {index} out of bounds (have {len} inputs)"
+            ));
+        }
+        Ok(self.psbt().inputs[index].unknown.get(key).cloned())
+    }
+
+    fn set_input_proprietary_kv(
+        &mut self,
+        index: usize,
+        key: raw::ProprietaryKey,
+        value: Vec<u8>,
+    ) -> Result<(), String> {
+        let len = self.psbt().inputs.len();
+        if index >= len {
+            return Err(format!(
+                "input index {index} out of bounds (have {len} inputs)"
+            ));
+        }
+        self.psbt_mut().inputs[index].proprietary.insert(key, value);
+        Ok(())
+    }
+
+    fn get_input_proprietary_kv(
+        &self,
+        index: usize,
+        key: &raw::ProprietaryKey,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let len = self.psbt().inputs.len();
+        if index >= len {
+            return Err(format!(
+                "input index {index} out of bounds (have {len} inputs)"
+            ));
+        }
+        Ok(self.psbt().inputs[index].proprietary.get(key).cloned())
+    }
+
+    // -------------------------------------------------------------------------
+    // Per-output KV accessors
+    // -------------------------------------------------------------------------
+
+    fn set_output_unknown_kv(
+        &mut self,
+        index: usize,
+        key: raw::Key,
+        value: Vec<u8>,
+    ) -> Result<(), String> {
+        let len = self.psbt().outputs.len();
+        if index >= len {
+            return Err(format!(
+                "output index {index} out of bounds (have {len} outputs)"
+            ));
+        }
+        self.psbt_mut().outputs[index].unknown.insert(key, value);
+        Ok(())
+    }
+
+    fn get_output_unknown_kv(
+        &self,
+        index: usize,
+        key: &raw::Key,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let len = self.psbt().outputs.len();
+        if index >= len {
+            return Err(format!(
+                "output index {index} out of bounds (have {len} outputs)"
+            ));
+        }
+        Ok(self.psbt().outputs[index].unknown.get(key).cloned())
+    }
+
+    fn set_output_proprietary_kv(
+        &mut self,
+        index: usize,
+        key: raw::ProprietaryKey,
+        value: Vec<u8>,
+    ) -> Result<(), String> {
+        let len = self.psbt().outputs.len();
+        if index >= len {
+            return Err(format!(
+                "output index {index} out of bounds (have {len} outputs)"
+            ));
+        }
+        self.psbt_mut().outputs[index]
+            .proprietary
+            .insert(key, value);
+        Ok(())
+    }
+
+    fn get_output_proprietary_kv(
+        &self,
+        index: usize,
+        key: &raw::ProprietaryKey,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let len = self.psbt().outputs.len();
+        if index >= len {
+            return Err(format!(
+                "output index {index} out of bounds (have {len} outputs)"
+            ));
+        }
+        Ok(self.psbt().outputs[index].proprietary.get(key).cloned())
     }
 }
 
