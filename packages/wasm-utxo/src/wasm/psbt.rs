@@ -3,6 +3,7 @@ use crate::error::WasmUtxoError;
 use crate::wasm::bip32::WasmBIP32;
 use crate::wasm::descriptor::WrapDescriptorEnum;
 use crate::wasm::ecpair::WasmECPair;
+use crate::wasm::psbt_ops::WasmPsbtOps;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use crate::wasm::WrapDescriptor;
 use miniscript::bitcoin::bip32::Fingerprint;
@@ -368,14 +369,6 @@ impl WrapPsbt {
             .expect("insert at len should never fail")
     }
 
-    pub fn remove_input(&mut self, index: usize) -> Result<(), JsError> {
-        crate::psbt_ops::remove_input(&mut self.0, index).map_err(|e| JsError::new(&e))
-    }
-
-    pub fn remove_output(&mut self, index: usize) -> Result<(), JsError> {
-        crate::psbt_ops::remove_output(&mut self.0, index).map_err(|e| JsError::new(&e))
-    }
-
     /// Get the unsigned transaction bytes
     ///
     /// # Returns
@@ -626,30 +619,10 @@ impl WrapPsbt {
         Ok(crate::wasm::transaction::WasmTransaction::from_tx(tx))
     }
 
-    pub fn input_count(&self) -> usize {
-        crate::psbt_ops::PsbtAccess::input_count(self)
-    }
-
-    pub fn output_count(&self) -> usize {
-        crate::psbt_ops::PsbtAccess::output_count(self)
-    }
-
-    pub fn get_inputs(&self) -> Result<JsValue, WasmUtxoError> {
-        get_inputs_from_psbt(&self.0)
-    }
-
-    pub fn get_outputs(&self) -> Result<JsValue, WasmUtxoError> {
-        get_outputs_from_psbt(&self.0)
-    }
-
     pub fn get_outputs_with_address(&self, coin: &str) -> Result<JsValue, WasmUtxoError> {
         let network = crate::Network::from_coin_name(coin)
             .ok_or_else(|| WasmUtxoError::new(&format!("Unknown coin: {}", coin)))?;
         get_outputs_with_address_from_psbt(&self.0, network)
-    }
-
-    pub fn get_global_xpubs(&self) -> JsValue {
-        get_global_xpubs_from_psbt(&self.0)
     }
 
     pub fn get_partial_signatures(&self, input_index: usize) -> Result<JsValue, WasmUtxoError> {
@@ -672,18 +645,6 @@ impl WrapPsbt {
         Ok(!input.partial_sigs.is_empty()
             || !input.tap_script_sigs.is_empty()
             || input.tap_key_sig.is_some())
-    }
-
-    pub fn unsigned_tx_id(&self) -> String {
-        crate::psbt_ops::PsbtAccess::unsigned_tx_id(self)
-    }
-
-    pub fn lock_time(&self) -> u32 {
-        crate::psbt_ops::PsbtAccess::lock_time(self)
-    }
-
-    pub fn version(&self) -> i32 {
-        crate::psbt_ops::PsbtAccess::version(self)
     }
 
     pub fn validate_signature_at_input(
@@ -777,88 +738,194 @@ impl WrapPsbt {
         // No matching signature found
         Ok(false)
     }
-
-    pub fn set_kv(&mut self, key: JsValue, value: Vec<u8>) -> Result<(), WasmUtxoError> {
-        use crate::psbt_ops::PsbtAccess;
-        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
-        match PsbtKvKey::try_from_js_value(&key)? {
-            PsbtKvKey::Unknown(k) => PsbtAccess::set_global_unknown_kv(self, k, value),
-            PsbtKvKey::Proprietary(k) => PsbtAccess::set_global_proprietary_kv(self, k, value),
-        }
-        Ok(())
-    }
-
-    pub fn get_kv(&self, key: JsValue) -> Result<Option<Vec<u8>>, WasmUtxoError> {
-        use crate::psbt_ops::PsbtAccess;
-        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
-        Ok(match PsbtKvKey::try_from_js_value(&key)? {
-            PsbtKvKey::Unknown(k) => PsbtAccess::get_global_unknown_kv(self, &k),
-            PsbtKvKey::Proprietary(k) => PsbtAccess::get_global_proprietary_kv(self, &k),
-        })
-    }
-
-    pub fn set_input_kv(
-        &mut self,
-        index: usize,
-        key: JsValue,
-        value: Vec<u8>,
-    ) -> Result<(), WasmUtxoError> {
-        use crate::psbt_ops::PsbtAccess;
-        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
-        match PsbtKvKey::try_from_js_value(&key)? {
-            PsbtKvKey::Unknown(k) => PsbtAccess::set_input_unknown_kv(self, index, k, value),
-            PsbtKvKey::Proprietary(k) => {
-                PsbtAccess::set_input_proprietary_kv(self, index, k, value)
-            }
-        }
-        .map_err(|e| WasmUtxoError::new(&e))
-    }
-
-    pub fn get_input_kv(
-        &self,
-        index: usize,
-        key: JsValue,
-    ) -> Result<Option<Vec<u8>>, WasmUtxoError> {
-        use crate::psbt_ops::PsbtAccess;
-        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
-        match PsbtKvKey::try_from_js_value(&key)? {
-            PsbtKvKey::Unknown(k) => PsbtAccess::get_input_unknown_kv(self, index, &k),
-            PsbtKvKey::Proprietary(k) => PsbtAccess::get_input_proprietary_kv(self, index, &k),
-        }
-        .map_err(|e| WasmUtxoError::new(&e))
-    }
-
-    pub fn set_output_kv(
-        &mut self,
-        index: usize,
-        key: JsValue,
-        value: Vec<u8>,
-    ) -> Result<(), WasmUtxoError> {
-        use crate::psbt_ops::PsbtAccess;
-        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
-        match PsbtKvKey::try_from_js_value(&key)? {
-            PsbtKvKey::Unknown(k) => PsbtAccess::set_output_unknown_kv(self, index, k, value),
-            PsbtKvKey::Proprietary(k) => {
-                PsbtAccess::set_output_proprietary_kv(self, index, k, value)
-            }
-        }
-        .map_err(|e| WasmUtxoError::new(&e))
-    }
-
-    pub fn get_output_kv(
-        &self,
-        index: usize,
-        key: JsValue,
-    ) -> Result<Option<Vec<u8>>, WasmUtxoError> {
-        use crate::psbt_ops::PsbtAccess;
-        use crate::wasm::try_from_js_value::{PsbtKvKey, TryFromJsValue};
-        match PsbtKvKey::try_from_js_value(&key)? {
-            PsbtKvKey::Unknown(k) => PsbtAccess::get_output_unknown_kv(self, index, &k),
-            PsbtKvKey::Proprietary(k) => PsbtAccess::get_output_proprietary_kv(self, index, &k),
-        }
-        .map_err(|e| WasmUtxoError::new(&e))
-    }
 }
+
+/// Generates a `#[wasm_bindgen]` impl block exposing all shared PSBT delegation methods.
+///
+/// - `impl_wasm_psbt_ops!(Type)` — the type itself implements `PsbtAccess` (e.g. `WrapPsbt`)
+/// - `impl_wasm_psbt_ops!(Type, field)` — `self.field` implements `PsbtAccess` (e.g. `BitGoPsbt, psbt`)
+///
+/// Requires `WasmPsbtOps` to be in scope at the invocation site.
+macro_rules! impl_wasm_psbt_ops {
+    ($type:ty) => {
+        #[::wasm_bindgen::prelude::wasm_bindgen]
+        impl $type {
+            pub fn input_count(&self) -> usize {
+                self.wasm_input_count()
+            }
+            pub fn output_count(&self) -> usize {
+                self.wasm_output_count()
+            }
+            pub fn version(&self) -> i32 {
+                self.wasm_version()
+            }
+            pub fn lock_time(&self) -> u32 {
+                self.wasm_lock_time()
+            }
+            pub fn unsigned_tx_id(&self) -> String {
+                self.wasm_unsigned_tx_id()
+            }
+            pub fn remove_input(
+                &mut self,
+                index: usize,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.wasm_remove_input(index)
+            }
+            pub fn remove_output(
+                &mut self,
+                index: usize,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.wasm_remove_output(index)
+            }
+            pub fn get_inputs(
+                &self,
+            ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
+                self.wasm_get_inputs()
+            }
+            pub fn get_outputs(
+                &self,
+            ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
+                self.wasm_get_outputs()
+            }
+            pub fn get_global_xpubs(&self) -> ::wasm_bindgen::JsValue {
+                self.wasm_get_global_xpubs()
+            }
+            pub fn set_kv(
+                &mut self,
+                key: ::wasm_bindgen::JsValue,
+                value: Vec<u8>,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.wasm_set_kv(key, value)
+            }
+            pub fn get_kv(
+                &self,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<Option<Vec<u8>>, $crate::error::WasmUtxoError> {
+                self.wasm_get_kv(key)
+            }
+            pub fn set_input_kv(
+                &mut self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+                value: Vec<u8>,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.wasm_set_input_kv(index, key, value)
+            }
+            pub fn get_input_kv(
+                &self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<Option<Vec<u8>>, $crate::error::WasmUtxoError> {
+                self.wasm_get_input_kv(index, key)
+            }
+            pub fn set_output_kv(
+                &mut self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+                value: Vec<u8>,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.wasm_set_output_kv(index, key, value)
+            }
+            pub fn get_output_kv(
+                &self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<Option<Vec<u8>>, $crate::error::WasmUtxoError> {
+                self.wasm_get_output_kv(index, key)
+            }
+        }
+    };
+    ($type:ty, $field:ident) => {
+        #[::wasm_bindgen::prelude::wasm_bindgen]
+        impl $type {
+            pub fn input_count(&self) -> usize {
+                self.$field.wasm_input_count()
+            }
+            pub fn output_count(&self) -> usize {
+                self.$field.wasm_output_count()
+            }
+            pub fn version(&self) -> i32 {
+                self.$field.wasm_version()
+            }
+            pub fn lock_time(&self) -> u32 {
+                self.$field.wasm_lock_time()
+            }
+            pub fn unsigned_tx_id(&self) -> String {
+                self.$field.wasm_unsigned_tx_id()
+            }
+            pub fn remove_input(
+                &mut self,
+                index: usize,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.$field.wasm_remove_input(index)
+            }
+            pub fn remove_output(
+                &mut self,
+                index: usize,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.$field.wasm_remove_output(index)
+            }
+            pub fn get_inputs(
+                &self,
+            ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
+                self.$field.wasm_get_inputs()
+            }
+            pub fn get_outputs(
+                &self,
+            ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
+                self.$field.wasm_get_outputs()
+            }
+            pub fn get_global_xpubs(&self) -> ::wasm_bindgen::JsValue {
+                self.$field.wasm_get_global_xpubs()
+            }
+            pub fn set_kv(
+                &mut self,
+                key: ::wasm_bindgen::JsValue,
+                value: Vec<u8>,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.$field.wasm_set_kv(key, value)
+            }
+            pub fn get_kv(
+                &self,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<Option<Vec<u8>>, $crate::error::WasmUtxoError> {
+                self.$field.wasm_get_kv(key)
+            }
+            pub fn set_input_kv(
+                &mut self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+                value: Vec<u8>,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.$field.wasm_set_input_kv(index, key, value)
+            }
+            pub fn get_input_kv(
+                &self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<Option<Vec<u8>>, $crate::error::WasmUtxoError> {
+                self.$field.wasm_get_input_kv(index, key)
+            }
+            pub fn set_output_kv(
+                &mut self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+                value: Vec<u8>,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.$field.wasm_set_output_kv(index, key, value)
+            }
+            pub fn get_output_kv(
+                &self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<Option<Vec<u8>>, $crate::error::WasmUtxoError> {
+                self.$field.wasm_get_output_kv(index, key)
+            }
+        }
+    };
+}
+
+impl_wasm_psbt_ops!(WrapPsbt);
 
 impl crate::psbt_ops::PsbtAccess for WrapPsbt {
     fn psbt(&self) -> &Psbt {

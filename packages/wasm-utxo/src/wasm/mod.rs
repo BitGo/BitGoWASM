@@ -4,13 +4,15 @@ mod bip322;
 mod dash_transaction;
 mod descriptor;
 mod ecpair;
+mod psbt_ops;
+#[macro_use]
+mod psbt;
 mod fixed_script_wallet;
 mod inscriptions;
 mod inspect;
 mod message;
 mod miniscript;
 mod package_info;
-mod psbt;
 mod recursive_tap_tree;
 mod replay_protection;
 mod transaction;

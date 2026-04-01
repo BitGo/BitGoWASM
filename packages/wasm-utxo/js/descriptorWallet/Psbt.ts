@@ -3,29 +3,22 @@ import {
   type WasmBIP32,
   type WasmECPair,
   type WrapDescriptor,
-  type PsbtInputData,
-  type PsbtOutputData,
   type PsbtOutputDataWithAddress,
 } from "../wasm/wasm_utxo.js";
 import type { IPsbt } from "../psbt.js";
-import type { PsbtKvKey } from "../fixedScriptWallet/BitGoKeySubtype.js";
 import type { CoinName } from "../coinName.js";
-import type { BIP32 } from "../bip32.js";
 import { Transaction } from "../transaction.js";
+import { PsbtBase } from "../psbtBase.js";
 
 export type SignPsbtResult = {
   [inputIndex: number]: [pubkey: string][];
 };
 
-export class Psbt implements IPsbt {
-  private _wasm: WasmPsbt;
-
+export class Psbt extends PsbtBase<WasmPsbt> implements IPsbt {
   constructor(versionOrWasm?: number | WasmPsbt, lockTime?: number) {
-    if (versionOrWasm instanceof WasmPsbt) {
-      this._wasm = versionOrWasm;
-    } else {
-      this._wasm = new WasmPsbt(versionOrWasm, lockTime);
-    }
+    super(
+      versionOrWasm instanceof WasmPsbt ? versionOrWasm : new WasmPsbt(versionOrWasm, lockTime),
+    );
   }
 
   /** @internal Access the underlying WASM instance */
@@ -45,47 +38,11 @@ export class Psbt implements IPsbt {
 
   // -- Serialization --
 
-  serialize(): Uint8Array {
-    return this._wasm.serialize();
-  }
-
   clone(): Psbt {
     return new Psbt(this._wasm.clone());
   }
 
   // -- IPsbt: introspection --
-
-  inputCount(): number {
-    return this._wasm.input_count();
-  }
-
-  outputCount(): number {
-    return this._wasm.output_count();
-  }
-
-  version(): number {
-    return this._wasm.version();
-  }
-
-  lockTime(): number {
-    return this._wasm.lock_time();
-  }
-
-  unsignedTxId(): string {
-    return this._wasm.unsigned_tx_id();
-  }
-
-  getInputs(): PsbtInputData[] {
-    return this._wasm.get_inputs() as PsbtInputData[];
-  }
-
-  getOutputs(): PsbtOutputData[] {
-    return this._wasm.get_outputs() as PsbtOutputData[];
-  }
-
-  getGlobalXpubs(): BIP32[] {
-    return this._wasm.get_global_xpubs() as BIP32[];
-  }
 
   getOutputsWithAddress(coin: CoinName): PsbtOutputDataWithAddress[] {
     return this._wasm.get_outputs_with_address(coin) as PsbtOutputDataWithAddress[];
@@ -120,38 +77,6 @@ export class Psbt implements IPsbt {
 
   addOutput(script: Uint8Array, value: bigint): number {
     return this._wasm.add_output(script, value);
-  }
-
-  removeInput(index: number): void {
-    this._wasm.remove_input(index);
-  }
-
-  removeOutput(index: number): void {
-    this._wasm.remove_output(index);
-  }
-
-  setKV(key: PsbtKvKey, value: Uint8Array): void {
-    this._wasm.set_kv(key, value);
-  }
-
-  getKV(key: PsbtKvKey): Uint8Array | undefined {
-    return this._wasm.get_kv(key) ?? undefined;
-  }
-
-  setInputKV(index: number, key: PsbtKvKey, value: Uint8Array): void {
-    this._wasm.set_input_kv(index, key, value);
-  }
-
-  getInputKV(index: number, key: PsbtKvKey): Uint8Array | undefined {
-    return this._wasm.get_input_kv(index, key) ?? undefined;
-  }
-
-  setOutputKV(index: number, key: PsbtKvKey, value: Uint8Array): void {
-    this._wasm.set_output_kv(index, key, value);
-  }
-
-  getOutputKV(index: number, key: PsbtKvKey): Uint8Array | undefined {
-    return this._wasm.get_output_kv(index, key) ?? undefined;
   }
 
   // -- Descriptor updates --
