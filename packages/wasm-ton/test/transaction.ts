@@ -20,8 +20,19 @@ describe("Transaction", () => {
     it("should deserialize a signed send transaction", () => {
       const tx = fromBase64(signedSendTx);
       assert.ok(tx);
-      assert.ok(tx.id);
       assert.ok(tx.destination);
+    });
+
+    it("should compute cell hash as transaction id", () => {
+      const tx = fromBase64(signedSendTx);
+      // Cell hash of the root external message cell, base64url with padding
+      assert.equal(tx.id, "tuyOkyFUMv_neV_FeNBH24Nd4cML2jUgDP4zjGkuOFI=");
+    });
+
+    it("should compute correct id for single nominator withdraw", () => {
+      const tx = fromBase64(singleNominatorWithdrawTx);
+      // Must match legacy TonWeb hash, not the re-serialized cell hash
+      assert.equal(tx.id, "n1rr-QL61WZ7UJN7ESH2iPQO7toTy9WLqXoSIG1JtXg=");
     });
 
     it("should get signable payload", () => {
@@ -45,6 +56,7 @@ describe("Transaction", () => {
       assert.ok(parsed.sendActions.length > 0);
       assert.ok(parsed.sender);
       assert.ok(parsed.signature);
+      assert.equal(parsed.sendActions[0].withdrawAmount, undefined);
     });
 
     it("should parse a whales deposit transaction", () => {
@@ -52,13 +64,16 @@ describe("Transaction", () => {
       const parsed = parseTransaction(tx);
       assert.equal(parsed.transactionType, "WhalesDeposit");
       assert.ok(parsed.sendActions.length > 0);
+      assert.equal(parsed.sendActions[0].withdrawAmount, undefined);
     });
 
-    it("should parse a single nominator withdraw transaction", () => {
+    it("should parse a single nominator withdraw transaction with withdrawAmount", () => {
       const tx = fromBase64(singleNominatorWithdrawTx);
       const parsed = parseTransaction(tx);
       assert.equal(parsed.transactionType, "SingleNominatorWithdraw");
       assert.ok(parsed.sendActions.length > 0);
+      assert.equal(typeof parsed.sendActions[0].withdrawAmount, "bigint");
+      assert.equal(parsed.sendActions[0].withdrawAmount, 932178112330000n);
     });
   });
 });

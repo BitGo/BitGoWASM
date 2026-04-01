@@ -209,6 +209,15 @@ impl TryIntoJsValue for ParsedSendAction {
             .map_err(|_| JsConversionError::new("Failed to set jettonTransfer"))?;
         }
 
+        if let Some(withdraw_amount) = self.withdraw_amount {
+            js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("withdrawAmount"),
+                &TryIntoJsValue::try_to_js_value(&withdraw_amount)?,
+            )
+            .map_err(|_| JsConversionError::new("Failed to set withdrawAmount"))?;
+        }
+
         Ok(obj.into())
     }
 }
