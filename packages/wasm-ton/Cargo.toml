@@ -25,7 +25,7 @@ crc = "3"
 sha2 = "0.10"
 num-bigint = "0.4"
 tlb-ton = { version = "0.7.3", features = ["sha2"] }
-ton-contracts = { version = "0.7.3", features = ["wallet"] }
+ton-contracts = { version = "0.7.3", features = ["wallet", "jetton"] }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
