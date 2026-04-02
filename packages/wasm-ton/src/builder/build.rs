@@ -8,6 +8,7 @@ use tlb_ton::{
     ser::CellSerializeExt,
     BagOfCells, BagOfCellsArgs, Cell, MsgAddress,
 };
+use ton_contracts::jetton::{ForwardPayload, ForwardPayloadComment, JettonTransfer};
 use ton_contracts::wallet::v4r2::{WalletV4R2ExternalBody, WalletV4R2SignBody, V4R2};
 use ton_contracts::wallet::WalletVersion;
 
@@ -18,8 +19,6 @@ use crate::error::WasmTonError;
 const WHALES_DEPOSIT_OPCODE: u32 = 0x7bcd1fef;
 const WHALES_WITHDRAW_OPCODE: u32 = 0xda803efd;
 const SINGLE_NOMINATOR_WITHDRAW_OPCODE: u32 = 0x00001000;
-// Jetton transfer opcode
-const JETTON_TRANSFER_OPCODE: u32 = 0x0f8a7ea5;
 
 const BOC_ARGS: BagOfCellsArgs = BagOfCellsArgs {
     has_idx: false,
@@ -294,58 +293,21 @@ fn build_jetton_transfer_body(
     forward_ton_amount: u64,
     memo: Option<&str>,
 ) -> Result<Cell, WasmTonError> {
-    let mut builder = Cell::builder();
-    builder
-        .pack(JETTON_TRANSFER_OPCODE, ())
-        .map_err(|e| WasmTonError::new(&format!("jetton: failed to write opcode: {e}")))?;
-    builder
-        .pack(query_id, ())
-        .map_err(|e| WasmTonError::new(&format!("jetton: failed to write query_id: {e}")))?;
-    builder
-        .pack_as::<_, &Grams>(&BigUint::from(amount), ())
-        .map_err(|e| WasmTonError::new(&format!("jetton: failed to write amount: {e}")))?;
-    builder
-        .pack(destination, ())
-        .map_err(|e| WasmTonError::new(&format!("jetton: failed to write destination: {e}")))?;
-    builder.pack(response_destination, ()).map_err(|e| {
-        WasmTonError::new(&format!(
-            "jetton: failed to write response_destination: {e}"
-        ))
-    })?;
-    // custom_payload: Maybe ^Cell = None
-    builder.pack(false, ()).map_err(|e| {
-        WasmTonError::new(&format!("jetton: failed to write custom_payload flag: {e}"))
-    })?;
-    builder
-        .pack_as::<_, &Grams>(&BigUint::from(forward_ton_amount), ())
-        .map_err(|e| {
-            WasmTonError::new(&format!("jetton: failed to write forward_ton_amount: {e}"))
-        })?;
-
-    // forward_payload: Either Cell ^Cell
-    if let Some(text) = memo {
-        builder.pack(false, ()).map_err(|e| {
-            WasmTonError::new(&format!(
-                "jetton: failed to write forward_payload flag: {e}"
-            ))
-        })?;
-        builder
-            .pack(0u32, ())
-            .map_err(|e| WasmTonError::new(&format!("jetton: failed to write memo opcode: {e}")))?;
-        for byte in text.as_bytes() {
-            builder.pack(*byte, ()).map_err(|e| {
-                WasmTonError::new(&format!("jetton: failed to write memo byte: {e}"))
-            })?;
-        }
-    } else {
-        builder.pack(false, ()).map_err(|e| {
-            WasmTonError::new(&format!(
-                "jetton: failed to write forward_payload flag: {e}"
-            ))
-        })?;
+    let forward_payload = match memo {
+        Some(text) => ForwardPayload::Comment(ForwardPayloadComment::Text(text.to_string())),
+        None => ForwardPayload::Data(Cell::default()),
+    };
+    JettonTransfer::<Cell> {
+        query_id,
+        amount: BigUint::from(amount),
+        dst: destination,
+        response_dst: response_destination,
+        custom_payload: None,
+        forward_ton_amount: BigUint::from(forward_ton_amount),
+        forward_payload,
     }
-
-    Ok(builder.into_cell())
+    .to_cell(())
+    .map_err(|e| WasmTonError::new(&format!("jetton: failed to serialize transfer: {e}")))
 }
 
 fn build_whales_deposit_body(query_id: u64) -> Result<Cell, WasmTonError> {
