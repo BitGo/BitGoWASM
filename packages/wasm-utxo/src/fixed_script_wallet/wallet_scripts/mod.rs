@@ -13,7 +13,7 @@ pub use checksigverify::{
     build_p2tr_ns_script, build_tap_tree_for_output, create_tap_bip32_derivation_for_output,
     ScriptP2tr,
 };
-pub use singlesig::{build_p2pk_script, ScriptP2shP2pk};
+pub use singlesig::{build_p2pk_script, parse_p2pk_script, ScriptP2shP2pk};
 
 use crate::address::networks::OutputScriptSupport;
 use crate::bitcoin::bip32::{ChildNumber, DerivationPath};

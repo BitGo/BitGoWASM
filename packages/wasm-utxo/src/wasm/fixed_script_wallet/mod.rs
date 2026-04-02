@@ -427,34 +427,58 @@ impl BitGoPsbt {
         unspents: JsValue,
     ) -> Result<BitGoPsbt, WasmUtxoError> {
         use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ScriptIdWithValue;
+        use crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput;
 
         let network = parse_network(network)?;
         let wallet_keys = wallet_keys.inner();
 
-        // Parse the unspents array from JsValue
+        // Parse the unspents array from JsValue.
+        // Each element is either:
+        //   { chain: number, index: number, value: bigint }  → wallet input
+        //   { value: bigint }                                 → replay protection input
+        // The presence of `chain` is used to distinguish the two.
         let arr = js_sys::Array::from(&unspents);
         let mut parsed_unspents = Vec::with_capacity(arr.length() as usize);
         for i in 0..arr.length() {
             let item = arr.get(i);
-            let chain = js_sys::Reflect::get(&item, &"chain".into())
-                .map_err(|_| WasmUtxoError::new("Missing 'chain' field on unspent"))?
-                .as_f64()
-                .ok_or_else(|| WasmUtxoError::new("'chain' must be a number"))?
-                as u32;
-            let index = js_sys::Reflect::get(&item, &"index".into())
-                .map_err(|_| WasmUtxoError::new("Missing 'index' field on unspent"))?
-                .as_f64()
-                .ok_or_else(|| WasmUtxoError::new("'index' must be a number"))?
-                as u32;
             let value_js = js_sys::Reflect::get(&item, &"value".into())
                 .map_err(|_| WasmUtxoError::new("Missing 'value' field on unspent"))?;
             let value = u64::try_from(js_sys::BigInt::unchecked_from_js(value_js))
                 .map_err(|_| WasmUtxoError::new("'value' must be a bigint convertible to u64"))?;
-            parsed_unspents.push(ScriptIdWithValue {
-                chain,
-                index,
-                value,
-            });
+
+            let chain_val =
+                js_sys::Reflect::get(&item, &"chain".into()).unwrap_or(JsValue::UNDEFINED);
+
+            if chain_val.is_undefined() {
+                // No 'chain' property → replay protection input; require pubkey
+                let pubkey_val = js_sys::Reflect::get(&item, &"pubkey".into()).map_err(|_| {
+                    WasmUtxoError::new("Missing 'pubkey' on replay protection unspent")
+                })?;
+                let pubkey_bytes = js_sys::Uint8Array::new(&pubkey_val).to_vec();
+                let pubkey = miniscript::bitcoin::CompressedPublicKey::from_slice(&pubkey_bytes)
+                    .map_err(|_| {
+                        WasmUtxoError::new(
+                            "'pubkey' is not a valid compressed public key (33 bytes)",
+                        )
+                    })?;
+                parsed_unspents.push(HydrationUnspentInput::ReplayProtection { pubkey, value });
+            } else {
+                // Has 'chain' → wallet input; also parse 'index'
+                let chain = chain_val
+                    .as_f64()
+                    .ok_or_else(|| WasmUtxoError::new("'chain' must be a number"))?
+                    as u32;
+                let index = js_sys::Reflect::get(&item, &"index".into())
+                    .map_err(|_| WasmUtxoError::new("Missing 'index' field on wallet unspent"))?
+                    .as_f64()
+                    .ok_or_else(|| WasmUtxoError::new("'index' must be a number"))?
+                    as u32;
+                parsed_unspents.push(HydrationUnspentInput::Wallet(ScriptIdWithValue {
+                    chain,
+                    index,
+                    value,
+                }));
+            }
         }
 
         let psbt =

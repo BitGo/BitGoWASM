@@ -124,11 +124,9 @@ export type ParseOutputsOptions = {
   payGoPubkeys?: ECPairArg[];
 };
 
-export type HydrationUnspent = {
-  chain: number;
-  index: number;
-  value: bigint;
-};
+export type HydrationUnspent =
+  | { chain: number; index: number; value: bigint } // wallet input
+  | { pubkey: Uint8Array; value: bigint }; // P2SH-P2PK replay protection input
 
 export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddress {
   protected constructor(wasm: WasmBitGoPsbt) {

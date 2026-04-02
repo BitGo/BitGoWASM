@@ -12,6 +12,19 @@ pub fn build_p2pk_script(key: CompressedPublicKey) -> ScriptBuf {
         .into_script()
 }
 
+/// Parse a bare P2PK script (`<pubkey> OP_CHECKSIG`) and return the pubkey if valid.
+///
+/// P2PK format: `0x21 <33-byte compressed pubkey> 0xac`
+pub fn parse_p2pk_script(script: &ScriptBuf) -> Option<CompressedPublicKey> {
+    let b = script.as_bytes();
+    // 0x21 = push 33 bytes, 0xac = OP_CHECKSIG
+    if b.len() == 35 && b[0] == 0x21 && b[34] == 0xac {
+        CompressedPublicKey::from_slice(&b[1..34]).ok()
+    } else {
+        None
+    }
+}
+
 #[derive(Debug)]
 pub struct ScriptP2shP2pk {
     pub redeem_script: ScriptBuf,
