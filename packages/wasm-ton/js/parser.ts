@@ -27,6 +27,8 @@ export interface ParsedSendAction {
   bodyOpcode?: number;
   memo?: string;
   jettonTransfer?: JettonTransferFields;
+  /** Withdraw amount from the message body (SingleNominator/Whales withdrawal types). */
+  withdrawAmount?: bigint;
 }
 
 /** A fully parsed TON transaction */

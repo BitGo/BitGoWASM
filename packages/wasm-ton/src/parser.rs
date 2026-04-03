@@ -5,8 +5,14 @@ use ton_contracts::wallet::v4r2::{WalletV4R2Op, WalletV4R2SignBody};
 use crate::error::WasmTonError;
 use crate::transaction::Transaction;
 
-/// Body parse result: (opcode, memo, jetton_transfer)
-type BodyParseResult = (Option<u32>, Option<String>, Option<JettonTransferFields>);
+/// Parsed result of a message body.
+#[derive(Debug, Default)]
+struct BodyParseResult {
+    opcode: Option<u32>,
+    memo: Option<String>,
+    jetton_transfer: Option<JettonTransferFields>,
+    withdraw_amount: Option<u64>,
+}
 
 /// Transaction type enum
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +70,8 @@ pub struct ParsedSendAction {
     pub state_init: bool,
     pub memo: Option<String>,
     pub jetton_transfer: Option<JettonTransferFields>,
+    /// Withdraw amount encoded in the message body (SingleNominator/Whales withdrawal types).
+    pub withdraw_amount: Option<u64>,
 }
 
 /// A fully parsed TON transaction
@@ -142,7 +150,7 @@ fn parse_sign_body_actions(
                 let state_init = msg.init.is_some();
 
                 // Parse body
-                let (body_opcode, memo, jetton_transfer) = parse_message_body(&msg.body)?;
+                let body = parse_message_body(&msg.body)?;
 
                 parsed.push(ParsedSendAction {
                     mode: action.mode,
@@ -154,10 +162,11 @@ fn parse_sign_body_actions(
                     destination_bounceable: bounceable_str,
                     amount,
                     bounce,
-                    body_opcode,
+                    body_opcode: body.opcode,
                     state_init,
-                    memo,
-                    jetton_transfer,
+                    memo: body.memo,
+                    jetton_transfer: body.jetton_transfer,
+                    withdraw_amount: body.withdraw_amount,
                 });
             }
             Ok(parsed)
@@ -172,12 +181,12 @@ fn parse_message_body(body: &Cell) -> Result<BodyParseResult, WasmTonError> {
 
     // Empty body
     if bits_left == 0 {
-        return Ok((None, None, None));
+        return Ok(BodyParseResult::default());
     }
 
     // Need at least 32 bits for opcode
     if bits_left < 32 {
-        return Ok((None, None, None));
+        return Ok(BodyParseResult::default());
     }
 
     let opcode: u32 = parser
@@ -195,16 +204,50 @@ fn parse_message_body(body: &Cell) -> Result<BodyParseResult, WasmTonError> {
             };
         }
         let memo = String::from_utf8_lossy(&bytes).to_string();
-        return Ok((Some(0), Some(memo), None));
+        return Ok(BodyParseResult {
+            opcode: Some(0),
+            memo: Some(memo),
+            ..Default::default()
+        });
     }
 
     if opcode == JETTON_TRANSFER_OPCODE {
         let (jetton, memo) = parse_jetton_transfer_body(&mut parser, body)?;
-        return Ok((Some(opcode), memo, Some(jetton)));
+        return Ok(BodyParseResult {
+            opcode: Some(opcode),
+            memo,
+            jetton_transfer: Some(jetton),
+            ..Default::default()
+        });
+    }
+
+    if opcode == WHALES_WITHDRAW_OPCODE || opcode == SINGLE_NOMINATOR_WITHDRAW_OPCODE {
+        let amount = parse_withdraw_amount_body(&mut parser)?;
+        return Ok(BodyParseResult {
+            opcode: Some(opcode),
+            withdraw_amount: Some(amount),
+            ..Default::default()
+        });
     }
 
     // Other known opcodes
-    Ok((Some(opcode), None, None))
+    Ok(BodyParseResult {
+        opcode: Some(opcode),
+        ..Default::default()
+    })
+}
+
+/// Parse query_id + amount from a withdrawal message body (Whales or SingleNominator).
+fn parse_withdraw_amount_body(
+    parser: &mut tlb_ton::de::CellParser<'_>,
+) -> Result<u64, WasmTonError> {
+    let _query_id: u64 = parser
+        .unpack(())
+        .map_err(|e| WasmTonError::new(&format!("withdraw: failed to read query_id: {e}")))?;
+    let amount_big: BigUint = parser
+        .unpack_as::<_, Grams>(())
+        .map_err(|e| WasmTonError::new(&format!("withdraw: failed to read amount: {e}")))?;
+    Ok(biguint_to_u64(&amount_big))
 }
 
 /// Parse a jetton transfer body, returning the parsed fields and any text memo.
