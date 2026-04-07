@@ -142,6 +142,7 @@ impl OutputScriptSupport {
             OutputScriptType::P2sh => true, // all networks support legacy scripts
             OutputScriptType::P2shP2wsh | OutputScriptType::P2wsh => self.segwit,
             OutputScriptType::P2trLegacy | OutputScriptType::P2trMusig2 => self.taproot,
+            OutputScriptType::P2mr => self.p2mr,
         }
     }
 }

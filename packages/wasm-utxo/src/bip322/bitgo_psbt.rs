@@ -140,6 +140,9 @@ pub fn add_bip322_input(
                 create_bip32_derivation(wallet_keys, chain, index);
             inner_psbt.inputs[input_index].witness_script = Some(script.witness_script.clone());
         }
+        WalletScripts::P2mr(_) => {
+            return Err("BIP-322 signing for P2MR is not yet supported".to_string());
+        }
         WalletScripts::P2trLegacy(script) | WalletScripts::P2trMusig2(script) => {
             // For taproot, sign_path is required
             let (signer_idx, cosigner_idx) =

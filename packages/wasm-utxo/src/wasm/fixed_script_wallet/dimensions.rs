@@ -146,6 +146,24 @@ fn get_p2tr_script_path_components(level: usize) -> (Vec<usize>, Vec<usize>) {
     )
 }
 
+/// Get P2MR script path spend witness components at the given merkle tree depth.
+///
+/// P2MR control blocks are `1 + 32 * depth` bytes (no 32-byte internal key,
+/// unlike P2TR which is `1 + 32 + 32 * depth`).
+fn get_p2mr_script_path_components(depth: usize) -> (Vec<usize>, Vec<usize>) {
+    let leaf_script = OP_PUSH_SIZE
+        + SCHNORR_PUBKEY_SIZE
+        + OP_CHECKSIG_SIZE
+        + OP_PUSH_SIZE
+        + SCHNORR_PUBKEY_SIZE
+        + OP_CHECKSIGVERIFY_SIZE;
+    let control_block = 1 + 32 * depth; // header(1) + path(32 * depth) — no internal key
+    (
+        vec![],
+        vec![SCHNORR_SIG, SCHNORR_SIG, leaf_script, control_block],
+    )
+}
+
 /// Get p2tr keypath spend components (single aggregated Schnorr signature)
 fn get_p2tr_keypath_components() -> (Vec<usize>, Vec<usize>) {
     (vec![], vec![SCHNORR_SIG])
@@ -241,6 +259,16 @@ fn get_input_weights_for_type(script_type: InputScriptType, compat: bool) -> Inp
                 is_segwit: true,
             }
         }
+        InputScriptType::P2mr => {
+            // P2MR script path at depth 1 (primary user+bitgo spend)
+            let (script, witness) = get_p2mr_script_path_components(1);
+            let w = compute_input_weight(&script, &witness);
+            InputWeights {
+                min: w,
+                max: w,
+                is_segwit: true,
+            }
+        }
         InputScriptType::P2shP2pk => {
             let min = compute_input_weight(&get_p2sh_p2pk_components(ECDSA_SIG_MIN, false), &[]);
             let max = compute_input_weight(&get_p2sh_p2pk_components(sig_max, compat), &[]);
@@ -282,6 +310,19 @@ fn get_input_weights_for_chain(
                 is_segwit: true,
             })
         }
+        OutputScriptType::P2mr => {
+            // P2MR - script path only (no key-path spend).
+            // Primary spend (user+bitgo) is at depth 1, recovery paths at depth 2.
+            let is_recovery = cosigner == Some("backup");
+            let depth = if is_recovery { 2 } else { 1 };
+            let (script, witness) = get_p2mr_script_path_components(depth);
+            let w = compute_input_weight(&script, &witness);
+            Ok(InputWeights {
+                min: w,
+                max: w,
+                is_segwit: true,
+            })
+        }
         OutputScriptType::P2trMusig2 => {
             // p2trMusig2 - keypath for user+bitgo, scriptpath for user+backup
             let is_recovery = cosigner == Some("backup");
@@ -316,6 +357,7 @@ fn parse_script_type(script_type: &str) -> Result<InputScriptType, String> {
         "p2trMusig2KeyPath" => Ok(InputScriptType::P2trMusig2KeyPath),
         "p2trMusig2ScriptPath" => Ok(InputScriptType::P2trMusig2ScriptPath),
         "p2shP2pk" => Ok(InputScriptType::P2shP2pk),
+        "p2mr" => Ok(InputScriptType::P2mr),
         _ => Err(format!("Unknown script type: {}", script_type)),
     }
 }
@@ -400,6 +442,7 @@ impl WasmDimensions {
                                 InputScriptType::P2trMusig2KeyPath
                             }
                         }
+                        OutputScriptType::P2mr => InputScriptType::P2mr,
                     };
 
                     get_input_weights_for_type(script_type, false)
@@ -505,6 +548,8 @@ impl WasmDimensions {
             OutputScriptType::P2wsh => 34,
             // P2TR: OP_1 [32 bytes] = 34 bytes
             OutputScriptType::P2trLegacy | OutputScriptType::P2trMusig2 => 34,
+            // P2MR: OP_2 [32 bytes] = 34 bytes
+            OutputScriptType::P2mr => 34,
         };
         Ok(Self::from_output_script_length(length))
     }

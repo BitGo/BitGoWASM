@@ -11,7 +11,7 @@ pub use checkmultisig::{
 };
 pub use checksigverify::{
     build_p2tr_ns_script, build_tap_tree_for_output, create_tap_bip32_derivation_for_output,
-    ScriptP2tr,
+    ScriptP2mr, ScriptP2tr,
 };
 pub use singlesig::{build_p2pk_script, parse_p2pk_script, ScriptP2shP2pk};
 
@@ -38,6 +38,8 @@ pub enum WalletScripts {
     P2trLegacy(ScriptP2tr),
     /// Chains 40 and 41. Taproot with Musig2 key-path spend support.
     P2trMusig2(ScriptP2tr),
+    /// Chains 360 and 361. BIP-360 Pay-to-Merkle-Root (P2MR).
+    P2mr(ScriptP2mr),
 }
 
 impl std::fmt::Display for WalletScripts {
@@ -51,6 +53,7 @@ impl std::fmt::Display for WalletScripts {
                 WalletScripts::P2wsh(_) => "P2wsh".to_string(),
                 WalletScripts::P2trLegacy(_) => "P2trLegacy".to_string(),
                 WalletScripts::P2trMusig2(_) => "P2trMusig2".to_string(),
+                WalletScripts::P2mr(_) => "P2mr".to_string(),
             }
         )
     }
@@ -93,6 +96,10 @@ impl WalletScripts {
                 script_support.assert_taproot()?;
                 Ok(WalletScripts::P2trMusig2(ScriptP2tr::new(keys, true)))
             }
+            OutputScriptType::P2mr => {
+                script_support.assert_p2mr()?;
+                Ok(WalletScripts::P2mr(ScriptP2mr::new(keys)))
+            }
         }
     }
 
@@ -115,6 +122,7 @@ impl WalletScripts {
             WalletScripts::P2wsh(script) => script.witness_script.to_p2wsh(),
             WalletScripts::P2trLegacy(script) => script.output_script(),
             WalletScripts::P2trMusig2(script) => script.output_script(),
+            WalletScripts::P2mr(script) => script.output_script(),
         }
     }
 }
@@ -154,6 +162,7 @@ impl Chain {
             OutputScriptType::P2wsh => 20,
             OutputScriptType::P2trLegacy => 30,
             OutputScriptType::P2trMusig2 => 40,
+            OutputScriptType::P2mr => 360,
         }) + match self.scope {
             Scope::External => 0,
             Scope::Internal => 1,
@@ -176,6 +185,8 @@ impl TryFrom<u32> for Chain {
             31 => (OutputScriptType::P2trLegacy, Scope::Internal),
             40 => (OutputScriptType::P2trMusig2, Scope::External),
             41 => (OutputScriptType::P2trMusig2, Scope::Internal),
+            360 => (OutputScriptType::P2mr, Scope::External),
+            361 => (OutputScriptType::P2mr, Scope::Internal),
             _ => return Err(format!("no chain for {}", value)),
         };
         Ok(Chain::new(script_type, scope))
@@ -207,15 +218,18 @@ pub enum OutputScriptType {
     P2trLegacy,
     /// Taproot with MuSig2 key-path support (chains 40, 41)
     P2trMusig2,
+    /// BIP-360 Pay-to-Merkle-Root (chains 360, 361)
+    P2mr,
 }
 
 /// All OutputScriptType variants for iteration.
-const ALL_SCRIPT_TYPES: [OutputScriptType; 5] = [
+const ALL_SCRIPT_TYPES: [OutputScriptType; 6] = [
     OutputScriptType::P2sh,
     OutputScriptType::P2shP2wsh,
     OutputScriptType::P2wsh,
     OutputScriptType::P2trLegacy,
     OutputScriptType::P2trMusig2,
+    OutputScriptType::P2mr,
 ];
 
 impl FromStr for OutputScriptType {
@@ -235,11 +249,12 @@ impl FromStr for OutputScriptType {
             // "p2tr" is kept as alias for backwards compatibility
             "p2tr" | "p2trLegacy" => Ok(OutputScriptType::P2trLegacy),
             "p2trMusig2" => Ok(OutputScriptType::P2trMusig2),
+            "p2mr" => Ok(OutputScriptType::P2mr),
             // Input script types (normalized to output types)
             "p2shP2pk" => Ok(OutputScriptType::P2sh),
             "p2trMusig2ScriptPath" | "p2trMusig2KeyPath" => Ok(OutputScriptType::P2trMusig2),
             _ => Err(format!(
-                "Unknown script type '{}'. Expected: p2sh, p2shP2wsh, p2wsh, p2trLegacy, p2trMusig2",
+                "Unknown script type '{}'. Expected: p2sh, p2shP2wsh, p2wsh, p2trLegacy, p2trMusig2, p2mr",
                 s
             )),
         }
@@ -248,7 +263,7 @@ impl FromStr for OutputScriptType {
 
 impl OutputScriptType {
     /// Returns all possible OutputScriptType values.
-    pub fn all() -> &'static [OutputScriptType; 5] {
+    pub fn all() -> &'static [OutputScriptType; 6] {
         &ALL_SCRIPT_TYPES
     }
 
@@ -260,6 +275,7 @@ impl OutputScriptType {
             OutputScriptType::P2wsh => "p2wsh",
             OutputScriptType::P2trLegacy => "p2trLegacy",
             OutputScriptType::P2trMusig2 => "p2trMusig2",
+            OutputScriptType::P2mr => "p2mr",
         }
     }
 }
@@ -305,7 +321,7 @@ mod tests {
     use crate::fixed_script_wallet::wallet_keys::tests::get_test_wallet_keys;
     use crate::Network;
 
-    const ALL_CHAINS: [Chain; 10] = [
+    const ALL_CHAINS: [Chain; 12] = [
         Chain::new(OutputScriptType::P2sh, Scope::External),
         Chain::new(OutputScriptType::P2sh, Scope::Internal),
         Chain::new(OutputScriptType::P2shP2wsh, Scope::External),
@@ -316,6 +332,8 @@ mod tests {
         Chain::new(OutputScriptType::P2trLegacy, Scope::Internal),
         Chain::new(OutputScriptType::P2trMusig2, Scope::External),
         Chain::new(OutputScriptType::P2trMusig2, Scope::Internal),
+        Chain::new(OutputScriptType::P2mr, Scope::External),
+        Chain::new(OutputScriptType::P2mr, Scope::Internal),
     ];
 
     fn assert_output_script(keys: &RootWalletKeys, chain: Chain, expected_script: &str) {
@@ -356,6 +374,12 @@ mod tests {
             }
             (P2trMusig2, Internal) => {
                 "51202629eea5dbef6841160a0b752dedd4b8e206f046835ee944848679d6dea2ac2c"
+            }
+            (P2mr, External) => {
+                "5220e66329f43aaf6a473df4f49636836c651a410f51be31b54069922f0f71613140"
+            }
+            (P2mr, Internal) => {
+                "5220d60831a20b0f5b1ccb9bec86527714199ffd8c00a344c195fa0de8184fbd80e8"
             }
         };
         assert_output_script(keys, chain, expected);
