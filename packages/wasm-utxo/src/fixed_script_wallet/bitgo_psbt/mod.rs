@@ -120,6 +120,18 @@ pub use psbt_wallet_input::{
 };
 pub use psbt_wallet_output::ParsedOutput;
 
+/// Describes a single input for `from_half_signed_legacy_transaction`.
+pub enum HydrationUnspentInput {
+    /// A regular wallet input with derivation chain, index, and value.
+    Wallet(psbt_wallet_input::ScriptIdWithValue),
+    /// A P2SH-P2PK replay protection input. The caller provides the expected pubkey so it can be
+    /// validated against the redeemScript embedded in the legacy transaction.
+    ReplayProtection {
+        pubkey: miniscript::bitcoin::CompressedPublicKey,
+        value: u64,
+    },
+}
+
 /// Parsed transaction with wallet information
 #[derive(Debug, Clone)]
 pub struct ParsedTransaction {
@@ -505,12 +517,12 @@ impl BitGoPsbt {
     /// creates a PSBT with proper wallet metadata (bip32Derivation, scripts,
     /// witnessUtxo), and inserts the extracted signatures.
     ///
-    /// Only supports p2sh, p2shP2wsh, and p2wsh inputs (not taproot).
+    /// Supports p2sh, p2shP2wsh, p2wsh, and P2SH-P2PK (replay protection) inputs.
     pub fn from_half_signed_legacy_transaction(
         tx_bytes: &[u8],
         network: Network,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        unspents: &[psbt_wallet_input::ScriptIdWithValue],
+        unspents: &[HydrationUnspentInput],
     ) -> Result<Self, String> {
         use miniscript::bitcoin::consensus::Decodable;
         use miniscript::bitcoin::{PublicKey, Transaction};
@@ -531,43 +543,113 @@ impl BitGoPsbt {
 
         let mut psbt = Self::new(network, wallet_keys, Some(version), Some(lock_time));
 
-        // Extract signatures before adding inputs (we need the raw tx_in data)
-        let partial_sigs: Vec<legacy_txformat::LegacyPartialSig> = tx
+        // Parse each input from the legacy tx
+        let input_results: Vec<legacy_txformat::LegacyInputResult> = tx
             .input
             .iter()
             .enumerate()
             .map(|(i, tx_in)| {
-                legacy_txformat::unsign_legacy_input(tx_in)
+                legacy_txformat::parse_legacy_input(tx_in)
                     .map_err(|e| format!("Input {}: {}", i, e))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Add wallet inputs (populates bip32Derivation, scripts, witnessUtxo)
         for (i, (tx_in, unspent)) in tx.input.iter().zip(unspents.iter()).enumerate() {
-            let script_id = psbt_wallet_input::ScriptId {
-                chain: unspent.chain,
-                index: unspent.index,
-            };
-            psbt.add_wallet_input(
-                tx_in.previous_output.txid,
-                tx_in.previous_output.vout,
-                unspent.value,
-                wallet_keys,
-                script_id,
-                psbt_wallet_input::WalletInputOptions {
-                    sign_path: None,
-                    sequence: Some(tx_in.sequence.0),
-                    prev_tx: None, // psbt-lite: no nonWitnessUtxo
-                },
-            )
-            .map_err(|e| format!("Input {}: failed to add wallet input: {}", i, e))?;
+            match (&input_results[i], unspent) {
+                (
+                    legacy_txformat::LegacyInputResult::Multisig(sig),
+                    HydrationUnspentInput::Wallet(sv),
+                ) => {
+                    let script_id = psbt_wallet_input::ScriptId {
+                        chain: sv.chain,
+                        index: sv.index,
+                    };
+                    psbt.add_wallet_input(
+                        tx_in.previous_output.txid,
+                        tx_in.previous_output.vout,
+                        sv.value,
+                        wallet_keys,
+                        script_id,
+                        psbt_wallet_input::WalletInputOptions {
+                            sign_path: None,
+                            sequence: Some(tx_in.sequence.0),
+                            prev_tx: None, // psbt-lite: no nonWitnessUtxo
+                        },
+                    )
+                    .map_err(|e| format!("Input {}: failed to add wallet input: {}", i, e))?;
 
-            // Insert the extracted partial signature
-            let sig = &partial_sigs[i];
-            let pubkey = PublicKey::from(sig.pubkey);
-            psbt.psbt_mut().inputs[i]
-                .partial_sigs
-                .insert(pubkey, sig.sig);
+                    let pubkey = PublicKey::from(sig.pubkey);
+                    psbt.psbt_mut().inputs[i]
+                        .partial_sigs
+                        .insert(pubkey, sig.sig);
+                }
+                (
+                    legacy_txformat::LegacyInputResult::ReplayProtection {
+                        pubkey: tx_pubkey,
+                        sig,
+                    },
+                    HydrationUnspentInput::ReplayProtection {
+                        pubkey: expected_pubkey,
+                        value,
+                    },
+                ) => {
+                    if tx_pubkey.to_bytes() != expected_pubkey.to_bytes() {
+                        return Err(format!(
+                            "Input {}: replay protection pubkey mismatch: \
+                             tx has {}, expected {}",
+                            i,
+                            tx_pubkey
+                                .to_bytes()
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<String>(),
+                            expected_pubkey
+                                .to_bytes()
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<String>(),
+                        ));
+                    }
+                    psbt.add_replay_protection_input_at_index(
+                        i,
+                        *tx_pubkey,
+                        tx_in.previous_output.txid,
+                        tx_in.previous_output.vout,
+                        *value,
+                        ReplayProtectionOptions {
+                            sequence: Some(tx_in.sequence.0),
+                            prev_tx: None,
+                            sighash_type: None,
+                        },
+                    )
+                    .map_err(|e| {
+                        format!("Input {}: failed to add replay protection input: {}", i, e)
+                    })?;
+
+                    if let Some(ecdsa_sig) = sig {
+                        let pk = PublicKey::from(*tx_pubkey);
+                        psbt.psbt_mut().inputs[i]
+                            .partial_sigs
+                            .insert(pk, *ecdsa_sig);
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "Input {}: mismatch between tx input type and provided unspent type \
+                         (tx has {}, unspent is {})",
+                        i,
+                        match &input_results[i] {
+                            legacy_txformat::LegacyInputResult::Multisig(_) => "multisig",
+                            legacy_txformat::LegacyInputResult::ReplayProtection { .. } =>
+                                "replay protection",
+                        },
+                        match unspent {
+                            HydrationUnspentInput::Wallet(_) => "wallet",
+                            HydrationUnspentInput::ReplayProtection { .. } => "replay protection",
+                        }
+                    ));
+                }
+            }
         }
 
         // Add outputs (plain script+value, no wallet metadata)
@@ -4197,7 +4279,7 @@ mod tests {
 
         // Step 2: Build unspents from bip32 derivation paths in the PSBT
         // The derivation path is m/<chain>/<index>
-        let unspents: Vec<ScriptIdWithValue> = psbt
+        let unspents: Vec<HydrationUnspentInput> = psbt
             .inputs
             .iter()
             .enumerate()
@@ -4219,11 +4301,11 @@ mod tests {
                     .ok_or_else(|| format!("Input {} has no witnessUtxo", i))?
                     .value
                     .to_sat();
-                Ok(ScriptIdWithValue {
+                Ok(HydrationUnspentInput::Wallet(ScriptIdWithValue {
                     chain,
                     index,
                     value,
-                })
+                }))
             })
             .collect::<Result<Vec<_>, String>>()?;
 

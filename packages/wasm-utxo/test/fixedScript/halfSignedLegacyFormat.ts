@@ -7,6 +7,7 @@ import * as utxolib from "@bitgo/utxo-lib";
 import { BitGoPsbt } from "../../js/fixedScriptWallet/BitGoPsbt.js";
 import { ZcashBitGoPsbt } from "../../js/fixedScriptWallet/ZcashBitGoPsbt.js";
 import { ChainCode } from "../../js/fixedScriptWallet/chains.js";
+import { ECPair } from "../../js/ecpair.js";
 import { getDefaultWalletKeys, getKeyTriple } from "../../js/testutils/keys.js";
 import { getCoinNameForNetwork } from "../networks.js";
 
@@ -246,6 +247,38 @@ describe("getHalfSignedLegacyFormat", function () {
         /expected exactly 1 partial signature/i,
         "Should throw for fully signed inputs",
       );
+    });
+  });
+
+  describe("Replay protection inputs", function () {
+    it("serializes PSBT with wallet + replay protection input to legacy format", function () {
+      const rootWalletKeys = getDefaultWalletKeys();
+      const [userXprv] = getKeyTriple("default");
+      const ecpair = ECPair.fromPublicKey(rootWalletKeys.userKey().publicKey);
+
+      const psbt = BitGoPsbt.createEmpty("btc", rootWalletKeys, { version: 2, lockTime: 0 });
+      psbt.addWalletInput(
+        { txid: "00".repeat(32), vout: 0, value: BigInt(10000), sequence: 0xfffffffd },
+        rootWalletKeys,
+        { scriptId: { chain: 0, index: 0 } },
+      );
+      psbt.addReplayProtectionInput(
+        { txid: "aa".repeat(32), vout: 0, value: BigInt(1000), sequence: 0xfffffffd },
+        ecpair,
+      );
+      psbt.addWalletOutput(rootWalletKeys, { chain: 0, index: 100, value: BigInt(5000) });
+      // sign() only signs wallet inputs (bip32_derivation-based); replay protection gets 0 sigs
+      psbt.sign(userXprv);
+
+      const txBytes = psbt.getHalfSignedLegacyFormat();
+      assert.ok(txBytes.length > 0, "Should produce non-empty bytes");
+
+      const tx = utxolib.bitgo.createTransactionFromBuffer(
+        Buffer.from(txBytes),
+        utxolib.networks.bitcoin,
+        { amountType: "bigint" },
+      );
+      assert.strictEqual(tx.ins.length, 2, "Both inputs (wallet + replay protection) serialized");
     });
   });
 });

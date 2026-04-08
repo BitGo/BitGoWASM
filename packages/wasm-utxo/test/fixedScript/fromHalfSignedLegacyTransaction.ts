@@ -15,6 +15,7 @@ import * as utxolib from "@bitgo/utxo-lib";
 import { BitGoPsbt, type HydrationUnspent } from "../../js/fixedScriptWallet/BitGoPsbt.js";
 import { ZcashBitGoPsbt } from "../../js/fixedScriptWallet/ZcashBitGoPsbt.js";
 import { ChainCode } from "../../js/fixedScriptWallet/chains.js";
+import { ECPair } from "../../js/ecpair.js";
 import { getDefaultWalletKeys, getKeyTriple } from "../../js/testutils/keys.js";
 import { getCoinNameForNetwork } from "../networks.js";
 
@@ -127,5 +128,47 @@ describe("BitGoPsbt.fromHalfSignedLegacyTransaction", function () {
         assert.ok(serialized.length > 0, "Reconstructed PSBT should serialize to non-empty bytes");
       });
     }
+  });
+
+  describe("Round-trip with replay protection input", function () {
+    it("reconstructs PSBT from legacy tx with wallet + replay protection input", function () {
+      const rootWalletKeys = getDefaultWalletKeys();
+      const [userXprv] = getKeyTriple("default");
+      const ecpair = ECPair.fromPublicKey(rootWalletKeys.userKey().publicKey);
+
+      const psbt = BitGoPsbt.createEmpty("btc", rootWalletKeys, { version: 2, lockTime: 0 });
+      psbt.addWalletInput(
+        { txid: "00".repeat(32), vout: 0, value: BigInt(10000), sequence: 0xfffffffd },
+        rootWalletKeys,
+        { scriptId: { chain: 0, index: 0 } },
+      );
+      psbt.addReplayProtectionInput(
+        { txid: "aa".repeat(32), vout: 0, value: BigInt(1000), sequence: 0xfffffffd },
+        ecpair,
+      );
+      psbt.addWalletOutput(rootWalletKeys, { chain: 0, index: 100, value: BigInt(5000) });
+      // sign() only signs wallet inputs; replay protection input gets 0 sigs
+      psbt.sign(userXprv);
+
+      const txBytes = psbt.getHalfSignedLegacyFormat();
+
+      const unspents: HydrationUnspent[] = [
+        { chain: 0, index: 0, value: BigInt(10000) }, // wallet
+        { pubkey: ecpair.publicKey, value: BigInt(1000) }, // replay protection
+      ];
+      const reconstructed = BitGoPsbt.fromHalfSignedLegacyTransaction(
+        txBytes,
+        "btc",
+        rootWalletKeys,
+        unspents,
+      );
+
+      assert.ok(reconstructed.serialize().length > 0, "Reconstructed PSBT serializes");
+      assert.strictEqual(reconstructed.inputCount(), 2, "Both inputs present");
+      assert.ok(
+        reconstructed.verifySignature(0, rootWalletKeys.userKey().neutered().toBase58()),
+        "Wallet input signature preserved",
+      );
+    });
   });
 });
