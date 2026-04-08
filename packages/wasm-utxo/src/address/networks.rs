@@ -3,6 +3,7 @@
 //! This module bridges the Network enum with address codecs, providing
 //! convenient functions to encode/decode addresses using network identifiers.
 
+use super::bech32::is_p2mr;
 use super::{
     from_output_script, to_output_script_try_codecs, AddressCodec, AddressError, Result, ScriptBuf,
     BITCOIN, BITCOIN_BECH32, BITCOIN_CASH, BITCOIN_CASH_CASHADDR, BITCOIN_CASH_TESTNET,
@@ -76,6 +77,7 @@ impl AddressFormat {
 pub struct OutputScriptSupport {
     pub segwit: bool,
     pub taproot: bool,
+    pub p2mr: bool,
 }
 
 impl OutputScriptSupport {
@@ -102,6 +104,15 @@ impl OutputScriptSupport {
         Ok(())
     }
 
+    pub(crate) fn assert_p2mr(&self) -> Result<()> {
+        if !self.p2mr {
+            return Err(AddressError::UnsupportedScriptType(
+                "Network does not support P2MR".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn assert_support(&self, script: &Script) -> Result<()> {
         match script.witness_version() {
             None => {
@@ -112,6 +123,9 @@ impl OutputScriptSupport {
             }
             Some(WitnessVersion::V1) => {
                 self.assert_taproot()?;
+            }
+            Some(WitnessVersion::V2) => {
+                self.assert_p2mr()?;
             }
             _ => {
                 return Err(AddressError::UnsupportedScriptType(
@@ -170,7 +184,16 @@ impl Network {
         // - https://github.com/litecoin-project/litecoin/blob/v0.21.4/src/script/interpreter.h#L129-L131
         let taproot = segwit && matches!(self.mainnet(), Network::Bitcoin);
 
-        OutputScriptSupport { segwit, taproot }
+        // P2MR (BIP-360) support:
+        // Enabled on all Bitcoin networks (mainnet + testnets) for address encoding.
+        // Backend activation is controlled separately.
+        let p2mr = matches!(self.mainnet(), Network::Bitcoin);
+
+        OutputScriptSupport {
+            segwit,
+            taproot,
+            p2mr,
+        }
     }
 }
 
@@ -182,12 +205,13 @@ fn get_encode_codec(
 ) -> Result<&'static dyn AddressCodec> {
     network.output_script_support().assert_support(script)?;
 
-    let is_witness = script.is_p2wpkh() || script.is_p2wsh() || script.is_p2tr();
+    let is_witness = script.is_p2wpkh() || script.is_p2wsh() || script.is_p2tr() || is_p2mr(script);
     let is_legacy = script.is_p2pkh() || script.is_p2sh();
 
     if !is_witness && !is_legacy {
         return Err(AddressError::UnsupportedScriptType(
-            "Script is not a standard address type (P2PKH, P2SH, P2WPKH, P2WSH, P2TR)".to_string(),
+            "Script is not a standard address type (P2PKH, P2SH, P2WPKH, P2WSH, P2TR, P2MR)"
+                .to_string(),
         ));
     }
 
@@ -554,12 +578,14 @@ mod tests {
         let support_none = OutputScriptSupport {
             segwit: false,
             taproot: false,
+            p2mr: false,
         };
         assert!(support_none.assert_legacy().is_ok());
 
         let support_all = OutputScriptSupport {
             segwit: true,
             taproot: true,
+            p2mr: false,
         };
         assert!(support_all.assert_legacy().is_ok());
     }
@@ -570,6 +596,7 @@ mod tests {
         let support_segwit = OutputScriptSupport {
             segwit: true,
             taproot: false,
+            p2mr: false,
         };
         assert!(support_segwit.assert_segwit().is_ok());
 
@@ -577,6 +604,7 @@ mod tests {
         let no_support = OutputScriptSupport {
             segwit: false,
             taproot: false,
+            p2mr: false,
         };
         let result = no_support.assert_segwit();
         assert!(result.is_err());
@@ -592,6 +620,7 @@ mod tests {
         let support_taproot = OutputScriptSupport {
             segwit: true,
             taproot: true,
+            p2mr: false,
         };
         assert!(support_taproot.assert_taproot().is_ok());
 
@@ -599,6 +628,7 @@ mod tests {
         let no_support = OutputScriptSupport {
             segwit: true,
             taproot: false,
+            p2mr: false,
         };
         let result = no_support.assert_taproot();
         assert!(result.is_err());
@@ -619,6 +649,7 @@ mod tests {
         let no_support = OutputScriptSupport {
             segwit: false,
             taproot: false,
+            p2mr: false,
         };
         assert!(no_support.assert_support(&p2pkh_script).is_ok());
 
@@ -640,6 +671,7 @@ mod tests {
         let support_segwit = OutputScriptSupport {
             segwit: true,
             taproot: false,
+            p2mr: false,
         };
         assert!(support_segwit.assert_support(&p2wpkh_script).is_ok());
 
@@ -647,6 +679,7 @@ mod tests {
         let no_support = OutputScriptSupport {
             segwit: false,
             taproot: false,
+            p2mr: false,
         };
         let result = no_support.assert_support(&p2wpkh_script);
         assert!(result.is_err());
@@ -685,6 +718,7 @@ mod tests {
         let support_taproot = OutputScriptSupport {
             segwit: true,
             taproot: true,
+            p2mr: false,
         };
         assert!(support_taproot.assert_support(&p2tr_script).is_ok());
 
@@ -692,6 +726,7 @@ mod tests {
         let no_taproot = OutputScriptSupport {
             segwit: true,
             taproot: false,
+            p2mr: false,
         };
         let result = no_taproot.assert_support(&p2tr_script);
         assert!(result.is_err());
@@ -704,6 +739,7 @@ mod tests {
         let no_support = OutputScriptSupport {
             segwit: false,
             taproot: false,
+            p2mr: false,
         };
         let result = no_support.assert_support(&p2tr_script);
         assert!(result.is_err());

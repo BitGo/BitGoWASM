@@ -290,7 +290,11 @@ mod tests {
         let script_obj = Script::from_bytes(script);
         if script_obj.is_p2pkh() || script_obj.is_p2sh() {
             from_output_script(script_obj, &BITCOIN)
-        } else if script_obj.is_p2wpkh() || script_obj.is_p2wsh() || script_obj.is_p2tr() {
+        } else if script_obj.is_p2wpkh()
+            || script_obj.is_p2wsh()
+            || script_obj.is_p2tr()
+            || bech32::is_p2mr(script_obj)
+        {
             from_output_script(script_obj, &BITCOIN_BECH32)
         } else {
             Err(AddressError::UnsupportedScriptType(format!(
@@ -310,7 +314,11 @@ mod tests {
         let script_obj = Script::from_bytes(script);
         if script_obj.is_p2pkh() || script_obj.is_p2sh() {
             from_output_script(script_obj, &TESTNET)
-        } else if script_obj.is_p2wpkh() || script_obj.is_p2wsh() || script_obj.is_p2tr() {
+        } else if script_obj.is_p2wpkh()
+            || script_obj.is_p2wsh()
+            || script_obj.is_p2tr()
+            || bech32::is_p2mr(script_obj)
+        {
             from_output_script(script_obj, &TESTNET_BECH32)
         } else {
             Err(AddressError::UnsupportedScriptType(format!(
@@ -325,7 +333,11 @@ mod tests {
         let script_obj = Script::from_bytes(script);
         if script_obj.is_p2pkh() || script_obj.is_p2sh() {
             from_output_script(script_obj, &LITECOIN)
-        } else if script_obj.is_p2wpkh() || script_obj.is_p2wsh() || script_obj.is_p2tr() {
+        } else if script_obj.is_p2wpkh()
+            || script_obj.is_p2wsh()
+            || script_obj.is_p2tr()
+            || bech32::is_p2mr(script_obj)
+        {
             from_output_script(script_obj, &LITECOIN_BECH32)
         } else {
             Err(AddressError::UnsupportedScriptType(format!(
@@ -483,7 +495,11 @@ mod tests {
         // For networks with both base58 and bech32, choose based on script type
         let codec = if script_obj.is_p2pkh() || script_obj.is_p2sh() {
             codecs[0]
-        } else if script_obj.is_p2wpkh() || script_obj.is_p2wsh() || script_obj.is_p2tr() {
+        } else if script_obj.is_p2wpkh()
+            || script_obj.is_p2wsh()
+            || script_obj.is_p2tr()
+            || bech32::is_p2mr(script_obj)
+        {
             // Use bech32 codec if available (index 1), otherwise fall back to base58
             if codecs.len() > 1 {
                 codecs[1]

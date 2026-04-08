@@ -377,6 +377,7 @@ mod tests {
         let no_segwit_support = OutputScriptSupport {
             segwit: false,
             taproot: false,
+            p2mr: false,
         };
 
         use OutputScriptType::*;
@@ -410,6 +411,7 @@ mod tests {
         let no_taproot_support = OutputScriptSupport {
             segwit: true,
             taproot: false,
+            p2mr: false,
         };
 
         let result = WalletScripts::from_wallet_keys(

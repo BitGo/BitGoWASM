@@ -9,11 +9,7 @@
     "00141e231c7f9b3415daaa53ee5a7e12e120f00ec212",
     "bc1qrc33clumxs2a42jnaed8uyhpyrcqassje6kugr"
   ],
-  [
-    "p2sh",
-    "a91411510d2560794b3ed7bf734bc0e030e70e4db42d87",
-    "33GaWMLihvhqWJ9YNd7xo8diSh6otdfi5w"
-  ],
+  ["p2sh", "a91411510d2560794b3ed7bf734bc0e030e70e4db42d87", "33GaWMLihvhqWJ9YNd7xo8diSh6otdfi5w"],
   [
     "p2shP2wsh",
     "a9140c4e25aa3282fa35888f5e1eedb876265328312587",
@@ -44,11 +40,7 @@
     "001491b8f56f155030f74259be43dff4d94a6258d84a",
     "bc1qjxu02mc42qc0wsjehepalaxeff393kz2mzwu70"
   ],
-  [
-    "p2sh",
-    "a914d640bad0fafe2eeac9fc0e0f09fb899066263ebf87",
-    "3MDt56c1ME4Vi8aYP9DJdhWngxo3yDxGJb"
-  ],
+  ["p2sh", "a914d640bad0fafe2eeac9fc0e0f09fb899066263ebf87", "3MDt56c1ME4Vi8aYP9DJdhWngxo3yDxGJb"],
   [
     "p2shP2wsh",
     "a914696cab5f237c954fc1fade8c6b234fe93e0e80f287",
@@ -79,11 +71,7 @@
     "00140a058aec7588fca80070436b020c352c2891b680",
     "bc1qpgzc4mr43r72sqrsgd4syrp49s5frd5qq7et93"
   ],
-  [
-    "p2sh",
-    "a914056f5a1c07fe38d27e554b88bd857f64bda8eb6f87",
-    "32BkhNhA8a7byNxgz6RR3jrG8T1mCXqiC8"
-  ],
+  ["p2sh", "a914056f5a1c07fe38d27e554b88bd857f64bda8eb6f87", "32BkhNhA8a7byNxgz6RR3jrG8T1mCXqiC8"],
   [
     "p2shP2wsh",
     "a914f7db4f654f1211a63165cfdaf1170e96d433bc1387",
@@ -114,11 +102,7 @@
     "00145a8451539186feb4578b4f5613df6991e3078230",
     "bc1qt2z9z5u3smltg4utfatp8hmfj83s0q3s62ygc4"
   ],
-  [
-    "p2sh",
-    "a9149829fb41e3c2bcf6a164310a7acbf0adcc0c3ee187",
-    "3FZavdFukrNR5aJcL7dmbc18tZ9tBkVtqK"
-  ],
+  ["p2sh", "a9149829fb41e3c2bcf6a164310a7acbf0adcc0c3ee187", "3FZavdFukrNR5aJcL7dmbc18tZ9tBkVtqK"],
   [
     "p2shP2wsh",
     "a91493f1dd87104175795a1e37f5245461827237a05787",
@@ -138,5 +122,20 @@
     "p2trMusig2",
     "512085078b6ce45af8c4dea63248a5fae283d8edcca75f186395b237706c4bb42a36",
     "bc1ps5rckm8yttuvfh4xxfy2t7hzs0vwmn98tuvx89djxacxcja59gmq8lx0zu"
+  ],
+  [
+    "p2mr",
+    "5220c525714a7f49c28aedbbba78c005931a81c234b2f6c99a73e4d06082adc8bf2b",
+    "bc1zc5jhzjnlf8pg4mdmhfuvqpvnr2quyd9j7mye5uly6psg9twghu4ssr0v9k"
+  ],
+  [
+    "p2mr",
+    "5220ab179431c28d3b68fb798957faf5497d69c883c6fb1e1cd9f81483d87bac90cc",
+    "bc1z4vtegvwz35ak37me39tl4a2f045u3q7xlv0pek0czjpas7avjrxqz20g2y"
+  ],
+  [
+    "p2mr",
+    "5220ccbd66c6f7e8fdab47b3a486f59d28262be857f30d4773f2d5ea47f7761ce0e2",
+    "bc1zej7kd3hhar76k3an5jr0t8fgyc47s4lnp4rh8uk4afrlwasuur3qzgewqq"
   ]
 ]
