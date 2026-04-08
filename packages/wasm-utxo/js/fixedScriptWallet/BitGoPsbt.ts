@@ -1,12 +1,10 @@
 import {
   BitGoPsbt as WasmBitGoPsbt,
   FixedScriptWalletNamespace,
-  WasmBIP32,
-  type PsbtInputData,
-  type PsbtOutputData,
   type PsbtOutputDataWithAddress,
 } from "../wasm/wasm_utxo.js";
 import type { IPsbtWithAddress } from "../psbt.js";
+import { PsbtBase } from "../psbtBase.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
 import { type ReplayProtectionArg, ReplayProtection } from "./ReplayProtection.js";
 import { type BIP32Arg, BIP32, isBIP32Arg } from "../bip32.js";
@@ -14,7 +12,6 @@ import { type ECPairArg, ECPair } from "../ecpair.js";
 import type { UtxolibName } from "../utxolibCompat.js";
 import type { CoinName } from "../coinName.js";
 import type { InputScriptType } from "./scriptType.js";
-import type { PsbtKvKey } from "./BitGoKeySubtype.js";
 import {
   Transaction,
   DashTransaction,
@@ -133,8 +130,10 @@ export type HydrationUnspent = {
   value: bigint;
 };
 
-export class BitGoPsbt implements IPsbtWithAddress {
-  protected constructor(protected _wasm: WasmBitGoPsbt) {}
+export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddress {
+  protected constructor(wasm: WasmBitGoPsbt) {
+    super(wasm);
+  }
 
   /**
    * Get the underlying WASM instance
@@ -532,64 +531,6 @@ export class BitGoPsbt implements IPsbtWithAddress {
     );
   }
 
-  removeInput(index: number): void {
-    this._wasm.remove_input(index);
-  }
-
-  removeOutput(index: number): void {
-    this._wasm.remove_output(index);
-  }
-
-  /**
-   * Get the unsigned transaction ID
-   * @returns The unsigned transaction ID
-   */
-  unsignedTxId(): string {
-    return this._wasm.unsigned_txid();
-  }
-
-  /**
-   * Get the transaction version
-   * @returns The transaction version number
-   */
-  version(): number {
-    return this._wasm.version();
-  }
-
-  lockTime(): number {
-    return this._wasm.lock_time();
-  }
-
-  /** Set an arbitrary KV pair on the PSBT global map. */
-  setKV(key: PsbtKvKey, value: Uint8Array): void {
-    this._wasm.set_kv(key, value);
-  }
-
-  /** Get a KV value from the PSBT global map. Returns `undefined` if not present. */
-  getKV(key: PsbtKvKey): Uint8Array | undefined {
-    return this._wasm.get_kv(key) ?? undefined;
-  }
-
-  /** Set an arbitrary KV pair on a specific PSBT input. */
-  setInputKV(index: number, key: PsbtKvKey, value: Uint8Array): void {
-    this._wasm.set_input_kv(index, key, value);
-  }
-
-  /** Get a KV value from a specific PSBT input. Returns `undefined` if not present. */
-  getInputKV(index: number, key: PsbtKvKey): Uint8Array | undefined {
-    return this._wasm.get_input_kv(index, key) ?? undefined;
-  }
-
-  /** Set an arbitrary KV pair on a specific PSBT output. */
-  setOutputKV(index: number, key: PsbtKvKey, value: Uint8Array): void {
-    this._wasm.set_output_kv(index, key, value);
-  }
-
-  /** Get a KV value from a specific PSBT output. Returns `undefined` if not present. */
-  getOutputKV(index: number, key: PsbtKvKey): Uint8Array | undefined {
-    return this._wasm.get_output_kv(index, key) ?? undefined;
-  }
-
   /**
    * Parse transaction with wallet keys to identify wallet inputs/outputs
    * @param walletKeys - The wallet keys to use for identification
@@ -851,15 +792,6 @@ export class BitGoPsbt implements IPsbtWithAddress {
   }
 
   /**
-   * Serialize the PSBT to bytes
-   *
-   * @returns The serialized PSBT as a byte array
-   */
-  serialize(): Uint8Array {
-    return this._wasm.serialize();
-  }
-
-  /**
    * Generate and store MuSig2 nonces for all MuSig2 inputs
    *
    * This method generates nonces using the State-Machine API and stores them in the PSBT.
@@ -984,43 +916,6 @@ export class BitGoPsbt implements IPsbtWithAddress {
   }
 
   /**
-   * Get the number of inputs in the PSBT
-   * @returns The number of inputs
-   */
-  inputCount(): number {
-    return this._wasm.input_count();
-  }
-
-  outputCount(): number {
-    return this._wasm.output_count();
-  }
-
-  /**
-   * Get all PSBT inputs as an array
-   *
-   * Returns raw PSBT input data including witness_utxo and derivation info.
-   * For parsed transaction data with address identification, use
-   * parseTransactionWithWalletKeys() instead.
-   *
-   * @returns Array of PsbtInputData objects
-   */
-  getInputs(): PsbtInputData[] {
-    return this._wasm.get_inputs() as PsbtInputData[];
-  }
-
-  /**
-   * Get all PSBT outputs as an array
-   *
-   * Returns raw PSBT output data without address resolution.
-   * For output data with addresses, use getOutputsWithAddress().
-   *
-   * @returns Array of PsbtOutputData objects
-   */
-  getOutputs(): PsbtOutputData[] {
-    return this._wasm.get_outputs() as PsbtOutputData[];
-  }
-
-  /**
    * Get all PSBT outputs with resolved address strings
    *
    * Unlike the generic Psbt class which requires a coin parameter,
@@ -1038,14 +933,6 @@ export class BitGoPsbt implements IPsbtWithAddress {
    */
   getOutputsWithAddress(): PsbtOutputDataWithAddress[] {
     return this._wasm.get_outputs_with_address() as PsbtOutputDataWithAddress[];
-  }
-
-  /**
-   * Returns the unordered global xpubs from this PSBT as BIP32 instances.
-   */
-  getGlobalXpubs(): BIP32[] {
-    const result = this._wasm.get_global_xpubs() as WasmBIP32[];
-    return result.map((w) => BIP32.fromWasm(w));
   }
 }
 

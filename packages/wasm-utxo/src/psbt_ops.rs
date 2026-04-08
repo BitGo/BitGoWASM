@@ -177,6 +177,32 @@ pub trait PsbtAccess {
         }
         Ok(self.psbt().outputs[index].proprietary.get(key).cloned())
     }
+
+    fn remove_input(&mut self, index: usize) -> Result<(), String> {
+        let psbt = self.psbt_mut();
+        if index >= psbt.inputs.len() {
+            return Err(format!(
+                "input index {index} out of bounds (have {} inputs)",
+                psbt.inputs.len()
+            ));
+        }
+        psbt.unsigned_tx.input.remove(index);
+        psbt.inputs.remove(index);
+        Ok(())
+    }
+
+    fn remove_output(&mut self, index: usize) -> Result<(), String> {
+        let psbt = self.psbt_mut();
+        if index >= psbt.outputs.len() {
+            return Err(format!(
+                "output index {index} out of bounds (have {} outputs)",
+                psbt.outputs.len()
+            ));
+        }
+        psbt.unsigned_tx.output.remove(index);
+        psbt.outputs.remove(index);
+        Ok(())
+    }
 }
 
 fn check_bounds(index: usize, len: usize, name: &str) -> Result<(), String> {
@@ -210,28 +236,4 @@ pub fn insert_output(
     psbt.unsigned_tx.output.insert(index, tx_out);
     psbt.outputs.insert(index, psbt_output);
     Ok(index)
-}
-
-pub fn remove_input(psbt: &mut Psbt, index: usize) -> Result<(), String> {
-    if index >= psbt.inputs.len() {
-        return Err(format!(
-            "input index {index} out of bounds (have {} inputs)",
-            psbt.inputs.len()
-        ));
-    }
-    psbt.unsigned_tx.input.remove(index);
-    psbt.inputs.remove(index);
-    Ok(())
-}
-
-pub fn remove_output(psbt: &mut Psbt, index: usize) -> Result<(), String> {
-    if index >= psbt.outputs.len() {
-        return Err(format!(
-            "output index {index} out of bounds (have {} outputs)",
-            psbt.outputs.len()
-        ));
-    }
-    psbt.unsigned_tx.output.remove(index);
-    psbt.outputs.remove(index);
-    Ok(())
 }

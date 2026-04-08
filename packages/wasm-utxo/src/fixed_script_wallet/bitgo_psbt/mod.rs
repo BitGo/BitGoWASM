@@ -1119,11 +1119,11 @@ impl BitGoPsbt {
     }
 
     pub fn remove_input(&mut self, index: usize) -> Result<(), String> {
-        crate::psbt_ops::remove_input(self.psbt_mut(), index)
+        crate::psbt_ops::PsbtAccess::remove_input(self, index)
     }
 
     pub fn remove_output(&mut self, index: usize) -> Result<(), String> {
-        crate::psbt_ops::remove_output(self.psbt_mut(), index)
+        crate::psbt_ops::PsbtAccess::remove_output(self, index)
     }
 
     pub fn network(&self) -> Network {

@@ -1,12 +1,7 @@
-import {
-  WasmDashTransaction,
-  WasmTransaction,
-  WasmZcashTransaction,
-  type TxInputData,
-  type TxOutputData,
-  type TxOutputDataWithAddress,
-} from "./wasm/wasm_utxo.js";
+import { WasmDashTransaction, WasmTransaction, WasmZcashTransaction } from "./wasm/wasm_utxo.js";
+import type { TxInputData, TxOutputData, TxOutputDataWithAddress } from "./wasm/wasm_utxo.js";
 import type { CoinName } from "./coinName.js";
+import { TransactionBase } from "./transactionBase.js";
 
 /** Common read-only interface shared by transactions and PSBTs */
 export interface ITransactionCommon<TInput, TOutput> {
@@ -30,8 +25,10 @@ export interface ITransaction extends ITransactionCommon<TxInputData, TxOutputDa
  *
  * Provides a camelCase, strongly-typed API over the snake_case WASM bindings.
  */
-export class Transaction implements ITransaction {
-  private constructor(private _wasm: WasmTransaction) {}
+export class Transaction extends TransactionBase<WasmTransaction> {
+  private constructor(wasm: WasmTransaction) {
+    super(wasm);
+  }
 
   /**
    * Create an empty transaction (version 1, locktime 0)
@@ -72,22 +69,6 @@ export class Transaction implements ITransaction {
     return this._wasm.add_output(script, value);
   }
 
-  toBytes(): Uint8Array {
-    return this._wasm.to_bytes();
-  }
-
-  /**
-   * Get the transaction ID (txid)
-   *
-   * The txid is the double SHA256 of the transaction bytes (excluding witness
-   * data for segwit transactions), displayed in reverse byte order as is standard.
-   *
-   * @returns The transaction ID as a hex string
-   */
-  getId(): string {
-    return this._wasm.get_txid();
-  }
-
   /**
    * Get the virtual size of the transaction
    *
@@ -97,34 +78,6 @@ export class Transaction implements ITransaction {
    */
   getVSize(): number {
     return this._wasm.get_vsize();
-  }
-
-  inputCount(): number {
-    return this._wasm.input_count();
-  }
-
-  outputCount(): number {
-    return this._wasm.output_count();
-  }
-
-  version(): number {
-    return this._wasm.version();
-  }
-
-  lockTime(): number {
-    return this._wasm.lock_time();
-  }
-
-  getInputs(): TxInputData[] {
-    return this._wasm.get_inputs() as TxInputData[];
-  }
-
-  getOutputs(): TxOutputData[] {
-    return this._wasm.get_outputs() as TxOutputData[];
-  }
-
-  getOutputsWithAddress(coin: CoinName): TxOutputDataWithAddress[] {
-    return this._wasm.get_outputs_with_address(coin) as TxOutputDataWithAddress[];
   }
 
   /** @internal */
@@ -138,8 +91,10 @@ export class Transaction implements ITransaction {
  *
  * Provides a camelCase, strongly-typed API over the snake_case WASM bindings.
  */
-export class ZcashTransaction implements ITransaction {
-  private constructor(private _wasm: WasmZcashTransaction) {}
+export class ZcashTransaction extends TransactionBase<WasmZcashTransaction> {
+  private constructor(wasm: WasmZcashTransaction) {
+    super(wasm);
+  }
 
   static fromBytes(bytes: Uint8Array): ZcashTransaction {
     return new ZcashTransaction(WasmZcashTransaction.from_bytes(bytes));
@@ -148,50 +103,6 @@ export class ZcashTransaction implements ITransaction {
   /** @internal Create from WASM instance directly (avoids re-parsing bytes) */
   static fromWasm(wasm: WasmZcashTransaction): ZcashTransaction {
     return new ZcashTransaction(wasm);
-  }
-
-  toBytes(): Uint8Array {
-    return this._wasm.to_bytes();
-  }
-
-  /**
-   * Get the transaction ID (txid)
-   *
-   * The txid is the double SHA256 of the full Zcash transaction bytes,
-   * displayed in reverse byte order as is standard.
-   *
-   * @returns The transaction ID as a hex string
-   */
-  getId(): string {
-    return this._wasm.get_txid();
-  }
-
-  inputCount(): number {
-    return this._wasm.input_count();
-  }
-
-  outputCount(): number {
-    return this._wasm.output_count();
-  }
-
-  version(): number {
-    return this._wasm.version();
-  }
-
-  lockTime(): number {
-    return this._wasm.lock_time();
-  }
-
-  getInputs(): TxInputData[] {
-    return this._wasm.get_inputs() as TxInputData[];
-  }
-
-  getOutputs(): TxOutputData[] {
-    return this._wasm.get_outputs() as TxOutputData[];
-  }
-
-  getOutputsWithAddress(coin: CoinName): TxOutputDataWithAddress[] {
-    return this._wasm.get_outputs_with_address(coin) as TxOutputDataWithAddress[];
   }
 
   /** @internal */
@@ -205,8 +116,10 @@ export class ZcashTransaction implements ITransaction {
  *
  * Round-trip only: bytes -> parse -> bytes.
  */
-export class DashTransaction implements ITransaction {
-  private constructor(private _wasm: WasmDashTransaction) {}
+export class DashTransaction extends TransactionBase<WasmDashTransaction> {
+  private constructor(wasm: WasmDashTransaction) {
+    super(wasm);
+  }
 
   static fromBytes(bytes: Uint8Array): DashTransaction {
     return new DashTransaction(WasmDashTransaction.from_bytes(bytes));
@@ -215,50 +128,6 @@ export class DashTransaction implements ITransaction {
   /** @internal Create from WASM instance directly (avoids re-parsing bytes) */
   static fromWasm(wasm: WasmDashTransaction): DashTransaction {
     return new DashTransaction(wasm);
-  }
-
-  toBytes(): Uint8Array {
-    return this._wasm.to_bytes();
-  }
-
-  /**
-   * Get the transaction ID (txid)
-   *
-   * The txid is the double SHA256 of the full Dash transaction bytes,
-   * displayed in reverse byte order as is standard.
-   *
-   * @returns The transaction ID as a hex string
-   */
-  getId(): string {
-    return this._wasm.get_txid();
-  }
-
-  inputCount(): number {
-    return this._wasm.input_count();
-  }
-
-  outputCount(): number {
-    return this._wasm.output_count();
-  }
-
-  version(): number {
-    return this._wasm.version();
-  }
-
-  lockTime(): number {
-    return this._wasm.lock_time();
-  }
-
-  getInputs(): TxInputData[] {
-    return this._wasm.get_inputs() as TxInputData[];
-  }
-
-  getOutputs(): TxOutputData[] {
-    return this._wasm.get_outputs() as TxOutputData[];
-  }
-
-  getOutputsWithAddress(coin: CoinName): TxOutputDataWithAddress[] {
-    return this._wasm.get_outputs_with_address(coin) as TxOutputDataWithAddress[];
   }
 
   /** @internal */
