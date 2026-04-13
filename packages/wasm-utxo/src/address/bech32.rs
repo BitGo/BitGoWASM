@@ -2,10 +2,18 @@
 //!
 //! Implements BIP 173 (Bech32) and BIP 350 (Bech32m) encoding schemes using the bitcoin crate.
 //! - Bech32 is used for witness version 0 (P2WPKH, P2WSH)
-//! - Bech32m is used for witness version 1+ (P2TR)
+//! - Bech32m is used for witness version 1+ (P2TR, P2MR)
 
 use super::{AddressCodec, AddressError, Result};
 use crate::bitcoin::{Script, ScriptBuf, WitnessVersion};
+
+/// Check if a script is a P2MR (BIP-360) witness v2 program.
+/// P2MR: OP_2 (0x52) | OP_PUSHBYTES_32 (0x20) | <32-byte merkle root> = 34 bytes
+pub(crate) fn is_p2mr(script: &Script) -> bool {
+    script.len() == 34
+        && script.witness_version() == Some(WitnessVersion::V2)
+        && script.as_bytes()[1] == 0x20
+}
 
 /// Bech32/Bech32m codec for witness addresses
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,16 +43,12 @@ pub fn encode_witness_with_custom_hrp(
     let hrp = Hrp::parse(hrp_str)
         .map_err(|e| AddressError::Bech32Error(format!("Invalid HRP '{}': {}", hrp_str, e)))?;
 
-    // Encode based on witness version
-    let address = if version == WitnessVersion::V0 {
-        // Use Bech32 for witness version 0
-        bech32::segwit::encode_v0(hrp, program)
-            .map_err(|e| AddressError::Bech32Error(format!("Bech32 encoding failed: {}", e)))?
-    } else {
-        // Use Bech32m for witness version 1+
-        bech32::segwit::encode_v1(hrp, program)
-            .map_err(|e| AddressError::Bech32Error(format!("Bech32m encoding failed: {}", e)))?
-    };
+    // Encode using generic segwit encode which handles any witness version.
+    // v0 uses Bech32, v1+ uses Bech32m (BIP 350).
+    let version_fe32 = bech32::Fe32::try_from(version.to_num())
+        .map_err(|e| AddressError::Bech32Error(format!("Invalid witness version: {}", e)))?;
+    let address = bech32::segwit::encode(hrp, version_fe32, program)
+        .map_err(|e| AddressError::Bech32Error(format!("Bech32 encoding failed: {}", e)))?;
 
     Ok(address)
 }
@@ -72,9 +76,11 @@ pub fn extract_witness_program(script: &Script) -> Result<(WitnessVersion, &[u8]
             ));
         }
         Ok((WitnessVersion::V1, &script.as_bytes()[2..34]))
+    } else if is_p2mr(script) {
+        Ok((WitnessVersion::V2, &script.as_bytes()[2..34]))
     } else {
         Err(AddressError::UnsupportedScriptType(
-            "Bech32 only supports witness programs (P2WPKH, P2WSH, P2TR)".to_string(),
+            "Bech32 only supports witness programs (P2WPKH, P2WSH, P2TR, P2MR)".to_string(),
         ))
     }
 }

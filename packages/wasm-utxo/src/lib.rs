@@ -8,6 +8,7 @@ pub mod inscriptions;
 pub mod inspect;
 pub mod message;
 mod networks;
+pub mod p2mr;
 pub mod paygo;
 pub mod psbt_ops;
 #[cfg(test)]

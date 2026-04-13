@@ -5051,9 +5051,9 @@ mod tests {
             }
 
             // If both have non_witness_utxo, compare the relevant output
-            if orig.non_witness_utxo.is_some() && recon.non_witness_utxo.is_some() {
-                let orig_tx = orig.non_witness_utxo.as_ref().unwrap();
-                let recon_tx = recon.non_witness_utxo.as_ref().unwrap();
+            if let (Some(orig_tx), Some(recon_tx)) =
+                (&orig.non_witness_utxo, &recon.non_witness_utxo)
+            {
                 let vout = original_tx.input[idx].previous_output.vout as usize;
                 assert_eq!(
                     orig_tx.output.get(vout),

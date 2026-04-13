@@ -33,7 +33,9 @@ function runTest(network: utxolib.Network, addressFormat?: AddressFormat) {
     });
 
     it("should convert to utxolib compatible network", function () {
-      for (const fixture of fixtures) {
+      // P2MR is not supported via the utxolib compat layer (only via Network enum)
+      const compatFixtures = fixtures.filter(([type]) => type !== "p2mr");
+      for (const fixture of compatFixtures) {
         const [, script, addressRef] = fixture;
         const scriptBuf = Buffer.from(script, "hex");
         const address = utxolibCompat.fromOutputScript(scriptBuf, network, addressFormat);
