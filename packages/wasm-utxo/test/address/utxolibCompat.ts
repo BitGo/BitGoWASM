@@ -14,6 +14,9 @@ const __dirname = dirname(__filename);
 type Fixture = [type: string, script: string, address: string];
 
 async function getFixtures(name: string, addressFormat?: AddressFormat): Promise<Fixture[]> {
+  if (name === "bitcoinBitGoSignet") {
+    name = "bitcoinPublicSignet";
+  }
   const filename = addressFormat ? `${name}-${addressFormat}` : name;
   const fixturePath = path.join(__dirname, "..", "fixtures", "address", `${filename}.json`);
   const fixtures = await fs.readFile(fixturePath, "utf8");

@@ -6,14 +6,17 @@ import { fixedScriptWallet } from "../../js/index.js";
 
 const { ChainCode, chainCodes } = fixedScriptWallet;
 
+// P2MR (360, 361) is wasm-only and not in utxo-lib
+const utxolibChainCodes = chainCodes.filter((c) => c !== 360 && c !== 361);
+
 describe("ChainCode", function () {
   describe("chainCodes array", function () {
     it("matches utxo-lib chainCodes", function () {
-      assert.deepStrictEqual([...chainCodes], [...utxolib.bitgo.chainCodes]);
+      assert.deepStrictEqual([...utxolibChainCodes], [...utxolib.bitgo.chainCodes]);
     });
 
     it("has expected values", function () {
-      assert.deepStrictEqual([...chainCodes], [0, 1, 10, 11, 20, 21, 30, 31, 40, 41]);
+      assert.deepStrictEqual([...chainCodes], [0, 1, 10, 11, 20, 21, 30, 31, 40, 41, 360, 361]);
     });
   });
 
@@ -69,7 +72,7 @@ describe("ChainCode", function () {
     });
 
     it("matches utxo-lib isExternalChainCode/isInternalChainCode", function () {
-      for (const code of chainCodes) {
+      for (const code of utxolibChainCodes) {
         const wasmScope = ChainCode.scope(code);
         const utxolibIsExternal = utxolib.bitgo.isExternalChainCode(code);
         const utxolibIsInternal = utxolib.bitgo.isInternalChainCode(code);
@@ -127,7 +130,7 @@ describe("ChainCode", function () {
     });
 
     it("matches utxo-lib scriptTypeForChain", function () {
-      for (const code of chainCodes) {
+      for (const code of utxolibChainCodes) {
         const wasmType = ChainCode.scriptType(code);
         const utxolibType = utxolib.bitgo.scriptTypeForChain(code);
 

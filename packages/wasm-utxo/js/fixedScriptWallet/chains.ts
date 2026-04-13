@@ -8,7 +8,7 @@ import { FixedScriptWalletNamespace } from "../wasm/wasm_utxo.js";
 import type { OutputScriptType } from "./scriptType.js";
 
 /** All valid chain codes as a const tuple */
-export const chainCodes = [0, 1, 10, 11, 20, 21, 30, 31, 40, 41] as const;
+export const chainCodes = [0, 1, 10, 11, 20, 21, 30, 31, 40, 41, 360, 361] as const;
 
 /** A valid chain code value */
 export type ChainCode = (typeof chainCodes)[number];

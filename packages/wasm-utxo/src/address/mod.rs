@@ -462,7 +462,6 @@ mod tests {
             "bitcoin.json" => vec![&BITCOIN as &dyn AddressCodec, &BITCOIN_BECH32],
             "testnet.json" => vec![&TESTNET, &TESTNET_BECH32],
             "bitcoinPublicSignet.json" => vec![&TESTNET, &TESTNET_BECH32],
-            "bitcoinBitGoSignet.json" => vec![&TESTNET, &TESTNET_BECH32],
             "bitcoincash.json" => vec![&BITCOIN_CASH],
             "bitcoincash-cashaddr.json" => vec![&BITCOIN_CASH_CASHADDR],
             "bitcoincashTestnet.json" => vec![&BITCOIN_CASH_TESTNET],
