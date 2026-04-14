@@ -8,11 +8,12 @@ use crate::fixed_script_wallet::bitgo_psbt::{
     ProprietaryKeySubtype,
 };
 use crate::fixed_script_wallet::wallet_scripts::{
-    build_multisig_script_2_of_3, build_p2tr_ns_script, ScriptP2tr,
+    build_multisig_script_2_of_3, build_p2tr_ns_script, ScriptP2mr, ScriptP2tr,
 };
 use crate::fixed_script_wallet::{to_pub_triple, Chain, PubTriple, RootWalletKeys, WalletScripts};
 use crate::networks::Network;
 
+use miniscript::bitcoin::hashes::Hash;
 use miniscript::bitcoin::taproot::{LeafVersion, TapLeafHash};
 use miniscript::bitcoin::{Amount, ScriptBuf, Transaction, TxIn, TxOut};
 
@@ -140,8 +141,44 @@ pub fn add_bip322_input(
                 create_bip32_derivation(wallet_keys, chain, index);
             inner_psbt.inputs[input_index].witness_script = Some(script.witness_script.clone());
         }
-        WalletScripts::P2mr(_) => {
-            return Err("BIP-322 signing for P2MR is not yet supported".to_string());
+        WalletScripts::P2mr(script) => {
+            // P2MR is always script-path (no key-path). Same sighash as P2TR
+            // (BIP-360 reuses BIP-342 common signature message).
+            //
+            // Unlike P2trLegacy, we use the precomputed leaf hashes from ScriptP2mr
+            // rather than re-deriving keys and rebuilding scripts. The tree is fixed:
+            //   leaf[0]: user+bitgo  (key indices {0,2})
+            //   leaf[1]: user+backup (key indices {0,1})
+            //   leaf[2]: backup+bitgo (key indices {1,2})
+            //
+            // tap_scripts is skipped because P2MR control blocks (no internal key)
+            // can't be represented as rust-bitcoin's ControlBlock type.
+            let (signer_idx, cosigner_idx) =
+                sign_path.ok_or("signer and cosigner are required for p2mr inputs")?;
+
+            let mut pair = [signer_idx, cosigner_idx];
+            pair.sort();
+            let leaf_idx = match pair {
+                [0, 2] => 0,
+                [0, 1] => 1,
+                [1, 2] => 2,
+                _ => {
+                    return Err(format!(
+                        "Invalid signer pair: ({}, {})",
+                        signer_idx, cosigner_idx
+                    ))
+                }
+            };
+
+            let leaf_hash = TapLeafHash::from_byte_array(script.leaves[leaf_idx].leaf_hash);
+
+            inner_psbt.inputs[input_index].tap_key_origins = create_tap_bip32_derivation(
+                wallet_keys,
+                chain,
+                index,
+                &[signer_idx, cosigner_idx],
+                Some(leaf_hash),
+            );
         }
         WalletScripts::P2trLegacy(script) | WalletScripts::P2trMusig2(script) => {
             // For taproot, sign_path is required
@@ -431,7 +468,7 @@ pub fn verify_bip322_psbt_input(
 ///
 /// # Arguments
 /// * `pubkeys` - The three wallet pubkeys [user, backup, bitgo]
-/// * `script_type` - One of: "p2sh", "p2shP2wsh", "p2wsh", "p2tr", "p2trMusig2"
+/// * `script_type` - One of: "p2sh", "p2shP2wsh", "p2wsh", "p2tr", "p2trMusig2", "p2mr"
 ///
 /// # Returns
 /// The output script (scriptPubKey)
@@ -461,8 +498,12 @@ fn build_output_script_from_pubkeys(
             let script_p2tr = ScriptP2tr::new(pubkeys, true);
             Ok(script_p2tr.output_script())
         }
+        "p2mr" => {
+            let script_p2mr = ScriptP2mr::new(pubkeys);
+            Ok(script_p2mr.output_script())
+        }
         _ => Err(format!(
-            "Unknown script type '{}'. Expected: p2sh, p2shP2wsh, p2wsh, p2tr, p2trMusig2",
+            "Unknown script type '{}'. Expected: p2sh, p2shP2wsh, p2wsh, p2tr, p2trMusig2, p2mr",
             script_type
         )),
     }
@@ -540,7 +581,7 @@ fn verify_bip322_tx_structure(tx: &Transaction, input_index: usize) -> Result<()
 /// * `input_index` - The index of the input to verify
 /// * `message` - The message that was signed
 /// * `pubkeys` - The three wallet pubkeys [user, backup, bitgo]
-/// * `script_type` - One of: "p2sh", "p2shP2wsh", "p2wsh", "p2tr", "p2trMusig2"
+/// * `script_type` - One of: "p2sh", "p2shP2wsh", "p2wsh", "p2tr", "p2trMusig2", "p2mr"
 /// * `is_script_path` - For taproot types, whether script path was used (None for non-taproot)
 /// * `tag` - Optional custom tag for message hashing
 ///
@@ -617,7 +658,7 @@ pub fn verify_bip322_psbt_input_with_pubkeys(
 /// * `input_index` - The index of the input to verify
 /// * `message` - The message that was signed
 /// * `pubkeys` - The three wallet pubkeys [user, backup, bitgo]
-/// * `script_type` - One of: "p2sh", "p2shP2wsh", "p2wsh", "p2tr", "p2trMusig2"
+/// * `script_type` - One of: "p2sh", "p2shP2wsh", "p2wsh", "p2tr", "p2trMusig2", "p2mr"
 /// * `is_script_path` - For taproot types, whether script path was used (None for non-taproot)
 /// * `tag` - Optional custom tag for message hashing
 ///
