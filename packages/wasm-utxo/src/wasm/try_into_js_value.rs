@@ -349,6 +349,7 @@ impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::InputScriptType 
             InputScriptType::P2trLegacy => "p2trLegacy",
             InputScriptType::P2trMusig2ScriptPath => "p2trMusig2ScriptPath",
             InputScriptType::P2trMusig2KeyPath => "p2trMusig2KeyPath",
+            InputScriptType::P2mr => "p2mr",
         };
         Ok(JsValue::from_str(script_type))
     }

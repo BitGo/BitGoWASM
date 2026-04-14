@@ -751,6 +751,7 @@ pub enum InputScriptType {
     P2trLegacy,
     P2trMusig2ScriptPath,
     P2trMusig2KeyPath,
+    P2mr,
 }
 
 impl InputScriptType {
@@ -769,6 +770,7 @@ impl InputScriptType {
                     Ok(InputScriptType::P2trMusig2KeyPath)
                 }
             }
+            OutputScriptType::P2mr => Ok(InputScriptType::P2mr),
         }
     }
 

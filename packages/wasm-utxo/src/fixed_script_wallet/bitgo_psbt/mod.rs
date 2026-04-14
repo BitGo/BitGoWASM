@@ -1014,6 +1014,9 @@ impl BitGoPsbt {
                     create_bip32_derivation(wallet_keys, chain, derivation_index);
                 psbt_input.witness_script = Some(script.witness_script.clone());
             }
+            WalletScripts::P2mr(_) => {
+                return Err("P2MR PSBT input signing is not yet supported".to_string());
+            }
             WalletScripts::P2trLegacy(script) | WalletScripts::P2trMusig2(script) => {
                 let sign_path = options.sign_path.ok_or_else(|| {
                     "sign_path is required for p2tr/p2trMusig2 inputs".to_string()
@@ -1167,6 +1170,20 @@ impl BitGoPsbt {
                 psbt_output.bip32_derivation =
                     create_bip32_derivation(wallet_keys, chain, derivation_index);
                 psbt_output.witness_script = Some(script.witness_script.clone());
+            }
+            WalletScripts::P2mr(_) => {
+                // P2MR uses the same leaf structure as P2TR legacy (3 leaves, no musig2).
+                // We reuse taproot PSBT fields (tap_tree, tap_key_origins) since
+                // all tested PSBT parsers accept them on witness v2 outputs.
+                // No tap_internal_key (P2MR has no internal key or tweak).
+                psbt_output.tap_tree = Some(build_tap_tree_for_output(&pub_triple, false));
+                psbt_output.tap_key_origins = create_tap_bip32_derivation_for_output(
+                    wallet_keys,
+                    chain,
+                    derivation_index,
+                    &pub_triple,
+                    false,
+                );
             }
             WalletScripts::P2trLegacy(script) | WalletScripts::P2trMusig2(script) => {
                 let is_musig2 = matches!(scripts, WalletScripts::P2trMusig2(_));
