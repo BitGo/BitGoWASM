@@ -11,6 +11,7 @@ import { type BIP32Arg, BIP32, isBIP32Arg } from "../bip32.js";
 import { type ECPairArg, ECPair } from "../ecpair.js";
 import type { UtxolibName } from "../utxolibCompat.js";
 import type { CoinName } from "../coinName.js";
+import { toCoinName } from "../coinName.js";
 import type { InputScriptType } from "./scriptType.js";
 import {
   Transaction,
@@ -196,24 +197,49 @@ export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddre
    * with proper wallet metadata (bip32Derivation, scripts, witnessUtxo).
    * Only supports p2sh, p2shP2wsh, and p2wsh inputs (not taproot).
    *
-   * @param txBytes - The serialized half-signed legacy transaction
+   * Supports both Bitcoin-like coins (BTC, LTC, DOGE) and Dash (DASH).
+   * Zcash is NOT supported; use ZcashBitGoPsbt.fromHalfSignedLegacyTransaction instead.
+   *
+   * @param txBytesOrTx - Transaction bytes or decoded transaction instance (Bitcoin-like or Dash)
    * @param network - Network name
    * @param walletKeys - The wallet's root keys
    * @param unspents - Chain, index, and value for each input
+   * @param _options - Reserved for future use and signature compatibility with subclasses
+   * @throws Error if transaction is Zcash (use ZcashBitGoPsbt.fromHalfSignedLegacyTransaction instead)
    */
   static fromHalfSignedLegacyTransaction(
-    txBytes: Uint8Array,
+    txBytesOrTx: Uint8Array | Transaction | DashTransaction,
     network: NetworkName,
     walletKeys: WalletKeysArg,
     unspents: HydrationUnspent[],
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _options?: unknown,
   ): BitGoPsbt {
     const keys = RootWalletKeys.from(walletKeys);
-    const wasm = WasmBitGoPsbt.from_half_signed_legacy_transaction(
-      txBytes,
-      network,
-      keys.wasm,
-      unspents,
-    );
+
+    // Parse bytes to Transaction if needed
+    const tx =
+      txBytesOrTx instanceof Uint8Array
+        ? Transaction.fromBytes(txBytesOrTx, toCoinName(network))
+        : txBytesOrTx;
+
+    // Validate that this is not a Zcash transaction
+    if (tx instanceof ZcashTransaction) {
+      throw new Error(
+        "Use ZcashBitGoPsbt.fromHalfSignedLegacyTransaction() for Zcash transactions",
+      );
+    }
+
+    // Pass WASM transaction directly to avoid serialization round-trip
+    const wasm: WasmBitGoPsbt =
+      tx instanceof DashTransaction
+        ? WasmBitGoPsbt.from_half_signed_legacy_transaction_dash(
+            tx.wasm,
+            network,
+            keys.wasm,
+            unspents,
+          )
+        : WasmBitGoPsbt.from_half_signed_legacy_transaction(tx.wasm, network, keys.wasm, unspents);
     return new BitGoPsbt(wasm);
   }
 

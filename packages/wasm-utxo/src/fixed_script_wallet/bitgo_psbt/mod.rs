@@ -525,11 +525,100 @@ impl BitGoPsbt {
         unspents: &[HydrationUnspentInput],
     ) -> Result<Self, String> {
         use miniscript::bitcoin::consensus::Decodable;
-        use miniscript::bitcoin::{PublicKey, Transaction};
+        use miniscript::bitcoin::Transaction;
 
         let tx = Transaction::consensus_decode(&mut &tx_bytes[..])
             .map_err(|e| format!("Failed to decode transaction: {}", e))?;
 
+        let version = tx.version.0;
+        let lock_time = tx.lock_time.to_consensus_u32();
+
+        let mut psbt = Self::new(network, wallet_keys, Some(version), Some(lock_time));
+
+        Self::hydrate_psbt(&mut psbt, &tx, wallet_keys, unspents)?;
+
+        Ok(psbt)
+    }
+
+    /// Convert a half-signed legacy Zcash transaction to a PSBT with Zcash metadata.
+    ///
+    /// This is the Zcash-specific inverse of `get_half_signed_legacy_format()`.
+    /// It decodes the Zcash wire format (which includes version_group_id, expiry_height, sapling_fields),
+    /// extracts partial signatures, and reconstructs a Zcash PSBT.
+    ///
+    /// Unlike `from_half_signed_legacy_transaction`, this requires a `block_height` to determine
+    /// the correct `consensus_branch_id` via network upgrade activation height lookup.
+    ///
+    /// # Arguments
+    /// * `tx_bytes` - Zcash transaction bytes (overwintered format)
+    /// * `network` - Zcash network (Zcash or ZcashTestnet)
+    /// * `wallet_keys` - The wallet's root keys
+    /// * `unspents` - Chain, index, value for each input
+    /// * `block_height` - Block height to determine consensus branch ID
+    ///
+    /// # Returns
+    /// Thin wrapper over `from_half_signed_legacy_transaction_zcash_with_consensus_branch_id`.
+    /// Resolves consensus_branch_id from block height.
+    /// Convert a half-signed legacy Zcash transaction to a PSBT with explicit consensus branch ID.
+    ///
+    /// This is similar to `from_half_signed_legacy_transaction_zcash`, but takes an explicit
+    /// `consensus_branch_id` instead of deriving it from block height. Use this when you
+    /// already know the consensus branch ID (e.g., 0xC2D6D0B4 for NU5, 0x76B809BB for Sapling).
+    ///
+    /// # Arguments
+    /// * `tx_bytes` - Zcash transaction bytes (overwintered format)
+    /// * `network` - Zcash network (Zcash or ZcashTestnet)
+    /// * `wallet_keys` - The wallet's root keys
+    /// * `unspents` - Chain, index, value for each input
+    /// * `consensus_branch_id` - Explicit consensus branch ID for sighash computation
+    ///
+    /// # Returns
+    /// A BitGoPsbt::Zcash instance with restored Sapling fields
+    /// Helper that accepts already-decoded Zcash transaction parts (avoiding re-parsing).
+    pub fn from_half_signed_legacy_transaction_zcash_with_consensus_branch_id_from_parts(
+        parts: &crate::zcash::transaction::ZcashTransactionParts,
+        network: Network,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        unspents: &[HydrationUnspentInput],
+        consensus_branch_id: u32,
+    ) -> Result<Self, String> {
+        let tx = &parts.transaction;
+        let version = tx.version.0;
+        let lock_time = tx.lock_time.to_consensus_u32();
+
+        // Create Zcash PSBT using explicit consensus_branch_id
+        let mut psbt = Self::new_zcash(
+            network,
+            wallet_keys,
+            consensus_branch_id,
+            Some(version),
+            Some(lock_time),
+            parts.version_group_id,
+            parts.expiry_height,
+        );
+
+        Self::hydrate_psbt(&mut psbt, tx, wallet_keys, unspents)?;
+
+        // Restore Sapling fields in the Zcash PSBT variant
+        if let BitGoPsbt::Zcash(ref mut zcash_psbt, _) = psbt {
+            zcash_psbt.sapling_fields = parts.sapling_fields.clone();
+        }
+
+        Ok(psbt)
+    }
+
+    /// Helper that accepts already-decoded Zcash transaction parts (avoiding re-parsing).
+    /// Private helper: hydrate inputs and outputs in an already-created PSBT.
+    /// Shared logic for both Bitcoin-like and Zcash variants.
+    fn hydrate_psbt(
+        psbt: &mut BitGoPsbt,
+        tx: &miniscript::bitcoin::Transaction,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        unspents: &[HydrationUnspentInput],
+    ) -> Result<(), String> {
+        use miniscript::bitcoin::PublicKey;
+
+        // Validate input count
         if tx.input.len() != unspents.len() {
             return Err(format!(
                 "Input count mismatch: tx has {} inputs, got {} unspents",
@@ -537,11 +626,6 @@ impl BitGoPsbt {
                 unspents.len()
             ));
         }
-
-        let version = tx.version.0;
-        let lock_time = tx.lock_time.to_consensus_u32();
-
-        let mut psbt = Self::new(network, wallet_keys, Some(version), Some(lock_time));
 
         // Parse each input from the legacy tx
         let input_results: Vec<legacy_txformat::LegacyInputResult> = tx
@@ -554,6 +638,7 @@ impl BitGoPsbt {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        // Hydrate inputs
         for (i, (tx_in, unspent)) in tx.input.iter().zip(unspents.iter()).enumerate() {
             match (&input_results[i], unspent) {
                 (
@@ -573,7 +658,7 @@ impl BitGoPsbt {
                         psbt_wallet_input::WalletInputOptions {
                             sign_path: None,
                             sequence: Some(tx_in.sequence.0),
-                            prev_tx: None, // psbt-lite: no nonWitnessUtxo
+                            prev_tx: None,
                         },
                     )
                     .map_err(|e| format!("Input {}: failed to add wallet input: {}", i, e))?;
@@ -652,12 +737,12 @@ impl BitGoPsbt {
             }
         }
 
-        // Add outputs (plain script+value, no wallet metadata)
+        // Add outputs
         for tx_out in &tx.output {
             psbt.add_output(tx_out.script_pubkey.clone(), tx_out.value.to_sat());
         }
 
-        Ok(psbt)
+        Ok(())
     }
 
     fn new_internal(

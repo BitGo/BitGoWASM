@@ -280,7 +280,7 @@ impl WasmTransaction {
 /// transactions, which use the Overwinter transaction format.
 #[wasm_bindgen]
 pub struct WasmZcashTransaction {
-    parts: crate::zcash::transaction::ZcashTransactionParts,
+    pub(crate) parts: crate::zcash::transaction::ZcashTransactionParts,
 }
 
 impl WasmZcashTransaction {

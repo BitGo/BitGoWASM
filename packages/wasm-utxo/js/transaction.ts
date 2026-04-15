@@ -31,13 +31,35 @@ export class Transaction extends TransactionBase<WasmTransaction> {
   }
 
   /**
+   * Check if a coin is supported by this transaction class.
+   * Bitcoin-like transactions support all coins except Zcash and Dash.
+   */
+  static supportsCoin(coin: CoinName): boolean {
+    return !ZcashTransaction.supportsCoin(coin) && !DashTransaction.supportsCoin(coin);
+  }
+
+  /**
    * Create an empty transaction (version 1, locktime 0)
    */
   static create(): Transaction {
     return new Transaction(WasmTransaction.create());
   }
 
-  static fromBytes(bytes: Uint8Array): Transaction {
+  static fromBytes(bytes: Uint8Array): Transaction;
+  static fromBytes(bytes: Uint8Array, coin: "zec" | "tzec"): ZcashTransaction;
+  static fromBytes(bytes: Uint8Array, coin: "dash" | "tdash"): DashTransaction;
+  static fromBytes(
+    bytes: Uint8Array,
+    coin: CoinName,
+  ): Transaction | ZcashTransaction | DashTransaction;
+  static fromBytes(
+    bytes: Uint8Array,
+    coin?: CoinName,
+  ): Transaction | ZcashTransaction | DashTransaction {
+    if (coin !== undefined) {
+      if (ZcashTransaction.supportsCoin(coin)) return ZcashTransaction.fromBytes(bytes);
+      if (DashTransaction.supportsCoin(coin)) return DashTransaction.fromBytes(bytes);
+    }
     return new Transaction(WasmTransaction.from_bytes(bytes));
   }
 
@@ -96,6 +118,14 @@ export class ZcashTransaction extends TransactionBase<WasmZcashTransaction> {
     super(wasm);
   }
 
+  /**
+   * Check if a coin is supported by this transaction class.
+   * Zcash transactions support Zcash mainnet and testnet.
+   */
+  static supportsCoin(coin: CoinName): boolean {
+    return coin === "zec" || coin === "tzec";
+  }
+
   static fromBytes(bytes: Uint8Array): ZcashTransaction {
     return new ZcashTransaction(WasmZcashTransaction.from_bytes(bytes));
   }
@@ -119,6 +149,14 @@ export class ZcashTransaction extends TransactionBase<WasmZcashTransaction> {
 export class DashTransaction extends TransactionBase<WasmDashTransaction> {
   private constructor(wasm: WasmDashTransaction) {
     super(wasm);
+  }
+
+  /**
+   * Check if a coin is supported by this transaction class.
+   * Dash transactions support Dash mainnet and testnet.
+   */
+  static supportsCoin(coin: CoinName): boolean {
+    return coin === "dash" || coin === "tdash";
   }
 
   static fromBytes(bytes: Uint8Array): DashTransaction {

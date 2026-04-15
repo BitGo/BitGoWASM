@@ -16,6 +16,7 @@ import { BitGoPsbt, type HydrationUnspent } from "../../js/fixedScriptWallet/Bit
 import { ZcashBitGoPsbt } from "../../js/fixedScriptWallet/ZcashBitGoPsbt.js";
 import { ChainCode } from "../../js/fixedScriptWallet/chains.js";
 import { ECPair } from "../../js/ecpair.js";
+import { Transaction } from "../../js/transaction.js";
 import { getDefaultWalletKeys, getKeyTriple } from "../../js/testutils/keys.js";
 import { getCoinNameForNetwork } from "../networks.js";
 
@@ -169,6 +170,113 @@ describe("BitGoPsbt.fromHalfSignedLegacyTransaction", function () {
         reconstructed.verifySignature(0, rootWalletKeys.userKey().neutered().toBase58()),
         "Wallet input signature preserved",
       );
+    });
+  });
+
+  describe("Zcash legacy format round-trip", function () {
+    it("should reject Zcash via dynamic dispatch in fromHalfSignedLegacyTransaction", function () {
+      // With dynamic dispatch, fromHalfSignedLegacyTransaction now validates the transaction type
+      // and rejects Zcash early with a clear error message, directing to ZcashBitGoPsbt.createEmpty().
+      const rootWalletKeys = getDefaultWalletKeys();
+      const { psbt: zcashPsbt, unspents } = createHalfSignedP2msPsbt(utxolib.networks.zcash);
+
+      // Step 1: Extract Zcash PSBT as legacy format
+      const txBytes = zcashPsbt.getHalfSignedLegacyFormat();
+      assert.ok(txBytes.length > 0, "ZcashBitGoPsbt.getHalfSignedLegacyFormat() produces bytes");
+
+      // Step 2: Call fromHalfSignedLegacyTransaction with Zcash bytes
+      // Expected: Throws clear error after detecting Zcash transaction via dynamic dispatch
+      assert.throws(
+        () => {
+          BitGoPsbt.fromHalfSignedLegacyTransaction(txBytes, "zec", rootWalletKeys, unspents);
+        },
+        /Use ZcashBitGoPsbt.fromHalfSignedLegacyTransaction\(\) for Zcash transactions/,
+      );
+    });
+
+    it("should round-trip Zcash PSBT via ZcashBitGoPsbt.fromHalfSignedLegacyTransaction (with blockHeight)", function () {
+      // This test verifies the round-trip: create Zcash PSBT → extract legacy format → reconstruct PSBT
+      const rootWalletKeys = getDefaultWalletKeys();
+      const { psbt, unspents } = createHalfSignedP2msPsbt(utxolib.networks.zcash);
+
+      // Step 1: Extract half-signed legacy format (this is what would be transmitted)
+      const legacyBytes = psbt.getHalfSignedLegacyFormat();
+      assert.ok(legacyBytes.length > 0, "getHalfSignedLegacyFormat() produces bytes");
+
+      // Step 2: Reconstruct PSBT from legacy format with block height
+      const reconstructed = ZcashBitGoPsbt.fromHalfSignedLegacyTransaction(
+        legacyBytes,
+        "zec",
+        rootWalletKeys,
+        unspents,
+        { blockHeight: ZCASH_NU5_HEIGHT },
+      );
+
+      // Step 3: Verify reconstruction succeeded
+      assert.ok(reconstructed, "fromHalfSignedLegacyTransaction() reconstructs PSBT");
+      assert.ok(reconstructed instanceof ZcashBitGoPsbt, "Reconstructed PSBT is ZcashBitGoPsbt");
+
+      // Step 4: Verify Zcash metadata is preserved
+      assert.strictEqual(reconstructed.version(), 4, "Zcash version preserved as 4 (Overwintered)");
+
+      // Step 5: Verify serialization works (round-trip complete)
+      const serialized = reconstructed.serialize();
+      assert.ok(serialized.length > 0, "Reconstructed Zcash PSBT serializes without error");
+    });
+
+    it("should round-trip Zcash PSBT via ZcashBitGoPsbt.fromHalfSignedLegacyTransaction (with consensusBranchId)", function () {
+      // This test verifies the round-trip with explicit consensus branch ID instead of block height
+      const rootWalletKeys = getDefaultWalletKeys();
+      const { psbt, unspents } = createHalfSignedP2msPsbt(utxolib.networks.zcash);
+
+      // Step 1: Extract half-signed legacy format
+      const legacyBytes = psbt.getHalfSignedLegacyFormat();
+
+      // Step 2: Reconstruct PSBT from legacy format with explicit consensus branch ID
+      // 0xC2D6D0B4 is the NU5 consensus branch ID
+      const reconstructed = ZcashBitGoPsbt.fromHalfSignedLegacyTransaction(
+        legacyBytes,
+        "zec",
+        rootWalletKeys,
+        unspents,
+        { consensusBranchId: 0xc2d6d0b4 },
+      );
+
+      // Step 3: Verify reconstruction succeeded with explicit branch ID
+      assert.ok(
+        reconstructed,
+        "fromHalfSignedLegacyTransactionZcash() works with consensusBranchId",
+      );
+      assert.ok(reconstructed instanceof ZcashBitGoPsbt, "Reconstructed PSBT is ZcashBitGoPsbt");
+
+      // Step 4: Verify serialization works
+      const serialized = reconstructed.serialize();
+      assert.ok(serialized.length > 0, "Reconstructed Zcash PSBT serializes without error");
+    });
+
+    it("should accept pre-decoded transaction instance to avoid re-parsing", function () {
+      // Dynamic dispatch enhancement: fromHalfSignedLegacyTransaction now accepts
+      // either txBytes OR a pre-decoded ITransaction instance
+      const rootWalletKeys = getDefaultWalletKeys();
+      const { psbt, unspents } = createHalfSignedP2msPsbt(utxolib.networks.bitcoin);
+      const txBytes = psbt.getHalfSignedLegacyFormat();
+
+      // Method 1: Pass raw bytes (uses dynamic dispatch internally)
+      const psbt1 = BitGoPsbt.fromHalfSignedLegacyTransaction(
+        txBytes,
+        "btc",
+        rootWalletKeys,
+        unspents,
+      );
+
+      // Method 2: Pre-decode transaction and pass instance (avoids re-parsing)
+      const tx = Transaction.fromBytes(txBytes);
+      const psbt2 = BitGoPsbt.fromHalfSignedLegacyTransaction(tx, "btc", rootWalletKeys, unspents);
+
+      // Both methods should produce equivalent results
+      assert.strictEqual(psbt1.inputCount(), psbt2.inputCount(), "Same input count");
+      assert.strictEqual(psbt1.outputCount(), psbt2.outputCount(), "Same output count");
+      assert.deepStrictEqual(psbt1.serialize(), psbt2.serialize(), "Identical serialization");
     });
   });
 });

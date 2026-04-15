@@ -416,79 +416,161 @@ impl BitGoPsbt {
     /// Convert a half-signed legacy transaction to a psbt-lite.
     ///
     /// # Arguments
-    /// * `tx_bytes` - The serialized half-signed legacy transaction
+    /// * `tx` - The decoded half-signed legacy transaction
     /// * `network` - Network name (utxolib or coin name)
     /// * `wallet_keys` - The wallet's root keys
     /// * `unspents` - Array of `{ chain: number, index: number, value: bigint }` for each input
     pub fn from_half_signed_legacy_transaction(
-        tx_bytes: &[u8],
+        tx: &crate::wasm::transaction::WasmTransaction,
         network: &str,
         wallet_keys: &WasmRootWalletKeys,
         unspents: JsValue,
     ) -> Result<BitGoPsbt, WasmUtxoError> {
-        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ScriptIdWithValue;
         use crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput;
 
         let network = parse_network(network)?;
         let wallet_keys = wallet_keys.inner();
 
-        // Parse the unspents array from JsValue.
-        // Each element is either:
-        //   { chain: number, index: number, value: bigint }  → wallet input
-        //   { value: bigint }                                 → replay protection input
-        // The presence of `chain` is used to distinguish the two.
+        // Parse the unspents array using the TryFromJsValue trait
         let arr = js_sys::Array::from(&unspents);
-        let mut parsed_unspents = Vec::with_capacity(arr.length() as usize);
-        for i in 0..arr.length() {
-            let item = arr.get(i);
-            let value_js = js_sys::Reflect::get(&item, &"value".into())
-                .map_err(|_| WasmUtxoError::new("Missing 'value' field on unspent"))?;
-            let value = u64::try_from(js_sys::BigInt::unchecked_from_js(value_js))
-                .map_err(|_| WasmUtxoError::new("'value' must be a bigint convertible to u64"))?;
+        let parsed_unspents = arr
+            .iter()
+            .map(|item| HydrationUnspentInput::try_from_js_value(&item))
+            .collect::<Result<Vec<_>, _>>()?;
 
-            let chain_val =
-                js_sys::Reflect::get(&item, &"chain".into()).unwrap_or(JsValue::UNDEFINED);
-
-            if chain_val.is_undefined() {
-                // No 'chain' property → replay protection input; require pubkey
-                let pubkey_val = js_sys::Reflect::get(&item, &"pubkey".into()).map_err(|_| {
-                    WasmUtxoError::new("Missing 'pubkey' on replay protection unspent")
-                })?;
-                let pubkey_bytes = js_sys::Uint8Array::new(&pubkey_val).to_vec();
-                let pubkey = miniscript::bitcoin::CompressedPublicKey::from_slice(&pubkey_bytes)
-                    .map_err(|_| {
-                        WasmUtxoError::new(
-                            "'pubkey' is not a valid compressed public key (33 bytes)",
-                        )
-                    })?;
-                parsed_unspents.push(HydrationUnspentInput::ReplayProtection { pubkey, value });
-            } else {
-                // Has 'chain' → wallet input; also parse 'index'
-                let chain = chain_val
-                    .as_f64()
-                    .ok_or_else(|| WasmUtxoError::new("'chain' must be a number"))?
-                    as u32;
-                let index = js_sys::Reflect::get(&item, &"index".into())
-                    .map_err(|_| WasmUtxoError::new("Missing 'index' field on wallet unspent"))?
-                    .as_f64()
-                    .ok_or_else(|| WasmUtxoError::new("'index' must be a number"))?
-                    as u32;
-                parsed_unspents.push(HydrationUnspentInput::Wallet(ScriptIdWithValue {
-                    chain,
-                    index,
-                    value,
-                }));
-            }
-        }
-
+        let tx_bytes = tx.to_bytes();
         let psbt =
             crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::from_half_signed_legacy_transaction(
-                tx_bytes,
+                &tx_bytes,
                 network,
                 wallet_keys,
                 &parsed_unspents,
             )
             .map_err(|e| WasmUtxoError::new(&e))?;
+
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
+    /// Convert a half-signed legacy Dash transaction to a psbt-lite.
+    ///
+    /// # Arguments
+    /// * `tx` - The decoded Dash transaction
+    /// * `network` - Network name ("dash" or "tdash")
+    /// * `wallet_keys` - The wallet's root keys
+    /// * `unspents` - Array of `{ chain: number, index: number, value: bigint }` for each input
+    pub fn from_half_signed_legacy_transaction_dash(
+        tx: &crate::wasm::dash_transaction::WasmDashTransaction,
+        network: &str,
+        wallet_keys: &WasmRootWalletKeys,
+        unspents: JsValue,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput;
+
+        let network = parse_network(network)?;
+        let wallet_keys = wallet_keys.inner();
+
+        // Parse the unspents array using the TryFromJsValue trait
+        let arr = js_sys::Array::from(&unspents);
+        let parsed_unspents = arr
+            .iter()
+            .map(|item| HydrationUnspentInput::try_from_js_value(&item))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let tx_bytes = tx.to_bytes()?;
+        let psbt =
+            crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::from_half_signed_legacy_transaction(
+                &tx_bytes,
+                network,
+                wallet_keys,
+                &parsed_unspents,
+            )
+            .map_err(|e| WasmUtxoError::new(&e))?;
+
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
+    /// Convert a half-signed legacy Zcash transaction to a psbt-lite (with block height).
+    /// Thin wrapper: resolves block_height → consensus_branch_id and delegates to the explicit variant.
+    ///
+    /// # Arguments
+    /// * `tx` - The decoded Zcash transaction
+    /// * `network` - Network name ("zec" or "tzec")
+    /// * `wallet_keys` - The wallet's root keys
+    /// * `unspents` - Array of `{ chain: number, index: number, value: bigint }` for each input
+    /// * `block_height` - Block height to determine consensus branch ID
+    #[wasm_bindgen]
+    pub fn from_half_signed_legacy_transaction_zcash_with_block_height(
+        tx: &crate::wasm::transaction::WasmZcashTransaction,
+        network: &str,
+        wallet_keys: &WasmRootWalletKeys,
+        unspents: JsValue,
+        block_height: u32,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        let network_parsed = parse_network(network)?;
+        let is_mainnet = matches!(network_parsed, crate::networks::Network::Zcash);
+
+        // Resolve consensus_branch_id from block height
+        let consensus_branch_id = crate::zcash::branch_id_for_height(block_height, is_mainnet)
+            .ok_or_else(|| {
+                WasmUtxoError::new(&format!(
+                    "Block height {} is before Overwinter activation on {}",
+                    block_height,
+                    if is_mainnet { "mainnet" } else { "testnet" }
+                ))
+            })?;
+
+        // Delegate to the explicit consensus_branch_id variant
+        Self::from_half_signed_legacy_transaction_zcash_with_branch_id(
+            tx,
+            network,
+            wallet_keys,
+            unspents,
+            consensus_branch_id,
+        )
+    }
+
+    /// Convert a half-signed legacy Zcash transaction to a psbt-lite (with consensus branch ID).
+    ///
+    /// # Arguments
+    /// * `tx` - The decoded Zcash transaction
+    /// * `network` - Network name ("zec" or "tzec")
+    /// * `wallet_keys` - The wallet's root keys
+    /// * `unspents` - Array of `{ chain: number, index: number, value: bigint }` for each input
+    /// * `consensus_branch_id` - Zcash consensus branch ID
+    #[wasm_bindgen]
+    pub fn from_half_signed_legacy_transaction_zcash_with_branch_id(
+        tx: &crate::wasm::transaction::WasmZcashTransaction,
+        network: &str,
+        wallet_keys: &WasmRootWalletKeys,
+        unspents: JsValue,
+        consensus_branch_id: u32,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput;
+
+        let network = parse_network(network)?;
+        let wallet_keys = wallet_keys.inner();
+
+        // Parse the unspents array using the TryFromJsValue trait
+        let arr = js_sys::Array::from(&unspents);
+        let parsed_unspents = arr
+            .iter()
+            .map(|item| HydrationUnspentInput::try_from_js_value(&item))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::from_half_signed_legacy_transaction_zcash_with_consensus_branch_id_from_parts(
+            &tx.parts,
+            network,
+            wallet_keys,
+            &parsed_unspents,
+            consensus_branch_id,
+        )
+        .map_err(|e| WasmUtxoError::new(&e))?;
 
         Ok(BitGoPsbt {
             psbt,

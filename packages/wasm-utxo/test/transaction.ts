@@ -1,6 +1,7 @@
 import assert from "node:assert";
-import { Transaction } from "../js/transaction.js";
+import { Transaction, ZcashTransaction, DashTransaction } from "../js/transaction.js";
 import { fixedScriptWallet } from "../js/index.js";
+import { coinNames } from "../js/coinName.js";
 
 describe("Transaction builder", function () {
   it("should create an empty transaction", function () {
@@ -81,5 +82,68 @@ describe("Transaction builder", function () {
     const bytes = tx.toBytes();
     const tx2 = Transaction.fromBytes(bytes);
     assert.deepStrictEqual(tx2.toBytes(), bytes);
+  });
+});
+
+describe("supportsCoin", function () {
+  it("should identify Zcash coins correctly", function () {
+    assert.ok(ZcashTransaction.supportsCoin("zec"), "zec should be supported by ZcashTransaction");
+    assert.ok(
+      ZcashTransaction.supportsCoin("tzec"),
+      "tzec should be supported by ZcashTransaction",
+    );
+  });
+
+  it("should reject non-Zcash coins in ZcashTransaction", function () {
+    const nonZcashCoins = coinNames.filter((c) => !ZcashTransaction.supportsCoin(c));
+    assert.ok(nonZcashCoins.length > 0, "should have non-Zcash coins");
+    nonZcashCoins.forEach((coin) => {
+      assert.ok(
+        !ZcashTransaction.supportsCoin(coin),
+        `ZcashTransaction should not support ${coin}`,
+      );
+    });
+  });
+
+  it("should identify Dash coins correctly", function () {
+    assert.ok(DashTransaction.supportsCoin("dash"), "dash should be supported by DashTransaction");
+    assert.ok(
+      DashTransaction.supportsCoin("tdash"),
+      "tdash should be supported by DashTransaction",
+    );
+  });
+
+  it("should reject non-Dash coins in DashTransaction", function () {
+    const nonDashCoins = coinNames.filter((c) => !DashTransaction.supportsCoin(c));
+    assert.ok(nonDashCoins.length > 0, "should have non-Dash coins");
+    nonDashCoins.forEach((coin) => {
+      assert.ok(!DashTransaction.supportsCoin(coin), `DashTransaction should not support ${coin}`);
+    });
+  });
+
+  it("should identify Bitcoin-like coins correctly", function () {
+    const bitcoinLikeCoins = coinNames.filter((c) => Transaction.supportsCoin(c));
+    assert.ok(bitcoinLikeCoins.length > 0, "should have Bitcoin-like coins");
+    bitcoinLikeCoins.forEach((coin) => {
+      assert.ok(
+        !ZcashTransaction.supportsCoin(coin) && !DashTransaction.supportsCoin(coin),
+        `${coin} should only be supported by Transaction`,
+      );
+    });
+  });
+
+  it("should partition all coins into exactly one family", function () {
+    coinNames.forEach((coin) => {
+      const zSupports = ZcashTransaction.supportsCoin(coin);
+      const dSupports = DashTransaction.supportsCoin(coin);
+      const bSupports = Transaction.supportsCoin(coin);
+
+      const supportCount = [zSupports, dSupports, bSupports].filter(Boolean).length;
+      assert.strictEqual(
+        supportCount,
+        1,
+        `${coin} should be supported by exactly one transaction class`,
+      );
+    });
   });
 });
