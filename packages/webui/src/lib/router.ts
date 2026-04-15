@@ -32,7 +32,7 @@ let currentPath: string | null = null;
  */
 export function parseHash(hash: string = location.hash): ParsedHash {
   // Remove leading # if present
-  let hashContent = hash.startsWith("#") ? hash.slice(1) : hash;
+  const hashContent = hash.startsWith("#") ? hash.slice(1) : hash;
 
   // Default to root path
   if (!hashContent || hashContent === "/") {

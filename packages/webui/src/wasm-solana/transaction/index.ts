@@ -703,7 +703,7 @@ class SolanaTransactionParser extends BaseComponent {
   }
 
   private share(): void {
-    copyToClipboard(location.href, this.$(".btn")!);
+    void copyToClipboard(location.href, this.$(".btn")!);
   }
 
   private clear(): void {

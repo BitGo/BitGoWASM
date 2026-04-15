@@ -231,7 +231,7 @@ function renderTreeNode(
                 class: "copy-btn",
                 onclick: (e: Event) => {
                   e.stopPropagation();
-                  copyToClipboard(getFullValue(node.value), e.target as HTMLElement);
+                  void copyToClipboard(getFullValue(node.value), e.target as HTMLElement);
                 },
               },
               "Copy",
@@ -1437,7 +1437,8 @@ class PsbtTxParser extends BaseComponent {
       this.applyPsbtEdit();
     } catch (e) {
       if (errorEl) {
-        errorEl.replaceChildren(h("div", { class: "error-message" }, `${e}`));
+        const message = e instanceof Error ? e.message : String(e);
+        errorEl.replaceChildren(h("div", { class: "error-message" }, message));
       }
     }
   }
@@ -1502,7 +1503,7 @@ class PsbtTxParser extends BaseComponent {
   }
 
   private share(): void {
-    copyToClipboard(location.href, this.$(".btn")!);
+    void copyToClipboard(location.href, this.$(".btn")!);
   }
 
   private clear(): void {
