@@ -42,6 +42,15 @@ impl WasmUtxoError {
     pub fn new(s: &str) -> WasmUtxoError {
         WasmUtxoError::StringError(s.to_string())
     }
+
+    pub fn from_errors<E: fmt::Display>(errors: impl IntoIterator<Item = E>) -> WasmUtxoError {
+        let messages: Vec<String> = errors.into_iter().map(|e| e.to_string()).collect();
+        WasmUtxoError::StringError(format!(
+            "{} errors: {}",
+            messages.len(),
+            messages.join(", ")
+        ))
+    }
 }
 
 impl From<crate::address::AddressError> for WasmUtxoError {

@@ -425,9 +425,7 @@ impl WrapPsbt {
         let key = bip32::Xpriv::from_str(&xprv).map_err(|_| WasmUtxoError::new("Invalid xprv"))?;
         self.0
             .sign(&key, &Secp256k1::new())
-            .map_err(|(_, errors)| {
-                WasmUtxoError::new(&format!("{} errors: {:?}", errors.len(), errors))
-            })
+            .map_err(|(_, errors)| WasmUtxoError::from_errors(errors.into_values()))
             .and_then(|r| r.try_to_js_value())
     }
 
@@ -437,9 +435,7 @@ impl WrapPsbt {
         let secp = Secp256k1::new();
         self.0
             .sign(&SingleKeySigner::from_privkey(privkey, &secp), &secp)
-            .map_err(|(_r, errors)| {
-                WasmUtxoError::new(&format!("{} errors: {:?}", errors.len(), errors))
-            })
+            .map_err(|(_r, errors)| WasmUtxoError::from_errors(errors.into_values()))
             .and_then(|r| r.try_to_js_value())
     }
 
@@ -457,9 +453,7 @@ impl WrapPsbt {
         let xpriv = key.to_xpriv()?;
         self.0
             .sign(&xpriv, &Secp256k1::new())
-            .map_err(|(_, errors)| {
-                WasmUtxoError::new(&format!("{} errors: {:?}", errors.len(), errors))
-            })
+            .map_err(|(_, errors)| WasmUtxoError::from_errors(errors.into_values()))
             .and_then(|r| r.try_to_js_value())
     }
 
@@ -479,9 +473,7 @@ impl WrapPsbt {
         let private_key = PrivateKey::new(privkey, miniscript::bitcoin::network::Network::Bitcoin);
         self.0
             .sign(&SingleKeySigner::from_privkey(private_key, &secp), &secp)
-            .map_err(|(_r, errors)| {
-                WasmUtxoError::new(&format!("{} errors: {:?}", errors.len(), errors))
-            })
+            .map_err(|(_r, errors)| WasmUtxoError::from_errors(errors.into_values()))
             .and_then(|r| r.try_to_js_value())
     }
 
@@ -596,9 +588,7 @@ impl WrapPsbt {
     pub fn finalize_mut(&mut self) -> Result<(), WasmUtxoError> {
         self.0
             .finalize_mut(&Secp256k1::verification_only())
-            .map_err(|vec_err| {
-                WasmUtxoError::new(&format!("{} errors: {:?}", vec_err.len(), vec_err))
-            })
+            .map_err(WasmUtxoError::from_errors)
     }
 
     /// Extract the final transaction from a finalized PSBT
