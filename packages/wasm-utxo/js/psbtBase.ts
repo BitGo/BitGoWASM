@@ -16,10 +16,13 @@ interface WasmPsbtBase {
   remove_output(index: number): void;
   set_kv(key: unknown, value: Uint8Array): void;
   get_kv(key: unknown): Uint8Array | null | undefined;
+  delete_kv(key: unknown): void;
   set_input_kv(index: number, key: unknown, value: Uint8Array): void;
   get_input_kv(index: number, key: unknown): Uint8Array | null | undefined;
+  delete_input_kv(index: number, key: unknown): void;
   set_output_kv(index: number, key: unknown, value: Uint8Array): void;
   get_output_kv(index: number, key: unknown): Uint8Array | null | undefined;
+  delete_output_kv(index: number, key: unknown): void;
 }
 
 export abstract class PsbtBase<W extends WasmPsbtBase> {
@@ -79,5 +82,14 @@ export abstract class PsbtBase<W extends WasmPsbtBase> {
   }
   getOutputKV(index: number, key: PsbtKvKey): Uint8Array | undefined {
     return this._wasm.get_output_kv(index, key) ?? undefined;
+  }
+  deleteKV(key: PsbtKvKey): void {
+    this._wasm.delete_kv(key);
+  }
+  deleteInputKV(index: number, key: PsbtKvKey): void {
+    this._wasm.delete_input_kv(index, key);
+  }
+  deleteOutputKV(index: number, key: PsbtKvKey): void {
+    this._wasm.delete_output_kv(index, key);
   }
 }
