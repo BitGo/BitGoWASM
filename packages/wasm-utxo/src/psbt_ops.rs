@@ -48,6 +48,14 @@ pub trait PsbtAccess {
         self.psbt().proprietary.get(key).cloned()
     }
 
+    fn delete_global_unknown_kv(&mut self, key: raw::Key) {
+        self.psbt_mut().unknown.remove(&key);
+    }
+
+    fn delete_global_proprietary_kv(&mut self, key: raw::ProprietaryKey) {
+        self.psbt_mut().proprietary.remove(&key);
+    }
+
     // -------------------------------------------------------------------------
     // Per-input KV accessors
     // -------------------------------------------------------------------------
@@ -110,6 +118,32 @@ pub trait PsbtAccess {
             ));
         }
         Ok(self.psbt().inputs[index].proprietary.get(key).cloned())
+    }
+
+    fn delete_input_unknown_kv(&mut self, index: usize, key: raw::Key) -> Result<(), String> {
+        let len = self.psbt().inputs.len();
+        if index >= len {
+            return Err(format!(
+                "input index {index} out of bounds (have {len} inputs)"
+            ));
+        }
+        self.psbt_mut().inputs[index].unknown.remove(&key);
+        Ok(())
+    }
+
+    fn delete_input_proprietary_kv(
+        &mut self,
+        index: usize,
+        key: raw::ProprietaryKey,
+    ) -> Result<(), String> {
+        let len = self.psbt().inputs.len();
+        if index >= len {
+            return Err(format!(
+                "input index {index} out of bounds (have {len} inputs)"
+            ));
+        }
+        self.psbt_mut().inputs[index].proprietary.remove(&key);
+        Ok(())
     }
 
     // -------------------------------------------------------------------------
@@ -176,6 +210,32 @@ pub trait PsbtAccess {
             ));
         }
         Ok(self.psbt().outputs[index].proprietary.get(key).cloned())
+    }
+
+    fn delete_output_unknown_kv(&mut self, index: usize, key: raw::Key) -> Result<(), String> {
+        let len = self.psbt().outputs.len();
+        if index >= len {
+            return Err(format!(
+                "output index {index} out of bounds (have {len} outputs)"
+            ));
+        }
+        self.psbt_mut().outputs[index].unknown.remove(&key);
+        Ok(())
+    }
+
+    fn delete_output_proprietary_kv(
+        &mut self,
+        index: usize,
+        key: raw::ProprietaryKey,
+    ) -> Result<(), String> {
+        let len = self.psbt().outputs.len();
+        if index >= len {
+            return Err(format!(
+                "output index {index} out of bounds (have {len} outputs)"
+            ));
+        }
+        self.psbt_mut().outputs[index].proprietary.remove(&key);
+        Ok(())
     }
 
     fn remove_input(&mut self, index: usize) -> Result<(), String> {

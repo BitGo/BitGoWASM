@@ -833,6 +833,26 @@ macro_rules! impl_wasm_psbt_ops {
             ) -> Result<Option<Vec<u8>>, $crate::error::WasmUtxoError> {
                 self.wasm_get_output_kv(index, key)
             }
+            pub fn delete_kv(
+                &mut self,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.wasm_delete_kv(key)
+            }
+            pub fn delete_input_kv(
+                &mut self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.wasm_delete_input_kv(index, key)
+            }
+            pub fn delete_output_kv(
+                &mut self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.wasm_delete_output_kv(index, key)
+            }
         }
     };
     ($type:ty, $field:ident) => {
@@ -920,6 +940,26 @@ macro_rules! impl_wasm_psbt_ops {
                 key: ::wasm_bindgen::JsValue,
             ) -> Result<Option<Vec<u8>>, $crate::error::WasmUtxoError> {
                 self.$field.wasm_get_output_kv(index, key)
+            }
+            pub fn delete_kv(
+                &mut self,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.$field.wasm_delete_kv(key)
+            }
+            pub fn delete_input_kv(
+                &mut self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.$field.wasm_delete_input_kv(index, key)
+            }
+            pub fn delete_output_kv(
+                &mut self,
+                index: usize,
+                key: ::wasm_bindgen::JsValue,
+            ) -> Result<(), $crate::error::WasmUtxoError> {
+                self.$field.wasm_delete_output_kv(index, key)
             }
         }
     };

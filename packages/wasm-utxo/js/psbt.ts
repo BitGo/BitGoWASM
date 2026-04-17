@@ -20,10 +20,13 @@ export interface IPsbt extends ITransactionCommon<PsbtInputData, PsbtOutputData>
   removeOutput(index: number): void;
   setKV(key: PsbtKvKey, value: Uint8Array): void;
   getKV(key: PsbtKvKey): Uint8Array | undefined;
+  deleteKV(key: PsbtKvKey): void;
   setInputKV(index: number, key: PsbtKvKey, value: Uint8Array): void;
   getInputKV(index: number, key: PsbtKvKey): Uint8Array | undefined;
+  deleteInputKV(index: number, key: PsbtKvKey): void;
   setOutputKV(index: number, key: PsbtKvKey, value: Uint8Array): void;
   getOutputKV(index: number, key: PsbtKvKey): Uint8Array | undefined;
+  deleteOutputKV(index: number, key: PsbtKvKey): void;
 }
 
 /** Extended PSBT with address resolution (no coin parameter needed) */

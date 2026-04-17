@@ -114,6 +114,30 @@ pub(crate) trait WasmPsbtOps: PsbtAccess {
         }
         .map_err(|e| WasmUtxoError::new(&e))
     }
+
+    fn wasm_delete_kv(&mut self, key: JsValue) -> Result<(), WasmUtxoError> {
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::delete_global_unknown_kv(self, k),
+            PsbtKvKey::Proprietary(k) => PsbtAccess::delete_global_proprietary_kv(self, k),
+        }
+        Ok(())
+    }
+
+    fn wasm_delete_input_kv(&mut self, index: usize, key: JsValue) -> Result<(), WasmUtxoError> {
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::delete_input_unknown_kv(self, index, k),
+            PsbtKvKey::Proprietary(k) => PsbtAccess::delete_input_proprietary_kv(self, index, k),
+        }
+        .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    fn wasm_delete_output_kv(&mut self, index: usize, key: JsValue) -> Result<(), WasmUtxoError> {
+        match PsbtKvKey::try_from_js_value(&key)? {
+            PsbtKvKey::Unknown(k) => PsbtAccess::delete_output_unknown_kv(self, index, k),
+            PsbtKvKey::Proprietary(k) => PsbtAccess::delete_output_proprietary_kv(self, index, k),
+        }
+        .map_err(|e| WasmUtxoError::new(&e))
+    }
 }
 
 impl<T: PsbtAccess> WasmPsbtOps for T {}
