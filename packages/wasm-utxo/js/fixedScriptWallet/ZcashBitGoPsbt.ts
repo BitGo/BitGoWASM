@@ -1,7 +1,7 @@
 import { BitGoPsbt as WasmBitGoPsbt } from "../wasm/wasm_utxo.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
-import { BitGoPsbt, type CreateEmptyOptions } from "./BitGoPsbt.js";
-import { ZcashTransaction } from "../transaction.js";
+import { BitGoPsbt, type CreateEmptyOptions, type HydrationUnspent } from "./BitGoPsbt.js";
+import { ZcashTransaction, type ITransaction } from "../transaction.js";
 
 /** Zcash network names */
 export type ZcashNetworkName = "zcash" | "zcashTest" | "zec" | "tzec";
@@ -142,6 +142,80 @@ export class ZcashBitGoPsbt extends BitGoPsbt {
   static override fromBytes(bytes: Uint8Array, network: ZcashNetworkName): ZcashBitGoPsbt {
     const wasm = WasmBitGoPsbt.from_bytes(bytes, network);
     return new ZcashBitGoPsbt(wasm);
+  }
+
+  /**
+   * Reconstruct a Zcash PSBT from a half-signed legacy transaction
+   *
+   * This is the inverse of `getHalfSignedLegacyFormat()` for Zcash. It decodes the Zcash wire
+   * format (which includes version_group_id, expiry_height, and sapling fields), extracts
+   * partial signatures, and reconstructs a proper Zcash PSBT with consensus metadata.
+   *
+   * Supports two modes for determining consensus_branch_id:
+   * - **Recommended**: Pass `blockHeight` to auto-determine consensus_branch_id via network upgrade activation heights
+   * - **Advanced**: Pass `consensusBranchId` directly if you already know it (e.g., 0xC2D6D0B4 for NU5)
+   *
+   * @param txBytesOrTx - Either serialized Zcash transaction bytes or a decoded ZcashTransaction instance
+   * @param network - Zcash network name ("zcash", "zcashTest", "zec", "tzec")
+   * @param walletKeys - The wallet's root keys
+   * @param unspents - Chain, index, and value for each input
+   * @param options - Either `{ blockHeight: number }` or `{ consensusBranchId: number }`
+   * @returns A ZcashBitGoPsbt instance
+   *
+   * @example
+   * ```typescript
+   * // Round-trip with block height (recommended)
+   * const legacyBytes = psbt.getHalfSignedLegacyFormat();
+   * const reconstructed = ZcashBitGoPsbt.fromHalfSignedLegacyTransaction(
+   *   legacyBytes,
+   *   "zec",
+   *   walletKeys,
+   *   unspents,
+   *   { blockHeight: 1687105 }  // NU5 activation height
+   * );
+   *
+   * // Or with explicit consensus branch ID
+   * const reconstructed = ZcashBitGoPsbt.fromHalfSignedLegacyTransaction(
+   *   legacyBytes,
+   *   "zec",
+   *   walletKeys,
+   *   unspents,
+   *   { consensusBranchId: 0xC2D6D0B4 }  // NU5 branch ID
+   * );
+   * ```
+   */
+  static fromHalfSignedLegacyTransaction(
+    txBytesOrTx: Uint8Array | ITransaction,
+    network: ZcashNetworkName,
+    walletKeys: WalletKeysArg,
+    unspents: HydrationUnspent[],
+    options: { blockHeight: number } | { consensusBranchId: number },
+  ): ZcashBitGoPsbt {
+    const keys = RootWalletKeys.from(walletKeys);
+    const tx =
+      txBytesOrTx instanceof Uint8Array
+        ? ZcashTransaction.fromBytes(txBytesOrTx)
+        : (txBytesOrTx as ZcashTransaction);
+
+    if ("blockHeight" in options) {
+      const wasm = WasmBitGoPsbt.from_half_signed_legacy_transaction_zcash_with_block_height(
+        tx.wasm,
+        network,
+        keys.wasm,
+        unspents,
+        options.blockHeight,
+      );
+      return new ZcashBitGoPsbt(wasm);
+    } else {
+      const wasm = WasmBitGoPsbt.from_half_signed_legacy_transaction_zcash_with_branch_id(
+        tx.wasm,
+        network,
+        keys.wasm,
+        unspents,
+        options.consensusBranchId,
+      );
+      return new ZcashBitGoPsbt(wasm);
+    }
   }
 
   // --- Zcash-specific getters ---

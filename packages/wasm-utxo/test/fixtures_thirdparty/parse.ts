@@ -1,9 +1,9 @@
 import * as assert from "assert/strict";
 import { describe } from "mocha";
-import { getNetworkList, getNetworkName, isZcash } from "../networks.js";
+import { getNetworkList, getNetworkName } from "../networks.js";
 import { testFixtureArray, txValidTestFile, TxValidVector } from "./fixtures.js";
-
-import { Transaction, ZcashTransaction } from "../../js/index.js";
+import { Transaction } from "../../js/index.js";
+import { toCoinName } from "../../js/coinName.js";
 
 describe("Third-Party Fixtures", function () {
   getNetworkList().forEach((network) => {
@@ -13,18 +13,17 @@ describe("Third-Party Fixtures", function () {
           const [, /* inputs , */ txHex] = v;
           const buffer = Buffer.from(txHex, "hex");
 
-          // Parse transaction to verify it's valid
-          if (isZcash(network)) {
-            const tx = ZcashTransaction.fromBytes(buffer);
-            // Round-trip to verify serialization
-            const serialized = Buffer.from(tx.toBytes());
-            assert.deepEqual(serialized, buffer, `Zcash transaction ${i} failed round-trip`);
-          } else {
-            const tx = Transaction.fromBytes(buffer);
-            // Round-trip to verify serialization
-            const serialized = Buffer.from(tx.toBytes());
-            assert.deepEqual(serialized, buffer, `Transaction ${i} failed round-trip`);
-          }
+          // Parse transaction using factory dispatch
+          const coin = toCoinName(getNetworkName(network));
+          const tx = Transaction.fromBytes(buffer, coin);
+
+          // Round-trip to verify serialization
+          const serialized = Buffer.from(tx.toBytes());
+          assert.deepEqual(
+            serialized,
+            buffer,
+            `Transaction round-trip failed for ${coin} vector ${i}`,
+          );
         });
       });
     });

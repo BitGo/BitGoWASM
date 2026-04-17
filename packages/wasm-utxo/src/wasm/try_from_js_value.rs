@@ -3,7 +3,7 @@ use std::ops::Deref;
 use crate::address::utxolib_compat::{CashAddr, UtxolibNetwork};
 use crate::error::WasmUtxoError;
 use miniscript::bitcoin::psbt::raw;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 
 // =============================================================================
 // TryFromJsValue trait
@@ -225,5 +225,61 @@ impl TryFromJsValue for crate::networks::Network {
                     network_str
                 ))
             })
+    }
+}
+
+// =============================================================================
+// HydrationUnspentInput: Wallet or replay protection input
+// =============================================================================
+
+impl TryFromJsValue for crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput {
+    fn try_from_js_value(item: &JsValue) -> Result<Self, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ScriptIdWithValue;
+
+        // Read 'value' as BigInt (required)
+        let value_js = js_sys::Reflect::get(item, &"value".into())
+            .map_err(|_| WasmUtxoError::new("Missing 'value' field on unspent"))?;
+        let value = u64::try_from(js_sys::BigInt::unchecked_from_js(value_js))
+            .map_err(|_| WasmUtxoError::new("'value' must be a bigint convertible to u64"))?;
+
+        // Check if 'chain' is present; if missing → ReplayProtection, else → Wallet
+        let chain_val = js_sys::Reflect::get(item, &"chain".into()).unwrap_or(JsValue::UNDEFINED);
+
+        if chain_val.is_undefined() {
+            // Replay protection input: requires 'pubkey' field
+            let pubkey_val = js_sys::Reflect::get(item, &"pubkey".into())
+                .map_err(|_| WasmUtxoError::new("Missing 'pubkey' on replay protection unspent"))?;
+            let pubkey_bytes = js_sys::Uint8Array::new(&pubkey_val).to_vec();
+            let pubkey = miniscript::bitcoin::CompressedPublicKey::from_slice(&pubkey_bytes)
+                .map_err(|_| {
+                    WasmUtxoError::new("'pubkey' is not a valid compressed public key (33 bytes)")
+                })?;
+            Ok(
+                crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput::ReplayProtection {
+                    pubkey,
+                    value,
+                },
+            )
+        } else {
+            // Wallet input: requires 'chain' and 'index' fields
+            let chain = chain_val
+                .as_f64()
+                .ok_or_else(|| WasmUtxoError::new("'chain' must be a number"))?
+                as u32;
+            let index = js_sys::Reflect::get(item, &"index".into())
+                .map_err(|_| WasmUtxoError::new("Missing 'index' field on wallet unspent"))?
+                .as_f64()
+                .ok_or_else(|| WasmUtxoError::new("'index' must be a number"))?
+                as u32;
+            Ok(
+                crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput::Wallet(
+                    ScriptIdWithValue {
+                        chain,
+                        index,
+                        value,
+                    },
+                ),
+            )
+        }
     }
 }
