@@ -230,7 +230,7 @@ dependencies = [
 [[package]]
 name = "bitcoin"
 version = "0.32.8"
-source = "git+https://github.com/BitGo/rust-bitcoin.git?tag=bitcoin-0.32.8-bitgo.1#8d7f0c5a88bc3e0a5a6ea6118372ab852d0e361a"
+source = "git+https://github.com/BitGo/rust-bitcoin.git?tag=bitcoin-0.32.8-bitgo.2#0a50a7f6ab43738330bd6c0ef1320d9041437544"
 dependencies = [
  "base58ck",
  "bech32",
@@ -1675,7 +1675,7 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 [[package]]
 name = "miniscript"
 version = "13.0.0"
-source = "git+https://github.com/BitGo/rust-miniscript?tag=miniscript-13.0.0-bitgo.1#7f10a9ca7003a667ea58ea6d40507badeee7a9c7"
+source = "git+https://github.com/BitGo/rust-miniscript?tag=miniscript-13.0.0-bitgo.2#25595dc04a51240cf8dfb6df21d3c6bef84089b9"
 dependencies = [
  "bech32",
  "bitcoin",
