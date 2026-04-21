@@ -803,6 +803,19 @@ impl InputScriptType {
             }
         }
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::P2shP2pk             => "p2shP2pk",
+            Self::P2sh                 => "p2sh",
+            Self::P2shP2wsh            => "p2shP2wsh",
+            Self::P2wsh                => "p2wsh",
+            Self::P2trLegacy           => "p2trLegacy",
+            Self::P2trMusig2KeyPath    => "p2trMusig2",
+            Self::P2trMusig2ScriptPath => "p2trMusig2Script",
+            Self::P2mr                 => "p2mr",
+        }
+    }
 }
 
 /// Parsed input from a PSBT transaction
