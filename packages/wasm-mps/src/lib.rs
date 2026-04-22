@@ -112,6 +112,7 @@ mod mps {
     pub struct Share {
         pub share: Vec<u8>,
         pub pk: [u8; 32],
+        pub chaincode: [u8; 32],
     }
 
     fn internal_dkg_round0_process<G>(
@@ -279,6 +280,7 @@ mod mps {
         Ok(Share {
             share: bincode::serialize(&share).map_err(|_| MpsError::SerializationError)?,
             pk: share.public_key.compress().to_bytes(),
+            chaincode: share.root_chain_code,
         })
     }
 
@@ -525,14 +527,22 @@ mod tests {
         )
         .unwrap();
 
-        // Assert generated public keys are equal
+        // Assert generated public keychains are equal
         assert_eq!(
             p2_share.pk, p0_share.pk,
-            "Party 0 share differs from party 2 share"
+            "Party 0 public key differs from party 2 public key"
         );
         assert_eq!(
             p2_share.pk, p1_share.pk,
-            "Party 1 share differs from party 2 share"
+            "Party 1 public key differs from party 2 public key"
+        );
+        assert_eq!(
+            p2_share.chaincode, p0_share.chaincode,
+            "Party 0 chaincode differs from party 2 chaincode"
+        );
+        assert_eq!(
+            p2_share.chaincode, p1_share.chaincode,
+            "Party 1 chaincode differs from party 2 chaincode"
         );
     }
 
@@ -697,6 +707,7 @@ impl MsgState {
 pub struct Share {
     share: Vec<u8>,
     pk: Vec<u8>,
+    chaincode: Vec<u8>,
 }
 
 #[wasm_bindgen]
@@ -709,6 +720,11 @@ impl Share {
     #[wasm_bindgen(getter)]
     pub fn pk(&self) -> Vec<u8> {
         self.pk.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn chaincode(&self) -> Vec<u8> {
+        self.chaincode.clone()
     }
 }
 
@@ -730,6 +746,7 @@ impl MsgShare {
         Share {
             share: self.share.share.clone(),
             pk: self.share.pk.clone(),
+            chaincode: self.share.chaincode.clone(),
         }
     }
 }
@@ -796,6 +813,7 @@ pub fn ed25519_dkg_round2_process(round2_messages: Array, state: &[u8]) -> Resul
     Ok(Share {
         share: result.share,
         pk: result.pk.to_vec(),
+        chaincode: result.chaincode.to_vec(),
     })
 }
 
