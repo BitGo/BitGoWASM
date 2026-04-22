@@ -5415,4 +5415,111 @@ mod tests {
         // Result should be sorted back to [user, backup, bitgo]
         assert_eq!(result.xpubs, xpubs);
     }
+
+    /// Regression test: ZIP-243 sighash must be correct when the outputs preimage is exactly
+    /// 256 bytes (an exact multiple of the 128-byte BLAKE2b block size).
+    ///
+    /// A transaction with 8 P2SH outputs produces a 256-byte outputs preimage:
+    /// each P2SH output serializes to 8 (value) + 1 (varint 23) + 23 (script) = 32 bytes,
+    /// so 8 × 32 = 256 = 2 × 128.
+    ///
+    /// The old `blake2b_256_personal` implementation processed all complete blocks with the
+    /// finalization flag `f=0`, leaving an empty buffer for `finalize_variable_core`.
+    /// That caused a spurious all-zero block to be compressed as the final block, producing
+    /// the wrong `hashOutputs` and therefore a wrong sighash — making every signature over
+    /// such a transaction invalid.
+    ///
+    /// This test uses a pre-computed signature from the fixed implementation as a test vector.
+    /// A sign-then-verify round-trip would pass even on the buggy version because both sides
+    /// would agree on the same (wrong) sighash.  Verifying a pre-generated correct signature
+    /// fails on the buggy version because the verifier recomputes a different (wrong) sighash.
+    #[test]
+    fn test_zcash_sighash_block_aligned_outputs() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use crate::zcash::NetworkUpgrade;
+        use miniscript::bitcoin::ecdsa::Signature as EcdsaSig;
+        use miniscript::bitcoin::hashes::Hash;
+        use miniscript::bitcoin::secp256k1::Secp256k1;
+        use miniscript::bitcoin::{CompressedPublicKey, PublicKey, Txid};
+
+        let seed = "zcash_block_aligned";
+        let secp = Secp256k1::new();
+
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+
+        let sapling_height = NetworkUpgrade::Sapling.testnet_activation_height();
+        let mut psbt = BitGoPsbt::new_zcash_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            sapling_height,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("new_zcash_at_height");
+
+        // 1 input spending a P2SH output
+        psbt.add_wallet_input(
+            Txid::all_zeros(),
+            0,
+            100_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .expect("add_wallet_input");
+
+        // 8 P2SH outputs — each is 32 bytes (8 value + 1 varint + 23 script),
+        // so the outputs preimage is 8 × 32 = 256 bytes = 2 BLAKE2b blocks.
+        for i in 0..8u32 {
+            psbt.add_wallet_output(0, i, 10_000, &wallet_keys)
+                .expect("add_wallet_output");
+        }
+
+        // Pre-computed test vector: user key signature produced by the fixed implementation.
+        // Derived from seed "zcash_block_aligned", user key at m/0/0/0/0.
+        let sig_bytes = hex::decode(
+            "3045022100b480fdda99f4a7c5bf62374204e88a336c355b282470c156e2d632987ca0313a\
+             02203abd32d68fc95c56b27be9608b4cd34ad16a09b6854c35bf9d41989d67a46d9401",
+        )
+        .unwrap();
+        let pubkey_bytes =
+            hex::decode("039c8019dee0882c7625ad609a54d19fe9996941c0f73256fcabe1f699c9ff2816")
+                .unwrap();
+
+        let compressed = CompressedPublicKey::from_slice(&pubkey_bytes).expect("compressed pubkey");
+        let pubkey = PublicKey::new(compressed.0);
+        let sig = EcdsaSig::from_slice(&sig_bytes).expect("pre-computed sig");
+
+        // Insert the pre-computed signature into the PSBT instead of signing.
+        // This ensures verification uses the fixed implementation's sighash as the reference.
+        let BitGoPsbt::Zcash(ref mut zcash_psbt, _) = psbt else {
+            panic!("expected Zcash PSBT variant");
+        };
+        zcash_psbt.psbt.inputs[0].partial_sigs.insert(pubkey, sig);
+
+        let consensus_branch_id =
+            propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt).expect("branch id");
+        let version_group_id = zcash_psbt
+            .version_group_id
+            .unwrap_or(zcash_psbt::ZCASH_SAPLING_VERSION_GROUP_ID);
+        let expiry_height = zcash_psbt.expiry_height.unwrap_or(0);
+
+        let ok = psbt_wallet_input::verify_ecdsa_signature_zcash(
+            &secp,
+            &zcash_psbt.psbt,
+            0,
+            compressed,
+            consensus_branch_id,
+            version_group_id,
+            expiry_height,
+        )
+        .expect("verify_ecdsa_signature_zcash");
+
+        assert!(
+            ok,
+            "Zcash signature over 256-byte (block-aligned) outputs preimage must verify"
+        );
+    }
 }
