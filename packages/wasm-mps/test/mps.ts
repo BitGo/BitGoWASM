@@ -73,6 +73,9 @@ describe("mps", function () {
       );
       for (let i = 0; i < 2; i++) {
         assert.ok(results3[i].pk.every((value, index) => value === results3[2].pk[index]));
+        assert.ok(
+          results3[i].chaincode.every((value, index) => value === results3[2].chaincode[index]),
+        );
       }
     });
 
