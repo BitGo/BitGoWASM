@@ -507,7 +507,7 @@ class AddressConverter extends BaseComponent {
           {
             class: "copy-btn",
             style: "margin-left: 0.5rem",
-            onclick: (e: Event) => copyToClipboard(hexString, e.target as HTMLElement),
+            onclick: (e: Event) => void copyToClipboard(hexString, e.target as HTMLElement),
           },
           "Copy",
         ),
@@ -569,7 +569,7 @@ class AddressConverter extends BaseComponent {
         "button",
         {
           class: "copy-btn",
-          onclick: (e: Event) => copyToClipboard(outcome.address, e.target as HTMLElement),
+          onclick: (e: Event) => void copyToClipboard(outcome.address, e.target as HTMLElement),
         },
         "Copy",
       ),
@@ -595,7 +595,7 @@ class AddressConverter extends BaseComponent {
   }
 
   private share(): void {
-    copyToClipboard(location.href, this.$(".btn")!);
+    void copyToClipboard(location.href, this.$(".btn")!);
   }
 
   private clear(): void {
