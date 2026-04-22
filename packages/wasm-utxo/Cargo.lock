@@ -3604,9 +3604,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_script"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6ef9d04e0434a80b62ad06c5a610557be358ef60a98afa5dbc8ecaf19ad72e7"
+checksum = "774d808ab619b0f1887d7b90cd815c356101698d16aa681f3d2d9dea063de475"
 dependencies = [
  "bip32",
  "bitflags",
@@ -3630,9 +3630,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_transparent"
-version = "0.6.3"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9b7b4bc11d8bb20833d1b8ab6807f4dca941b381f1129e5bbd72a84e391991"
+checksum = "2cd0a5fdc55d2310e1788d379edf0d68aa735041c18773503366b3c1a6df138b"
 dependencies = [
  "bip32",
  "blake2b_simd",
@@ -3656,9 +3656,9 @@ dependencies = [
 
 [[package]]
 name = "zebra-chain"
-version = "6.0.1"
+version = "6.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0eebcd0ad0160d7bbc7f8ed26e6d00e257adf17c6d136628ea8ae979c027eced"
+checksum = "1ba7508b73a38ee9ddaaf2ba9b3c4799fbe47f6f4b47282fc109b78230f0b0f1"
 dependencies = [
  "bech32",
  "bitflags",
