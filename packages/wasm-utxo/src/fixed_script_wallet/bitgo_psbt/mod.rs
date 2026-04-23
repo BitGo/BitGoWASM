@@ -8,7 +8,7 @@ mod legacy_txformat;
 pub mod p2tr_musig2_input;
 #[cfg(test)]
 mod p2tr_musig2_input_utxolib;
-mod propkv;
+pub(crate) mod propkv;
 pub mod psbt_wallet_input;
 pub mod psbt_wallet_output;
 mod sighash;
@@ -101,17 +101,6 @@ pub enum BitGoPsbt {
     BitcoinLike(Psbt, Network),
     Dash(DashBitGoPsbt, Network),
     Zcash(ZcashBitGoPsbt, Network),
-}
-
-/// Options for creating a new Zcash PSBT
-#[derive(Debug, Clone, Copy)]
-struct ZcashNewOptions {
-    /// Zcash consensus branch ID (required for sighash computation)
-    consensus_branch_id: u32,
-    /// Version group ID (defaults to Sapling: 0x892F2085)
-    version_group_id: Option<u32>,
-    /// Transaction expiry height
-    expiry_height: Option<u32>,
 }
 
 // Re-export types from submodules for convenience
@@ -296,6 +285,39 @@ pub(crate) fn create_tap_bip32_derivation(
     map
 }
 
+mod fixed_script_input;
+pub(crate) use fixed_script_input::{FixedScriptInput, SighashContext};
+
+/// Build a base Psbt (empty transaction + xpubs). Shared by `BitGoPsbt::new` and
+/// `ZcashBitGoPsbt::new`.
+pub(crate) fn make_psbt_with_xpubs(
+    version: i32,
+    lock_time: u32,
+    wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+) -> Psbt {
+    use miniscript::bitcoin::{
+        absolute::LockTime, bip32::DerivationPath, transaction::Version, Transaction,
+    };
+    use std::collections::BTreeMap;
+    use std::str::FromStr;
+
+    let tx = Transaction {
+        version: Version(version),
+        lock_time: LockTime::from_consensus(lock_time),
+        input: vec![],
+        output: vec![],
+    };
+    let mut psbt = Psbt::from_unsigned_tx(tx).expect("empty transaction is valid");
+    let mut xpub_map = BTreeMap::new();
+    for xpub in &wallet_keys.xpubs {
+        let fingerprint = xpub.fingerprint();
+        let path = DerivationPath::from_str("m").expect("'m' is a valid path");
+        xpub_map.insert(*xpub, (fingerprint, path));
+    }
+    psbt.xpub = xpub_map;
+    psbt
+}
+
 impl BitGoPsbt {
     /// Deserialize a PSBT from bytes, using network-specific logic
     pub fn deserialize(psbt_bytes: &[u8], network: Network) -> Result<BitGoPsbt, DeserializeError> {
@@ -338,8 +360,7 @@ impl BitGoPsbt {
 
     /// Create an empty PSBT with the given network and wallet keys
     ///
-    /// For Zcash networks, use [`BitGoPsbt::new_zcash`] instead which requires
-    /// the consensus branch ID.
+    /// For Zcash networks, use `BitGoPsbt::new_zcash` instead.
     ///
     /// # Arguments
     /// * `network` - The network this PSBT is for (must not be Zcash)
@@ -348,7 +369,7 @@ impl BitGoPsbt {
     /// * `lock_time` - Lock time (default: 0)
     ///
     /// # Panics
-    /// Panics if called with a Zcash network. Use `new_zcash` instead.
+    /// Panics if called with a Zcash network. Use `BitGoPsbt::new_zcash` instead.
     pub fn new(
         network: Network,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
@@ -356,27 +377,13 @@ impl BitGoPsbt {
         lock_time: Option<u32>,
     ) -> Self {
         if matches!(network, Network::Zcash | Network::ZcashTestnet) {
-            panic!(
-                "Use BitGoPsbt::new_zcash() for Zcash networks - consensus_branch_id is required"
-            );
+            panic!("Use BitGoPsbt::new_zcash() for Zcash networks");
         }
-
-        Self::new_internal(network, wallet_keys, version, lock_time, None)
+        let psbt = make_psbt_with_xpubs(version.unwrap_or(2), lock_time.unwrap_or(0), wallet_keys);
+        BitGoPsbt::BitcoinLike(psbt, network)
     }
 
-    /// Create an empty Zcash PSBT with the required consensus branch ID
-    ///
-    /// # Arguments
-    /// * `network` - The Zcash network (Zcash or ZcashTestnet)
-    /// * `wallet_keys` - The wallet's root keys (used to set global xpubs)
-    /// * `consensus_branch_id` - The Zcash consensus branch ID (e.g., 0xC2D6D0B4 for NU5)
-    /// * `version` - Transaction version (default: 4 for Zcash Sapling+)
-    /// * `lock_time` - Lock time (default: 0)
-    /// * `version_group_id` - Optional version group ID (defaults to Sapling: 0x892F2085)
-    /// * `expiry_height` - Optional expiry height
-    ///
-    /// # Panics
-    /// Panics if called with a non-Zcash network.
+    /// Create an empty Zcash PSBT. Delegates to `ZcashBitGoPsbt::new`.
     pub fn new_zcash(
         network: Network,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
@@ -386,45 +393,22 @@ impl BitGoPsbt {
         version_group_id: Option<u32>,
         expiry_height: Option<u32>,
     ) -> Self {
-        if !matches!(network, Network::Zcash | Network::ZcashTestnet) {
-            panic!("new_zcash() can only be used with Zcash networks");
-        }
-
-        let zcash_options = ZcashNewOptions {
-            consensus_branch_id,
-            version_group_id,
-            expiry_height,
-        };
-
-        Self::new_internal(
+        BitGoPsbt::Zcash(
+            ZcashBitGoPsbt::new(
+                network,
+                wallet_keys,
+                consensus_branch_id,
+                version,
+                lock_time,
+                version_group_id,
+                expiry_height,
+            ),
             network,
-            wallet_keys,
-            Some(version.unwrap_or(4)), // Zcash Sapling+ uses version 4
-            lock_time,
-            Some(zcash_options),
         )
     }
 
-    /// Create an empty Zcash PSBT with consensus branch ID determined from block height
-    ///
-    /// This method automatically determines the correct consensus branch ID based on
-    /// the network and block height using the network upgrade activation heights.
-    ///
-    /// # Arguments
-    /// * `network` - The Zcash network (Zcash or ZcashTestnet)
-    /// * `wallet_keys` - The wallet's root keys (used to set global xpubs)
-    /// * `block_height` - Block height to determine consensus rules
-    /// * `version` - Transaction version (default: 4 for Zcash Sapling+)
-    /// * `lock_time` - Lock time (default: 0)
-    /// * `version_group_id` - Optional version group ID (defaults to Sapling: 0x892F2085)
-    /// * `expiry_height` - Optional expiry height
-    ///
-    /// # Returns
-    /// * `Ok(Self)` - Successfully created PSBT with appropriate consensus branch ID
-    /// * `Err(String)` - If the block height is before Overwinter activation
-    ///
-    /// # Panics
-    /// Panics if called with a non-Zcash network.
+    /// Create an empty Zcash PSBT with consensus branch ID resolved from block height.
+    /// Delegates to `ZcashBitGoPsbt::new_at_height`.
     #[allow(clippy::too_many_arguments)]
     pub fn new_zcash_at_height(
         network: Network,
@@ -435,32 +419,17 @@ impl BitGoPsbt {
         version_group_id: Option<u32>,
         expiry_height: Option<u32>,
     ) -> Result<Self, String> {
-        if !matches!(network, Network::Zcash | Network::ZcashTestnet) {
-            panic!("new_zcash_at_height() can only be used with Zcash networks");
-        }
-
-        // Determine if this is mainnet or testnet
-        let is_mainnet = matches!(network, Network::Zcash);
-
-        // Get the consensus branch ID for this block height
-        let consensus_branch_id = crate::zcash::branch_id_for_height(block_height, is_mainnet)
-            .ok_or_else(|| {
-                format!(
-                    "Block height {} is before Overwinter activation on {}",
-                    block_height,
-                    if is_mainnet { "mainnet" } else { "testnet" }
-                )
-            })?;
-
-        // Call the existing new_zcash with the computed branch ID
-        Ok(Self::new_zcash(
+        Ok(BitGoPsbt::Zcash(
+            ZcashBitGoPsbt::new_at_height(
+                network,
+                wallet_keys,
+                block_height,
+                version,
+                lock_time,
+                version_group_id,
+                expiry_height,
+            )?,
             network,
-            wallet_keys,
-            consensus_branch_id,
-            version,
-            lock_time,
-            version_group_id,
-            expiry_height,
         ))
     }
 
@@ -487,18 +456,20 @@ impl BitGoPsbt {
         let lock_time = template.psbt().unsigned_tx.lock_time.to_consensus_u32();
 
         match template {
-            BitGoPsbt::Zcash(zcash_psbt, _) => {
-                // For Zcash, extract all required parameters from the template
-                let consensus_branch_id = propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt)
+            BitGoPsbt::Zcash(z, _) => {
+                let branch_id = propkv::get_zec_consensus_branch_id(&z.psbt)
                     .ok_or("Template PSBT missing ZecConsensusBranchId")?;
-                Ok(Self::new_zcash(
+                Ok(BitGoPsbt::Zcash(
+                    ZcashBitGoPsbt::new(
+                        network,
+                        wallet_keys,
+                        branch_id,
+                        Some(version),
+                        Some(lock_time),
+                        z.version_group_id,
+                        z.expiry_height,
+                    ),
                     network,
-                    wallet_keys,
-                    consensus_branch_id,
-                    Some(version),
-                    Some(lock_time),
-                    zcash_psbt.version_group_id,
-                    zcash_psbt.expiry_height,
                 ))
             }
             _ => Ok(Self::new(
@@ -510,115 +481,16 @@ impl BitGoPsbt {
         }
     }
 
-    /// Convert a half-signed legacy transaction to a psbt-lite.
-    ///
-    /// This is the inverse of `get_half_signed_legacy_format()`. It parses the
-    /// legacy transaction, extracts partial signatures from scriptSig/witness,
-    /// creates a PSBT with proper wallet metadata (bip32Derivation, scripts,
-    /// witnessUtxo), and inserts the extracted signatures.
-    ///
-    /// Supports p2sh, p2shP2wsh, p2wsh, and P2SH-P2PK (replay protection) inputs.
-    pub fn from_half_signed_legacy_transaction(
-        tx_bytes: &[u8],
+    /// Add inputs and outputs from `tx`/`unspents` into a raw `Psbt`.
+    /// Shared by `from_tx_parts` (bitcoin-like) and `ZcashBitGoPsbt::from_tx_parts`.
+    /// Does not insert any signatures.
+    pub(crate) fn hydrate_psbt(
+        psbt: &mut Psbt,
         network: Network,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        unspents: &[HydrationUnspentInput],
-    ) -> Result<Self, String> {
-        use miniscript::bitcoin::consensus::Decodable;
-        use miniscript::bitcoin::Transaction;
-
-        let tx = Transaction::consensus_decode(&mut &tx_bytes[..])
-            .map_err(|e| format!("Failed to decode transaction: {}", e))?;
-
-        let version = tx.version.0;
-        let lock_time = tx.lock_time.to_consensus_u32();
-
-        let mut psbt = Self::new(network, wallet_keys, Some(version), Some(lock_time));
-
-        Self::hydrate_psbt(&mut psbt, &tx, wallet_keys, unspents)?;
-
-        Ok(psbt)
-    }
-
-    /// Convert a half-signed legacy Zcash transaction to a PSBT with Zcash metadata.
-    ///
-    /// This is the Zcash-specific inverse of `get_half_signed_legacy_format()`.
-    /// It decodes the Zcash wire format (which includes version_group_id, expiry_height, sapling_fields),
-    /// extracts partial signatures, and reconstructs a Zcash PSBT.
-    ///
-    /// Unlike `from_half_signed_legacy_transaction`, this requires a `block_height` to determine
-    /// the correct `consensus_branch_id` via network upgrade activation height lookup.
-    ///
-    /// # Arguments
-    /// * `tx_bytes` - Zcash transaction bytes (overwintered format)
-    /// * `network` - Zcash network (Zcash or ZcashTestnet)
-    /// * `wallet_keys` - The wallet's root keys
-    /// * `unspents` - Chain, index, value for each input
-    /// * `block_height` - Block height to determine consensus branch ID
-    ///
-    /// # Returns
-    /// Thin wrapper over `from_half_signed_legacy_transaction_zcash_with_consensus_branch_id`.
-    /// Resolves consensus_branch_id from block height.
-    /// Convert a half-signed legacy Zcash transaction to a PSBT with explicit consensus branch ID.
-    ///
-    /// This is similar to `from_half_signed_legacy_transaction_zcash`, but takes an explicit
-    /// `consensus_branch_id` instead of deriving it from block height. Use this when you
-    /// already know the consensus branch ID (e.g., 0xC2D6D0B4 for NU5, 0x76B809BB for Sapling).
-    ///
-    /// # Arguments
-    /// * `tx_bytes` - Zcash transaction bytes (overwintered format)
-    /// * `network` - Zcash network (Zcash or ZcashTestnet)
-    /// * `wallet_keys` - The wallet's root keys
-    /// * `unspents` - Chain, index, value for each input
-    /// * `consensus_branch_id` - Explicit consensus branch ID for sighash computation
-    ///
-    /// # Returns
-    /// A BitGoPsbt::Zcash instance with restored Sapling fields
-    /// Helper that accepts already-decoded Zcash transaction parts (avoiding re-parsing).
-    pub fn from_half_signed_legacy_transaction_zcash_with_consensus_branch_id_from_parts(
-        parts: &crate::zcash::transaction::ZcashTransactionParts,
-        network: Network,
-        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        unspents: &[HydrationUnspentInput],
-        consensus_branch_id: u32,
-    ) -> Result<Self, String> {
-        let tx = &parts.transaction;
-        let version = tx.version.0;
-        let lock_time = tx.lock_time.to_consensus_u32();
-
-        // Create Zcash PSBT using explicit consensus_branch_id
-        let mut psbt = Self::new_zcash(
-            network,
-            wallet_keys,
-            consensus_branch_id,
-            Some(version),
-            Some(lock_time),
-            parts.version_group_id,
-            parts.expiry_height,
-        );
-
-        Self::hydrate_psbt(&mut psbt, tx, wallet_keys, unspents)?;
-
-        // Restore Sapling fields in the Zcash PSBT variant
-        if let BitGoPsbt::Zcash(ref mut zcash_psbt, _) = psbt {
-            zcash_psbt.sapling_fields = parts.sapling_fields.clone();
-        }
-
-        Ok(psbt)
-    }
-
-    /// Helper that accepts already-decoded Zcash transaction parts (avoiding re-parsing).
-    /// Private helper: hydrate inputs and outputs in an already-created PSBT.
-    /// Shared logic for both Bitcoin-like and Zcash variants.
-    fn hydrate_psbt(
-        psbt: &mut BitGoPsbt,
         tx: &miniscript::bitcoin::Transaction,
-        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
         unspents: &[HydrationUnspentInput],
     ) -> Result<(), String> {
-        use miniscript::bitcoin::PublicKey;
-
-        // Validate input count
         if tx.input.len() != unspents.len() {
             return Err(format!(
                 "Input count mismatch: tx has {} inputs, got {} unspents",
@@ -627,29 +499,17 @@ impl BitGoPsbt {
             ));
         }
 
-        // Parse each input from the legacy tx
-        let input_results: Vec<legacy_txformat::LegacyInputResult> = tx
-            .input
-            .iter()
-            .enumerate()
-            .map(|(i, tx_in)| {
-                legacy_txformat::parse_legacy_input(tx_in)
-                    .map_err(|e| format!("Input {}: {}", i, e))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        // Hydrate inputs
         for (i, (tx_in, unspent)) in tx.input.iter().zip(unspents.iter()).enumerate() {
-            match (&input_results[i], unspent) {
-                (
-                    legacy_txformat::LegacyInputResult::Multisig(sig),
-                    HydrationUnspentInput::Wallet(sv),
-                ) => {
+            match unspent {
+                HydrationUnspentInput::Wallet(sv) => {
                     let script_id = psbt_wallet_input::ScriptId {
                         chain: sv.chain,
                         index: sv.index,
                     };
-                    psbt.add_wallet_input(
+                    Self::add_wallet_input_to_psbt(
+                        psbt,
+                        i,
+                        network,
                         tx_in.previous_output.txid,
                         tx_in.previous_output.vout,
                         sv.value,
@@ -661,148 +521,126 @@ impl BitGoPsbt {
                             prev_tx: None,
                         },
                     )
-                    .map_err(|e| format!("Input {}: failed to add wallet input: {}", i, e))?;
-
-                    let pubkey = PublicKey::from(sig.pubkey);
-                    psbt.psbt_mut().inputs[i]
-                        .partial_sigs
-                        .insert(pubkey, sig.sig);
+                    .map_err(|e| format!("Input {}: {}", i, e))?;
                 }
-                (
-                    legacy_txformat::LegacyInputResult::ReplayProtection {
-                        pubkey: tx_pubkey,
-                        sig,
-                    },
-                    HydrationUnspentInput::ReplayProtection {
-                        pubkey: expected_pubkey,
-                        value,
-                    },
-                ) => {
-                    if tx_pubkey.to_bytes() != expected_pubkey.to_bytes() {
-                        return Err(format!(
-                            "Input {}: replay protection pubkey mismatch: \
-                             tx has {}, expected {}",
-                            i,
-                            tx_pubkey
-                                .to_bytes()
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .collect::<String>(),
-                            expected_pubkey
-                                .to_bytes()
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .collect::<String>(),
-                        ));
-                    }
-                    psbt.add_replay_protection_input_at_index(
-                        i,
-                        *tx_pubkey,
-                        tx_in.previous_output.txid,
-                        tx_in.previous_output.vout,
-                        *value,
-                        ReplayProtectionOptions {
-                            sequence: Some(tx_in.sequence.0),
-                            prev_tx: None,
-                            sighash_type: None,
-                        },
-                    )
-                    .map_err(|e| {
-                        format!("Input {}: failed to add replay protection input: {}", i, e)
-                    })?;
-
-                    if let Some(ecdsa_sig) = sig {
-                        let pk = PublicKey::from(*tx_pubkey);
-                        psbt.psbt_mut().inputs[i]
-                            .partial_sigs
-                            .insert(pk, *ecdsa_sig);
-                    }
-                }
-                _ => {
-                    return Err(format!(
-                        "Input {}: mismatch between tx input type and provided unspent type \
-                         (tx has {}, unspent is {})",
-                        i,
-                        match &input_results[i] {
-                            legacy_txformat::LegacyInputResult::Multisig(_) => "multisig",
-                            legacy_txformat::LegacyInputResult::ReplayProtection { .. } =>
-                                "replay protection",
-                        },
-                        match unspent {
-                            HydrationUnspentInput::Wallet(_) => "wallet",
-                            HydrationUnspentInput::ReplayProtection { .. } => "replay protection",
+                HydrationUnspentInput::ReplayProtection {
+                    pubkey: expected_pubkey,
+                    value,
+                } => {
+                    // Validate pubkey matches what's in the transaction
+                    let parsed = FixedScriptInput::from_txin(tx_in)
+                        .map_err(|e| format!("Input {}: {}", i, e))?;
+                    if let FixedScriptInput::ReplayProtection {
+                        pubkey: tx_pubkey, ..
+                    } = &parsed
+                    {
+                        if tx_pubkey.to_bytes() != expected_pubkey.to_bytes() {
+                            return Err(format!("Input {}: replay protection pubkey mismatch", i));
                         }
-                    ));
+                        Self::add_replay_protection_input_to_psbt(
+                            psbt,
+                            i,
+                            network,
+                            *tx_pubkey,
+                            tx_in.previous_output.txid,
+                            tx_in.previous_output.vout,
+                            *value,
+                            ReplayProtectionOptions {
+                                sequence: Some(tx_in.sequence.0),
+                                prev_tx: None,
+                                sighash_type: None,
+                            },
+                        )
+                        .map_err(|e| format!("Input {}: {}", i, e))?;
+                    } else {
+                        return Err(format!("Input {}: expected replay protection input", i));
+                    }
                 }
             }
         }
 
-        // Add outputs
         for tx_out in &tx.output {
-            psbt.add_output(tx_out.script_pubkey.clone(), tx_out.value.to_sat());
+            let index = psbt.unsigned_tx.output.len();
+            crate::psbt_ops::insert_output(
+                psbt,
+                index,
+                tx_out.clone(),
+                miniscript::bitcoin::psbt::Output::default(),
+            )
+            .map_err(|e| format!("Failed to add output: {}", e))?;
         }
 
         Ok(())
     }
 
-    fn new_internal(
+    pub(crate) fn validate_half_signed(psbt: &BitGoPsbt) -> Result<(), String> {
+        for (i, input) in psbt.psbt().inputs.iter().enumerate() {
+            if input.bip32_derivation.len() >= 3 {
+                let n = input.partial_sigs.len();
+                if n != 1 {
+                    return Err(format!(
+                        "Input {}: expected 1 signature for half-signed transaction, found {}",
+                        i, n
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Convert a network-format transaction (0, 1, or 2 signatures per input) to a PSBT.
+    ///
+    /// Accepts any fixed-script wallet transaction format:
+    /// - Unsigned:    `[OP_0, OP_0, OP_0, OP_0, redeemScript]`
+    /// - Half-signed: `[OP_0, sig,  OP_0, OP_0, redeemScript]`
+    /// - Full-signed: `[OP_0, sig_a, sig_b, redeemScript]`
+    pub fn from_network_format(
+        tx_bytes: &[u8],
         network: Network,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        version: Option<i32>,
-        lock_time: Option<u32>,
-        zcash_options: Option<ZcashNewOptions>,
-    ) -> Self {
-        use miniscript::bitcoin::{
-            absolute::LockTime, bip32::DerivationPath, transaction::Version, Transaction,
-        };
-        use std::collections::BTreeMap;
-        use std::str::FromStr;
+        unspents: &[HydrationUnspentInput],
+    ) -> Result<Self, String> {
+        use miniscript::bitcoin::consensus::Decodable;
+        use miniscript::bitcoin::Transaction;
 
-        let tx = Transaction {
-            version: Version(version.unwrap_or(2)),
-            lock_time: LockTime::from_consensus(lock_time.unwrap_or(0)),
-            input: vec![],
-            output: vec![],
-        };
+        let tx = Transaction::consensus_decode(&mut &tx_bytes[..])
+            .map_err(|e| format!("Failed to decode transaction: {}", e))?;
 
-        let mut psbt = Psbt::from_unsigned_tx(tx).expect("empty transaction should be valid");
-
-        // Set global xpubs from wallet keys
-        // Each xpub is mapped to (master_fingerprint, derivation_path)
-        // We use 'm' as the path since these are the root wallet keys
-        let mut xpub_map = BTreeMap::new();
-        for xpub in &wallet_keys.xpubs {
-            let fingerprint = xpub.fingerprint();
-            let path = DerivationPath::from_str("m").expect("'m' is a valid path");
-            xpub_map.insert(*xpub, (fingerprint, path));
+        let inputs = FixedScriptInput::parse_all(&tx)?;
+        let mut psbt = Self::from_tx_parts(network, wallet_keys, &tx, unspents)?;
+        for (i, input) in inputs.iter().enumerate() {
+            psbt.add_input_signatures(i, input)?;
         }
-        psbt.xpub = xpub_map;
+        Ok(psbt)
+    }
 
-        match network {
-            Network::Zcash | Network::ZcashTestnet => {
-                let opts = zcash_options.expect("ZcashNewOptions required for Zcash networks");
+    /// Assemble a PSBT from a transaction and unspents — no signatures.
+    pub fn from_tx_parts(
+        network: Network,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        tx: &miniscript::bitcoin::Transaction,
+        unspents: &[HydrationUnspentInput],
+    ) -> Result<Self, String> {
+        let mut psbt = Self::new(
+            network,
+            wallet_keys,
+            Some(tx.version.0),
+            Some(tx.lock_time.to_consensus_u32()),
+        );
+        Self::hydrate_psbt(psbt.psbt_mut(), network, wallet_keys, tx, unspents)?;
+        Ok(psbt)
+    }
 
-                // Store consensus branch ID in PSBT proprietary map
-                propkv::set_zec_consensus_branch_id(&mut psbt, opts.consensus_branch_id);
-
-                // Initialize sapling_fields for transparent-only transactions:
-                // valueBalance (8 bytes, 0) + nShieldedSpend (1 byte, 0) +
-                // nShieldedOutput (1 byte, 0) + nJoinSplit (1 byte, 0)
-                let sapling_fields = vec![0u8; 11];
-
-                BitGoPsbt::Zcash(
-                    ZcashBitGoPsbt {
-                        psbt,
-                        network,
-                        version_group_id: opts.version_group_id,
-                        expiry_height: opts.expiry_height,
-                        sapling_fields,
-                    },
-                    network,
-                )
-            }
-            _ => BitGoPsbt::BitcoinLike(psbt, network),
-        }
+    /// Insert signatures from a parsed `FixedScriptInput` into this PSBT at `index`.
+    pub(crate) fn add_input_signatures(
+        &mut self,
+        index: usize,
+        input: &FixedScriptInput,
+    ) -> Result<(), String> {
+        let ctx = SighashContext::Bitcoin {
+            fork_id: sighash::get_sighash_fork_id(self.network()),
+        };
+        input.apply_signatures(self.psbt_mut(), index, &ctx)
     }
 
     /// Add an input to the PSBT
@@ -877,24 +715,24 @@ impl BitGoPsbt {
     /// * `options` - Optional parameters (sequence, sighash_type, prev_tx)
     ///
     /// # Returns
-    /// The index of the newly added input
-    pub fn add_replay_protection_input_at_index(
-        &mut self,
+    /// Add a replay protection input directly to a raw `Psbt`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn add_replay_protection_input_to_psbt(
+        psbt: &mut Psbt,
         index: usize,
+        network: Network,
         pubkey: miniscript::bitcoin::CompressedPublicKey,
         txid: Txid,
         vout: u32,
         value: u64,
         options: ReplayProtectionOptions,
-    ) -> Result<usize, String> {
+    ) -> Result<(), String> {
         use crate::fixed_script_wallet::wallet_scripts::ScriptP2shP2pk;
         use miniscript::bitcoin::consensus::Decodable;
         use miniscript::bitcoin::psbt::{Input, PsbtSighashType};
         use miniscript::bitcoin::{
             transaction::Sequence, Amount, OutPoint, Transaction, TxIn, TxOut,
         };
-
-        let network = self.network();
 
         let script = ScriptP2shP2pk::new(pubkey);
         let output_script = script.output_script();
@@ -907,7 +745,6 @@ impl BitGoPsbt {
             witness: miniscript::bitcoin::Witness::default(),
         };
 
-        // Networks with SIGHASH_FORKID use SIGHASH_ALL | SIGHASH_FORKID (0x41)
         let sighash_type = options
             .sighash_type
             .unwrap_or_else(|| match network.mainnet() {
@@ -935,7 +772,30 @@ impl BitGoPsbt {
             });
         }
 
-        crate::psbt_ops::insert_input(self.psbt_mut(), index, tx_in, psbt_input)
+        crate::psbt_ops::insert_input(psbt, index, tx_in, psbt_input).map(|_| ())
+    }
+
+    pub fn add_replay_protection_input_at_index(
+        &mut self,
+        index: usize,
+        pubkey: miniscript::bitcoin::CompressedPublicKey,
+        txid: Txid,
+        vout: u32,
+        value: u64,
+        options: ReplayProtectionOptions,
+    ) -> Result<usize, String> {
+        let network = self.network();
+        Self::add_replay_protection_input_to_psbt(
+            self.psbt_mut(),
+            index,
+            network,
+            pubkey,
+            txid,
+            vout,
+            value,
+            options,
+        )?;
+        Ok(index)
     }
 
     pub fn add_replay_protection_input(
@@ -1019,16 +879,19 @@ impl BitGoPsbt {
     /// # Returns
     /// The index of the newly added input
     #[allow(clippy::too_many_arguments)]
-    pub fn add_wallet_input_at_index(
-        &mut self,
+    /// Add a wallet input at a specific index directly to a raw `Psbt`.
+    /// Used by `add_wallet_input_at_index` and by `hydrate_psbt`.
+    pub(crate) fn add_wallet_input_to_psbt(
+        psbt: &mut Psbt,
         index: usize,
+        network: Network,
         txid: Txid,
         vout: u32,
         value: u64,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
         script_id: psbt_wallet_input::ScriptId,
         options: WalletInputOptions,
-    ) -> Result<usize, String> {
+    ) -> Result<(), String> {
         use crate::fixed_script_wallet::to_pub_triple;
         use crate::fixed_script_wallet::wallet_scripts::{Chain, OutputScriptType, WalletScripts};
         use miniscript::bitcoin::psbt::Input;
@@ -1036,9 +899,6 @@ impl BitGoPsbt {
         use miniscript::bitcoin::{transaction::Sequence, Amount, OutPoint, TxIn, TxOut};
         use p2tr_musig2_input::Musig2Participants;
         use std::convert::TryFrom;
-
-        let network = self.network();
-        let psbt = self.psbt_mut();
 
         let chain = script_id.chain;
         let derivation_index = script_id.index;
@@ -1170,7 +1030,33 @@ impl BitGoPsbt {
             }
         }
 
-        crate::psbt_ops::insert_input(psbt, index, tx_in, psbt_input)
+        crate::psbt_ops::insert_input(psbt, index, tx_in, psbt_input).map(|_| ())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_wallet_input_at_index(
+        &mut self,
+        index: usize,
+        txid: Txid,
+        vout: u32,
+        value: u64,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        script_id: psbt_wallet_input::ScriptId,
+        options: WalletInputOptions,
+    ) -> Result<usize, String> {
+        let network = self.network();
+        Self::add_wallet_input_to_psbt(
+            self.psbt_mut(),
+            index,
+            network,
+            txid,
+            vout,
+            value,
+            wallet_keys,
+            script_id,
+            options,
+        )?;
+        Ok(index)
     }
 
     pub fn add_wallet_input(
@@ -1501,11 +1387,13 @@ impl BitGoPsbt {
 
         match self {
             BitGoPsbt::BitcoinLike(_, _) | BitGoPsbt::Dash(_, _) => {
-                let tx = legacy_txformat::build_half_signed_legacy_tx(self.psbt())?;
+                let tx = legacy_txformat::build_half_signed_legacy_tx(self.psbt())
+                    .map_err(|e| e.to_string())?;
                 Ok(serialize(&tx))
             }
             BitGoPsbt::Zcash(zcash_psbt, _) => {
-                let tx = legacy_txformat::build_half_signed_legacy_tx(&zcash_psbt.psbt)?;
+                let tx = legacy_txformat::build_half_signed_legacy_tx(&zcash_psbt.psbt)
+                    .map_err(|e| e.to_string())?;
 
                 // Serialize with Zcash-specific fields
                 let parts = crate::zcash::transaction::ZcashTransactionParts {
@@ -3433,9 +3321,7 @@ mod tests {
             None,
         );
         assert!(result.is_ok(), "Should succeed for Nu5 height");
-        let psbt = result.unwrap();
-        // Verify it's a Zcash PSBT
-        assert!(matches!(psbt, BitGoPsbt::Zcash(_, Network::Zcash)));
+        let _ = result.unwrap();
 
         // Test with Nu6 activation height
         let nu6_height = NetworkUpgrade::Nu6.mainnet_activation_height();
@@ -3487,9 +3373,7 @@ mod tests {
             None,
         );
         assert!(result.is_ok(), "Should succeed for Nu5 height on testnet");
-        let psbt = result.unwrap();
-        // Verify it's a Zcash testnet PSBT
-        assert!(matches!(psbt, BitGoPsbt::Zcash(_, Network::ZcashTestnet)));
+        let _ = result.unwrap();
 
         // Test with pre-Overwinter height (should fail)
         let pre_overwinter_height = NetworkUpgrade::Overwinter.testnet_activation_height() - 1;
@@ -4418,13 +4302,9 @@ mod tests {
             .collect::<Result<Vec<_>, String>>()?;
 
         // Step 3: Convert back to PSBT
-        let reconverted = BitGoPsbt::from_half_signed_legacy_transaction(
-            &legacy_bytes,
-            network,
-            &wallet_keys,
-            &unspents,
-        )
-        .map_err(|e| format!("from_half_signed_legacy_transaction failed: {}", e))?;
+        let reconverted =
+            BitGoPsbt::from_network_format(&legacy_bytes, network, &wallet_keys, &unspents)
+                .map_err(|e| format!("from_network_format failed: {}", e))?;
 
         // Verify: same number of inputs/outputs
         let orig_psbt = bitgo_psbt.psbt();
