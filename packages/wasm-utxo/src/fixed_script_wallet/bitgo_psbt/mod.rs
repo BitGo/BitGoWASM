@@ -3279,6 +3279,12 @@ impl crate::psbt_ops::PsbtAccess for BitGoPsbt {
             BitGoPsbt::Zcash(ref mut zcash_psbt, _) => &mut zcash_psbt.psbt,
         }
     }
+    fn unsigned_tx_id(&self) -> String {
+        // Use the network-aware method so Zcash PSBTs hash the full Zcash wire
+        // format (including versionGroupId, expiryHeight, and sapling fields)
+        // rather than the stripped inner Bitcoin transaction.
+        self.unsigned_txid().to_string()
+    }
 }
 
 /// All 6 orderings of a 3-element array, used to brute-force the
@@ -4854,6 +4860,59 @@ mod tests {
         let serialized = psbt.serialize();
         assert!(serialized.is_ok(), "Serialization should succeed");
     }
+
+    // Verify that the PsbtAccess::unsigned_tx_id implementation for BitGoPsbt
+    // returns the same txid as BitGoPsbt::unsigned_txid for all networks.
+    //
+    // Regression test for a bug introduced in 4.2.0 where the PsbtAccess trait's
+    // default unsigned_tx_id was used for Zcash PSBTs, which hashes only the
+    // stripped inner Bitcoin transaction rather than the full Zcash wire format
+    // (including versionGroupId, expiryHeight, and empty sapling vectors).
+    crate::test_psbt_fixtures!(
+        test_psbt_access_txid_matches_unsigned_txid,
+        network,
+        format,
+        {
+            use crate::psbt_ops::PsbtAccess;
+
+            for sig_state in [
+                fixtures::SignatureState::Unsigned,
+                fixtures::SignatureState::Halfsigned,
+                fixtures::SignatureState::Fullsigned,
+            ] {
+                let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
+                    network.to_utxolib_name(),
+                    sig_state,
+                    format,
+                    fixtures::FixtureNamespace::UtxolibCompat,
+                )
+                .unwrap();
+                let bytes = BASE64_STANDARD
+                    .decode(&fixture.psbt_base64)
+                    .expect("Failed to decode base64");
+                let psbt =
+                    BitGoPsbt::deserialize(&bytes, network).expect("Failed to deserialize PSBT");
+
+                let txid_via_trait = PsbtAccess::unsigned_tx_id(&psbt);
+                let txid_via_method = psbt.unsigned_txid().to_string();
+
+                assert_eq!(
+                    txid_via_trait, txid_via_method,
+                    "PsbtAccess::unsigned_tx_id must equal BitGoPsbt::unsigned_txid for {:?}",
+                    network
+                );
+
+                // For Zcash, also verify it differs from the naive Bitcoin txid (stripped bytes).
+                if network == Network::Zcash {
+                    let stripped_txid = psbt.psbt().unsigned_tx.compute_txid().to_string();
+                    assert_ne!(
+                    txid_via_trait, stripped_txid,
+                    "Zcash txid must NOT equal the stripped Bitcoin txid (versionGroupId etc. must be included)"
+                );
+                }
+            }
+        }
+    );
 
     /// Test reconstructing PSBTs from fixture data using builder methods
     fn test_psbt_reconstruction_for_network(network: Network, format: fixtures::TxFormat) {
