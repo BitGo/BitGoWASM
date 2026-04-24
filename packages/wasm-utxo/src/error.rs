@@ -58,3 +58,9 @@ impl From<crate::address::AddressError> for WasmUtxoError {
         WasmUtxoError::StringError(err.to_string())
     }
 }
+
+impl From<crate::silent_payments::SilentPaymentError> for WasmUtxoError {
+    fn from(err: crate::silent_payments::SilentPaymentError) -> Self {
+        WasmUtxoError::StringError(err.to_string())
+    }
+}

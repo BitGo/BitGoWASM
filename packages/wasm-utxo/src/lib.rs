@@ -11,6 +11,7 @@ mod networks;
 pub mod p2mr;
 pub mod paygo;
 pub mod psbt_ops;
+pub mod silent_payments;
 #[cfg(test)]
 mod test_utils;
 pub mod zcash;
