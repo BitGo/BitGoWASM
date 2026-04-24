@@ -32,9 +32,102 @@ pub struct ZcashBitGoPsbt {
 }
 
 impl ZcashBitGoPsbt {
+    /// Create an empty Zcash PSBT directly without going through `BitGoPsbt`.
+    pub(crate) fn new(
+        network: crate::Network,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        consensus_branch_id: u32,
+        version: Option<i32>,
+        lock_time: Option<u32>,
+        version_group_id: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Self {
+        let mut psbt =
+            super::make_psbt_with_xpubs(version.unwrap_or(4), lock_time.unwrap_or(0), wallet_keys);
+        super::propkv::set_zec_consensus_branch_id(&mut psbt, consensus_branch_id);
+        Self {
+            psbt,
+            network,
+            version_group_id,
+            expiry_height,
+            sapling_fields: vec![0u8; 11],
+        }
+    }
+
+    /// Create an empty Zcash PSBT with consensus branch ID resolved from `block_height`.
+    pub(crate) fn new_at_height(
+        network: crate::Network,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        block_height: u32,
+        version: Option<i32>,
+        lock_time: Option<u32>,
+        version_group_id: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<Self, String> {
+        let is_mainnet = matches!(network, crate::Network::Zcash);
+        let consensus_branch_id = crate::zcash::branch_id_for_height(block_height, is_mainnet)
+            .ok_or_else(|| {
+                format!(
+                    "Block height {} is before Overwinter activation on {}",
+                    block_height,
+                    if is_mainnet { "mainnet" } else { "testnet" }
+                )
+            })?;
+        Ok(Self::new(
+            network,
+            wallet_keys,
+            consensus_branch_id,
+            version,
+            lock_time,
+            version_group_id,
+            expiry_height,
+        ))
+    }
+
     /// Get the network this PSBT is for
     pub fn network(&self) -> crate::Network {
         self.network
+    }
+
+    /// Assemble a Zcash PSBT from a transaction and unspents — no signatures.
+    pub fn from_tx_parts(
+        network: crate::Network,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        tx: &miniscript::bitcoin::Transaction,
+        unspents: &[super::HydrationUnspentInput],
+        consensus_branch_id: u32,
+        version_group_id: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<Self, String> {
+        let mut z = Self::new(
+            network,
+            wallet_keys,
+            consensus_branch_id,
+            Some(tx.version.0),
+            Some(tx.lock_time.to_consensus_u32()),
+            version_group_id,
+            expiry_height,
+        );
+        super::BitGoPsbt::hydrate_psbt(&mut z.psbt, network, wallet_keys, tx, unspents)?;
+        Ok(z)
+    }
+
+    /// Insert signatures from a parsed `FixedScriptInput` into this Zcash PSBT at `index`.
+    pub(crate) fn add_input_signatures(
+        &mut self,
+        index: usize,
+        input: &super::FixedScriptInput,
+    ) -> Result<(), String> {
+        let branch_id = super::propkv::get_zec_consensus_branch_id(&self.psbt)
+            .ok_or_else(|| "missing consensus_branch_id".to_string())?;
+        let ctx = super::SighashContext::Zcash {
+            consensus_branch_id: branch_id,
+            version_group_id: self
+                .version_group_id
+                .unwrap_or(ZCASH_SAPLING_VERSION_GROUP_ID),
+            expiry_height: self.expiry_height.unwrap_or(0),
+        };
+        input.apply_signatures(&mut self.psbt, index, &ctx)
     }
 
     /// Serialize a transaction with Zcash-specific fields (version_group_id, expiry_height, sapling_fields)
@@ -382,6 +475,35 @@ impl ZcashBitGoPsbt {
         result.extend_from_slice(r);
 
         Ok(result)
+    }
+
+    /// Convert a network-format Zcash transaction (0, 1, or 2 sigs) to a `ZcashBitGoPsbt`.
+    ///
+    /// Accepts unsigned, half-signed, and fully-signed Zcash transactions. The caller is
+    /// responsible for checking the signature count if a specific signing state is required.
+    pub fn from_network_format(
+        parts: &crate::zcash::transaction::ZcashTransactionParts,
+        network: crate::Network,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        unspents: &[super::HydrationUnspentInput],
+        consensus_branch_id: u32,
+    ) -> Result<Self, String> {
+        let tx = &parts.transaction;
+        let inputs = super::FixedScriptInput::parse_all(tx)?;
+        let mut z = Self::from_tx_parts(
+            network,
+            wallet_keys,
+            tx,
+            unspents,
+            consensus_branch_id,
+            parts.version_group_id,
+            parts.expiry_height,
+        )?;
+        for (i, input) in inputs.iter().enumerate() {
+            z.add_input_signatures(i, input)?;
+        }
+        z.sapling_fields = parts.sapling_fields.clone();
+        Ok(z)
     }
 
     /// Convert to the underlying Bitcoin PSBT, consuming self

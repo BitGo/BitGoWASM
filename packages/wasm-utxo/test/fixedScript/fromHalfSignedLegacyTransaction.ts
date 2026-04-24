@@ -1,13 +1,8 @@
 /**
- * Tests for BitGoPsbt.fromHalfSignedLegacyTransaction()
+ * Tests for BitGoPsbt.fromHalfSignedLegacyTransaction() and BitGoPsbt.fromNetworkFormat().
  *
- * Bug: js_sys::BigInt::from(value_js).as_f64() does an unchecked wrap but then
- * JsValue::as_f64() only works for JS Number type — not BigInt. Passing any proper
- * JS BigInt value (e.g. 10000n) returned None, so the function always threw
- * "'value' must be a bigint" even though the caller did exactly the right thing.
- *
- * Fix: u64::try_from(js_sys::BigInt::unchecked_from_js(value_js)) uses the
- * BigInt-specific conversion path and then safely maps to u64.
+ * fromHalfSignedLegacyTransaction is deprecated in favour of fromNetworkFormat. This file
+ * tests both the deprecated path (to verify it keeps working) and the new path.
  */
 import { describe, it } from "mocha";
 import * as assert from "assert";
@@ -173,6 +168,33 @@ describe("BitGoPsbt.fromHalfSignedLegacyTransaction", function () {
     });
   });
 
+  describe("Full-signed transaction", function () {
+    function createFullSignedTxBytes(coinName: CoinName): {
+      txBytes: Uint8Array;
+      unspents: HydrationUnspent[];
+    } {
+      const [, , bitgoXprv] = getKeyTriple("default");
+      const { psbt, unspents } = createHalfSignedP2msPsbt(coinName);
+      psbt.sign(bitgoXprv);
+      psbt.finalizeAllInputs();
+      return { txBytes: psbt.extractTransaction().toBytes(), unspents };
+    }
+
+    const fullSignedCoins = coinNames.filter(isSupportedCoin);
+
+    for (const coinName of fullSignedCoins) {
+      it(`${coinName}: throws because fully-signed transaction has 2 signatures`, function () {
+        const rootWalletKeys = getDefaultWalletKeys();
+        const { txBytes, unspents } = createFullSignedTxBytes(coinName);
+        assert.throws(
+          () =>
+            BitGoPsbt.fromHalfSignedLegacyTransaction(txBytes, coinName, rootWalletKeys, unspents),
+          /expected 1 signature for half-signed transaction, found 2/i,
+        );
+      });
+    }
+  });
+
   describe("Zcash legacy format round-trip", function () {
     it("should reject Zcash via type check in fromHalfSignedLegacyTransaction", function () {
       // fromHalfSignedLegacyTransaction validates the transaction type at call time
@@ -274,6 +296,150 @@ describe("BitGoPsbt.fromHalfSignedLegacyTransaction", function () {
       assert.strictEqual(psbt1.inputCount(), psbt2.inputCount(), "Same input count");
       assert.strictEqual(psbt1.outputCount(), psbt2.outputCount(), "Same output count");
       assert.deepStrictEqual(psbt1.serialize(), psbt2.serialize(), "Identical serialization");
+    });
+  });
+});
+
+describe("BitGoPsbt.fromNetworkFormat", function () {
+  const [userXprv, , bitgoXprv] = getKeyTriple("default");
+
+  describe("Half-signed input", function () {
+    const roundTripCoins = coinNames.filter(isSupportedCoin);
+
+    for (const coinName of roundTripCoins) {
+      it(`${coinName}: succeeds and PSBT has user signature`, function () {
+        const rootWalletKeys = getDefaultWalletKeys();
+        const { psbt, unspents } = createHalfSignedP2msPsbt(coinName);
+        const txBytes = psbt.getHalfSignedLegacyFormat();
+
+        const reconstructed = BitGoPsbt.fromNetworkFormat(
+          txBytes,
+          coinName,
+          rootWalletKeys,
+          unspents,
+        );
+
+        assert.ok(reconstructed.serialize().length > 0, "PSBT serializes");
+        assert.ok(
+          reconstructed.verifySignature(0, userXprv.neutered().toBase58()),
+          "User signature present in input 0",
+        );
+      });
+    }
+  });
+
+  describe("Full-signed input", function () {
+    const fullSignedCoins = coinNames.filter(isSupportedCoin);
+
+    for (const coinName of fullSignedCoins) {
+      it(`${coinName}: succeeds and PSBT has both user and bitgo signatures`, function () {
+        const rootWalletKeys = getDefaultWalletKeys();
+        const { psbt, unspents } = createHalfSignedP2msPsbt(coinName);
+        psbt.sign(bitgoXprv);
+        psbt.finalizeAllInputs();
+        const txBytes = psbt.extractTransaction().toBytes();
+
+        const reconstructed = BitGoPsbt.fromNetworkFormat(
+          txBytes,
+          coinName,
+          rootWalletKeys,
+          unspents,
+        );
+
+        assert.ok(reconstructed.serialize().length > 0, "PSBT serializes");
+        assert.ok(
+          reconstructed.verifySignature(0, userXprv.neutered().toBase58()),
+          "User signature present in input 0",
+        );
+        assert.ok(
+          reconstructed.verifySignature(0, bitgoXprv.neutered().toBase58()),
+          "Bitgo signature present in input 0",
+        );
+      });
+    }
+  });
+
+  describe("ZcashBitGoPsbt.fromNetworkFormat", function () {
+    it("zec half-signed: PSBT has user signature (blockHeight)", function () {
+      const rootWalletKeys = getDefaultWalletKeys();
+      const { psbt, unspents } = createHalfSignedP2msPsbt("zec");
+      const txBytes = psbt.getHalfSignedLegacyFormat();
+
+      const reconstructed = ZcashBitGoPsbt.fromNetworkFormat(
+        txBytes,
+        "zec",
+        rootWalletKeys,
+        unspents,
+        { blockHeight: ZCASH_NU5_HEIGHT },
+      );
+
+      assert.ok(reconstructed instanceof ZcashBitGoPsbt, "Returns ZcashBitGoPsbt");
+      assert.ok(reconstructed.serialize().length > 0, "PSBT serializes");
+      assert.ok(
+        reconstructed.verifySignature(0, userXprv.neutered().toBase58()),
+        "User signature present in input 0",
+      );
+    });
+
+    it("zec half-signed: PSBT has user signature (consensusBranchId)", function () {
+      const rootWalletKeys = getDefaultWalletKeys();
+      const { psbt, unspents } = createHalfSignedP2msPsbt("zec");
+      const txBytes = psbt.getHalfSignedLegacyFormat();
+
+      const reconstructed = ZcashBitGoPsbt.fromNetworkFormat(
+        txBytes,
+        "zec",
+        rootWalletKeys,
+        unspents,
+        { consensusBranchId: 0xc2d6d0b4 },
+      );
+
+      assert.ok(reconstructed instanceof ZcashBitGoPsbt, "Returns ZcashBitGoPsbt");
+      assert.ok(reconstructed.serialize().length > 0, "PSBT serializes");
+      assert.ok(
+        reconstructed.verifySignature(0, userXprv.neutered().toBase58()),
+        "User signature present in input 0",
+      );
+    });
+
+    it("zec full-signed: succeeds and PSBT has both user and bitgo signatures", function () {
+      const rootWalletKeys = getDefaultWalletKeys();
+      const { psbt, unspents } = createHalfSignedP2msPsbt("zec");
+      psbt.sign(bitgoXprv);
+      psbt.finalizeAllInputs();
+      const txBytes = psbt.extractTransaction().toBytes();
+
+      const reconstructed = ZcashBitGoPsbt.fromNetworkFormat(
+        txBytes,
+        "zec",
+        rootWalletKeys,
+        unspents,
+        { blockHeight: ZCASH_NU5_HEIGHT },
+      );
+
+      assert.ok(reconstructed.serialize().length > 0, "PSBT serializes");
+      assert.ok(
+        reconstructed.verifySignature(0, userXprv.neutered().toBase58()),
+        "User signature present in input 0",
+      );
+      assert.ok(
+        reconstructed.verifySignature(0, bitgoXprv.neutered().toBase58()),
+        "Bitgo signature present in input 0",
+      );
+    });
+
+    it("zec: accepts pre-decoded ZcashTransaction instance", function () {
+      const rootWalletKeys = getDefaultWalletKeys();
+      const { psbt, unspents } = createHalfSignedP2msPsbt("zec");
+      const txBytes = psbt.getHalfSignedLegacyFormat();
+      const tx = ZcashTransaction.fromBytes(txBytes);
+
+      const reconstructed = ZcashBitGoPsbt.fromNetworkFormat(tx, "zec", rootWalletKeys, unspents, {
+        blockHeight: ZCASH_NU5_HEIGHT,
+      });
+
+      assert.ok(reconstructed instanceof ZcashBitGoPsbt, "Returns ZcashBitGoPsbt");
+      assert.ok(reconstructed.serialize().length > 0, "Serializes without error");
     });
   });
 });

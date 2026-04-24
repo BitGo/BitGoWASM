@@ -193,19 +193,22 @@ export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddre
   /**
    * Convert a half-signed legacy transaction to a psbt-lite.
    *
+   * @deprecated Use `fromNetworkFormat()` instead. Signature-count enforcement
+   * (exactly 1 sig per wallet input) is moving to the caller.
+   *
    * Extracts partial signatures from scriptSig/witness and creates a PSBT
    * with proper wallet metadata (bip32Derivation, scripts, witnessUtxo).
    * Only supports p2sh, p2shP2wsh, and p2wsh inputs (not taproot).
    *
    * Supports both Bitcoin-like coins (BTC, LTC, DOGE) and Dash (DASH).
-   * Zcash is NOT supported; use ZcashBitGoPsbt.fromHalfSignedLegacyTransaction instead.
+   * Zcash is NOT supported; use ZcashBitGoPsbt.fromNetworkFormat instead.
    *
    * @param txBytesOrTx - Transaction bytes or decoded transaction instance (Bitcoin-like or Dash)
    * @param network - Network name
    * @param walletKeys - The wallet's root keys
    * @param unspents - Chain, index, and value for each input
    * @param _options - Reserved for future use and signature compatibility with subclasses
-   * @throws Error if transaction is Zcash (use ZcashBitGoPsbt.fromHalfSignedLegacyTransaction instead)
+   * @throws Error if transaction is Zcash (use ZcashBitGoPsbt.fromNetworkFormat instead)
    */
   static fromHalfSignedLegacyTransaction(
     txBytesOrTx: Uint8Array | Transaction | DashTransaction,
@@ -240,6 +243,47 @@ export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddre
             unspents,
           )
         : WasmBitGoPsbt.from_half_signed_legacy_transaction(tx.wasm, network, keys.wasm, unspents);
+    return new BitGoPsbt(wasm);
+  }
+
+  /**
+   * Convert a network-format transaction to a PSBT.
+   *
+   * Accepts both the half-signed legacy format (5-slot scriptSig/witness with OP_0
+   * placeholders) and the fully-signed network format (compact 4-item form). The
+   * resulting PSBT will contain all partial signatures present in the transaction.
+   *
+   * Use this when you don't know ahead of time whether the transaction is half-signed
+   * or fully-signed. For Zcash, use ZcashBitGoPsbt.fromNetworkFormat() instead.
+   *
+   * @param txBytesOrTx - Transaction bytes or decoded Transaction/DashTransaction
+   * @param network - Network name
+   * @param walletKeys - The wallet's root keys
+   * @param unspents - Chain, index, and value for each input
+   */
+  static fromNetworkFormat(
+    txBytesOrTx: Uint8Array | Transaction | DashTransaction,
+    network: NetworkName,
+    walletKeys: WalletKeysArg,
+    unspents: HydrationUnspent[],
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _options?: unknown,
+  ): BitGoPsbt {
+    const keys = RootWalletKeys.from(walletKeys);
+
+    const tx =
+      txBytesOrTx instanceof Uint8Array
+        ? Transaction.fromBytes(txBytesOrTx, toCoinName(network))
+        : txBytesOrTx;
+
+    if (tx instanceof ZcashTransaction) {
+      throw new Error("Use ZcashBitGoPsbt.fromNetworkFormat() for Zcash transactions");
+    }
+
+    const wasm: WasmBitGoPsbt =
+      tx instanceof DashTransaction
+        ? WasmBitGoPsbt.from_network_format_dash(tx.wasm, network, keys.wasm, unspents)
+        : WasmBitGoPsbt.from_network_format(tx.wasm, network, keys.wasm, unspents);
     return new BitGoPsbt(wasm);
   }
 

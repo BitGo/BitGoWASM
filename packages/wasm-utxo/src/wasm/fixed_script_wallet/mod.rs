@@ -439,13 +439,14 @@ impl BitGoPsbt {
             .collect::<Result<Vec<_>, _>>()?;
 
         let tx_bytes = tx.to_bytes();
-        let psbt =
-            crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::from_half_signed_legacy_transaction(
-                &tx_bytes,
-                network,
-                wallet_keys,
-                &parsed_unspents,
-            )
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::from_network_format(
+            &tx_bytes,
+            network,
+            wallet_keys,
+            &parsed_unspents,
+        )
+        .map_err(|e| WasmUtxoError::new(&e))?;
+        crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::validate_half_signed(&psbt)
             .map_err(|e| WasmUtxoError::new(&e))?;
 
         Ok(BitGoPsbt {
@@ -480,13 +481,14 @@ impl BitGoPsbt {
             .collect::<Result<Vec<_>, _>>()?;
 
         let tx_bytes = tx.to_bytes()?;
-        let psbt =
-            crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::from_half_signed_legacy_transaction(
-                &tx_bytes,
-                network,
-                wallet_keys,
-                &parsed_unspents,
-            )
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::from_network_format(
+            &tx_bytes,
+            network,
+            wallet_keys,
+            &parsed_unspents,
+        )
+        .map_err(|e| WasmUtxoError::new(&e))?;
+        crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::validate_half_signed(&psbt)
             .map_err(|e| WasmUtxoError::new(&e))?;
 
         Ok(BitGoPsbt {
@@ -495,8 +497,87 @@ impl BitGoPsbt {
         })
     }
 
-    /// Convert a half-signed legacy Zcash transaction to a psbt-lite (with block height).
-    /// Thin wrapper: resolves block_height → consensus_branch_id and delegates to the explicit variant.
+    /// Convert a network-format transaction (half-signed OR fully-signed) to a PSBT.
+    ///
+    /// Accepts both the half-signed legacy format (5 items with OP_0 placeholders) and
+    /// the fully-signed network format (4 items, no placeholders). The PSBT will contain
+    /// all partial signatures present in the transaction.
+    ///
+    /// # Arguments
+    /// * `tx` - The decoded Bitcoin-like (non-Dash, non-Zcash) transaction
+    /// * `network` - Network name (e.g., "bitcoin", "btc")
+    /// * `wallet_keys` - The wallet's root keys
+    /// * `unspents` - Array of `{ chain: number, index: number, value: bigint }` per input
+    #[wasm_bindgen]
+    pub fn from_network_format(
+        tx: &crate::wasm::transaction::WasmTransaction,
+        network: &str,
+        wallet_keys: &WasmRootWalletKeys,
+        unspents: JsValue,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput;
+
+        let network = parse_network(network)?;
+        let wallet_keys = wallet_keys.inner();
+
+        let arr = js_sys::Array::from(&unspents);
+        let parsed_unspents = arr
+            .iter()
+            .map(|item| HydrationUnspentInput::try_from_js_value(&item))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let tx_bytes = tx.to_bytes();
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::from_network_format(
+            &tx_bytes,
+            network,
+            wallet_keys,
+            &parsed_unspents,
+        )
+        .map_err(|e| WasmUtxoError::new(&e))?;
+
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
+    /// Convert a network-format Dash transaction (half-signed OR fully-signed) to a PSBT.
+    #[wasm_bindgen]
+    pub fn from_network_format_dash(
+        tx: &crate::wasm::dash_transaction::WasmDashTransaction,
+        network: &str,
+        wallet_keys: &WasmRootWalletKeys,
+        unspents: JsValue,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput;
+
+        let network = parse_network(network)?;
+        let wallet_keys = wallet_keys.inner();
+
+        let arr = js_sys::Array::from(&unspents);
+        let parsed_unspents = arr
+            .iter()
+            .map(|item| HydrationUnspentInput::try_from_js_value(&item))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let tx_bytes = tx.to_bytes()?;
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::from_network_format(
+            &tx_bytes,
+            network,
+            wallet_keys,
+            &parsed_unspents,
+        )
+        .map_err(|e| WasmUtxoError::new(&e))?;
+
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
+    /// Convert a network-format Zcash transaction (0, 1, or 2 sigs) to a PSBT (with block height).
+    ///
+    /// Accepts unsigned, half-signed, and fully-signed Zcash transactions.
     ///
     /// # Arguments
     /// * `tx` - The decoded Zcash transaction
@@ -505,7 +586,7 @@ impl BitGoPsbt {
     /// * `unspents` - Array of `{ chain: number, index: number, value: bigint }` for each input
     /// * `block_height` - Block height to determine consensus branch ID
     #[wasm_bindgen]
-    pub fn from_half_signed_legacy_transaction_zcash_with_block_height(
+    pub fn from_network_format_zcash_with_block_height(
         tx: &crate::wasm::transaction::WasmZcashTransaction,
         network: &str,
         wallet_keys: &WasmRootWalletKeys,
@@ -515,7 +596,6 @@ impl BitGoPsbt {
         let network_parsed = parse_network(network)?;
         let is_mainnet = matches!(network_parsed, crate::networks::Network::Zcash);
 
-        // Resolve consensus_branch_id from block height
         let consensus_branch_id = crate::zcash::branch_id_for_height(block_height, is_mainnet)
             .ok_or_else(|| {
                 WasmUtxoError::new(&format!(
@@ -525,8 +605,7 @@ impl BitGoPsbt {
                 ))
             })?;
 
-        // Delegate to the explicit consensus_branch_id variant
-        Self::from_half_signed_legacy_transaction_zcash_with_branch_id(
+        Self::from_network_format_zcash_with_branch_id(
             tx,
             network,
             wallet_keys,
@@ -535,7 +614,9 @@ impl BitGoPsbt {
         )
     }
 
-    /// Convert a half-signed legacy Zcash transaction to a psbt-lite (with consensus branch ID).
+    /// Convert a network-format Zcash transaction (0, 1, or 2 sigs) to a PSBT (with consensus branch ID).
+    ///
+    /// Accepts unsigned, half-signed, and fully-signed Zcash transactions.
     ///
     /// # Arguments
     /// * `tx` - The decoded Zcash transaction
@@ -544,7 +625,7 @@ impl BitGoPsbt {
     /// * `unspents` - Array of `{ chain: number, index: number, value: bigint }` for each input
     /// * `consensus_branch_id` - Zcash consensus branch ID
     #[wasm_bindgen]
-    pub fn from_half_signed_legacy_transaction_zcash_with_branch_id(
+    pub fn from_network_format_zcash_with_branch_id(
         tx: &crate::wasm::transaction::WasmZcashTransaction,
         network: &str,
         wallet_keys: &WasmRootWalletKeys,
@@ -556,14 +637,13 @@ impl BitGoPsbt {
         let network = parse_network(network)?;
         let wallet_keys = wallet_keys.inner();
 
-        // Parse the unspents array using the TryFromJsValue trait
         let arr = js_sys::Array::from(&unspents);
         let parsed_unspents = arr
             .iter()
             .map(|item| HydrationUnspentInput::try_from_js_value(&item))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::from_half_signed_legacy_transaction_zcash_with_consensus_branch_id_from_parts(
+        let zcash = crate::fixed_script_wallet::bitgo_psbt::ZcashBitGoPsbt::from_network_format(
             &tx.parts,
             network,
             wallet_keys,
@@ -573,7 +653,7 @@ impl BitGoPsbt {
         .map_err(|e| WasmUtxoError::new(&e))?;
 
         Ok(BitGoPsbt {
-            psbt,
+            psbt: crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::Zcash(zcash, network),
             first_rounds: HashMap::new(),
         })
     }
