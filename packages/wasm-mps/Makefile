@@ -64,6 +64,10 @@ dist/esm/js/wasm:
 dist/cjs/js/wasm:
 	$(call BUILD,$@,nodejs)
 
+.PHONY: dist/web/js/wasm
+dist/web/js/wasm:
+	$(call BUILD,$@,web)
+
 .PHONY: lint
 lint:
 	cargo fmt --check
