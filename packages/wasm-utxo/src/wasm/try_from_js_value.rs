@@ -78,6 +78,14 @@ impl TryFromJsValue for u8 {
     }
 }
 
+impl TryFromJsValue for bool {
+    fn try_from_js_value(value: &JsValue) -> Result<Self, WasmUtxoError> {
+        value
+            .as_bool()
+            .ok_or_else(|| WasmUtxoError::new("Expected a boolean"))
+    }
+}
+
 impl TryFromJsValue for u32 {
     fn try_from_js_value(value: &JsValue) -> Result<Self, WasmUtxoError> {
         value

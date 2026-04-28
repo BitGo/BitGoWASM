@@ -1,4 +1,5 @@
 use crate::error::WasmUtxoError;
+use crate::wasm::try_from_js_value::get_field;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use miniscript::bitcoin::secp256k1::{Secp256k1, Signing};
 use miniscript::bitcoin::ScriptBuf;
@@ -153,6 +154,83 @@ impl WrapDescriptor {
                 Ok(WrapDescriptor(WrapDescriptorEnum::String(desc)))
             }
             _ => Err(WasmUtxoError::new("Invalid descriptor type")),
+        }
+    }
+
+    fn from_string_definite_ext(
+        descriptor: &str,
+        ext_params: &miniscript::miniscript::analyzable::ExtParams,
+    ) -> Result<WrapDescriptor, WasmUtxoError> {
+        let desc = Descriptor::<DefiniteDescriptorKey>::from_str_ext(descriptor, ext_params)?;
+        Ok(WrapDescriptor(WrapDescriptorEnum::Definite(desc)))
+    }
+
+    /// Parse a descriptor string with custom ExtParams for taproot leaf validation.
+    ///
+    /// This allows control over which miniscript analysis checks are applied to
+    /// taproot leaves. All options default to false (sane behavior).
+    ///
+    /// # Arguments
+    /// * `descriptor` - A string containing the descriptor to parse
+    /// * `pk_type` - The type of public key ("definite" only for now)
+    /// * `ext_params_config` - JavaScript object with optional boolean flags:
+    ///   - `drop`: Allow drop operations (r: wrapper)
+    ///   - `topUnsafe`: Allow scripts without signatures on all paths
+    ///   - `resourceLimitations`: Allow scripts exceeding resource limits
+    ///   - `timelockMixing`: Allow CSV + CLTV mixing
+    ///   - `malleability`: Allow malleable scripts
+    ///   - `repeatedPk`: Allow repeated public keys
+    ///   - `rawPkh`: Allow raw pubkey hash fragments
+    ///
+    /// # Example
+    /// ```javascript
+    /// // Allow r:older() only (for sBTC)
+    /// Descriptor.fromStringExt(desc, "definite", { drop: true })
+    ///
+    /// // Allow multiple extensions
+    /// Descriptor.fromStringExt(desc, "definite", { drop: true, malleability: true })
+    ///
+    /// // All sane (default)
+    /// Descriptor.fromStringExt(desc, "definite", {})
+    /// ```
+    #[wasm_bindgen(js_name = fromStringExt, skip_typescript)]
+    pub fn from_string_ext(
+        descriptor: &str,
+        pk_type: &str,
+        ext_params_config: JsValue,
+    ) -> Result<WrapDescriptor, WasmUtxoError> {
+        let flag = |key| -> Result<bool, WasmUtxoError> {
+            Ok(get_field::<Option<bool>>(&ext_params_config, key)?.unwrap_or(false))
+        };
+
+        let mut params = miniscript::miniscript::analyzable::ExtParams::sane();
+        if flag("drop")? {
+            params = params.drop();
+        }
+        if flag("topUnsafe")? {
+            params = params.top_unsafe();
+        }
+        if flag("resourceLimitations")? {
+            params = params.exceed_resource_limitations();
+        }
+        if flag("timelockMixing")? {
+            params = params.timelock_mixing();
+        }
+        if flag("malleability")? {
+            params = params.malleability();
+        }
+        if flag("repeatedPk")? {
+            params = params.repeated_pk();
+        }
+        if flag("rawPkh")? {
+            params = params.raw_pkh();
+        }
+
+        match pk_type {
+            "definite" => WrapDescriptor::from_string_definite_ext(descriptor, &params),
+            _ => Err(WasmUtxoError::new(
+                "fromStringExt only supports 'definite' pk_type",
+            )),
         }
     }
 

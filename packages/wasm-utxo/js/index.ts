@@ -38,6 +38,16 @@ export type DescriptorPkType = "derivable" | "definite" | "string";
 
 export type ScriptContext = "tap" | "segwitv0" | "legacy";
 
+export interface ExtParamsConfig {
+  drop?: boolean;
+  topUnsafe?: boolean;
+  resourceLimitations?: boolean;
+  timelockMixing?: boolean;
+  malleability?: boolean;
+  repeatedPk?: boolean;
+  rawPkh?: boolean;
+}
+
 declare module "./wasm/wasm_utxo.js" {
   interface WrapDescriptor {
     /** These are not the same types of nodes as in the ast module */
@@ -48,6 +58,11 @@ declare module "./wasm/wasm_utxo.js" {
   namespace WrapDescriptor {
     function fromString(descriptor: string, pkType: DescriptorPkType): WrapDescriptor;
     function fromStringDetectType(descriptor: string): WrapDescriptor;
+    function fromStringExt(
+      descriptor: string,
+      pkType: "definite",
+      extParams: ExtParamsConfig,
+    ): WrapDescriptor;
   }
 
   interface WrapMiniscript {
