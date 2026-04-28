@@ -3,6 +3,7 @@
 //! This module contains the business logic for BIP-0322 message signing
 //! with BitGo fixed-script wallets.
 
+use crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::Musig2Participants;
 use crate::fixed_script_wallet::bitgo_psbt::{
     create_bip32_derivation, create_tap_bip32_derivation, find_kv, BitGoKeyValue, BitGoPsbt,
     ProprietaryKeySubtype,
@@ -129,6 +130,8 @@ pub fn add_bip322_input(
             inner_psbt.inputs[input_index].bip32_derivation =
                 create_bip32_derivation(wallet_keys, chain, index);
             inner_psbt.inputs[input_index].redeem_script = Some(script.redeem_script.clone());
+            // Legacy P2SH sighash requires the full previous transaction, not just the output.
+            inner_psbt.inputs[input_index].non_witness_utxo = Some(to_spend);
         }
         WalletScripts::P2shP2wsh(script) => {
             inner_psbt.inputs[input_index].bip32_derivation =
@@ -231,6 +234,18 @@ pub fn add_bip322_input(
                     &[signer_idx, cosigner_idx],
                     None,
                 );
+                // Write Musig2Participants so is_musig2_input() returns true and the
+                // nonce-generation and signing routines engage the musig2 protocol.
+                let tap_output_key = script.spend_info.output_key().to_x_only_public_key();
+                let musig2_participants = Musig2Participants {
+                    tap_output_key,
+                    tap_internal_key: internal_key,
+                    participant_pub_keys: [pub_triple[0], pub_triple[2]],
+                };
+                let (key, value) = musig2_participants.to_key_value().to_key_value();
+                inner_psbt.inputs[input_index]
+                    .proprietary
+                    .insert(key, value);
             }
         }
     }
@@ -711,4 +726,361 @@ pub fn verify_bip322_tx_input_with_pubkeys(
     // since the transaction passed finalization validation.
     // TODO: Parse witness to determine actual signers if needed
     Ok(vec![0, 1, 2])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::{Musig2Context, Musig2Input};
+    use crate::fixed_script_wallet::test_utils::fixtures::XprvTriple;
+    use crate::Network;
+    use miniscript::bitcoin::bip32::Xpriv;
+    use miniscript::bitcoin::hashes::{sha256, Hash};
+
+    fn make_xprv_triple(seed: &str) -> XprvTriple {
+        let get_xpriv = |s: &str| {
+            let seed_hash = sha256::Hash::hash(s.as_bytes()).to_byte_array();
+            Xpriv::new_master(miniscript::bitcoin::Network::Testnet, &seed_hash)
+                .expect("could not create xpriv from seed")
+        };
+        XprvTriple::new([
+            get_xpriv(&format!("{}.0", seed)),
+            get_xpriv(&format!("{}.1", seed)),
+            get_xpriv(&format!("{}.2", seed)),
+        ])
+    }
+
+    fn make_wallet_keys(seed: &str) -> (XprvTriple, RootWalletKeys) {
+        let xprivs = make_xprv_triple(seed);
+        let wallet_keys = xprivs.to_root_wallet_keys();
+        (xprivs, wallet_keys)
+    }
+
+    fn make_bip322_psbt(wallet_keys: &RootWalletKeys) -> BitGoPsbt {
+        BitGoPsbt::new(Network::Bitcoin, wallet_keys, Some(0), None)
+    }
+
+    // Sign a p2trMusig2 keypath BIP322 PSBT input using the Musig2Context state machine.
+    fn sign_musig2_bip322(
+        psbt: &mut BitGoPsbt,
+        input_index: usize,
+        xprivs: &XprvTriple,
+    ) -> Result<(), String> {
+        let user_session_id: [u8; 32] = [1u8; 32];
+        let bitgo_session_id: [u8; 32] = [2u8; 32];
+
+        let mut ctx =
+            Musig2Context::new(psbt.psbt_mut(), input_index).map_err(|e| e.to_string())?;
+        let (user_first_round, _) = ctx
+            .generate_nonce_first_round(xprivs.user_key(), user_session_id)
+            .map_err(|e| e.to_string())?;
+
+        let mut ctx =
+            Musig2Context::new(psbt.psbt_mut(), input_index).map_err(|e| e.to_string())?;
+        let (bitgo_first_round, _) = ctx
+            .generate_nonce_first_round(xprivs.bitgo_key(), bitgo_session_id)
+            .map_err(|e| e.to_string())?;
+
+        let mut ctx =
+            Musig2Context::new(psbt.psbt_mut(), input_index).map_err(|e| e.to_string())?;
+        ctx.sign_with_first_round(user_first_round, xprivs.user_key())
+            .map_err(|e| e.to_string())?;
+
+        let mut ctx =
+            Musig2Context::new(psbt.psbt_mut(), input_index).map_err(|e| e.to_string())?;
+        ctx.sign_with_first_round(bitgo_first_round, xprivs.bitgo_key())
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_bip322_input_musig2_sets_participants_field() {
+        let (_, wallet_keys) = make_wallet_keys("bip322_musig2_test");
+        let mut psbt = make_bip322_psbt(&wallet_keys);
+        let idx = add_bip322_input(
+            &mut psbt,
+            "test message",
+            40,
+            0,
+            &wallet_keys,
+            Some((0, 2)),
+            None,
+        )
+        .unwrap();
+        assert!(
+            Musig2Input::is_musig2_input(&psbt.psbt().inputs[idx]),
+            "Musig2Participants proprietary field must be present"
+        );
+    }
+
+    #[test]
+    fn test_bip322_musig2_keypath_sign_and_verify() {
+        let (xprivs, wallet_keys) = make_wallet_keys("bip322_musig2_sign_verify");
+        let message = "BIP322 p2trMusig2 keypath test";
+        let chain = 40; // p2trMusig2 external
+        let index = 0;
+
+        let mut psbt = make_bip322_psbt(&wallet_keys);
+        add_bip322_input(
+            &mut psbt,
+            message,
+            chain,
+            index,
+            &wallet_keys,
+            Some((0, 2)),
+            None,
+        )
+        .unwrap();
+        sign_musig2_bip322(&mut psbt, 0, &xprivs).unwrap();
+
+        let signers =
+            verify_bip322_psbt_input(&psbt, 0, message, chain, index, &wallet_keys, None).unwrap();
+        assert!(signers.contains(&"user".to_string()));
+        assert!(signers.contains(&"bitgo".to_string()));
+    }
+
+    #[test]
+    fn test_bip322_musig2_backup_flow_uses_script_path() {
+        // backup+user and backup+bitgo pairs must use script path, not musig2 keypath
+        let (_, wallet_keys) = make_wallet_keys("bip322_musig2_backup");
+        let chain = 40;
+        let index = 0;
+
+        for (signer, cosigner) in [(0usize, 1usize), (1, 2)] {
+            let mut psbt = make_bip322_psbt(&wallet_keys);
+            add_bip322_input(
+                &mut psbt,
+                "backup flow",
+                chain,
+                index,
+                &wallet_keys,
+                Some((signer, cosigner)),
+                None,
+            )
+            .unwrap();
+            assert!(
+                !Musig2Input::is_musig2_input(&psbt.psbt().inputs[0]),
+                "Backup flow must not set Musig2Participants (should use script path)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_bip322_musig2_multiple_inputs_verify_each() {
+        let (xprivs, wallet_keys) = make_wallet_keys("bip322_musig2_multi");
+        let messages = ["msg one", "msg two"];
+        let chain = 40;
+
+        let mut psbt = make_bip322_psbt(&wallet_keys);
+        for (i, msg) in messages.iter().enumerate() {
+            add_bip322_input(
+                &mut psbt,
+                msg,
+                chain,
+                i as u32,
+                &wallet_keys,
+                Some((0, 2)),
+                None,
+            )
+            .unwrap();
+            sign_musig2_bip322(&mut psbt, i, &xprivs).unwrap();
+        }
+
+        for (i, msg) in messages.iter().enumerate() {
+            let signers =
+                verify_bip322_psbt_input(&psbt, i, msg, chain, i as u32, &wallet_keys, None)
+                    .unwrap();
+            assert!(signers.contains(&"user".to_string()));
+            assert!(signers.contains(&"bitgo".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_bip322_musig2_wrong_message_fails_verification() {
+        let (xprivs, wallet_keys) = make_wallet_keys("bip322_musig2_wrong_msg");
+        let message = "correct message";
+        let chain = 40;
+        let index = 0;
+
+        let mut psbt = make_bip322_psbt(&wallet_keys);
+        add_bip322_input(
+            &mut psbt,
+            message,
+            chain,
+            index,
+            &wallet_keys,
+            Some((0, 2)),
+            None,
+        )
+        .unwrap();
+        sign_musig2_bip322(&mut psbt, 0, &xprivs).unwrap();
+
+        let result =
+            verify_bip322_psbt_input(&psbt, 0, "wrong message", chain, index, &wallet_keys, None);
+        assert!(result.is_err(), "Verification with wrong message must fail");
+    }
+
+    #[test]
+    fn test_bip322_p2tr_legacy_sign_and_verify() {
+        let (xprivs, wallet_keys) = make_wallet_keys("bip322_p2tr_legacy");
+        let message = "BIP322 p2tr legacy test";
+        let chain = 30; // p2tr external
+        let index = 0;
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+
+        let mut psbt = make_bip322_psbt(&wallet_keys);
+        add_bip322_input(
+            &mut psbt,
+            message,
+            chain,
+            index,
+            &wallet_keys,
+            Some((0, 2)),
+            None,
+        )
+        .unwrap();
+
+        psbt.sign(xprivs.user_key(), &secp).ok();
+        psbt.sign(xprivs.bitgo_key(), &secp).ok();
+
+        let signers =
+            verify_bip322_psbt_input(&psbt, 0, message, chain, index, &wallet_keys, None).unwrap();
+        assert!(signers.contains(&"user".to_string()));
+        assert!(signers.contains(&"bitgo".to_string()));
+    }
+
+    // --- helpers ---
+
+    fn xprv_for_index(xprivs: &XprvTriple, idx: usize) -> &Xpriv {
+        match idx {
+            0 => xprivs.user_key(),
+            1 => xprivs.backup_key(),
+            2 => xprivs.bitgo_key(),
+            _ => panic!("invalid key index {}", idx),
+        }
+    }
+
+    fn sign_script_path_pair(
+        psbt: &mut BitGoPsbt,
+        xprivs: &XprvTriple,
+        signer: usize,
+        cosigner: usize,
+    ) {
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+        psbt.sign(xprv_for_index(xprivs, signer), &secp).ok();
+        psbt.sign(xprv_for_index(xprivs, cosigner), &secp).ok();
+    }
+
+    fn assert_signers_include(signers: &[String], expected: &[&str]) {
+        for name in expected {
+            assert!(
+                signers.contains(&name.to_string()),
+                "expected signer '{}' not found in {:?}",
+                name,
+                signers
+            );
+        }
+    }
+
+    // --- P2sh, P2shP2wsh, P2wsh ---
+
+    fn test_bip322_ecdsa_sign_and_verify(chain: u32, seed: &str) {
+        let (xprivs, wallet_keys) = make_wallet_keys(seed);
+        let message = format!("BIP322 chain-{} test", chain);
+        let index = 0;
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+
+        let mut psbt = make_bip322_psbt(&wallet_keys);
+        add_bip322_input(&mut psbt, &message, chain, index, &wallet_keys, None, None).unwrap();
+
+        psbt.sign(xprivs.user_key(), &secp).ok();
+        psbt.sign(xprivs.bitgo_key(), &secp).ok();
+
+        let signers =
+            verify_bip322_psbt_input(&psbt, 0, &message, chain, index, &wallet_keys, None).unwrap();
+        assert_signers_include(&signers, &["user", "bitgo"]);
+    }
+
+    #[test]
+    fn test_bip322_p2sh_sign_and_verify() {
+        test_bip322_ecdsa_sign_and_verify(0, "bip322_p2sh");
+    }
+
+    #[test]
+    fn test_bip322_p2sh_p2wsh_sign_and_verify() {
+        test_bip322_ecdsa_sign_and_verify(10, "bip322_p2sh_p2wsh");
+    }
+
+    #[test]
+    fn test_bip322_p2wsh_sign_and_verify() {
+        test_bip322_ecdsa_sign_and_verify(20, "bip322_p2wsh");
+    }
+
+    // --- P2trLegacy backup flows ---
+
+    #[test]
+    fn test_bip322_p2tr_legacy_backup_sign_and_verify() {
+        const SIGNER_NAMES: [&str; 3] = ["user", "backup", "bitgo"];
+        let chain = 30;
+        let index = 0;
+
+        for (signer, cosigner) in [(0usize, 1usize), (1, 2)] {
+            let (xprivs, wallet_keys) = make_wallet_keys(&format!(
+                "bip322_p2tr_legacy_backup_{}_{}",
+                signer, cosigner
+            ));
+            let message = format!("p2tr legacy backup {}-{}", signer, cosigner);
+            let mut psbt = make_bip322_psbt(&wallet_keys);
+            add_bip322_input(
+                &mut psbt,
+                &message,
+                chain,
+                index,
+                &wallet_keys,
+                Some((signer, cosigner)),
+                None,
+            )
+            .unwrap();
+            sign_script_path_pair(&mut psbt, &xprivs, signer, cosigner);
+            let signers =
+                verify_bip322_psbt_input(&psbt, 0, &message, chain, index, &wallet_keys, None)
+                    .unwrap();
+            assert_signers_include(&signers, &[SIGNER_NAMES[signer], SIGNER_NAMES[cosigner]]);
+        }
+    }
+
+    // --- P2trMusig2 backup flow sign+verify ---
+
+    #[test]
+    fn test_bip322_p2trmusig2_backup_sign_and_verify() {
+        const SIGNER_NAMES: [&str; 3] = ["user", "backup", "bitgo"];
+        let chain = 40;
+        let index = 0;
+
+        for (signer, cosigner) in [(0usize, 1usize), (1, 2)] {
+            let (xprivs, wallet_keys) = make_wallet_keys(&format!(
+                "bip322_musig2_backup_sign_{}_{}",
+                signer, cosigner
+            ));
+            let message = format!("p2trMusig2 backup {}-{}", signer, cosigner);
+            let mut psbt = make_bip322_psbt(&wallet_keys);
+            add_bip322_input(
+                &mut psbt,
+                &message,
+                chain,
+                index,
+                &wallet_keys,
+                Some((signer, cosigner)),
+                None,
+            )
+            .unwrap();
+            // Backup pairs use script-path: standard ECDSA signing works
+            sign_script_path_pair(&mut psbt, &xprivs, signer, cosigner);
+            let signers =
+                verify_bip322_psbt_input(&psbt, 0, &message, chain, index, &wallet_keys, None)
+                    .unwrap();
+            assert_signers_include(&signers, &[SIGNER_NAMES[signer], SIGNER_NAMES[cosigner]]);
+        }
+    }
 }
