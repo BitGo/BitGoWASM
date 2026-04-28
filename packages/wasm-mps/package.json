@@ -11,7 +11,8 @@
   "files": [
     "dist/esm/js/**/*",
     "dist/cjs/js/**/*",
-    "dist/cjs/package.json"
+    "dist/cjs/package.json",
+    "dist/web/js/**/*"
   ],
   "exports": {
     ".": {
@@ -23,6 +24,10 @@
         "types": "./dist/cjs/js/index.d.ts",
         "default": "./dist/cjs/js/index.js"
       }
+    },
+    "./web": {
+      "types": "./dist/web/js/wasm/wasm_mps.d.ts",
+      "default": "./dist/web/js/wasm/wasm_mps.js"
     }
   },
   "main": "./dist/cjs/js/index.js",
@@ -35,7 +40,7 @@
   "scripts": {
     "test": "npm run test:mocha",
     "test:mocha": "mocha --recursive test",
-    "build:wasm": "make js/wasm && make dist/esm/js/wasm && make dist/cjs/js/wasm",
+    "build:wasm": "make js/wasm && make dist/esm/js/wasm && make dist/cjs/js/wasm && make dist/web/js/wasm",
     "build:ts-esm": "tsc",
     "build:ts-cjs": "tsc --project tsconfig.cjs.json",
     "build:ts": "npm run build:ts-esm && npm run build:ts-cjs",
