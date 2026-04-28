@@ -25,7 +25,10 @@
         "default": "./dist/cjs/js/index.js"
       }
     },
-    "./web": "./dist/web/js/wasm/wasm_mps.js"
+    "./web": {
+      "types": "./dist/web/js/wasm/wasm_mps.d.ts",
+      "default": "./dist/web/js/wasm/wasm_mps.js"
+    }
   },
   "main": "./dist/cjs/js/index.js",
   "module": "./dist/esm/js/index.js",
