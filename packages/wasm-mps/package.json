@@ -33,6 +33,13 @@
   "main": "./dist/cjs/js/index.js",
   "module": "./dist/esm/js/index.js",
   "types": "./dist/esm/js/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "web": [
+        "./dist/web/js/wasm/wasm_mps.d.ts"
+      ]
+    }
+  },
   "sideEffects": [
     "./dist/esm/js/wasm/wasm_mps.js",
     "./dist/cjs/js/wasm/wasm_mps.js"
