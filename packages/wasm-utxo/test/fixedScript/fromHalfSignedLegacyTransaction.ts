@@ -126,46 +126,88 @@ describe("BitGoPsbt.fromHalfSignedLegacyTransaction", function () {
   });
 
   describe("Round-trip with replay protection input", function () {
-    it("reconstructs PSBT from legacy tx with wallet + replay protection input", function () {
-      const rootWalletKeys = getDefaultWalletKeys();
-      const [userXprv] = getKeyTriple("default");
-      const ecpair = ECPair.fromPublicKey(rootWalletKeys.userKey().publicKey);
+    type RpTestCase = { coin: CoinName; desc: string };
+    const rpCoins: RpTestCase[] = [
+      { coin: "btc", desc: "BTC (standard sighash)" },
+      { coin: "bch", desc: "BCH (SIGHASH_ALL|SIGHASH_FORKID = 0x41)" },
+    ];
 
-      const psbt = BitGoPsbt.createEmpty("btc", rootWalletKeys, { version: 2, lockTime: 0 });
-      psbt.addWalletInput(
-        { txid: "00".repeat(32), vout: 0, value: BigInt(10000), sequence: 0xfffffffd },
-        rootWalletKeys,
-        { scriptId: { chain: 0, index: 0 } },
-      );
-      psbt.addReplayProtectionInput(
-        { txid: "aa".repeat(32), vout: 0, value: BigInt(1000), sequence: 0xfffffffd },
-        ecpair,
-      );
-      psbt.addWalletOutput(rootWalletKeys, { chain: 0, index: 100, value: BigInt(5000) });
-      // sign() only signs wallet inputs; replay protection input gets 0 sigs
-      psbt.sign(userXprv);
+    for (const { coin, desc } of rpCoins) {
+      it(`${desc}: unsigned p2shP2pk — wallet sig preserved, p2shP2pk has no sig`, function () {
+        const rootWalletKeys = getDefaultWalletKeys();
+        const [userXprv] = getKeyTriple("default");
+        const ecpair = ECPair.fromPublicKey(rootWalletKeys.userKey().publicKey);
 
-      const txBytes = psbt.getHalfSignedLegacyFormat();
-      const tx = Transaction.fromBytes(txBytes, "btc");
+        const psbt = BitGoPsbt.createEmpty(coin, rootWalletKeys, { version: 2, lockTime: 0 });
+        psbt.addWalletInput(
+          { txid: "00".repeat(32), vout: 0, value: BigInt(10000), sequence: 0xfffffffd },
+          rootWalletKeys,
+          { scriptId: { chain: 0, index: 0 } },
+        );
+        psbt.addReplayProtectionInput(
+          { txid: "aa".repeat(32), vout: 0, value: BigInt(1000), sequence: 0xfffffffd },
+          ecpair,
+        );
+        psbt.addWalletOutput(rootWalletKeys, { chain: 0, index: 100, value: BigInt(5000) });
+        psbt.sign(userXprv); // only signs wallet inputs
 
-      const unspents: HydrationUnspent[] = [
-        { chain: 0, index: 0, value: BigInt(10000) }, // wallet
-        { pubkey: ecpair.publicKey, value: BigInt(1000) }, // replay protection
-      ];
-      const reconstructed = BitGoPsbt.fromHalfSignedLegacyTransaction(
-        tx,
-        "btc",
-        rootWalletKeys,
-        unspents,
-      );
+        const txBytes = psbt.getHalfSignedLegacyFormat();
+        const tx = Transaction.fromBytes(txBytes, coin);
+        const unspents: HydrationUnspent[] = [
+          { chain: 0, index: 0, value: BigInt(10000) },
+          { pubkey: ecpair.publicKey, value: BigInt(1000) },
+        ];
+        const reconstructed = BitGoPsbt.fromHalfSignedLegacyTransaction(tx, coin, rootWalletKeys, unspents);
 
-      assert.ok(reconstructed.serialize().length > 0, "Reconstructed PSBT serializes");
-      assert.strictEqual(reconstructed.inputCount(), 2, "Both inputs present");
-      assert.ok(
-        reconstructed.verifySignature(0, rootWalletKeys.userKey().neutered().toBase58()),
-        "Wallet input signature preserved",
-      );
-    });
+        assert.strictEqual(reconstructed.inputCount(), 2);
+        assert.ok(
+          reconstructed.verifySignature(0, rootWalletKeys.userKey().neutered().toBase58()),
+          "Wallet sig preserved",
+        );
+        assert.ok(
+          !reconstructed.verifySignature(1, ecpair),
+          "p2shP2pk has no sig (unsigned)",
+        );
+      });
+
+      it(`${desc}: signed p2shP2pk — both wallet and p2shP2pk sigs preserved`, function () {
+        const rootWalletKeys = getDefaultWalletKeys();
+        const [userXprv] = getKeyTriple("default");
+        const ecpair = ECPair.fromPrivateKey(Buffer.from(userXprv.privateKey!));
+
+        const psbt = BitGoPsbt.createEmpty(coin, rootWalletKeys, { version: 2, lockTime: 0 });
+        psbt.addWalletInput(
+          { txid: "00".repeat(32), vout: 0, value: BigInt(10000), sequence: 0xfffffffd },
+          rootWalletKeys,
+          { scriptId: { chain: 0, index: 0 } },
+        );
+        psbt.addReplayProtectionInput(
+          { txid: "aa".repeat(32), vout: 0, value: BigInt(1000), sequence: 0xfffffffd },
+          ecpair,
+        );
+        psbt.addWalletOutput(rootWalletKeys, { chain: 0, index: 100, value: BigInt(5000) });
+        psbt.sign(userXprv);
+        psbt.signInput(1, ecpair); // sign p2shP2pk
+
+        const txBytes = psbt.getHalfSignedLegacyFormat();
+        const tx = Transaction.fromBytes(txBytes, coin);
+        const unspents: HydrationUnspent[] = [
+          { chain: 0, index: 0, value: BigInt(10000) },
+          { pubkey: ecpair.publicKey, value: BigInt(1000) },
+        ];
+        const reconstructed = BitGoPsbt.fromHalfSignedLegacyTransaction(tx, coin, rootWalletKeys, unspents);
+
+        assert.strictEqual(reconstructed.inputCount(), 2);
+        assert.ok(
+          reconstructed.verifySignature(0, rootWalletKeys.userKey().neutered().toBase58()),
+          "Wallet sig preserved",
+        );
+        assert.ok(
+          reconstructed.verifySignature(1, ecpair),
+          "p2shP2pk sig preserved after round-trip",
+        );
+      });
+    }
   });
 
   describe("Full-signed transaction", function () {
@@ -354,6 +396,94 @@ describe("BitGoPsbt.fromNetworkFormat", function () {
         assert.ok(
           reconstructed.verifySignature(0, bitgoXprv.neutered().toBase58()),
           "Bitgo signature present in input 0",
+        );
+      });
+    }
+  });
+
+  describe("with replay protection input", function () {
+    type RpTestCase = { coin: CoinName; desc: string };
+    const rpCoins: RpTestCase[] = [
+      { coin: "btc", desc: "BTC" },
+      { coin: "bch", desc: "BCH (SIGHASH_FORKID)" },
+    ];
+
+    for (const { coin, desc } of rpCoins) {
+      it(`${desc}: half-signed — wallet and p2shP2pk sigs preserved`, function () {
+        const rootWalletKeys = getDefaultWalletKeys();
+        const ecpair = ECPair.fromPrivateKey(Buffer.from(userXprv.privateKey!));
+
+        const psbt = BitGoPsbt.createEmpty(coin, rootWalletKeys, { version: 2, lockTime: 0 });
+        psbt.addWalletInput(
+          { txid: "00".repeat(32), vout: 0, value: BigInt(10000), sequence: 0xfffffffd },
+          rootWalletKeys,
+          { scriptId: { chain: 0, index: 0 } },
+        );
+        psbt.addReplayProtectionInput(
+          { txid: "aa".repeat(32), vout: 0, value: BigInt(1000), sequence: 0xfffffffd },
+          ecpair,
+        );
+        psbt.addWalletOutput(rootWalletKeys, { chain: 0, index: 100, value: BigInt(5000) });
+        psbt.sign(userXprv);
+        psbt.signInput(1, ecpair);
+
+        const txBytes = psbt.getHalfSignedLegacyFormat();
+        const unspents: HydrationUnspent[] = [
+          { chain: 0, index: 0, value: BigInt(10000) },
+          { pubkey: ecpair.publicKey, value: BigInt(1000) },
+        ];
+        const reconstructed = BitGoPsbt.fromNetworkFormat(txBytes, coin, rootWalletKeys, unspents);
+
+        assert.strictEqual(reconstructed.inputCount(), 2);
+        assert.ok(
+          reconstructed.verifySignature(0, userXprv.neutered().toBase58()),
+          "Wallet sig preserved",
+        );
+        assert.ok(
+          reconstructed.verifySignature(1, ecpair),
+          "p2shP2pk sig preserved",
+        );
+      });
+
+      it(`${desc}: full-signed — both wallet sigs and p2shP2pk sig preserved`, function () {
+        const rootWalletKeys = getDefaultWalletKeys();
+        const ecpair = ECPair.fromPrivateKey(Buffer.from(userXprv.privateKey!));
+
+        const psbt = BitGoPsbt.createEmpty(coin, rootWalletKeys, { version: 2, lockTime: 0 });
+        psbt.addWalletInput(
+          { txid: "00".repeat(32), vout: 0, value: BigInt(10000), sequence: 0xfffffffd },
+          rootWalletKeys,
+          { scriptId: { chain: 0, index: 0 } },
+        );
+        psbt.addReplayProtectionInput(
+          { txid: "aa".repeat(32), vout: 0, value: BigInt(1000), sequence: 0xfffffffd },
+          ecpair,
+        );
+        psbt.addWalletOutput(rootWalletKeys, { chain: 0, index: 100, value: BigInt(5000) });
+        psbt.sign(userXprv);
+        psbt.sign(bitgoXprv);
+        psbt.signInput(1, ecpair);
+        psbt.finalizeAllInputs();
+        const txBytes = psbt.extractTransaction().toBytes();
+
+        const unspents: HydrationUnspent[] = [
+          { chain: 0, index: 0, value: BigInt(10000) },
+          { pubkey: ecpair.publicKey, value: BigInt(1000) },
+        ];
+        const reconstructed = BitGoPsbt.fromNetworkFormat(txBytes, coin, rootWalletKeys, unspents);
+
+        assert.strictEqual(reconstructed.inputCount(), 2);
+        assert.ok(
+          reconstructed.verifySignature(0, userXprv.neutered().toBase58()),
+          "User wallet sig preserved",
+        );
+        assert.ok(
+          reconstructed.verifySignature(0, bitgoXprv.neutered().toBase58()),
+          "BitGo wallet sig preserved",
+        );
+        assert.ok(
+          reconstructed.verifySignature(1, ecpair),
+          "p2shP2pk sig preserved from fully-signed tx",
         );
       });
     }
