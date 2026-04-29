@@ -527,34 +527,38 @@ impl BitGoPsbt {
                     pubkey: expected_pubkey,
                     value,
                 } => {
-                    // Validate pubkey matches what's in the transaction
                     let parsed = FixedScriptInput::from_txin(tx_in)
                         .map_err(|e| format!("Input {}: {}", i, e))?;
-                    if let FixedScriptInput::ReplayProtection {
-                        pubkey: tx_pubkey, ..
-                    } = &parsed
-                    {
-                        if tx_pubkey.to_bytes() != expected_pubkey.to_bytes() {
-                            return Err(format!("Input {}: replay protection pubkey mismatch", i));
+                    let pubkey = match &parsed {
+                        FixedScriptInput::ReplayProtection {
+                            pubkey: tx_pubkey, ..
+                        } => {
+                            if tx_pubkey.to_bytes() != expected_pubkey.to_bytes() {
+                                return Err(format!(
+                                    "Input {}: replay protection pubkey mismatch",
+                                    i
+                                ));
+                            }
+                            *tx_pubkey
                         }
-                        Self::add_replay_protection_input_to_psbt(
-                            psbt,
-                            i,
-                            network,
-                            *tx_pubkey,
-                            tx_in.previous_output.txid,
-                            tx_in.previous_output.vout,
-                            *value,
-                            ReplayProtectionOptions {
-                                sequence: Some(tx_in.sequence.0),
-                                prev_tx: None,
-                                sighash_type: None,
-                            },
-                        )
-                        .map_err(|e| format!("Input {}: {}", i, e))?;
-                    } else {
-                        return Err(format!("Input {}: expected replay protection input", i));
-                    }
+                        FixedScriptInput::Unsigned => *expected_pubkey,
+                        _ => return Err(format!("Input {}: expected replay protection input", i)),
+                    };
+                    Self::add_replay_protection_input_to_psbt(
+                        psbt,
+                        i,
+                        network,
+                        pubkey,
+                        tx_in.previous_output.txid,
+                        tx_in.previous_output.vout,
+                        *value,
+                        ReplayProtectionOptions {
+                            sequence: Some(tx_in.sequence.0),
+                            prev_tx: None,
+                            sighash_type: None,
+                        },
+                    )
+                    .map_err(|e| format!("Input {}: {}", i, e))?;
                 }
             }
         }

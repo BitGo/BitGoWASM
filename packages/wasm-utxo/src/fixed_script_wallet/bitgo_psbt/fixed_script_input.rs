@@ -27,6 +27,8 @@ pub(crate) enum FixedScriptInput {
         /// Raw sig bytes, or `None` if the slot is an OP_0 placeholder.
         sig_bytes: Option<Vec<u8>>,
     },
+    /// Input with neither scriptSig nor witness — not yet signed.
+    Unsigned,
 }
 
 impl FixedScriptInput {
@@ -67,7 +69,16 @@ impl FixedScriptInput {
                 _ => return Err("Last scriptSig item is not a push".to_string()),
             };
             let inner_script = ScriptBuf::from(redeem_bytes);
-            let slots = instructions[1..instructions.len() - 1]
+            // For multisig, scriptSig is OP_0 <sig...> <redeemScript>:
+            //   index 0 is OP_0 (skip it), slots start at index 1.
+            // For P2SH-P2PK, scriptSig is <sig> <redeemScript>:
+            //   index 0 IS the sig, so slots must start at index 0.
+            let slot_start = if parse_p2pk_script(&inner_script).is_some() {
+                0
+            } else {
+                1
+            };
+            let slots = instructions[slot_start..instructions.len() - 1]
                 .iter()
                 .map(|inst| match inst {
                     miniscript::bitcoin::script::Instruction::PushBytes(b) => b.as_bytes().to_vec(),
@@ -76,7 +87,7 @@ impl FixedScriptInput {
                 .collect();
             (inner_script, slots)
         } else {
-            return Err("Input has neither witness nor scriptSig".to_string());
+            return Ok(Self::Unsigned);
         };
 
         if parse_multisig_script_2_of_3(&inner_script).is_ok() {
@@ -163,6 +174,7 @@ impl FixedScriptInput {
                         .insert(PublicKey::from(*pubkey), sig);
                 }
             }
+            Self::Unsigned => {}
         }
         Ok(())
     }
