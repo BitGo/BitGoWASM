@@ -1,6 +1,6 @@
 import * as assert from "assert";
 import * as crypto from "crypto";
-import { Descriptor, ExtParamsConfig } from "../js/index.js";
+import { Descriptor } from "../js/index.js";
 import { getUnspendableKey } from "../js/testutils/descriptor/descriptors.js";
 
 // sBTC protocol uses two taproot script leaves:
@@ -82,10 +82,9 @@ type SbtcDescriptorNode = {
 
 describe("sBTC taproot descriptor", function () {
   // Use fromStringExt with { drop: true } to enable r:older() in taproot
-  const descriptor = Descriptor.fromStringExt(
+  const descriptor = Descriptor.fromString(
     getSbtcDescriptor(DEPOSIT_LEAF, RECLAIM_LEAF),
     "definite",
-    { drop: true } satisfies ExtParamsConfig,
   );
 
   it("parses successfully with fromStringExt", () => {

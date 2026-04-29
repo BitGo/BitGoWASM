@@ -4,6 +4,7 @@ use crate::wasm::try_into_js_value::TryIntoJsValue;
 use miniscript::bitcoin::secp256k1::{Secp256k1, Signing};
 use miniscript::bitcoin::ScriptBuf;
 use miniscript::descriptor::KeyMap;
+use miniscript::miniscript::analyzable::ExtParams;
 use miniscript::{DefiniteDescriptorKey, Descriptor, DescriptorPublicKey};
 use std::fmt;
 use std::str::FromStr;
@@ -112,12 +113,16 @@ impl WrapDescriptor {
         secp: &Secp256k1<C>,
         descriptor: &str,
     ) -> Result<WrapDescriptor, WasmUtxoError> {
-        let (desc, keys) = Descriptor::parse_descriptor(secp, descriptor)?;
+        let (desc, keys) =
+            Descriptor::parse_descriptor_ext(secp, descriptor, &ExtParams::sane().drop())?;
         Ok(WrapDescriptor(WrapDescriptorEnum::Derivable(desc, keys)))
     }
 
     fn from_string_definite(descriptor: &str) -> Result<WrapDescriptor, WasmUtxoError> {
-        let desc = Descriptor::<DefiniteDescriptorKey>::from_str(descriptor)?;
+        let desc = Descriptor::<DefiniteDescriptorKey>::from_str_ext(
+            descriptor,
+            &ExtParams::sane().drop(),
+        )?;
         Ok(WrapDescriptor(WrapDescriptorEnum::Definite(desc)))
     }
 
@@ -150,31 +155,24 @@ impl WrapDescriptor {
             "derivable" => WrapDescriptor::from_string_derivable(&Secp256k1::new(), descriptor),
             "definite" => WrapDescriptor::from_string_definite(descriptor),
             "string" => {
-                let desc = Descriptor::<String>::from_str(descriptor)?;
+                let desc =
+                    Descriptor::<String>::from_str_ext(descriptor, &ExtParams::sane().drop())?;
                 Ok(WrapDescriptor(WrapDescriptorEnum::String(desc)))
             }
             _ => Err(WasmUtxoError::new("Invalid descriptor type")),
         }
     }
 
-    fn from_string_definite_ext(
-        descriptor: &str,
-        ext_params: &miniscript::miniscript::analyzable::ExtParams,
-    ) -> Result<WrapDescriptor, WasmUtxoError> {
-        let desc = Descriptor::<DefiniteDescriptorKey>::from_str_ext(descriptor, ext_params)?;
-        Ok(WrapDescriptor(WrapDescriptorEnum::Definite(desc)))
-    }
-
     /// Parse a descriptor string with custom ExtParams for taproot leaf validation.
     ///
     /// This allows control over which miniscript analysis checks are applied to
-    /// taproot leaves. All options default to false (sane behavior).
+    /// taproot leaves. The `drop` flag is always enabled; other flags default to false.
     ///
     /// # Arguments
     /// * `descriptor` - A string containing the descriptor to parse
     /// * `pk_type` - The type of public key ("definite" only for now)
     /// * `ext_params_config` - JavaScript object with optional boolean flags:
-    ///   - `drop`: Allow drop operations (r: wrapper)
+    ///   - `drop`: Allow drop operations (r: wrapper) — always enabled
     ///   - `topUnsafe`: Allow scripts without signatures on all paths
     ///   - `resourceLimitations`: Allow scripts exceeding resource limits
     ///   - `timelockMixing`: Allow CSV + CLTV mixing
@@ -184,14 +182,8 @@ impl WrapDescriptor {
     ///
     /// # Example
     /// ```javascript
-    /// // Allow r:older() only (for sBTC)
-    /// Descriptor.fromStringExt(desc, "definite", { drop: true })
-    ///
-    /// // Allow multiple extensions
-    /// Descriptor.fromStringExt(desc, "definite", { drop: true, malleability: true })
-    ///
-    /// // All sane (default)
-    /// Descriptor.fromStringExt(desc, "definite", {})
+    /// // r:older() is always allowed; add extra flags as needed
+    /// Descriptor.fromStringExt(desc, "definite", { malleability: true })
     /// ```
     #[wasm_bindgen(js_name = fromStringExt, skip_typescript)]
     pub fn from_string_ext(
@@ -203,10 +195,7 @@ impl WrapDescriptor {
             Ok(get_field::<Option<bool>>(&ext_params_config, key)?.unwrap_or(false))
         };
 
-        let mut params = miniscript::miniscript::analyzable::ExtParams::sane();
-        if flag("drop")? {
-            params = params.drop();
-        }
+        let mut params = ExtParams::sane().drop();
         if flag("topUnsafe")? {
             params = params.top_unsafe();
         }
@@ -227,7 +216,10 @@ impl WrapDescriptor {
         }
 
         match pk_type {
-            "definite" => WrapDescriptor::from_string_definite_ext(descriptor, &params),
+            "definite" => {
+                let desc = Descriptor::<DefiniteDescriptorKey>::from_str_ext(descriptor, &params)?;
+                Ok(WrapDescriptor(WrapDescriptorEnum::Definite(desc)))
+            }
             _ => Err(WasmUtxoError::new(
                 "fromStringExt only supports 'definite' pk_type",
             )),
