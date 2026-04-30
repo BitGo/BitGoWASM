@@ -203,6 +203,9 @@ impl<Pk: MiniscriptKey + TryIntoJsValue, Ctx: ScriptContext> TryIntoJsValue for 
             Terminal::Thresh(t) => js_obj!("Thresh" => t),
             Terminal::Multi(pks) => js_obj!("Multi" => pks),
             Terminal::MultiA(pks) => js_obj!("MultiA" => pks),
+            Terminal::PayloadDrop(payload) => {
+                js_obj!("PayloadDrop" => payload.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+            }
         }
     }
 }
