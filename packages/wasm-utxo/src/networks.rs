@@ -13,6 +13,7 @@ pub enum Network {
     BitcoinTestnet4,
     BitcoinPublicSignet,
     BitcoinBitGoSignet,
+    BitcoinRegtest,
 
     // https://github.com/bitcoin-cash-node/bitcoin-cash-node/blob/master/src/validation.cpp
     // https://github.com/bitcoin-cash-node/bitcoin-cash-node/blob/master/src/chainparams.cpp
@@ -63,6 +64,7 @@ impl Network {
         Network::BitcoinTestnet4,
         Network::BitcoinPublicSignet,
         Network::BitcoinBitGoSignet,
+        Network::BitcoinRegtest,
         Network::BitcoinCash,
         Network::BitcoinCashTestnet,
         Network::Ecash,
@@ -89,6 +91,7 @@ impl Network {
             Network::BitcoinTestnet4 => "BitcoinTestnet4",
             Network::BitcoinPublicSignet => "BitcoinPublicSignet",
             Network::BitcoinBitGoSignet => "BitcoinBitGoSignet",
+            Network::BitcoinRegtest => "BitcoinRegtest",
             Network::BitcoinCash => "BitcoinCash",
             Network::BitcoinCashTestnet => "BitcoinCashTestnet",
             Network::Ecash => "Ecash",
@@ -115,6 +118,7 @@ impl Network {
             "BitcoinTestnet4" => Some(Network::BitcoinTestnet4),
             "BitcoinPublicSignet" => Some(Network::BitcoinPublicSignet),
             "BitcoinBitGoSignet" => Some(Network::BitcoinBitGoSignet),
+            "BitcoinRegtest" => Some(Network::BitcoinRegtest),
 
             "BitcoinCash" => Some(Network::BitcoinCash),
             "BitcoinCashTestnet" => Some(Network::BitcoinCashTestnet),
@@ -154,6 +158,7 @@ impl Network {
             "bitcoinPublicSignet" => Some(Network::BitcoinPublicSignet),
             "bitcoinTestnet4" => Some(Network::BitcoinTestnet4),
             "bitcoinBitGoSignet" => Some(Network::BitcoinBitGoSignet),
+            "bitcoinRegtest" => Some(Network::BitcoinRegtest),
             "bitcoincash" => Some(Network::BitcoinCash),
             "bitcoincashTestnet" => Some(Network::BitcoinCashTestnet),
             "ecash" => Some(Network::Ecash),
@@ -181,6 +186,7 @@ impl Network {
             Network::BitcoinTestnet4 => "bitcoinTestnet4",
             Network::BitcoinPublicSignet => "bitcoinPublicSignet",
             Network::BitcoinBitGoSignet => "bitcoinBitGoSignet",
+            Network::BitcoinRegtest => "bitcoinRegtest",
             Network::BitcoinCash => "bitcoincash",
             Network::BitcoinCashTestnet => "bitcoincashTestnet",
             Network::Ecash => "ecash",
@@ -208,6 +214,7 @@ impl Network {
             "tbtc4" => Some(Network::BitcoinTestnet4),
             "tbtcsig" => Some(Network::BitcoinPublicSignet),
             "tbtcbgsig" => Some(Network::BitcoinBitGoSignet),
+            "tbtcreg" => Some(Network::BitcoinRegtest),
             "bch" => Some(Network::BitcoinCash),
             "tbch" => Some(Network::BitcoinCashTestnet),
             "bcha" => Some(Network::Ecash),
@@ -236,6 +243,7 @@ impl Network {
             Network::BitcoinTestnet4 => "tbtc4",
             Network::BitcoinPublicSignet => "tbtcsig",
             Network::BitcoinBitGoSignet => "tbtcbgsig",
+            Network::BitcoinRegtest => "tbtcreg",
             Network::BitcoinCash => "bch",
             Network::BitcoinCashTestnet => "tbch",
             Network::Ecash => "bcha",
@@ -261,7 +269,8 @@ impl Network {
             | Network::BitcoinTestnet3
             | Network::BitcoinTestnet4
             | Network::BitcoinPublicSignet
-            | Network::BitcoinBitGoSignet => Network::Bitcoin,
+            | Network::BitcoinBitGoSignet
+            | Network::BitcoinRegtest => Network::Bitcoin,
 
             Network::BitcoinCash => Network::BitcoinCash,
             Network::BitcoinCashTestnet => Network::BitcoinCash,
@@ -306,6 +315,7 @@ impl Network {
             Network::BitcoinTestnet4 => BitcoinNetwork::Testnet,
             Network::BitcoinPublicSignet => BitcoinNetwork::Signet,
             Network::BitcoinBitGoSignet => BitcoinNetwork::Signet,
+            Network::BitcoinRegtest => BitcoinNetwork::Regtest,
             // Non-Bitcoin networks - use Bitcoin mainnet/testnet based on whether they're mainnet
             _ => {
                 if self.is_mainnet() {
@@ -381,7 +391,7 @@ mod tests {
     #[test]
     fn test_all_networks() {
         // Verify ALL contains all networks
-        assert_eq!(Network::ALL.len(), 21);
+        assert_eq!(Network::ALL.len(), 22);
 
         // Verify no duplicates
         for (i, network1) in Network::ALL.iter().enumerate() {

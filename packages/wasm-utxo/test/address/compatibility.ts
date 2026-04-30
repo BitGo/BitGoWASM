@@ -46,7 +46,7 @@ const legacyGroups: CoinName[][] = [
   ["dash"],
   ["doge"],
   ["ltc"],
-  ["tbch", "tbcha", "tbsv", "tbtc", "tbtc4", "tbtcbgsig", "tbtcsig", "tbtg", "tdoge"],
+  ["tbch", "tbcha", "tbsv", "tbtc", "tbtc4", "tbtcbgsig", "tbtcreg", "tbtcsig", "tbtg", "tdoge"],
   ["tdash"],
   ["tltc"],
   ["tzec"],
@@ -58,11 +58,16 @@ const segwitGroups: CoinName[][] = [
   ["btg"],
   ["ltc"],
   ["tbtc", "tbtc4", "tbtcbgsig", "tbtcsig"],
+  ["tbtcreg"],
   ["tbtg"],
   ["tltc"],
 ];
 
-const taprootGroups: CoinName[][] = [["btc"], ["tbtc", "tbtc4", "tbtcbgsig", "tbtcsig"]];
+const taprootGroups: CoinName[][] = [
+  ["btc"],
+  ["tbtc", "tbtc4", "tbtcbgsig", "tbtcsig"],
+  ["tbtcreg"],
+];
 
 describe("address compatibility", function () {
   it("p2sh: btc/bch/bcha/bsv share mainnet format, most testnets share testnet format", function () {

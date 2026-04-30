@@ -107,6 +107,8 @@ pub const BITCOIN_BECH32: Bech32Codec = Bech32Codec::new("bc");
 
 pub const TESTNET: Base58CheckCodec = Base58CheckCodec::new(0x6f, 0xc4);
 pub const TESTNET_BECH32: Bech32Codec = Bech32Codec::new("tb");
+pub const REGTEST: Base58CheckCodec = Base58CheckCodec::new(0x6f, 0xc4);
+pub const REGTEST_BECH32: Bech32Codec = Bech32Codec::new("bcrt");
 
 // Bitcoin Cash (Base58Check)
 // https://github.com/bitcoin-cash-node/bitcoin-cash-node/blob/master/src/validation.cpp

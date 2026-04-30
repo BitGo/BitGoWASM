@@ -5,6 +5,7 @@ export const coinNames = [
   "tbtc4",
   "tbtcsig",
   "tbtcbgsig",
+  "tbtcreg",
   "bch",
   "tbch",
   "bcha",
@@ -31,6 +32,7 @@ export function getMainnet(name: CoinName): CoinName {
     case "tbtc4":
     case "tbtcsig":
     case "tbtcbgsig":
+    case "tbtcreg":
       return "btc";
     case "tbch":
       return "bch";
@@ -80,6 +82,8 @@ export function toCoinName(name: CoinName | UtxolibName): CoinName {
       return "tbtcsig";
     case "bitcoinBitGoSignet":
       return "tbtcbgsig";
+    case "bitcoinRegtest":
+      return "tbtcreg";
     case "bitcoincash":
       return "bch";
     case "bitcoincashTestnet":

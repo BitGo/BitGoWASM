@@ -7,6 +7,7 @@ export type UtxolibName =
   | "bitcoinTestnet4"
   | "bitcoinPublicSignet"
   | "bitcoinBitGoSignet"
+  | "bitcoinRegtest"
   | "bitcoincash"
   | "bitcoincashTestnet"
   | "ecash"

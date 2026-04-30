@@ -36,6 +36,7 @@ const networkLabels: Record<CoinName, string> = {
   tbtc4: "Bitcoin Testnet4",
   tbtcsig: "Bitcoin Signet",
   tbtcbgsig: "Bitcoin BitGo Signet",
+  tbtcreg: "Bitcoin Regtest",
   ltc: "Litecoin",
   tltc: "Litecoin Testnet",
   bch: "Bitcoin Cash",

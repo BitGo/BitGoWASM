@@ -340,6 +340,7 @@ impl BitGoPsbt {
             | Network::BitcoinTestnet4
             | Network::BitcoinPublicSignet
             | Network::BitcoinBitGoSignet
+            | Network::BitcoinRegtest
             | Network::BitcoinCash
             | Network::BitcoinCashTestnet
             | Network::Ecash
