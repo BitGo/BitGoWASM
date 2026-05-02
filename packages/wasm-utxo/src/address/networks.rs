@@ -10,8 +10,8 @@ use super::{
     BITCOIN_CASH_TESTNET_CASHADDR, BITCOIN_GOLD, BITCOIN_GOLD_BECH32, BITCOIN_GOLD_TESTNET,
     BITCOIN_GOLD_TESTNET_BECH32, BITCOIN_SV, BITCOIN_SV_TESTNET, DASH, DASH_TEST, DOGECOIN,
     DOGECOIN_TEST, ECASH, ECASH_CASHADDR, ECASH_TEST, ECASH_TEST_CASHADDR, LITECOIN,
-    LITECOIN_BECH32, LITECOIN_TEST, LITECOIN_TEST_BECH32, TESTNET, TESTNET_BECH32, ZCASH,
-    ZCASH_TEST,
+    LITECOIN_BECH32, LITECOIN_TEST, LITECOIN_TEST_BECH32, REGTEST, REGTEST_BECH32, TESTNET,
+    TESTNET_BECH32, ZCASH, ZCASH_TEST,
 };
 use crate::bitcoin::Script;
 use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
@@ -29,6 +29,7 @@ fn get_decode_codecs(network: Network) -> Vec<&'static dyn AddressCodec> {
         | Network::BitcoinBitGoSignet => {
             vec![&TESTNET, &TESTNET_BECH32]
         }
+        Network::BitcoinRegtest => vec![&REGTEST, &REGTEST_BECH32],
         Network::BitcoinCash => vec![&BITCOIN_CASH, &BITCOIN_CASH_CASHADDR],
         Network::BitcoinCashTestnet => vec![&BITCOIN_CASH_TESTNET, &BITCOIN_CASH_TESTNET_CASHADDR],
         Network::Ecash => vec![&ECASH, &ECASH_CASHADDR],
@@ -245,6 +246,13 @@ fn get_encode_codec(
                 Ok(&TESTNET_BECH32)
             } else {
                 Ok(&TESTNET)
+            }
+        }
+        Network::BitcoinRegtest => {
+            if is_witness {
+                Ok(&REGTEST_BECH32)
+            } else {
+                Ok(&REGTEST)
             }
         }
         Network::BitcoinCash => Ok(&BITCOIN_CASH),
