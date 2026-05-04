@@ -76,10 +76,18 @@ impl WasmRootWalletKeys {
         let derivation_paths = [user_derivation, backup_derivation, bitgo_derivation]
             .iter()
             .map(|p| {
-                // Remove leading 'm/' if present and add it back
-                let p = p.strip_prefix("m/").unwrap_or(p);
-                DerivationPath::from_str(&format!("m/{}", p))
-                    .map_err(|e| WasmUtxoError::new(&format!("Invalid derivation prefix: {}", e)))
+                // Strip leading 'm/' or 'm' to get the relative path component
+                let rel = p
+                    .strip_prefix("m/")
+                    .or_else(|| p.strip_prefix("m"))
+                    .unwrap_or(p);
+                if rel.is_empty() {
+                    Ok(DerivationPath::default())
+                } else {
+                    DerivationPath::from_str(&format!("m/{}", rel)).map_err(|e| {
+                        WasmUtxoError::new(&format!("Invalid derivation prefix: {}", e))
+                    })
+                }
             })
             .collect::<Result<Vec<_>, _>>()?
             .try_into()

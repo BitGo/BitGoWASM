@@ -8,6 +8,7 @@ use crate::fixed_script_wallet::bitgo_psbt::{
     create_bip32_derivation, create_tap_bip32_derivation, find_kv, BitGoKeyValue, BitGoPsbt,
     ProprietaryKeySubtype,
 };
+use crate::fixed_script_wallet::wallet_scripts::chain_index_path;
 use crate::fixed_script_wallet::wallet_scripts::{
     build_multisig_script_2_of_3, build_p2tr_ns_script, ScriptP2mr, ScriptP2tr,
 };
@@ -88,8 +89,8 @@ pub fn add_bip322_input(
     let chain_enum = Chain::try_from(chain).map_err(|e| format!("Invalid chain: {}", e))?;
     let scripts = WalletScripts::from_wallet_keys(
         wallet_keys,
-        chain_enum,
-        index,
+        chain_enum.script_type,
+        &chain_index_path(chain, index),
         &network.output_script_support(),
     )
     .map_err(|e| e.to_string())?;
@@ -190,7 +191,7 @@ pub fn add_bip322_input(
 
             // Derive pubkeys
             let derived_keys = wallet_keys
-                .derive_for_chain_and_index(chain, index)
+                .derive_path(&chain_index_path(chain, index))
                 .map_err(|e| format!("Failed to derive keys: {}", e))?;
             let pub_triple = to_pub_triple(&derived_keys);
 
@@ -335,8 +336,8 @@ pub fn verify_bip322_tx_input(
     let chain_enum = Chain::try_from(chain).map_err(|e| format!("Invalid chain: {}", e))?;
     let scripts = WalletScripts::from_wallet_keys(
         wallet_keys,
-        chain_enum,
-        index,
+        chain_enum.script_type,
+        &chain_index_path(chain, index),
         &network.output_script_support(),
     )
     .map_err(|e| e.to_string())?;
@@ -427,8 +428,8 @@ pub fn verify_bip322_psbt_input(
     let chain_enum = Chain::try_from(chain).map_err(|e| format!("Invalid chain: {}", e))?;
     let scripts = WalletScripts::from_wallet_keys(
         wallet_keys,
-        chain_enum,
-        index,
+        chain_enum.script_type,
+        &chain_index_path(chain, index),
         &network.output_script_support(),
     )
     .map_err(|e| e.to_string())?;

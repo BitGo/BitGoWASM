@@ -9,7 +9,8 @@ use crate::error::WasmUtxoError;
 use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::{
     parse_shared_chain_and_index, InputScriptType,
 };
-use crate::fixed_script_wallet::wallet_scripts::{Chain, OutputScriptType};
+use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
+use crate::fixed_script_wallet::Chain;
 use miniscript::bitcoin::VarInt;
 use wasm_bindgen::prelude::*;
 

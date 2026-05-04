@@ -91,46 +91,42 @@ impl RootWalletKeys {
         )
     }
 
-    pub fn derive_for_chain_and_index(
-        &self,
-        chain: u32,
-        index: u32,
-    ) -> Result<XpubTriple, WasmUtxoError> {
-        let cache_key = (chain, index);
-
-        // Check cache first
-        {
-            let cache = self.derivation_cache.borrow();
-            if let Some(cached) = cache.get(&cache_key) {
+    /// Derive keys from `self.prefix_derived` along `path`.
+    /// Caches using the last two Normal path components as `(chain, index)`.
+    pub fn derive_path(&self, path: &DerivationPath) -> Result<XpubTriple, WasmUtxoError> {
+        let cache_key: Option<(u32, u32)> = {
+            let children: Vec<_> = path.into_iter().cloned().collect();
+            let n = children.len();
+            match (children.get(n.wrapping_sub(2)), children.last()) {
+                (
+                    Some(ChildNumber::Normal { index: c }),
+                    Some(ChildNumber::Normal { index: i }),
+                ) => Some((*c, *i)),
+                _ => None,
+            }
+        };
+        if let Some(key) = cache_key {
+            if let Some(cached) = self.derivation_cache.borrow().get(&key) {
                 return Ok(*cached);
             }
         }
-
-        // Derive from prefix to chain+index (2 levels)
-        let path = DerivationPath::from(vec![
-            ChildNumber::Normal { index: chain },
-            ChildNumber::Normal { index },
-        ]);
         let derived: XpubTriple = self
             .prefix_derived
             .iter()
             .map(|xpub| {
-                xpub.derive_pub(&self.secp, &path)
+                xpub.derive_pub(&self.secp, path)
                     .map_err(|e| WasmUtxoError::new(&format!("Error deriving xpub: {}", e)))
             })
             .collect::<Result<Vec<_>, _>>()?
             .try_into()
             .map_err(|_| WasmUtxoError::new("Expected exactly 3 derived xpubs"))?;
-
-        // Cache the result (with bounded size)
-        {
+        if let Some(key) = cache_key {
             let mut cache = self.derivation_cache.borrow_mut();
             if cache.len() >= DERIVATION_CACHE_MAX_SIZE {
                 cache.clear();
             }
-            cache.insert(cache_key, derived);
+            cache.insert(key, derived);
         }
-
         Ok(derived)
     }
 }
@@ -195,6 +191,8 @@ pub mod tests {
     #[test]
     fn it_works() {
         let keys = get_test_wallet_keys("test");
-        assert!(keys.derive_for_chain_and_index(0, 0).is_ok());
+        assert!(keys
+            .derive_path(&crate::fixed_script_wallet::wallet_scripts::chain_index_path(0, 0))
+            .is_ok());
     }
 }

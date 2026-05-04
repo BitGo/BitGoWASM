@@ -16,13 +16,13 @@ pub use checksigverify::{
 pub use singlesig::{build_p2pk_script, parse_p2pk_script, ScriptP2shP2pk};
 
 use crate::address::networks::OutputScriptSupport;
-use crate::bitcoin::bip32::{ChildNumber, DerivationPath};
-use crate::bitcoin::ScriptBuf;
+use crate::bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint};
+use crate::bitcoin::secp256k1::PublicKey as Secp256k1PublicKey;
+use crate::bitcoin::{ScriptBuf, TapLeafHash, XOnlyPublicKey};
 use crate::error::WasmUtxoError;
-use crate::fixed_script_wallet::wallet_keys::{
-    to_pub_triple, PubTriple, RootWalletKeys, XpubTriple,
-};
-use std::convert::TryFrom;
+use crate::fixed_script_wallet::wallet_keys::{to_pub_triple, PubTriple, RootWalletKeys};
+use crate::Network;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 /// Scripts that belong to fixed-script BitGo wallets.
@@ -42,30 +42,13 @@ pub enum WalletScripts {
     P2mr(ScriptP2mr),
 }
 
-impl std::fmt::Display for WalletScripts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                WalletScripts::P2sh(_) => "P2sh".to_string(),
-                WalletScripts::P2shP2wsh(_) => "P2shP2wsh".to_string(),
-                WalletScripts::P2wsh(_) => "P2wsh".to_string(),
-                WalletScripts::P2trLegacy(_) => "P2trLegacy".to_string(),
-                WalletScripts::P2trMusig2(_) => "P2trMusig2".to_string(),
-                WalletScripts::P2mr(_) => "P2mr".to_string(),
-            }
-        )
-    }
-}
-
 impl WalletScripts {
     pub fn new(
         keys: &PubTriple,
-        chain: Chain,
+        script_type: OutputScriptType,
         script_support: &OutputScriptSupport,
     ) -> Result<WalletScripts, WasmUtxoError> {
-        match chain.script_type {
+        match script_type {
             OutputScriptType::P2sh => {
                 script_support.assert_legacy()?;
                 let script = build_multisig_script_2_of_3(keys);
@@ -105,14 +88,12 @@ impl WalletScripts {
 
     pub fn from_wallet_keys(
         wallet_keys: &RootWalletKeys,
-        chain: Chain,
-        index: u32,
+        script_type: OutputScriptType,
+        path: &DerivationPath,
         script_support: &OutputScriptSupport,
     ) -> Result<WalletScripts, WasmUtxoError> {
-        let derived_keys = wallet_keys
-            .derive_for_chain_and_index(chain.value(), index)
-            .unwrap();
-        WalletScripts::new(&to_pub_triple(&derived_keys), chain, script_support)
+        let derived_keys = wallet_keys.derive_path(path)?;
+        WalletScripts::new(&to_pub_triple(&derived_keys), script_type, script_support)
     }
 
     pub fn output_script(&self) -> ScriptBuf {
@@ -124,81 +105,6 @@ impl WalletScripts {
             WalletScripts::P2trMusig2(script) => script.output_script(),
             WalletScripts::P2mr(script) => script.output_script(),
         }
-    }
-}
-
-/// Whether a chain is for receiving (external) or change (internal) addresses.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub enum Scope {
-    /// External chains are for receiving addresses (even chain values: 0, 10, 20, 30, 40).
-    External,
-    /// Internal chains are for change addresses (odd chain values: 1, 11, 21, 31, 41).
-    Internal,
-}
-
-/// BitGo-Defined mappings between derivation path component and script type.
-///
-/// A Chain combines an `OutputScriptType` with a `Scope` (external/internal).
-/// The chain value is used in derivation paths: `m/0/0/{chain}/{index}`.
-///
-/// Chain values are normalized: external = base, internal = base + 1.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct Chain {
-    pub script_type: OutputScriptType,
-    pub scope: Scope,
-}
-
-impl Chain {
-    /// Create a new Chain from script type and scope.
-    pub const fn new(script_type: OutputScriptType, scope: Scope) -> Self {
-        Self { script_type, scope }
-    }
-
-    /// Get the u32 chain value for derivation paths.
-    pub const fn value(&self) -> u32 {
-        (match self.script_type {
-            OutputScriptType::P2sh => 0,
-            OutputScriptType::P2shP2wsh => 10,
-            OutputScriptType::P2wsh => 20,
-            OutputScriptType::P2trLegacy => 30,
-            OutputScriptType::P2trMusig2 => 40,
-            OutputScriptType::P2mr => 360,
-        }) + match self.scope {
-            Scope::External => 0,
-            Scope::Internal => 1,
-        }
-    }
-}
-
-impl TryFrom<u32> for Chain {
-    type Error = String;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        let (script_type, scope) = match value {
-            0 => (OutputScriptType::P2sh, Scope::External),
-            1 => (OutputScriptType::P2sh, Scope::Internal),
-            10 => (OutputScriptType::P2shP2wsh, Scope::External),
-            11 => (OutputScriptType::P2shP2wsh, Scope::Internal),
-            20 => (OutputScriptType::P2wsh, Scope::External),
-            21 => (OutputScriptType::P2wsh, Scope::Internal),
-            30 => (OutputScriptType::P2trLegacy, Scope::External),
-            31 => (OutputScriptType::P2trLegacy, Scope::Internal),
-            40 => (OutputScriptType::P2trMusig2, Scope::External),
-            41 => (OutputScriptType::P2trMusig2, Scope::Internal),
-            360 => (OutputScriptType::P2mr, Scope::External),
-            361 => (OutputScriptType::P2mr, Scope::Internal),
-            _ => return Err(format!("no chain for {}", value)),
-        };
-        Ok(Chain::new(script_type, scope))
-    }
-}
-
-impl FromStr for Chain {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let chain: u32 = u32::from_str(s).map_err(|v| v.to_string())?;
-        Chain::try_from(chain)
     }
 }
 
@@ -286,38 +192,187 @@ impl std::fmt::Display for OutputScriptType {
     }
 }
 
-/// Return derived WalletKeys. All keys are derived with the same path.
-#[allow(dead_code)]
-pub fn derive_xpubs_with_path(
-    xpubs: &XpubTriple,
-    ctx: &crate::bitcoin::secp256k1::Secp256k1<crate::bitcoin::secp256k1::All>,
-    p: DerivationPath,
-) -> XpubTriple {
-    let derived = xpubs
-        .iter()
-        .map(|k| k.derive_pub(ctx, &p).unwrap())
-        .collect::<Vec<_>>();
-    derived.try_into().expect("could not convert vec to array")
+impl OutputScriptType {
+    fn is_network_supported(self, script_support: &OutputScriptSupport) -> bool {
+        match self {
+            Self::P2sh => true,
+            Self::P2shP2wsh | Self::P2wsh => script_support.segwit,
+            Self::P2trLegacy | Self::P2trMusig2 => script_support.taproot,
+            Self::P2mr => script_support.p2mr,
+        }
+    }
+
+    fn is_script_compatible(self, script: &ScriptBuf, has_witness_script: bool) -> bool {
+        match self {
+            Self::P2wsh => script.is_p2wsh(),
+            // Skip plain P2sh only when we know for certain it's P2shP2wsh (witness_script present).
+            // When has_witness_script=false (unknown), try both P2sh and P2shP2wsh.
+            Self::P2sh => script.is_p2sh() && !has_witness_script,
+            Self::P2shP2wsh => script.is_p2sh(),
+            Self::P2trLegacy | Self::P2trMusig2 => script.is_p2tr(),
+            Self::P2mr => true,
+        }
+    }
+
+    /// Try to find which script type the wallet uses for `output_script` at `path`.
+    /// Iterates all known script types; skips types unsupported by the network or
+    /// incompatible with the script shape, then checks by derivation.
+    /// Returns the first matching type, or `None` if none match.
+    pub fn check(
+        wallet_keys: &RootWalletKeys,
+        output_script: &ScriptBuf,
+        has_witness_script: bool,
+        path: &DerivationPath,
+        script_support: &OutputScriptSupport,
+    ) -> Option<Self> {
+        let (chain, index) = path_chain_index(path)?;
+        let derived_keys = wallet_keys
+            .derive_path(&chain_index_path(chain, index))
+            .ok()?;
+        let pub_triple = to_pub_triple(&derived_keys);
+        for &script_type in Self::all() {
+            if !script_type.is_network_supported(script_support) {
+                continue;
+            }
+            if !script_type.is_script_compatible(output_script, has_witness_script) {
+                continue;
+            }
+            if WalletScripts::new(&pub_triple, script_type, script_support)
+                .ok()
+                .is_some_and(|s| s.output_script() == *output_script)
+            {
+                return Some(script_type);
+            }
+        }
+        None
+    }
 }
 
-pub fn derive_xpubs(
-    xpubs: &XpubTriple,
-    ctx: &crate::bitcoin::secp256k1::Secp256k1<crate::bitcoin::secp256k1::All>,
-    chain: Chain,
-    index: u32,
-) -> XpubTriple {
-    let p = DerivationPath::from_str("m/0/0")
-        .unwrap()
-        .child(ChildNumber::Normal {
-            index: chain.value(),
+/// Extract the (chain, index) tail from a derivation path (last two Normal components).
+pub(crate) fn path_chain_index(path: &DerivationPath) -> Option<(u32, u32)> {
+    let children: Vec<ChildNumber> = path.into_iter().cloned().collect();
+    let n = children.len();
+    if n < 2 {
+        return None;
+    }
+    match (children[n - 2], children[n - 1]) {
+        (ChildNumber::Normal { index: chain }, ChildNumber::Normal { index }) => {
+            Some((chain, index))
+        }
+        _ => None,
+    }
+}
+
+/// A wallet output script matched to a derivation path.
+#[derive(Debug, Clone)]
+pub struct WalletOutputScript {
+    pub script_type: OutputScriptType,
+    /// The BIP32 derivation path; last two Normal components are (chain, index).
+    pub derivation_path: DerivationPath,
+}
+
+impl WalletOutputScript {
+    /// Try to match `output_script` at `path` against all script types supported by `network`.
+    /// Returns `None` if no script type produces a match.
+    pub fn from(
+        wallet_keys: &RootWalletKeys,
+        output_script: &ScriptBuf,
+        path: DerivationPath,
+        network: Network,
+    ) -> Option<Self> {
+        let script_type = OutputScriptType::check(
+            wallet_keys,
+            output_script,
+            false,
+            &path,
+            &network.output_script_support(),
+        )?;
+        Some(Self {
+            script_type,
+            derivation_path: path,
         })
-        .child(ChildNumber::Normal { index });
-    derive_xpubs_with_path(xpubs, ctx, p)
+    }
+
+    /// Match `output_script` against wallet keys using PSBT derivation metadata.
+    ///
+    /// Returns `Ok(None)` if the derivation maps are empty or belong to a different wallet,
+    /// `Ok(Some(wos))` if the script matches, `Err` if keys are ours but no script type fits.
+    pub fn from_psbt(
+        wallet_keys: &RootWalletKeys,
+        bip32_derivation: &BTreeMap<Secp256k1PublicKey, (Fingerprint, DerivationPath)>,
+        tap_key_origins: &BTreeMap<
+            XOnlyPublicKey,
+            (Vec<TapLeafHash>, (Fingerprint, DerivationPath)),
+        >,
+        has_witness_script: bool,
+        output_script: &ScriptBuf,
+        network: Network,
+    ) -> Result<Option<Self>, String> {
+        if bip32_derivation.is_empty() && tap_key_origins.is_empty() {
+            return Ok(None);
+        }
+
+        let belongs_to_wallet = if !bip32_derivation.is_empty() {
+            bip32_derivation.values().all(|(fp, _)| {
+                wallet_keys
+                    .xpubs
+                    .iter()
+                    .any(|xpub| xpub.fingerprint() == *fp)
+            })
+        } else {
+            tap_key_origins.values().all(|(_, (fp, _))| {
+                wallet_keys
+                    .xpubs
+                    .iter()
+                    .any(|xpub| xpub.fingerprint() == *fp)
+            })
+        };
+
+        if !belongs_to_wallet {
+            return Ok(None);
+        }
+
+        let path = if !bip32_derivation.is_empty() {
+            bip32_derivation.values().next().map(|(_, path)| path)
+        } else {
+            tap_key_origins.values().next().map(|(_, (_, path))| path)
+        }
+        .ok_or_else(|| "no derivation paths".to_string())?
+        .clone();
+
+        let script_type = OutputScriptType::check(
+            wallet_keys,
+            output_script,
+            has_witness_script,
+            &path,
+            &network.output_script_support(),
+        )
+        .ok_or_else(|| {
+            format!(
+                "wallet keys match but no script type matches actual script {}",
+                output_script
+            )
+        })?;
+
+        Ok(Some(Self {
+            script_type,
+            derivation_path: path,
+        }))
+    }
+}
+
+/// Build a 2-component derivation path `[chain, index]` — the standard form for wallet keys.
+pub(crate) fn chain_index_path(chain: u32, index: u32) -> DerivationPath {
+    DerivationPath::from(vec![
+        ChildNumber::Normal { index: chain },
+        ChildNumber::Normal { index },
+    ])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixed_script_wallet::script_id::{Chain, Scope};
     use crate::fixed_script_wallet::wallet_keys::tests::get_test_wallet_keys;
     use crate::Network;
 
@@ -339,8 +394,8 @@ mod tests {
     fn assert_output_script(keys: &RootWalletKeys, chain: Chain, expected_script: &str) {
         let scripts = WalletScripts::from_wallet_keys(
             keys,
-            chain,
-            0,
+            chain.script_type,
+            &chain_index_path(chain.value(), 0),
             &Network::Bitcoin.output_script_support(),
         )
         .unwrap();
@@ -404,27 +459,17 @@ mod tests {
             p2mr: false,
         };
 
-        use OutputScriptType::*;
-        use Scope::*;
+        use OutputScriptType::{P2sh, P2shP2wsh, P2trLegacy, P2trMusig2, P2wsh};
+        let p = &chain_index_path(0, 0);
 
-        let result = WalletScripts::from_wallet_keys(
-            &keys,
-            Chain::new(P2wsh, External),
-            0,
-            &no_segwit_support,
-        );
+        let result = WalletScripts::from_wallet_keys(&keys, P2wsh, p, &no_segwit_support);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
             .contains("Network does not support segwit"));
 
-        let result = WalletScripts::from_wallet_keys(
-            &keys,
-            Chain::new(P2shP2wsh, External),
-            0,
-            &no_segwit_support,
-        );
+        let result = WalletScripts::from_wallet_keys(&keys, P2shP2wsh, p, &no_segwit_support);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -438,24 +483,14 @@ mod tests {
             p2mr: false,
         };
 
-        let result = WalletScripts::from_wallet_keys(
-            &keys,
-            Chain::new(P2trLegacy, External),
-            0,
-            &no_taproot_support,
-        );
+        let result = WalletScripts::from_wallet_keys(&keys, P2trLegacy, p, &no_taproot_support);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
             .contains("Network does not support taproot"));
 
-        let result = WalletScripts::from_wallet_keys(
-            &keys,
-            Chain::new(P2trMusig2, External),
-            0,
-            &no_taproot_support,
-        );
+        let result = WalletScripts::from_wallet_keys(&keys, P2trMusig2, p, &no_taproot_support);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -463,74 +498,32 @@ mod tests {
             .contains("Network does not support taproot"));
 
         // Test that legacy scripts work regardless of support flags
-        let result = WalletScripts::from_wallet_keys(
-            &keys,
-            Chain::new(P2sh, External),
-            0,
-            &no_segwit_support,
-        );
-        assert!(result.is_ok());
+        assert!(WalletScripts::from_wallet_keys(&keys, P2sh, p, &no_segwit_support).is_ok());
 
         // Test real-world network scenarios
-        // Dogecoin doesn't support segwit or taproot
         let doge_support = Network::Dogecoin.output_script_support();
-        let result =
-            WalletScripts::from_wallet_keys(&keys, Chain::new(P2wsh, External), 0, &doge_support);
+        let result = WalletScripts::from_wallet_keys(&keys, P2wsh, p, &doge_support);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
             .contains("Network does not support segwit"));
 
-        // Litecoin supports segwit but not taproot
         let ltc_support = Network::Litecoin.output_script_support();
-        let result = WalletScripts::from_wallet_keys(
-            &keys,
-            Chain::new(P2trLegacy, External),
-            0,
-            &ltc_support,
-        );
+        let result = WalletScripts::from_wallet_keys(&keys, P2trLegacy, p, &ltc_support);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
             .contains("Network does not support taproot"));
 
-        // Litecoin should support segwit scripts
-        let result =
-            WalletScripts::from_wallet_keys(&keys, Chain::new(P2wsh, External), 0, &ltc_support);
-        assert!(result.is_ok());
+        assert!(WalletScripts::from_wallet_keys(&keys, P2wsh, p, &ltc_support).is_ok());
 
-        // Bitcoin should support all script types
         let btc_support = Network::Bitcoin.output_script_support();
-        assert!(WalletScripts::from_wallet_keys(
-            &keys,
-            Chain::new(P2sh, External),
-            0,
-            &btc_support
-        )
-        .is_ok());
-        assert!(WalletScripts::from_wallet_keys(
-            &keys,
-            Chain::new(P2wsh, External),
-            0,
-            &btc_support
-        )
-        .is_ok());
-        assert!(WalletScripts::from_wallet_keys(
-            &keys,
-            Chain::new(P2trLegacy, External),
-            0,
-            &btc_support
-        )
-        .is_ok());
-        assert!(WalletScripts::from_wallet_keys(
-            &keys,
-            Chain::new(P2trMusig2, External),
-            0,
-            &btc_support
-        )
-        .is_ok());
+        assert!(WalletScripts::from_wallet_keys(&keys, P2sh, p, &btc_support).is_ok());
+        assert!(WalletScripts::from_wallet_keys(&keys, P2wsh, p, &btc_support).is_ok());
+        assert!(WalletScripts::from_wallet_keys(&keys, P2trLegacy, p, &btc_support).is_ok());
+        assert!(WalletScripts::from_wallet_keys(&keys, P2trMusig2, p, &btc_support).is_ok());
     }
 
     #[test]
