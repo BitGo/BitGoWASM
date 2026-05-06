@@ -9,8 +9,8 @@ use wasm_bindgen::JsValue;
 
 use crate::address::networks::AddressFormat;
 use crate::error::WasmUtxoError;
-use crate::fixed_script_wallet::wallet_scripts::{OutputScriptType, Scope};
-use crate::fixed_script_wallet::{Chain, WalletScripts};
+use crate::fixed_script_wallet::wallet_scripts::{chain_index_path, OutputScriptType};
+use crate::fixed_script_wallet::{Chain, Scope, WalletScripts};
 use crate::utxolib_compat::UtxolibNetwork;
 use crate::wasm::bip32::WasmBIP32;
 use crate::wasm::ecpair::WasmECPair;
@@ -51,8 +51,8 @@ impl FixedScriptWalletNamespace {
         let wallet_keys = keys.inner();
         let scripts = WalletScripts::from_wallet_keys(
             wallet_keys,
-            chain,
-            index,
+            chain.script_type,
+            &chain_index_path(chain.value(), index),
             &network.output_script_support(),
         )?;
         Ok(scripts.output_script().to_bytes())
@@ -72,8 +72,8 @@ impl FixedScriptWalletNamespace {
             .map_err(|e| WasmUtxoError::new(&format!("Invalid chain: {}", e)))?;
         let scripts = WalletScripts::from_wallet_keys(
             wallet_keys,
-            chain,
-            index,
+            chain.script_type,
+            &chain_index_path(chain.value(), index),
             &network.output_script_support(),
         )?;
         let script = scripts.output_script();
@@ -102,8 +102,8 @@ impl FixedScriptWalletNamespace {
         let wallet_keys = keys.inner();
         let scripts = WalletScripts::from_wallet_keys(
             wallet_keys,
-            chain,
-            index,
+            chain.script_type,
+            &chain_index_path(chain.value(), index),
             &network.output_script_support(),
         )?;
         Ok(scripts.output_script().to_bytes())
@@ -123,8 +123,8 @@ impl FixedScriptWalletNamespace {
             .map_err(|e| WasmUtxoError::new(&format!("Invalid chain: {}", e)))?;
         let scripts = WalletScripts::from_wallet_keys(
             wallet_keys,
-            chain,
-            index,
+            chain.script_type,
+            &chain_index_path(chain.value(), index),
             &network.output_script_support(),
         )?;
         let script = scripts.output_script();
@@ -764,10 +764,9 @@ impl BitGoPsbt {
         sequence: Option<u32>,
         prev_tx: Option<Vec<u8>>,
     ) -> Result<usize, WasmUtxoError> {
-        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::{
-            ScriptId, SignPath, SignerKey,
-        };
+        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::{SignPath, SignerKey};
         use crate::fixed_script_wallet::bitgo_psbt::WalletInputOptions;
+        use crate::fixed_script_wallet::ScriptId;
         use miniscript::bitcoin::Txid;
         use std::str::FromStr;
 

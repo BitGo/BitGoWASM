@@ -446,7 +446,8 @@ mod tests {
 
     #[test]
     fn test_p2mr_chain_values() {
-        use crate::fixed_script_wallet::wallet_scripts::{Chain, OutputScriptType, Scope};
+        use crate::fixed_script_wallet::script_id::{Chain, Scope};
+        use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
         use std::convert::TryFrom;
 
         // Chain 360: external P2MR

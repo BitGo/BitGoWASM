@@ -332,6 +332,12 @@ impl TryIntoJsValue for SigningKeysMap {
     }
 }
 
+impl TryIntoJsValue for miniscript::bitcoin::bip32::DerivationPath {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        Ok(JsValue::from_str(&self.to_string()))
+    }
+}
+
 impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ScriptId {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
         js_obj!(
@@ -366,7 +372,8 @@ impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedInput {
             "value" => self.value,
             "scriptId" => self.script_id,
             "scriptType" => self.script_type,
-            "sequence" => self.sequence
+            "sequence" => self.sequence,
+            "derivationPath" => self.derivation_path.clone()
         )
     }
 }
@@ -378,7 +385,8 @@ impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedOutput {
             "script" => self.script.clone(),
             "value" => self.value,
             "scriptId" => self.script_id,
-            "paygo" => self.paygo
+            "paygo" => self.paygo,
+            "derivationPath" => self.derivation_path.clone()
         )
     }
 }

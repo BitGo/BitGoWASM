@@ -17,8 +17,11 @@ pub mod zcash_psbt;
 use crate::Network;
 pub use dash_psbt::DashBitGoPsbt;
 use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey, Txid};
-pub use propkv::{find_kv, BitGoKeyValue, ProprietaryKeySubtype, WasmUtxoVersionInfo, BITGO};
-pub use sighash::validate_sighash_type;
+pub use propkv::{
+    find_kv, get_zec_consensus_branch_id, BitGoKeyValue, ProprietaryKeySubtype,
+    WasmUtxoVersionInfo, BITGO,
+};
+pub use sighash::{get_sighash_fork_id, validate_sighash_type};
 pub use zcash_psbt::{
     decode_zcash_transaction_meta, ZcashBitGoPsbt, ZcashTransactionMeta,
     ZCASH_SAPLING_VERSION_GROUP_ID,
@@ -104,15 +107,16 @@ pub enum BitGoPsbt {
 }
 
 // Re-export types from submodules for convenience
+pub use crate::fixed_script_wallet::{ScriptId, ScriptIdWithValue};
 pub use psbt_wallet_input::{
-    InputScriptType, ParsedInput, ReplayProtectionOptions, ScriptId, WalletInputOptions,
+    InputScriptType, ParsedInput, ReplayProtectionOptions, WalletInputOptions,
 };
 pub use psbt_wallet_output::ParsedOutput;
 
 /// Describes a single input for `from_half_signed_legacy_transaction`.
 pub enum HydrationUnspentInput {
     /// A regular wallet input with derivation chain, index, and value.
-    Wallet(psbt_wallet_input::ScriptIdWithValue),
+    Wallet(ScriptIdWithValue),
     /// A P2SH-P2PK replay protection input. The caller provides the expected pubkey so it can be
     /// validated against the redeemScript embedded in the legacy transaction.
     ReplayProtection {
@@ -184,7 +188,7 @@ impl std::error::Error for ParseTransactionError {}
 /// Get the default sighash type for a network and chain type
 fn get_default_sighash_type(
     network: Network,
-    chain: crate::fixed_script_wallet::wallet_scripts::Chain,
+    chain: crate::fixed_script_wallet::Chain,
 ) -> miniscript::bitcoin::psbt::PsbtSighashType {
     use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
     use miniscript::bitcoin::sighash::{EcdsaSighashType, TapSighashType};
@@ -503,7 +507,7 @@ impl BitGoPsbt {
         for (i, (tx_in, unspent)) in tx.input.iter().zip(unspents.iter()).enumerate() {
             match unspent {
                 HydrationUnspentInput::Wallet(sv) => {
-                    let script_id = psbt_wallet_input::ScriptId {
+                    let script_id = ScriptId {
                         chain: sv.chain,
                         index: sv.index,
                     };
@@ -894,11 +898,14 @@ impl BitGoPsbt {
         vout: u32,
         value: u64,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        script_id: psbt_wallet_input::ScriptId,
+        script_id: ScriptId,
         options: WalletInputOptions,
     ) -> Result<(), String> {
         use crate::fixed_script_wallet::to_pub_triple;
-        use crate::fixed_script_wallet::wallet_scripts::{Chain, OutputScriptType, WalletScripts};
+        use crate::fixed_script_wallet::wallet_scripts::{
+            chain_index_path, OutputScriptType, WalletScripts,
+        };
+        use crate::fixed_script_wallet::Chain;
         use miniscript::bitcoin::psbt::Input;
         use miniscript::bitcoin::taproot::{LeafVersion, TapLeafHash};
         use miniscript::bitcoin::{transaction::Sequence, Amount, OutPoint, TxIn, TxOut};
@@ -911,12 +918,12 @@ impl BitGoPsbt {
         let chain_enum = Chain::try_from(chain)?;
 
         let derived_keys = wallet_keys
-            .derive_for_chain_and_index(chain, derivation_index)
+            .derive_path(&chain_index_path(chain, derivation_index))
             .map_err(|e| format!("Failed to derive keys: {}", e))?;
         let pub_triple = to_pub_triple(&derived_keys);
 
         let script_support = network.output_script_support();
-        let scripts = WalletScripts::new(&pub_triple, chain_enum, &script_support)
+        let scripts = WalletScripts::new(&pub_triple, chain_enum.script_type, &script_support)
             .map_err(|e| format!("Failed to create wallet scripts: {}", e))?;
 
         let output_script = scripts.output_script();
@@ -1046,7 +1053,7 @@ impl BitGoPsbt {
         vout: u32,
         value: u64,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        script_id: psbt_wallet_input::ScriptId,
+        script_id: ScriptId,
         options: WalletInputOptions,
     ) -> Result<usize, String> {
         let network = self.network();
@@ -1070,7 +1077,7 @@ impl BitGoPsbt {
         vout: u32,
         value: u64,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        script_id: psbt_wallet_input::ScriptId,
+        script_id: ScriptId,
         options: WalletInputOptions,
     ) -> Result<usize, String> {
         let index = self.psbt().inputs.len();
@@ -1101,8 +1108,10 @@ impl BitGoPsbt {
     ) -> Result<usize, String> {
         use crate::fixed_script_wallet::to_pub_triple;
         use crate::fixed_script_wallet::wallet_scripts::{
-            build_tap_tree_for_output, create_tap_bip32_derivation_for_output, Chain, WalletScripts,
+            build_tap_tree_for_output, chain_index_path, create_tap_bip32_derivation_for_output,
+            WalletScripts,
         };
+        use crate::fixed_script_wallet::Chain;
         use miniscript::bitcoin::psbt::Output;
         use miniscript::bitcoin::{Amount, TxOut};
         use std::convert::TryFrom;
@@ -1113,12 +1122,12 @@ impl BitGoPsbt {
         let chain_enum = Chain::try_from(chain)?;
 
         let derived_keys = wallet_keys
-            .derive_for_chain_and_index(chain, derivation_index)
+            .derive_path(&chain_index_path(chain, derivation_index))
             .map_err(|e| format!("Failed to derive keys: {}", e))?;
         let pub_triple = to_pub_triple(&derived_keys);
 
         let script_support = network.output_script_support();
-        let scripts = WalletScripts::new(&pub_triple, chain_enum, &script_support)
+        let scripts = WalletScripts::new(&pub_triple, chain_enum.script_type, &script_support)
             .map_err(|e| format!("Failed to create wallet scripts: {}", e))?;
 
         let output_script = scripts.output_script();
@@ -2382,15 +2391,6 @@ impl BitGoPsbt {
         Ok(())
     }
 
-    /// Parse inputs with wallet keys and replay protection
-    ///
-    /// # Arguments
-    /// - `wallet_keys`: The wallet's root keys for deriving scripts
-    /// - `replay_protection`: Scripts that are allowed as inputs without wallet validation
-    ///
-    /// # Returns
-    /// - `Ok(Vec<ParsedInput>)` with parsed inputs
-    /// - `Err(ParseTransactionError)` if input parsing fails
     fn parse_inputs(
         &self,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
@@ -3204,6 +3204,7 @@ pub fn to_wallet_keys(
     use crate::fixed_script_wallet::RootWalletKeys;
 
     let inner_psbt = psbt.psbt();
+    let network = psbt.network();
 
     // Collect non-replay-protection inputs (those with derivation info)
     let wallet_inputs: Vec<_> = inner_psbt
@@ -3230,9 +3231,15 @@ pub fn to_wallet_keys(
                 tx_input.previous_output,
             );
             match output_script {
-                Ok((script, _value)) => {
-                    psbt_wallet_input::assert_wallet_input(&wallet_keys, psbt_input, script).is_ok()
-                }
+                Ok((script, _value)) => crate::fixed_script_wallet::WalletOutputScript::from_psbt(
+                    &wallet_keys,
+                    &psbt_input.bip32_derivation,
+                    &psbt_input.tap_key_origins,
+                    psbt_input.witness_script.is_some(),
+                    script,
+                    network,
+                )
+                .is_ok_and(|o| o.is_some()),
                 Err(_) => false,
             }
         });
@@ -3248,6 +3255,7 @@ pub fn to_wallet_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixed_script_wallet::wallet_scripts::chain_index_path;
     use crate::fixed_script_wallet::Chain;
     use crate::fixed_script_wallet::RootWalletKeys;
     use crate::fixed_script_wallet::WalletScripts;
@@ -3604,8 +3612,8 @@ mod tests {
             parse_fixture_paths(input_fixture).expect("Failed to parse fixture paths");
         let scripts = WalletScripts::from_wallet_keys(
             &wallet_keys.to_root_wallet_keys(),
-            chain,
-            index,
+            chain.script_type,
+            &chain_index_path(chain.value(), index),
             &network.output_script_support(),
         )
         .expect("Failed to create wallet scripts");
@@ -4217,7 +4225,7 @@ mod tests {
         format: fixtures::TxFormat,
         script_type: fixtures::ScriptType,
     ) -> Result<(), String> {
-        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ScriptIdWithValue;
+        use crate::fixed_script_wallet::ScriptIdWithValue;
 
         let is_p2ms = matches!(
             script_type,

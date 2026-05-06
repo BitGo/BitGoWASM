@@ -3,8 +3,9 @@
 pub mod fixtures;
 pub mod psbt_compare;
 
+use super::script_id::{Chain, Scope};
 use super::wallet_keys::XpubTriple;
-use super::wallet_scripts::{Chain, OutputScriptType, Scope, WalletScripts};
+use super::wallet_scripts::{chain_index_path, OutputScriptType, WalletScripts};
 use crate::bitcoin::bip32::{DerivationPath, Fingerprint, Xpriv, Xpub};
 use crate::bitcoin::psbt::{Input as PsbtInput, Output as PsbtOutput, Psbt};
 use crate::bitcoin::{Transaction, TxIn, TxOut};
@@ -38,8 +39,11 @@ pub fn create_external_output(seed: &str) -> PsbtOutput {
     let xpubs = get_test_wallet_keys(seed);
     let _scripts = WalletScripts::from_wallet_keys(
         &RootWalletKeys::new(xpubs),
-        Chain::new(OutputScriptType::P2wsh, Scope::External),
-        0,
+        OutputScriptType::P2wsh,
+        &chain_index_path(
+            Chain::new(OutputScriptType::P2wsh, Scope::External).value(),
+            0,
+        ),
         &Network::Bitcoin.output_script_support(),
     )
     .unwrap();

@@ -36,17 +36,23 @@ export type ParsedInput = {
   address: string;
   script: Uint8Array;
   value: bigint;
+  /** Set only when the derivation path is chain-standard (chain code encodes script type per BitGo convention). */
   scriptId: ScriptId | null;
   scriptType: InputScriptType;
   sequence: number;
+  /** Full BIP32 derivation path from the wallet xpub (e.g. "0/1"). Null for replay-protection inputs. */
+  derivationPath: string | null;
 };
 
 export type ParsedOutput = {
   address: string | null;
   script: Uint8Array;
   value: bigint;
+  /** Set only when the derivation path is chain-standard (chain code encodes script type per BitGo convention). */
   scriptId: ScriptId | null;
   paygo: boolean;
+  /** Full BIP32 derivation path from the wallet xpub (e.g. "0/1"). Null for external outputs. */
+  derivationPath: string | null;
 };
 
 export type ParsedTransaction = {

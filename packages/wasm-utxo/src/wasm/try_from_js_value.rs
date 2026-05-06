@@ -242,7 +242,7 @@ impl TryFromJsValue for crate::networks::Network {
 
 impl TryFromJsValue for crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput {
     fn try_from_js_value(item: &JsValue) -> Result<Self, WasmUtxoError> {
-        use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::ScriptIdWithValue;
+        use crate::fixed_script_wallet::ScriptIdWithValue;
 
         // Read 'value' as BigInt (required)
         let value_js = js_sys::Reflect::get(item, &"value".into())
