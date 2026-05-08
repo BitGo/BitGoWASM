@@ -87,7 +87,7 @@
     "lint:fix": "npm run lint:prettier:fix && npm run lint:eslint:fix && npm run lint:rustfmt:fix"
   },
   "devDependencies": {
-    "@bitgo/unspents": "^0.50.13",
+    "@bitgo/unspents": "^0.51.3",
     "@bitgo/utxo-lib": "^10.1.0",
     "@eslint/js": "^9.17.0",
     "@types/mocha": "^10.0.7",
