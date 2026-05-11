@@ -1,7 +1,7 @@
 import * as assert from "assert";
 import * as crypto from "crypto";
 import { Descriptor } from "../js/index.js";
-import { getUnspendableKey } from "../js/testutils/descriptor/descriptors.js";
+import { getDefaultXPubs, getUnspendableKey } from "../js/testutils/descriptor/descriptors.js";
 
 // sBTC protocol uses two taproot script leaves:
 // 1. Deposit leaf: allows the signers to spend with a protocol payload
@@ -152,6 +152,97 @@ describe("sBTC taproot descriptor", function () {
     it("produces correct script pubkey", () => {
       const scriptPubkeyBytes = descriptor.scriptPubkey();
       assert.strictEqual(Buffer.from(scriptPubkeyBytes).toString("hex"), SCRIPT_PUBKEY_HEX);
+    });
+  });
+
+  describe("fromStringDetectType with wildcard xpubs", function () {
+    type GenericKey = { Single: string } | { XPub: string };
+    type DerivableSbtcNode = {
+      Tr: [
+        GenericKey,
+        {
+          Tree: [
+            { Check: { AndV: [{ PayloadDrop: string }, { PkK: GenericKey }] } },
+            {
+              AndV: [
+                { Drop: { Older: { relLockTime: number } } },
+                { MultiA: [number, ...GenericKey[]] },
+              ];
+            },
+          ];
+        },
+      ];
+    };
+
+    const xpubs = getDefaultXPubs();
+    const path = "0/*";
+    const depositLeafDerivable =
+      "c:and_v(payload_drop(" +
+      "0000000000013880051ad206838b7981a116c334e8cb1b950afb73eb54a5" +
+      ")," +
+      `pk_k(${xpubs[0]}/${path})` +
+      ")";
+    const reclaimLeafDerivable =
+      "and_v(r:older(1),multi_a(2," +
+      `${xpubs[0]}/${path},${xpubs[1]}/${path},${xpubs[2]}/${path}` +
+      "))";
+    const derivableDescriptor = Descriptor.fromStringDetectType(
+      getSbtcDescriptor(depositLeafDerivable, reclaimLeafDerivable),
+    );
+
+    it("parses as derivable when keys are xpubs with wildcards", () => {
+      assert.ok(derivableDescriptor);
+      assert.strictEqual(derivableDescriptor.hasWildcard(), true);
+    });
+
+    it("preserves payload_drop and Drop wrapper in derivable node structure", () => {
+      const node = derivableDescriptor.node() as DerivableSbtcNode;
+      const depositLeaf = node.Tr[1].Tree[0];
+      const reclaimLeaf = node.Tr[1].Tree[1];
+
+      assert.strictEqual(
+        depositLeaf.Check.AndV[0].PayloadDrop,
+        "0000000000013880051ad206838b7981a116c334e8cb1b950afb73eb54a5",
+      );
+      assert.strictEqual(reclaimLeaf.AndV[0].Drop.Older.relLockTime, 1);
+      // MultiA serializes as [threshold, ...keys]
+      assert.strictEqual(reclaimLeaf.AndV[1].MultiA[0], 2);
+      assert.strictEqual(reclaimLeaf.AndV[1].MultiA.length, 4);
+    });
+
+    it("derives at a concrete index and produces a P2TR scriptPubkey", () => {
+      const derived = derivableDescriptor.atDerivationIndex(0);
+      assert.strictEqual(derived.hasWildcard(), false);
+      const scriptPubkey = derived.scriptPubkey();
+      // P2TR: OP_1 (0x51) OP_PUSHBYTES_32 (0x20) <32-byte x-only key tweak>
+      assert.strictEqual(scriptPubkey.length, 34);
+      assert.strictEqual(scriptPubkey[0], 0x51);
+      assert.strictEqual(scriptPubkey[1], 0x20);
+    });
+  });
+
+  describe("fromStringDetectType", function () {
+    const detected = Descriptor.fromStringDetectType(getSbtcDescriptor(DEPOSIT_LEAF, RECLAIM_LEAF));
+
+    it("parses sBTC descriptor with payload_drop and r:older", () => {
+      assert.ok(detected, "Descriptor should parse successfully via fromStringDetectType");
+      assert.strictEqual(detected.hasWildcard(), false);
+    });
+
+    it("produces the same script pubkey as fromString", () => {
+      assert.strictEqual(Buffer.from(detected.scriptPubkey()).toString("hex"), SCRIPT_PUBKEY_HEX);
+    });
+
+    it("preserves payload_drop and Drop wrapper in node structure", () => {
+      const node = detected.node() as SbtcDescriptorNode;
+      const depositLeaf = node.Tr[1].Tree[0];
+      const reclaimLeaf = node.Tr[1].Tree[1];
+
+      assert.strictEqual(
+        depositLeaf.Check.AndV[0].PayloadDrop,
+        "0000000000013880051ad206838b7981a116c334e8cb1b950afb73eb54a5",
+      );
+      assert.strictEqual(reclaimLeaf.AndV[0].Drop.Older.relLockTime, 1);
     });
   });
 });
