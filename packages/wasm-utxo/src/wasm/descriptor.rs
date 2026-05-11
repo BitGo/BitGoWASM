@@ -252,8 +252,9 @@ impl WrapDescriptor {
     #[wasm_bindgen(js_name = fromStringDetectType, skip_typescript)]
     pub fn from_string_detect_type(descriptor: &str) -> Result<WrapDescriptor, WasmUtxoError> {
         let secp = Secp256k1::new();
-        let (descriptor, _key_map) = Descriptor::parse_descriptor(&secp, descriptor)
-            .map_err(|_| WasmUtxoError::new("Invalid descriptor"))?;
+        let (descriptor, _key_map) =
+            Descriptor::parse_descriptor_ext(&secp, descriptor, &ExtParams::sane().drop())
+                .map_err(|_| WasmUtxoError::new("Invalid descriptor"))?;
         if descriptor.has_wildcard() {
             WrapDescriptor::from_string_derivable(&secp, &descriptor.to_string())
         } else {
