@@ -14,6 +14,7 @@ export * as inscriptions from "./inscriptions.js";
 export * as message from "./message.js";
 export * as utxolibCompat from "./utxolibCompat.js";
 export * as fixedScriptWallet from "./fixedScriptWallet/index.js";
+export * as silentPayments from "./silentPayments.js";
 export * as descriptorWallet from "./descriptorWallet/index.js";
 export * as bip32 from "./bip32.js";
 export * as ecpair from "./ecpair.js";
