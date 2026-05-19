@@ -114,6 +114,8 @@ function fromUnknown(v: unknown): Node | Node[] {
         return node("multi", value);
       case "MultiA":
         return node("multi_a", value);
+      case "PayloadDrop":
+        return node("payload_drop", value);
 
       case "Tree":
         if (!Array.isArray(value) || value.length !== 2) {

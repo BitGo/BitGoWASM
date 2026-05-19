@@ -46,7 +46,8 @@ type Miniscript =
   | Wrap<{ hash256: string }>
   | Wrap<{ hash160: string }>
   | Wrap<{ older: number }>
-  | Wrap<{ after: number }>;
+  | Wrap<{ after: number }>
+  | Wrap<{ payload_drop: string }>;
 
 type TapTree = [TapTree, TapTree] | Miniscript;
 
