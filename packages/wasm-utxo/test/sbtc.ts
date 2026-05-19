@@ -1,6 +1,7 @@
 import * as assert from "assert";
 import * as crypto from "crypto";
 import { Descriptor } from "../js/index.js";
+import { fromDescriptor, formatNode } from "../js/ast/index.js";
 import { getDefaultXPubs, getUnspendableKey } from "../js/testutils/descriptor/descriptors.js";
 
 // sBTC protocol uses two taproot script leaves:
@@ -243,6 +244,31 @@ describe("sBTC taproot descriptor", function () {
         "0000000000013880051ad206838b7981a116c334e8cb1b950afb73eb54a5",
       );
       assert.strictEqual(reclaimLeaf.AndV[0].Drop.Older.relLockTime, 1);
+    });
+  });
+
+  describe("fromDescriptor (wasm → JS AST)", function () {
+    it("does not throw on a descriptor containing payload_drop", () => {
+      assert.doesNotThrow(() => fromDescriptor(descriptor));
+    });
+
+    it("emits a payload_drop node carrying the original hex payload", () => {
+      const ast = fromDescriptor(descriptor);
+      const formatted = formatNode(ast);
+      assert.ok(
+        formatted.includes(
+          "payload_drop(0000000000013880051ad206838b7981a116c334e8cb1b950afb73eb54a5)",
+        ),
+        `expected payload_drop(<hex>) in formatted AST, got: ${formatted}`,
+      );
+    });
+
+    it("round-trips the reclaim leaf via formatNode", () => {
+      const ast = fromDescriptor(descriptor) as unknown as {
+        tr: [string, [unknown, Parameters<typeof formatNode>[0]]];
+      };
+      const reclaimAst = ast.tr[1][1];
+      assert.strictEqual(formatNode(reclaimAst), RECLAIM_LEAF);
     });
   });
 });
