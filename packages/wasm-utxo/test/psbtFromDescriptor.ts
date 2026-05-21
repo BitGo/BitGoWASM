@@ -3,7 +3,7 @@ import { BIP32Interface, ECPair, ECPairInterface } from "@bitgo/utxo-lib";
 import { getKey } from "@bitgo/utxo-lib/dist/src/testutil";
 
 import { DescriptorNode, formatNode } from "../js/ast/index.js";
-import { mockPsbtDefault } from "./psbtFromDescriptor.util.js";
+import { mockPsbtDefault, PsbtParams } from "./psbtFromDescriptor.util.js";
 import { Descriptor, Transaction } from "../js/index.js";
 import { toWrappedPsbt } from "./psbt.util.js";
 
@@ -38,9 +38,11 @@ function describeSignDescriptor(
   {
     signBip32 = [],
     signECPair = [],
+    psbtParams,
   }: {
     signBip32?: BIP32Interface[][];
     signECPair?: ECPairInterface[][];
+    psbtParams?: Partial<PsbtParams>;
   },
 ) {
   describe(`psbt with descriptor ${name}`, function () {
@@ -51,6 +53,7 @@ function describeSignDescriptor(
         formatNode({ wpkh: toKeyWithPath(external) }),
         "derivable",
       ),
+      params: psbtParams,
     });
 
     function getSigResult(keys: (BIP32Interface | ECPairInterface)[]) {
@@ -155,14 +158,48 @@ describeSignDescriptor(
   { signECPair: [[toECPair(a)]] },
 );
 
+// sBTC taproot: NUMS internal key + deposit leaf (payload_drop + protocol signers key)
+// and reclaim leaf (2-of-3 multi_a behind r:older(1)). Reclaim path is the one signable
+// by user keys; sequence=1 satisfies older(1).
+const SBTC_UNSPENDABLE = "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0";
+const SBTC_SIGNERS_KEY = "c9c2312ca406dcb8eed50b829b5292f5fb3e846db0a556af61cc53834ce75421";
+const SBTC_PAYLOAD_HEX = "0000000000013880051ad206838b7981a116c334e8cb1b950afb73eb54a5";
+const sbtcDescriptorNode: DescriptorNode = {
+  tr: [
+    SBTC_UNSPENDABLE,
+    [
+      { and_v: [{ payload_drop: SBTC_PAYLOAD_HEX }, { pk: SBTC_SIGNERS_KEY }] },
+      {
+        and_v: [
+          { "r:older": 1 },
+          { multi_a: [2, toKeyWithPath(a), toKeyWithPath(b), toKeyWithPath(c)] },
+        ],
+      },
+    ],
+  ],
+};
+
+describeSignDescriptor("P2trSBTC", fromNodes(sbtcDescriptorNode, "derivable"), {
+  signBip32: [
+    [a, b],
+    [b, a],
+  ],
+  psbtParams: { sequence: 1 },
+});
+
 describe("WrapPsbt extractTransaction", function () {
-  function signFinalizeExtract(descriptor: Descriptor, signKeys: BIP32Interface[]) {
+  function signFinalizeExtract(
+    descriptor: Descriptor,
+    signKeys: BIP32Interface[],
+    psbtParams?: Partial<PsbtParams>,
+  ) {
     const psbt = mockPsbtDefault({
       descriptorSelf: descriptor,
       descriptorOther: Descriptor.fromString(
         formatNode({ wpkh: toKeyWithPath(external) }),
         "derivable",
       ),
+      params: psbtParams,
     });
     const wrappedPsbt = toWrappedPsbt(psbt);
     for (const key of signKeys) {
@@ -195,6 +232,17 @@ describe("WrapPsbt extractTransaction", function () {
       ),
       [a],
     );
+
+    assert.strictEqual(typeof tx.getId(), "string");
+    assert.strictEqual(tx.getId().length, 64);
+    assert.ok(tx.getVSize() > 0);
+    assert.ok(tx.toBytes().length > 0);
+  });
+
+  it("should extract transaction from finalized P2trSBTC PSBT", function () {
+    const tx = signFinalizeExtract(fromNodes(sbtcDescriptorNode, "derivable"), [a, b], {
+      sequence: 1,
+    });
 
     assert.strictEqual(typeof tx.getId(), "string");
     assert.strictEqual(tx.getId().length, 64);
