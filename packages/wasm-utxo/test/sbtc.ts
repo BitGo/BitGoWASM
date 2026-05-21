@@ -1,6 +1,6 @@
 import * as assert from "assert";
 import * as crypto from "crypto";
-import { Descriptor } from "../js/index.js";
+import { Descriptor, Miniscript } from "../js/index.js";
 import { fromDescriptor, formatNode } from "../js/ast/index.js";
 import { getDefaultXPubs, getUnspendableKey } from "../js/testutils/descriptor/descriptors.js";
 
@@ -244,6 +244,46 @@ describe("sBTC taproot descriptor", function () {
         "0000000000013880051ad206838b7981a116c334e8cb1b950afb73eb54a5",
       );
       assert.strictEqual(reclaimLeaf.AndV[0].Drop.Older.relLockTime, 1);
+    });
+  });
+
+  describe("Miniscript.fromStringExt / fromBitcoinScriptExt (reclaim leaf)", function () {
+    it("Miniscript.fromString rejects r:older (sanity baseline)", () => {
+      assert.throws(
+        () => Miniscript.fromString(RECLAIM_LEAF, "tap"),
+        /r:older|drop|wrapper|unexpected/i,
+        "expected fromString to reject the drop wrapper",
+      );
+    });
+
+    it("Miniscript.fromStringExt parses the reclaim leaf with drop enabled", () => {
+      const ms = Miniscript.fromStringExt(RECLAIM_LEAF, "tap");
+      assert.ok(ms);
+      assert.strictEqual(ms.toString(), RECLAIM_LEAF);
+    });
+
+    it("Miniscript.fromStringExt accepts an explicit empty config", () => {
+      const ms = Miniscript.fromStringExt(RECLAIM_LEAF, "tap", {});
+      assert.ok(ms);
+      assert.strictEqual(ms.toString(), RECLAIM_LEAF);
+    });
+
+    it("Miniscript.fromStringExt round-trips encode() back to RECLAIM_SCRIPT_HEX", () => {
+      const ms = Miniscript.fromStringExt(RECLAIM_LEAF, "tap");
+      assert.strictEqual(Buffer.from(ms.encode()).toString("hex"), RECLAIM_SCRIPT_HEX);
+    });
+
+    it("Miniscript.fromBitcoinScriptExt decodes RECLAIM_SCRIPT_HEX", () => {
+      const ms = Miniscript.fromBitcoinScriptExt(Buffer.from(RECLAIM_SCRIPT_HEX, "hex"), "tap", {});
+      assert.ok(ms);
+      assert.strictEqual(ms.toString(), RECLAIM_LEAF);
+    });
+
+    it("Miniscript.fromStringExt rejects unknown context_type", () => {
+      assert.throws(
+        () => Miniscript.fromStringExt(RECLAIM_LEAF, "bogus" as never, {}),
+        /Invalid context type/,
+      );
     });
   });
 
