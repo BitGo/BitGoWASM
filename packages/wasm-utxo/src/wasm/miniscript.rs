@@ -1,6 +1,8 @@
 use crate::error::WasmUtxoError;
+use crate::wasm::try_from_js_value::get_field;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use miniscript::bitcoin::{PublicKey, XOnlyPublicKey};
+use miniscript::miniscript::analyzable::ExtParams;
 use miniscript::{bitcoin, Legacy, Miniscript, Segwitv0, Tap};
 use std::fmt;
 use std::str::FromStr;
@@ -86,6 +88,85 @@ impl WrapMiniscript {
             _ => Err(WasmUtxoError::new("Invalid context type")),
         }
     }
+
+    #[wasm_bindgen(js_name = fromStringExt, skip_typescript)]
+    pub fn from_string_ext(
+        script: &str,
+        context_type: &str,
+        ext_params_config: JsValue,
+    ) -> Result<WrapMiniscript, WasmUtxoError> {
+        let params = build_ext_params(&ext_params_config)?;
+        match context_type {
+            "tap" => Ok(WrapMiniscript::from(
+                Miniscript::<XOnlyPublicKey, Tap>::from_str_ext(script, &params)
+                    .map_err(WasmUtxoError::from)?,
+            )),
+            "segwitv0" => Ok(WrapMiniscript::from(
+                Miniscript::<PublicKey, Segwitv0>::from_str_ext(script, &params)
+                    .map_err(WasmUtxoError::from)?,
+            )),
+            "legacy" => Ok(WrapMiniscript::from(
+                Miniscript::<PublicKey, Legacy>::from_str_ext(script, &params)
+                    .map_err(WasmUtxoError::from)?,
+            )),
+            _ => Err(WasmUtxoError::new("Invalid context type")),
+        }
+    }
+
+    #[wasm_bindgen(js_name = fromBitcoinScriptExt, skip_typescript)]
+    pub fn from_bitcoin_script_ext(
+        script: &[u8],
+        context_type: &str,
+        ext_params_config: JsValue,
+    ) -> Result<WrapMiniscript, WasmUtxoError> {
+        let params = build_ext_params(&ext_params_config)?;
+        let script = bitcoin::Script::from_bytes(script);
+        match context_type {
+            "tap" => Ok(WrapMiniscript::from(
+                Miniscript::<XOnlyPublicKey, Tap>::decode_with_ext(script, &params)
+                    .map_err(WasmUtxoError::from)?,
+            )),
+            "segwitv0" => Ok(WrapMiniscript::from(
+                Miniscript::<PublicKey, Segwitv0>::decode_with_ext(script, &params)
+                    .map_err(WasmUtxoError::from)?,
+            )),
+            "legacy" => Ok(WrapMiniscript::from(
+                Miniscript::<PublicKey, Legacy>::decode_with_ext(script, &params)
+                    .map_err(WasmUtxoError::from)?,
+            )),
+            _ => Err(WasmUtxoError::new("Invalid context type")),
+        }
+    }
+}
+
+fn build_ext_params(config: &JsValue) -> Result<ExtParams, WasmUtxoError> {
+    let flag = |key| -> Result<bool, WasmUtxoError> {
+        if config.is_undefined() || config.is_null() {
+            return Ok(false);
+        }
+        Ok(get_field::<Option<bool>>(config, key)?.unwrap_or(false))
+    };
+
+    let mut params = ExtParams::sane().drop();
+    if flag("topUnsafe")? {
+        params = params.top_unsafe();
+    }
+    if flag("resourceLimitations")? {
+        params = params.exceed_resource_limitations();
+    }
+    if flag("timelockMixing")? {
+        params = params.timelock_mixing();
+    }
+    if flag("malleability")? {
+        params = params.malleability();
+    }
+    if flag("repeatedPk")? {
+        params = params.repeated_pk();
+    }
+    if flag("rawPkh")? {
+        params = params.raw_pkh();
+    }
+    Ok(params)
 }
 
 impl From<Miniscript<XOnlyPublicKey, Tap>> for WrapMiniscript {

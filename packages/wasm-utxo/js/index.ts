@@ -74,6 +74,16 @@ declare module "./wasm/wasm_utxo.js" {
   namespace WrapMiniscript {
     function fromString(miniscript: string, ctx: ScriptContext): WrapMiniscript;
     function fromBitcoinScript(script: Uint8Array, ctx: ScriptContext): WrapMiniscript;
+    function fromStringExt(
+      miniscript: string,
+      ctx: ScriptContext,
+      extParams?: ExtParamsConfig,
+    ): WrapMiniscript;
+    function fromBitcoinScriptExt(
+      script: Uint8Array,
+      ctx: ScriptContext,
+      extParams?: ExtParamsConfig,
+    ): WrapMiniscript;
   }
 
   /** BIP32 derivation data from a PSBT */
