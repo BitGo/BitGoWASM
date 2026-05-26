@@ -990,6 +990,18 @@ export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddre
   }
 
   /**
+   * Serialize the unsigned transaction embedded in this PSBT.
+   *
+   * Unlike {@link extractTransaction}, this does NOT require finalization or signatures.
+   * Equivalent to utxo-lib's `UtxoPsbt.getUnsignedTx().toBuffer()`.
+   *
+   * @returns The serialized unsigned transaction bytes (network/consensus encoding).
+   */
+  getUnsignedTransaction(): Uint8Array {
+    return this._wasm.get_unsigned_tx();
+  }
+
+  /**
    * Get all PSBT outputs with resolved address strings
    *
    * Unlike the generic Psbt class which requires a coin parameter,

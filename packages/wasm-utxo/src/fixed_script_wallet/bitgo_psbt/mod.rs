@@ -1426,6 +1426,26 @@ impl BitGoPsbt {
         }
     }
 
+    /// Serialize the unsigned transaction embedded in this PSBT.
+    ///
+    /// Unlike `extract_half_signed_legacy_tx`, this does NOT require signatures or finalization.
+    pub fn get_unsigned_tx_bytes(&self) -> Vec<u8> {
+        use miniscript::bitcoin::consensus::Encodable;
+        match self {
+            BitGoPsbt::BitcoinLike(psbt, _) => {
+                let mut buf = Vec::new();
+                psbt.unsigned_tx
+                    .consensus_encode(&mut buf)
+                    .expect("encoding to vec should not fail");
+                buf
+            }
+            BitGoPsbt::Dash(dash_psbt, _) => dash_psbt.unsigned_tx_bytes.clone(),
+            BitGoPsbt::Zcash(zcash_psbt, _) => zcash_psbt
+                .extract_unsigned_zcash_transaction()
+                .expect("Zcash unsigned tx encoding should not fail"),
+        }
+    }
+
     pub fn into_psbt(self) -> Psbt {
         match self {
             BitGoPsbt::BitcoinLike(psbt, _network) => psbt,

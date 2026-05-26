@@ -1933,6 +1933,13 @@ impl BitGoPsbt {
             .extract_half_signed_legacy_tx()
             .map_err(|e| WasmUtxoError::new(&e))
     }
+
+    /// Serialize the unsigned transaction embedded in this PSBT.
+    ///
+    /// Unlike `extract_transaction()`, this does NOT require finalization or signatures.
+    pub fn get_unsigned_tx(&self) -> Vec<u8> {
+        self.psbt.get_unsigned_tx_bytes()
+    }
 }
 
 impl_wasm_psbt_ops!(BitGoPsbt, psbt);
