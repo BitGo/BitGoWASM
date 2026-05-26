@@ -123,10 +123,10 @@ type WithBip32Derivation = { bip32Derivation?: { path: string }[] };
 type WithTapBip32Derivation = { tapBip32Derivation?: { path: string }[] };
 
 function getDerivationPaths(v: WithBip32Derivation | WithTapBip32Derivation): string[] | undefined {
-  if ("bip32Derivation" in v && v.bip32Derivation) {
+  if ("bip32Derivation" in v && v.bip32Derivation && v.bip32Derivation.length > 0) {
     return v.bip32Derivation.map((v) => v.path);
   }
-  if ("tapBip32Derivation" in v && v.tapBip32Derivation) {
+  if ("tapBip32Derivation" in v && v.tapBip32Derivation && v.tapBip32Derivation.length > 0) {
     return v.tapBip32Derivation.map((v) => v.path).filter((v) => v !== "" && v !== "m");
   }
   return undefined;
