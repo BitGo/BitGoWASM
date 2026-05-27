@@ -70,6 +70,24 @@ describe("descriptorWallet/psbt/findDescriptors", () => {
       assert.strictEqual(result.index, 10);
     });
 
+    it("should find derivable descriptor using tapBip32Derivation when bip32Derivation is empty", () => {
+      const descriptor = Descriptor.fromStringDetectType(derivableDescriptor);
+      const derivedScript = descriptor.atDerivationIndex(7).scriptPubkey();
+
+      const descriptorMap = toDescriptorMap([{ name: "derivable", value: derivableDescriptor }]);
+
+      const input: PsbtInput = {
+        witnessUtxo: { script: derivedScript, value: 100000n },
+        bip32Derivation: [],
+        tapBip32Derivation: [{ path: "m/0/7" }],
+      };
+
+      const result = findDescriptorForInput(input, descriptorMap);
+
+      assert.ok(result);
+      assert.strictEqual(result.index, 7);
+    });
+
     it("should return undefined when no matching descriptor", () => {
       const descriptorMap = toDescriptorMap([{ name: "wpkh", value: wpkhDescriptor }]);
 
