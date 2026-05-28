@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { fixedScriptWallet } from "../../js/index.js";
+import { fixedScriptWallet, isWasmUtxoError } from "../../js/index.js";
 import { BitGoPsbt, InputScriptType } from "../../js/fixedScriptWallet/index.js";
 import type { RootWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
 import type { ECPair } from "../../js/index.js";
@@ -257,8 +257,14 @@ describe("parseTransactionWithWalletKeys", function () {
                   replayProtection: { publicKeys: [replayProtectionKey] },
                 });
               },
-              (error: Error) => {
-                return error.message.includes("wallet validation failed");
+              (error: unknown) => {
+                assert.ok(isWasmUtxoError(error));
+                assert.ok(error.message.includes("wallet validation failed"));
+                assert.strictEqual(
+                  error.code,
+                  "ParseTransactionError.Input/ParseInputError.WalletValidation",
+                );
+                return true;
               },
             );
           });

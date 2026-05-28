@@ -144,6 +144,20 @@ declare module "./wasm/wasm_utxo.js" {
   }
 }
 
+export interface WasmUtxoError extends Error {
+  code: string;
+}
+
+const WASM_UTXO_ERROR_SYMBOL = Symbol.for("@bitgo/wasm-utxo/error");
+
+export function isWasmUtxoError(e: unknown): e is WasmUtxoError {
+  return (
+    e instanceof Error &&
+    typeof (e as { code?: unknown }).code === "string" &&
+    (e as unknown as Record<symbol, unknown>)[WASM_UTXO_ERROR_SYMBOL] === true
+  );
+}
+
 export { WrapDescriptor as Descriptor } from "./wasm/wasm_utxo.js";
 export { WrapMiniscript as Miniscript } from "./wasm/wasm_utxo.js";
 export { Psbt } from "./descriptorWallet/Psbt.js";

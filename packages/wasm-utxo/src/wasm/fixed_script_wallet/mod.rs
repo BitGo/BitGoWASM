@@ -987,7 +987,7 @@ impl BitGoPsbt {
         let parsed_tx = self
             .psbt
             .parse_transaction_with_wallet_keys(wallet_keys, replay_protection, &pubkeys)
-            .map_err(|e| WasmUtxoError::new(&format!("Failed to parse transaction: {}", e)))?;
+            .map_err(WasmUtxoError::from)?;
 
         // Convert to JsValue directly using TryIntoJsValue
         parsed_tx.try_to_js_value()

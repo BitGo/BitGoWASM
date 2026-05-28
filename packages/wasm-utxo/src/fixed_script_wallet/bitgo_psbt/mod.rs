@@ -27,7 +27,7 @@ pub use zcash_psbt::{
     ZCASH_SAPLING_VERSION_GROUP_ID,
 };
 
-#[derive(Debug)]
+#[derive(Debug, strum::IntoStaticStr)]
 pub enum DeserializeError {
     /// Standard bitcoin consensus decoding error
     Consensus(miniscript::bitcoin::consensus::encode::Error),
@@ -48,6 +48,7 @@ impl std::fmt::Display for DeserializeError {
 }
 
 impl std::error::Error for DeserializeError {}
+crate::impl_wasm_error_code!(DeserializeError);
 
 impl From<miniscript::bitcoin::consensus::encode::Error> for DeserializeError {
     fn from(e: miniscript::bitcoin::consensus::encode::Error) -> Self {
@@ -61,7 +62,7 @@ impl From<miniscript::bitcoin::psbt::Error> for DeserializeError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, strum::IntoStaticStr)]
 pub enum SerializeError {
     /// Standard bitcoin consensus encoding error
     Consensus(std::io::Error),
@@ -79,6 +80,7 @@ impl std::fmt::Display for SerializeError {
 }
 
 impl std::error::Error for SerializeError {}
+crate::impl_wasm_error_code!(SerializeError);
 
 impl From<std::io::Error> for SerializeError {
     fn from(e: std::io::Error) -> Self {
@@ -136,7 +138,7 @@ pub struct ParsedTransaction {
 }
 
 /// Error type for transaction parsing
-#[derive(Debug)]
+#[derive(Debug, strum::IntoStaticStr)]
 pub enum ParseTransactionError {
     /// Failed to parse input
     Input {
@@ -184,6 +186,21 @@ impl std::fmt::Display for ParseTransactionError {
 }
 
 impl std::error::Error for ParseTransactionError {}
+
+impl crate::error::WasmErrorCode for ParseTransactionError {
+    fn code(&self) -> String {
+        let variant: &str = self.into();
+        match self {
+            Self::Input { error, .. } => {
+                format!("ParseTransactionError.{}/{}", variant, error.code())
+            }
+            Self::Output { error, .. } => {
+                format!("ParseTransactionError.{}/{}", variant, error.code())
+            }
+            _ => format!("ParseTransactionError.{}", variant),
+        }
+    }
+}
 
 /// Get the default sighash type for a network and chain type
 fn get_default_sighash_type(
