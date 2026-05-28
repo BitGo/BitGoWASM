@@ -49,7 +49,7 @@ pub use networks::{
 use crate::bitcoin::{Script, ScriptBuf};
 use std::fmt;
 
-#[derive(Debug)]
+#[derive(Debug, strum::IntoStaticStr)]
 pub enum AddressError {
     InvalidScript(String),
     InvalidAddress(String),
@@ -75,6 +75,7 @@ impl fmt::Display for AddressError {
 }
 
 impl std::error::Error for AddressError {}
+crate::impl_wasm_error_code!(AddressError);
 
 type Result<T> = std::result::Result<T, AddressError>;
 

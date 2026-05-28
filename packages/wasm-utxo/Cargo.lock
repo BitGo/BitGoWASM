@@ -3203,6 +3203,7 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "strum",
  "wasm-bindgen",
  "wasm-bindgen-test",
  "zebra-chain",

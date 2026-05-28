@@ -69,7 +69,7 @@ impl ParsedOutput {
 }
 
 /// Error type for parsing a single PSBT output
-#[derive(Debug)]
+#[derive(Debug, strum::IntoStaticStr)]
 pub enum ParseOutputError {
     /// Failed to match output to wallet (corruption or validation error)
     WalletMatch(String),
@@ -89,3 +89,4 @@ impl std::fmt::Display for ParseOutputError {
 }
 
 impl std::error::Error for ParseOutputError {}
+crate::impl_wasm_error_code!(ParseOutputError);

@@ -1,4 +1,4 @@
-use crate::error::WasmUtxoError;
+use crate::error::{WasmErrorCode, WasmUtxoError};
 use js_sys::Array;
 use miniscript::bitcoin::hashes::{hash160, ripemd160};
 use miniscript::bitcoin::psbt::{Input, SigningKeys, SigningKeysMap};
@@ -38,7 +38,12 @@ macro_rules! js_arr {
 
 impl From<WasmUtxoError> for JsValue {
     fn from(err: WasmUtxoError) -> Self {
-        js_sys::Error::new(&err.to_string()).into()
+        let code = err.code();
+        let js_err = js_sys::Error::new(&err.to_string());
+        let _ = js_sys::Reflect::set(&js_err, &"code".into(), &code.into());
+        let marker = js_sys::Symbol::for_("@bitgo/wasm-utxo/error");
+        let _ = js_sys::Reflect::set(&js_err, &marker.into(), &JsValue::TRUE);
+        js_err.into()
     }
 }
 

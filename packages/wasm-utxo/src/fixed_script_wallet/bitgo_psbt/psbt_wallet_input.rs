@@ -416,7 +416,7 @@ pub fn parse_shared_chain_and_index(input: &Input) -> Result<(u32, u32), String>
     Ok((chain, index))
 }
 
-#[derive(Debug)]
+#[derive(Debug, strum::IntoStaticStr)]
 pub enum OutputScriptError {
     OutputIndexOutOfBounds { vout: u32 },
     NoUtxoFields,
@@ -436,6 +436,7 @@ impl std::fmt::Display for OutputScriptError {
 }
 
 impl std::error::Error for OutputScriptError {}
+crate::impl_wasm_error_code!(OutputScriptError);
 
 /// Identifies a key in the wallet triple (user, backup, bitgo)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -627,7 +628,7 @@ impl ParsedInput {
 }
 
 /// Error type for parsing a single PSBT input
-#[derive(Debug)]
+#[derive(Debug, strum::IntoStaticStr)]
 pub enum ParseInputError {
     /// Failed to extract output script or value from input
     Utxo(OutputScriptError),
@@ -670,6 +671,17 @@ impl std::fmt::Display for ParseInputError {
 
 impl std::error::Error for ParseInputError {}
 
+impl crate::error::WasmErrorCode for ParseInputError {
+    fn code(&self) -> String {
+        let variant: &str = self.into();
+        match self {
+            Self::Utxo(e) => format!("ParseInputError.{}/{}", variant, e.code()),
+            Self::Address(e) => format!("ParseInputError.{}/{}", variant, e.code()),
+            _ => format!("ParseInputError.{}", variant),
+        }
+    }
+}
+
 /// Get both output script and value from a PSBT input
 pub fn get_output_script_and_value(
     input: &Input,
@@ -697,7 +709,7 @@ fn get_output_script_from_input(
     get_output_script_and_value(input, prevout).map(|(script, _value)| script)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, strum::IntoStaticStr)]
 pub enum InputValidationErrorKind {
     /// Failed to extract output script from input
     InvalidOutputScript(String),
@@ -739,7 +751,15 @@ impl std::fmt::Display for InputValidationError {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+crate::impl_wasm_error_code!(InputValidationErrorKind);
+
+impl crate::error::WasmErrorCode for InputValidationError {
+    fn code(&self) -> String {
+        self.kind.code()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, strum::IntoStaticStr)]
 pub enum PsbtValidationError {
     /// Number of prevouts does not match number of PSBT inputs
     InputLengthMismatch {
@@ -775,6 +795,19 @@ impl std::fmt::Display for PsbtValidationError {
 }
 
 impl std::error::Error for PsbtValidationError {}
+
+impl crate::error::WasmErrorCode for PsbtValidationError {
+    fn code(&self) -> String {
+        let variant: &str = self.into();
+        match self {
+            Self::InvalidInputs(errors) => {
+                let inner = errors.first().map(|e| e.code()).unwrap_or_default();
+                format!("PsbtValidationError.{}/{}", variant, inner)
+            }
+            _ => format!("PsbtValidationError.{}", variant),
+        }
+    }
+}
 
 /// Validates that all inputs in a PSBT belong to the wallet
 pub fn validate_psbt_wallet_inputs(

@@ -71,7 +71,7 @@ pub fn derive_xpub_for_input_tap(
 }
 
 /// Error types for MuSig2 parsing
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, strum::IntoStaticStr)]
 pub enum Musig2Error {
     /// Missing participants
     MissingParticipants,
@@ -143,6 +143,7 @@ impl std::fmt::Display for Musig2Error {
 }
 
 impl std::error::Error for Musig2Error {}
+crate::impl_wasm_error_code!(Musig2Error);
 
 /// MuSig2 participant data
 ///
