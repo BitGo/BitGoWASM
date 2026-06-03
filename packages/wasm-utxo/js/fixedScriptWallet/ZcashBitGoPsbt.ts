@@ -1,4 +1,4 @@
-import { BitGoPsbt as WasmBitGoPsbt } from "../wasm/wasm_utxo.js";
+import { BitGoPsbt as WasmBitGoPsbt, zcash_branch_id_for_height } from "../wasm/wasm_utxo.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
 import { BitGoPsbt, type CreateEmptyOptions, type HydrationUnspent } from "./BitGoPsbt.js";
 import { ZcashTransaction, type ITransaction } from "../transaction.js";
@@ -262,6 +262,22 @@ export class ZcashBitGoPsbt extends BitGoPsbt {
    */
   get expiryHeight(): number {
     return this.wasm.expiry_height();
+  }
+
+  /**
+   * Get the Zcash consensus branch ID stored in the PSBT proprietary map.
+   * Returns undefined for v5 PSBTs or PSBTs without the key.
+   */
+  get consensusBranchId(): number | undefined {
+    return this.wasm.consensus_branch_id();
+  }
+
+  /**
+   * Return the Zcash consensus branch ID active at `height` on `network`.
+   * Returns undefined if `height` is before Overwinter activation.
+   */
+  static branchIdForHeight(network: ZcashNetworkName, height: number): number | undefined {
+    return zcash_branch_id_for_height(network, height);
   }
 
   /**
