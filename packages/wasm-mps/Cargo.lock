@@ -457,8 +457,9 @@ checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
 
 [[package]]
 name = "multi-party-schnorr"
-version = "1.2.0-pre.1"
-source = "git+https://github.com/silence-laboratories/multi-party-schnorr.git?rev=7511971e757a2260afa797283cf239c9cdfd5f19#7511971e757a2260afa797283cf239c9cdfd5f19"
+version = "1.3.0-pre.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ec19b462861fe10a2c01dd2245ab00a47dfe854a73bec120699ef47849921c0"
 dependencies = [
  "bytemuck",
  "ciborium",
@@ -478,6 +479,7 @@ dependencies = [
  "serde_bytes",
  "sha2",
  "signature",
+ "sl-mpc-derive",
  "sl-mpc-mate",
  "thiserror 1.0.69",
  "zeroize",
@@ -717,6 +719,24 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest",
  "rand_core",
+]
+
+[[package]]
+name = "sl-mpc-derive"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c77ad793fb84ed507aa8b9225c5d2c7b8f4db81538a399875d58888d1a0a1966"
+dependencies = [
+ "crypto-bigint",
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "elliptic-curve",
+ "ff",
+ "hmac",
+ "rand",
+ "rand_chacha",
+ "sha2",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
