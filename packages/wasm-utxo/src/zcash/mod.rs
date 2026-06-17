@@ -93,10 +93,7 @@ impl NetworkUpgrade {
                 testnet_activation_height: 3536500,
             },
             // NU6.2: emergency hard fork re-enabling Orchard with the corrected circuit
-            // after GHSA-ghc3-g8w4-whf9. Values match ZcashFoundation/zebra
-            // `network_upgrade.rs` (CONSENSUS_BRANCH_IDS) / `constants::activation_heights`.
-            // Not yet in the pinned zebra-chain 7.0 dependency, so the parity tests below
-            // skip Nu6_2 and it is guarded by `test_nu6_2_constants` until the dep is bumped (T1-3519).
+            // after GHSA-ghc3-g8w4-whf9.
             NetworkUpgrade::Nu6_2 => UpgradeParams {
                 branch_id: 0x5437f330,
                 mainnet_activation_height: 3364600,
@@ -168,22 +165,6 @@ mod tests {
         }
     }
 
-    /// NU6.2 is not yet in the pinned zebra-chain dependency (see T1-3519), so it is
-    /// excluded from the parity tests below. Guard its hardcoded constants here instead.
-    /// Source: ZcashFoundation/zebra network_upgrade.rs + constants::activation_heights.
-    #[test]
-    fn test_nu6_2_constants() {
-        assert_eq!(NetworkUpgrade::Nu6_2.branch_id(), 0x5437f330);
-        assert_eq!(NetworkUpgrade::Nu6_2.mainnet_activation_height(), 3_364_600);
-        assert_eq!(NetworkUpgrade::Nu6_2.testnet_activation_height(), 4_052_000);
-        // Heights at/after activation resolve to NU6.2; the block before stays NU6.1.
-        assert_eq!(branch_id_for_height(3_364_600, true), Some(0x5437f330));
-        assert_eq!(
-            branch_id_for_height(3_364_599, true),
-            Some(NetworkUpgrade::Nu6_1.branch_id())
-        );
-    }
-
     /// Tests that verify our constants match zebra-chain crate.
     /// These tests are exhaustive - they verify ALL upgrades in zebra-chain
     /// and will fail if we're missing any.
@@ -195,11 +176,9 @@ mod tests {
         };
 
         /// Map our NetworkUpgrade to zebra-chain's NetworkUpgrade.
-        /// Returns `None` for upgrades not yet present in the pinned zebra-chain
-        /// dependency (currently NU6.2 — see T1-3519). The match is otherwise exhaustive,
-        /// so a new upgrade added here without a mapping will fail to compile.
-        fn to_zebra_upgrade(upgrade: NetworkUpgrade) -> Option<ZebraNetworkUpgrade> {
-            Some(match upgrade {
+        /// This match is exhaustive — a new upgrade added here without a mapping will fail to compile.
+        fn to_zebra_upgrade(upgrade: NetworkUpgrade) -> ZebraNetworkUpgrade {
+            match upgrade {
                 NetworkUpgrade::Overwinter => ZebraNetworkUpgrade::Overwinter,
                 NetworkUpgrade::Sapling => ZebraNetworkUpgrade::Sapling,
                 NetworkUpgrade::Blossom => ZebraNetworkUpgrade::Blossom,
@@ -208,9 +187,8 @@ mod tests {
                 NetworkUpgrade::Nu5 => ZebraNetworkUpgrade::Nu5,
                 NetworkUpgrade::Nu6 => ZebraNetworkUpgrade::Nu6,
                 NetworkUpgrade::Nu6_1 => ZebraNetworkUpgrade::Nu6_1,
-                // NU6.2 is not in pinned zebra-chain 7.0; validated by test_nu6_2_constants.
-                NetworkUpgrade::Nu6_2 => return None,
-            })
+                NetworkUpgrade::Nu6_2 => ZebraNetworkUpgrade::Nu6_2,
+            }
         }
 
         /// Map zebra-chain's NetworkUpgrade to ours.
@@ -227,6 +205,7 @@ mod tests {
                 ZebraNetworkUpgrade::Nu5 => Some(NetworkUpgrade::Nu5),
                 ZebraNetworkUpgrade::Nu6 => Some(NetworkUpgrade::Nu6),
                 ZebraNetworkUpgrade::Nu6_1 => Some(NetworkUpgrade::Nu6_1),
+                ZebraNetworkUpgrade::Nu6_2 => Some(NetworkUpgrade::Nu6_2),
                 #[cfg(any(test, feature = "zebra-test"))]
                 ZebraNetworkUpgrade::Nu7 => None,
                 #[cfg(zcash_unstable = "zfuture")]
@@ -263,18 +242,15 @@ mod tests {
                 // Verify round-trip (zebra-known upgrades always map back to Some)
                 assert_eq!(
                     to_zebra_upgrade(our_upgrade),
-                    Some(zebra_upgrade),
+                    zebra_upgrade,
                     "Round-trip failed for {:?}",
                     zebra_upgrade
                 );
             }
 
             // Verify every upgrade in our ALL list maps to zebra.
-            // NU6.2 is not yet in the pinned zebra-chain (T1-3519), so it is skipped here.
             for &our_upgrade in NetworkUpgrade::ALL {
-                let Some(zebra_upgrade) = to_zebra_upgrade(our_upgrade) else {
-                    continue;
-                };
+                let zebra_upgrade = to_zebra_upgrade(our_upgrade);
                 assert!(
                     zebra_upgrade.branch_id().is_some(),
                     "{:?} should have a branch ID",
@@ -286,9 +262,7 @@ mod tests {
         #[test]
         fn test_branch_ids_match_zebra() {
             for &upgrade in NetworkUpgrade::ALL {
-                let Some(zebra_upgrade) = to_zebra_upgrade(upgrade) else {
-                    continue; // NU6.2 not in pinned zebra-chain (T1-3519)
-                };
+                let zebra_upgrade = to_zebra_upgrade(upgrade);
                 let expected = zebra_upgrade
                     .branch_id()
                     .map(u32::from)
@@ -309,9 +283,7 @@ mod tests {
         fn test_mainnet_heights_match_zebra() {
             let network = ZebraNetwork::Mainnet;
             for &upgrade in NetworkUpgrade::ALL {
-                let Some(zebra_upgrade) = to_zebra_upgrade(upgrade) else {
-                    continue; // NU6.2 not in pinned zebra-chain (T1-3519)
-                };
+                let zebra_upgrade = to_zebra_upgrade(upgrade);
                 let expected = zebra_upgrade
                     .activation_height(&network)
                     .map(|h| h.0)
@@ -332,9 +304,7 @@ mod tests {
         fn test_testnet_heights_match_zebra() {
             let network = ZebraNetwork::new_default_testnet();
             for &upgrade in NetworkUpgrade::ALL {
-                let Some(zebra_upgrade) = to_zebra_upgrade(upgrade) else {
-                    continue; // NU6.2 not in pinned zebra-chain (T1-3519)
-                };
+                let zebra_upgrade = to_zebra_upgrade(upgrade);
                 let expected = zebra_upgrade
                     .activation_height(&network)
                     .map(|h| h.0)

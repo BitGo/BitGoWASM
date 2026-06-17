@@ -1,8 +1,3 @@
-[advisories]
-# core2 is unmaintained (RUSTSEC-2026-0105) but no safe upgrade is available;
-# it's a transitive dependency of zcash crates (zcash_encoding, zcash_primitives, zebra-chain).
-ignore = [{ id = "RUSTSEC-2026-0105" }]
-
 # Deny multiple versions of dependencies
 [bans]
 multiple-versions = "deny"
