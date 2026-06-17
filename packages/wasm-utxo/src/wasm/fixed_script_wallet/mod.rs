@@ -961,6 +961,17 @@ impl BitGoPsbt {
         }
     }
 
+    /// Get the Zcash consensus branch ID from the PSBT proprietary map (returns None for non-Zcash PSBTs)
+    pub fn consensus_branch_id(&self) -> Option<u32> {
+        use crate::fixed_script_wallet::bitgo_psbt::{
+            propkv::get_zec_consensus_branch_id, BitGoPsbt as InnerBitGoPsbt,
+        };
+        match &self.psbt {
+            InnerBitGoPsbt::Zcash(z, _) => get_zec_consensus_branch_id(&z.psbt),
+            _ => None,
+        }
+    }
+
     pub fn get_outputs_with_address(&self) -> Result<JsValue, WasmUtxoError> {
         crate::wasm::psbt::get_outputs_with_address_from_psbt(self.psbt.psbt(), self.psbt.network())
     }
@@ -1943,3 +1954,23 @@ impl BitGoPsbt {
 }
 
 impl_wasm_psbt_ops!(BitGoPsbt, psbt);
+
+/// Return the Zcash consensus branch ID active at `height` on `network`.
+///
+/// `network`: "zcash" / "zec" for mainnet, "zcashTest" / "tzec" for testnet.
+/// Returns `None` if `height` is before Overwinter activation.
+/// Throws if `network` is not a recognised Zcash network name.
+#[wasm_bindgen]
+pub fn zcash_branch_id_for_height(network: &str, height: u32) -> Result<Option<u32>, JsValue> {
+    let is_mainnet = match network {
+        "zcash" | "zec" => true,
+        "zcashTest" | "tzec" => false,
+        _ => {
+            return Err(JsValue::from_str(&format!(
+            "unknown Zcash network {:?}: expected \"zcash\", \"zec\", \"zcashTest\", or \"tzec\"",
+            network
+        )))
+        }
+    };
+    Ok(crate::zcash::branch_id_for_height(height, is_mainnet))
+}
