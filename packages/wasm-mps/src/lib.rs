@@ -116,6 +116,18 @@ mod mps {
         pub chaincode: [u8; 32],
     }
 
+    fn rem_prefix(prefix: &str, data: &Vec<u8>) -> Result<Vec<u8>, MpsError> {
+        Ok(data
+            .as_slice()
+            .strip_prefix(prefix.as_bytes())
+            .ok_or(MpsError::InvalidInput)?
+            .to_vec())
+    }
+
+    fn add_prefix(prefix: &str, data: &Vec<u8>) -> Vec<u8> {
+        [prefix.as_bytes(), data.as_slice()].concat()
+    }
+
     fn internal_dkg_round0_process<G>(
         party_id: u8,
         decryption_key: &[u8; 32],
@@ -193,7 +205,16 @@ mod mps {
         encryption_keys: &[Vec<u8>; 2],
         seed: &[u8; 32],
     ) -> Result<MsgState, MpsError> {
-        internal_dkg_round0_process::<EdwardsPoint>(party_id, decryption_key, encryption_keys, seed)
+        let result = internal_dkg_round0_process::<EdwardsPoint>(
+            party_id,
+            decryption_key,
+            encryption_keys,
+            seed,
+        )?;
+        Ok(MsgState {
+            msg: add_prefix("mps-ed25519-dkg-round1-message$", &result.msg),
+            state: add_prefix("mps-ed25519-dkg-round1-state$", &result.state),
+        })
     }
 
     fn internal_dkg_round1_process<G>(
@@ -240,7 +261,14 @@ mod mps {
         round1_messages: &[Vec<u8>; 2],
         state: &[u8],
     ) -> Result<MsgState, MpsError> {
-        internal_dkg_round1_process::<EdwardsPoint>(round1_messages, state)
+        let i0_msg1 = rem_prefix("mps-ed25519-dkg-round1-message$", &round1_messages[0])?;
+        let i1_msg1 = rem_prefix("mps-ed25519-dkg-round1-message$", &round1_messages[1])?;
+        let state = rem_prefix("mps-ed25519-dkg-round1-state$", &state.to_vec())?;
+        let result = internal_dkg_round1_process::<EdwardsPoint>(&[i0_msg1, i1_msg1], &state)?;
+        Ok(MsgState {
+            msg: add_prefix("mps-ed25519-dkg-round2-message$", &result.msg),
+            state: add_prefix("mps-ed25519-dkg-round2-state$", &result.state),
+        })
     }
 
     fn internal_dkg_round2_process<G>(
@@ -277,7 +305,10 @@ mod mps {
         round2_messages: &[Vec<u8>; 2],
         state: &[u8],
     ) -> Result<Share, MpsError> {
-        let share = internal_dkg_round2_process::<EdwardsPoint>(round2_messages, state)?;
+        let i0_msg2 = rem_prefix("mps-ed25519-dkg-round2-message$", &round2_messages[0])?;
+        let i1_msg2 = rem_prefix("mps-ed25519-dkg-round2-message$", &round2_messages[1])?;
+        let state = rem_prefix("mps-ed25519-dkg-round2-state$", &state.to_vec())?;
+        let share = internal_dkg_round2_process::<EdwardsPoint>(&[i0_msg2, i1_msg2], &state)?;
         Ok(Share {
             share: bincode::serialize(&share).map_err(|_| MpsError::SerializationError)?,
             pk: share.public_key.compress().to_bytes(),
@@ -328,7 +359,12 @@ mod mps {
             &mut rand::thread_rng(),
         );
 
-        internal_dsg_round0_process(p0)
+        let result = internal_dsg_round0_process(p0)?;
+
+        Ok(MsgState {
+            msg: add_prefix("mps-ed25519-dsg-round1-message$", &result.msg),
+            state: add_prefix("mps-ed25519-dsg-round1-state$", &result.state),
+        })
     }
 
     fn internal_dsg_round1_process<G>(
@@ -373,7 +409,17 @@ mod mps {
         round1_message: &[u8],
         state: &[u8],
     ) -> Result<MsgState, MpsError> {
-        internal_dsg_round1_process::<EdwardsPoint>(round1_message, state)
+        let round1_message =
+            rem_prefix("mps-ed25519-dsg-round1-message$", &round1_message.to_vec())?;
+        let state = rem_prefix("mps-ed25519-dsg-round1-state$", &state.to_vec())?;
+        let result = internal_dsg_round1_process::<EdwardsPoint>(
+            round1_message.as_slice(),
+            state.as_slice(),
+        )?;
+        Ok(MsgState {
+            msg: add_prefix("mps-ed25519-dsg-round2-message$", &result.msg),
+            state: add_prefix("mps-ed25519-dsg-round2-state$", &result.state),
+        })
     }
 
     /// Process round 2 of DSG protocol.
@@ -383,13 +429,18 @@ mod mps {
         round2_message: &[u8],
         state: &[u8],
     ) -> Result<MsgState, MpsError> {
+        // Strip prefix
+        let round2_message =
+            rem_prefix("mps-ed25519-dsg-round2-message$", &round2_message.to_vec())?;
+        let state = rem_prefix("mps-ed25519-dsg-round2-state$", &state.to_vec())?;
+
         // Parse state
         let state: DsgStateR2<EdwardsPoint> =
-            bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
+            bincode::deserialize(&state).map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
         let i0_msg2: SignMsg2<EdwardsPoint> =
-            bincode::deserialize(round2_message).map_err(|_| MpsError::DeserializationError)?;
+            bincode::deserialize(&round2_message).map_err(|_| MpsError::DeserializationError)?;
         let msgs = vec![i0_msg2, state.msg];
 
         // Process all round2 messages together
@@ -408,8 +459,14 @@ mod mps {
         };
 
         Ok(MsgState {
-            msg: bincode::serialize(&msg3).map_err(|_| MpsError::SerializationError)?,
-            state: bincode::serialize(&state).map_err(|_| MpsError::SerializationError)?,
+            msg: add_prefix(
+                "mps-ed25519-dsg-round3-message$",
+                &bincode::serialize(&msg3).map_err(|_| MpsError::SerializationError)?,
+            ),
+            state: add_prefix(
+                "mps-ed25519-dsg-round3-state$",
+                &bincode::serialize(&state).map_err(|_| MpsError::SerializationError)?,
+            ),
         })
     }
 
@@ -420,13 +477,18 @@ mod mps {
         round3_message: &[u8],
         state: &[u8],
     ) -> Result<Vec<u8>, MpsError> {
+        // Strip prefix
+        let round3_message =
+            rem_prefix("mps-ed25519-dsg-round3-message$", &round3_message.to_vec())?;
+        let state = rem_prefix("mps-ed25519-dsg-round3-state$", &state.to_vec())?;
+
         // Parse state
         let state: DsgStateR3<EdwardsPoint> =
-            bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
+            bincode::deserialize(&state).map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
         let i0_msg3: SignMsg3<EdwardsPoint> =
-            bincode::deserialize(round3_message).map_err(|_| MpsError::DeserializationError)?;
+            bincode::deserialize(&round3_message).map_err(|_| MpsError::DeserializationError)?;
         let msgs = vec![i0_msg3, state.msg];
 
         // Process all round2 messages together
