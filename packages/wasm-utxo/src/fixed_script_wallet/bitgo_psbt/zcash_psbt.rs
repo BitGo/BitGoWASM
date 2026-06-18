@@ -204,10 +204,21 @@ impl ZcashBitGoPsbt {
         Ok(hash.to_byte_array())
     }
 
+    /// Deserialize a Zcash PSBT from bytes without requiring the ZecConsensusBranchId
+    /// proprietary key.  Used when combining with a stripped HSM response that may not
+    /// carry the branch ID (the key is only needed for sighash, not for merging sigs).
+    pub(crate) fn deserialize_stripped(
+        bytes: &[u8],
+        network: crate::Network,
+    ) -> Result<Self, super::DeserializeError> {
+        Self::decode_with_zcash_tx(bytes, network, false)
+    }
+
     /// Deserialize the PSBT by converting the Zcash transaction to Bitcoin format first
     fn decode_with_zcash_tx(
         bytes: &[u8],
         network: crate::Network,
+        require_branch_id: bool,
     ) -> Result<Self, super::DeserializeError> {
         let mut r = bytes;
 
@@ -342,7 +353,7 @@ impl ZcashBitGoPsbt {
         let psbt = Psbt::deserialize(&modified_psbt)?;
 
         // Consensus branch ID must be set in the PSBT proprietary map
-        if super::propkv::get_zec_consensus_branch_id(&psbt).is_none() {
+        if require_branch_id && super::propkv::get_zec_consensus_branch_id(&psbt).is_none() {
             return Err(super::DeserializeError::Network(
                 "Missing ZecConsensusBranchId in PSBT proprietary map".to_string(),
             ));
@@ -366,7 +377,7 @@ impl ZcashBitGoPsbt {
         bytes: &[u8],
         network: crate::Network,
     ) -> Result<Self, super::DeserializeError> {
-        Self::decode_with_zcash_tx(bytes, network)
+        Self::decode_with_zcash_tx(bytes, network, true)
     }
 
     /// Convert to a standard Bitcoin PSBT (losing Zcash-specific fields)
