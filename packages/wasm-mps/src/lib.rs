@@ -6,6 +6,7 @@ mod mps {
         common::{
             ser::Serializable,
             traits::{GroupElem, Round, ScalarReduce},
+            Bip32Public,
         },
         curve25519_dalek::EdwardsPoint,
         keygen::{
@@ -318,7 +319,7 @@ mod mps {
             bincode::deserialize(share).map_err(|_| MpsError::DeserializationError)?;
 
         // Create signer party
-        let p0 = SignerParty::<DsgR0, EdwardsPoint>::new(
+        let p0 = SignerParty::<DsgR0, EdwardsPoint>::new_with_format::<_, Bip32Public>(
             Arc::new(keyshare),
             message.to_vec(),
             derivation_path
