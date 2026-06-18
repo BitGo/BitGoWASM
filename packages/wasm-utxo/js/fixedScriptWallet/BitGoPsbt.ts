@@ -932,6 +932,22 @@ export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddre
   }
 
   /**
+   * Merge all input fields from a raw PSBT (bytes) into this PSBT.
+   *
+   * The source bytes are parsed with the underlying bitcoin PSBT deserializer,
+   * bypassing network-specific validation (e.g. ZCash consensusBranchId), so the
+   * source may be a stripped PSBT that lacks those fields.
+   *
+   * Copies per input: partial_sigs, tap_key_sig, tap_script_sigs, proprietary.
+   *
+   * @param otherPsbtBytes - Raw bytes of the PSBT to merge signatures from
+   * @throws Error if PSBT parsing fails or input counts don't match
+   */
+  combineInputs(otherPsbtBytes: Uint8Array): void {
+    this._wasm.combine_inputs(otherPsbtBytes);
+  }
+
+  /**
    * Finalize all inputs in the PSBT
    *
    * @throws Error if any input failed to finalize

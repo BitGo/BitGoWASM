@@ -1300,6 +1300,52 @@ impl BitGoPsbt {
         Ok(())
     }
 
+    /// Merge all input fields from a raw PSBT (given as bytes) into this PSBT.
+    ///
+    /// For Zcash PSBTs the source is parsed with the ZEC-aware deserializer (skipping
+    /// the ZecConsensusBranchId check so that stripped HSM responses are accepted).
+    /// For all other coins the bitcoin PSBT deserializer is used.
+    ///
+    /// Copies per input: partial_sigs, tap_key_sig, tap_script_sigs, proprietary.
+    pub fn combine_inputs(&mut self, other_bytes: &[u8]) -> Result<(), String> {
+        let raw: Psbt = match self {
+            BitGoPsbt::Zcash(_, network) => {
+                ZcashBitGoPsbt::deserialize_stripped(other_bytes, *network)
+                    .map(|z| z.psbt)
+                    .map_err(|e| format!("Failed to parse PSBT: {}", e))?
+            }
+            _ => Psbt::deserialize(other_bytes)
+                .map_err(|e| format!("Failed to parse PSBT: {}", e))?,
+        };
+
+        let dest = self.psbt_mut();
+
+        if raw.inputs.len() != dest.inputs.len() {
+            return Err(format!(
+                "PSBT input count mismatch: source has {}, destination has {}",
+                raw.inputs.len(),
+                dest.inputs.len()
+            ));
+        }
+
+        for (src_in, dest_in) in raw.inputs.iter().zip(dest.inputs.iter_mut()) {
+            for (k, v) in &src_in.partial_sigs {
+                dest_in.partial_sigs.insert(*k, *v);
+            }
+            if let Some(sig) = src_in.tap_key_sig {
+                dest_in.tap_key_sig = Some(sig);
+            }
+            for (k, v) in &src_in.tap_script_sigs {
+                dest_in.tap_script_sigs.insert(*k, *v);
+            }
+            for (k, v) in &src_in.proprietary {
+                dest_in.proprietary.insert(k.clone(), v.clone());
+            }
+        }
+
+        Ok(())
+    }
+
     /// Serialize the PSBT to bytes, using network-specific logic
     pub fn serialize(&self) -> Result<Vec<u8>, SerializeError> {
         match self {

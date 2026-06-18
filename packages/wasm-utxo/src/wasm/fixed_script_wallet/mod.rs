@@ -971,7 +971,6 @@ impl BitGoPsbt {
             _ => None,
         }
     }
-
     pub fn get_outputs_with_address(&self) -> Result<JsValue, WasmUtxoError> {
         crate::wasm::psbt::get_outputs_with_address_from_psbt(self.psbt.psbt(), self.psbt.network())
     }
@@ -1814,6 +1813,20 @@ impl BitGoPsbt {
         self.psbt
             .combine_musig2_nonces(&source_psbt.psbt)
             .map_err(|e| WasmUtxoError::new(&format!("Failed to combine PSBTs: {}", e)))
+    }
+
+    /// Merge all input fields from a raw PSBT (given as bytes) into this PSBT.
+    ///
+    /// The source bytes are parsed with the underlying bitcoin PSBT deserializer,
+    /// bypassing any network-specific validation, so the source may be a partial
+    /// PSBT that lacks fields like ZecConsensusBranchId.
+    ///
+    /// # Errors
+    /// Returns error if PSBT parsing fails or input counts don't match
+    pub fn combine_inputs(&mut self, other_bytes: &[u8]) -> Result<(), WasmUtxoError> {
+        self.psbt
+            .combine_inputs(other_bytes)
+            .map_err(|e| WasmUtxoError::new(&format!("Failed to combine inputs: {}", e)))
     }
 
     /// Finalize all inputs in the PSBT
