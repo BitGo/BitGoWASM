@@ -2,7 +2,7 @@
 import { execSync } from 'child_process';
 import { appendFileSync } from 'fs';
 
-const ALL_PACKAGES = ['wasm-bip32', 'wasm-mps', 'wasm-utxo', 'wasm-solana', 'wasm-dot', 'wasm-ton'];
+const ALL_PACKAGES = ['wasm-bip32', 'wasm-mps', 'wasm-utxo', 'wasm-solana', 'wasm-dot', 'wasm-ton', 'wasm-privacy-coin'];
 
 function setOutput(packages) {
   const value = JSON.stringify(packages);

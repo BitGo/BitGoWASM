@@ -1,0 +1,4 @@
+src/main/resources/wasm/
+target/
+dist/
+.flattened-pom.xml

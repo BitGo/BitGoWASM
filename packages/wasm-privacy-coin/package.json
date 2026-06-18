@@ -1,0 +1,13 @@
+{
+  "name": "@bitgo/wasm-privacy-coin",
+  "version": "0.0.0-semantic-release-managed",
+  "scripts": {
+    "build": "make build",
+    "lint": "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings",
+    "check-fmt": "cargo fmt -- --check",
+    "test": "cargo test --workspace"
+  },
+  "files": [
+    "dist/wasm-privacy-coin.wasm"
+  ]
+}
