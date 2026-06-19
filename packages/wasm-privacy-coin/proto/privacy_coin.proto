@@ -1,0 +1,45 @@
+syntax = "proto3";
+package bitgo.privacy_coin;
+
+option java_package = "com.bitgo.wasm.privacycoin.proto";
+option java_multiple_files = true;
+
+// --- Request messages ---
+
+message FromFrontierRequest {
+  bytes frontier      = 1;  // raw CommitmentTree v0 bytes
+  uint32 block_height = 2;
+}
+
+message AppendCommitmentsRequest {
+  uint32 block_height        = 1;
+  repeated bytes commitments = 2;  // each exactly 32 bytes (cmx)
+  optional bytes expected_root = 3; // 32 bytes; absent = skip verification
+}
+
+message TruncateRequest {
+  uint32 block_height = 1;
+}
+
+// --- Response types ---
+
+message TreeInfo {
+  optional uint32 tip_height       = 1;  // absent if no block appended yet
+  uint64          leaf_count       = 2;
+  uint32          checkpoint_count = 3;
+}
+
+message WasmError {
+  string code    = 1;  // SCREAMING_SNAKE_CASE, e.g. ROOT_MISMATCH
+  string message = 2;
+}
+
+// Generic envelope — every WASM export writes one of these to LAST_RESULT
+message Response {
+  oneof result {
+    bool      ok          = 1;  // void success (ping, from_frontier, from_state, drop_tree)
+    bytes     bytes_value = 2;  // raw bytes success (root hash, persisted state)
+    TreeInfo  info_value  = 3;  // get_info success
+    WasmError error       = 4;  // any failure
+  }
+}

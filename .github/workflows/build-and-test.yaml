@@ -64,6 +64,7 @@ jobs:
             packages/wasm-solana
             packages/wasm-dot
             packages/wasm-ton
+            packages/wasm-privacy-coin
           cache-on-failure: true
 
       - name: Setup Node
@@ -101,6 +102,23 @@ jobs:
       - name: Build packages
         run: npm --workspaces run build
 
+      - name: Setup JDK 17 (for wasm-privacy-coin JAR)
+        uses: actions/setup-java@v4
+        with:
+          distribution: corretto
+          java-version: "17"
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('packages/wasm-privacy-coin/pom.xml') }}
+          restore-keys: ${{ runner.os }}-maven-
+
+      - name: Build wasm-privacy-coin JAR
+        working-directory: packages/wasm-privacy-coin
+        run: make jar
+
       - name: Check Source Code Formatting
         run: npm run check-fmt
 
@@ -121,6 +139,7 @@ jobs:
             packages/wasm-dot/js/wasm/
             packages/wasm-ton/dist/
             packages/wasm-ton/js/wasm/
+            packages/wasm-privacy-coin/dist/
           retention-days: 1
 
       - name: Upload webui artifact
@@ -154,6 +173,9 @@ jobs:
             needs-wasm-pack: false
             has-wasm-pack-tests: false
           - package: wasm-ton
+            needs-wasm-pack: false
+            has-wasm-pack-tests: false
+          - package: wasm-privacy-coin
             needs-wasm-pack: false
             has-wasm-pack-tests: false
     steps:
@@ -202,6 +224,26 @@ jobs:
       - name: Cargo Test
         run: cargo test --workspace
         working-directory: packages/${{ matrix.package }}
+
+      - name: Cache Maven dependencies
+        if: matrix.package == 'wasm-privacy-coin'
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('packages/wasm-privacy-coin/pom.xml') }}
+          restore-keys: ${{ runner.os }}-maven-
+
+      - name: Setup JDK 17 (wasm-privacy-coin Java tests)
+        if: matrix.package == 'wasm-privacy-coin'
+        uses: actions/setup-java@v4
+        with:
+          distribution: corretto
+          java-version: "17"
+
+      - name: Java Test
+        if: matrix.package == 'wasm-privacy-coin'
+        working-directory: packages/wasm-privacy-coin
+        run: make test-java
 
       - name: Wasm-Pack Test (Node)
         if: matrix.has-wasm-pack-tests
