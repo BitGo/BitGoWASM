@@ -23,6 +23,7 @@ jobs:
     permissions:
       id-token: write
       contents: write
+      packages: write
 
     steps:
       - name: Checkout repository
@@ -60,6 +61,12 @@ jobs:
           name: wasm-ton-build
           path: packages/wasm-ton/
 
+      - name: Download wasm-privacy-coin build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-privacy-coin-build
+          path: packages/wasm-privacy-coin/dist/
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -75,8 +82,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Setup JDK 17 (for wasm-privacy-coin Maven deploy)
+        uses: actions/setup-java@v4
+        with:
+          distribution: corretto
+          java-version: "17"
+
       - name: Install dependencies
         run: npm ci --workspaces --include-workspace-root
 
       - name: Release (multi-semantic-release)
         run: npx multi-semantic-release --ignore-private-packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}

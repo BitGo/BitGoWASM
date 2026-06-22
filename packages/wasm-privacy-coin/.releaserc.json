@@ -2,6 +2,18 @@
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
-    ["@semantic-release/github", { "failComment": false }]
+    [
+      "@semantic-release/exec",
+      {
+        "publishCmd": "mvn deploy:deploy-file -Dfile=dist/wasm-privacy-coin.jar -DgroupId=com.bitgo -DartifactId=wasm-privacy-coin -Dversion=${nextRelease.version} -Dpackaging=jar -DrepositoryId=github -Durl=https://maven.pkg.github.com/BitGo/BitGoWASM --settings ../../.github/maven-settings.xml"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "failComment": false,
+        "assets": [{ "path": "dist/wasm-privacy-coin.jar", "label": "wasm-privacy-coin.jar" }]
+      }
+    ]
   ]
 }

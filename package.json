@@ -15,6 +15,8 @@
   },
   "devDependencies": {
     "@semantic-release/commit-analyzer": "^12.0.0",
+    "@semantic-release/exec": "^6.0.0",
+    "@semantic-release/github": "^10.0.0",
     "@semantic-release/npm": "^13.0.0",
     "@semantic-release/release-notes-generator": "^12.0.0",
     "husky": "^9.1.7",
