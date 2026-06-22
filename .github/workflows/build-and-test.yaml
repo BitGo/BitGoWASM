@@ -340,6 +340,14 @@ jobs:
             packages/wasm-ton/dist/
           retention-days: 1
 
+      - name: Upload wasm-privacy-coin build artifacts
+        if: inputs.upload-artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-privacy-coin-build
+          path: packages/wasm-privacy-coin/dist/
+          retention-days: 1
+
   # This job provides a stable "test / Test" status check for branch protection.
   # It runs after all other jobs complete successfully.
   gate:
