@@ -46,7 +46,7 @@
   ],
   "scripts": {
     "test": "npm run test:mocha",
-    "test:mocha": "mocha --recursive test",
+    "test:mocha": "mocha --recursive test --node-option=disable-warning=ExperimentalWarning",
     "build:wasm": "make js/wasm && make dist/esm/js/wasm && make dist/cjs/js/wasm && make dist/web/js/wasm",
     "build:ts-esm": "tsc",
     "build:ts-cjs": "tsc --project tsconfig.cjs.json",
