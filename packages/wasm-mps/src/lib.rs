@@ -189,8 +189,10 @@ mod mps {
         };
 
         Ok(MsgState {
-            msg: bincode::serialize(&msg1).map_err(|_| MpsError::SerializationError)?,
-            state: bincode::serialize(&state).map_err(|_| MpsError::SerializationError)?,
+            msg: bincode::serde::encode_to_vec(msg1, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+            state: bincode::serde::encode_to_vec(&state, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
         })
     }
 
@@ -227,13 +229,23 @@ mod mps {
     {
         // Parse state
         let state: DkgStateR1<G> =
-            bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
+            bincode::serde::decode_from_slice(state, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
-        let i0_msg1: KeygenMsg1 = bincode::deserialize(round1_messages[0].as_slice())
-            .map_err(|_| MpsError::DeserializationError)?;
-        let i1_msg1: KeygenMsg1 = bincode::deserialize(round1_messages[1].as_slice())
-            .map_err(|_| MpsError::DeserializationError)?;
+        let i0_msg1: KeygenMsg1 = bincode::serde::decode_from_slice(
+            round1_messages[0].as_slice(),
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+        let i1_msg1: KeygenMsg1 = bincode::serde::decode_from_slice(
+            round1_messages[1].as_slice(),
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
         let msgs = vec![i0_msg1, i1_msg1, state.msg];
 
         // Process all round0 messages together
@@ -249,8 +261,10 @@ mod mps {
         };
 
         Ok(MsgState {
-            msg: bincode::serialize(&msg2).map_err(|_| MpsError::SerializationError)?,
-            state: bincode::serialize(&state).map_err(|_| MpsError::SerializationError)?,
+            msg: bincode::serde::encode_to_vec(&msg2, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+            state: bincode::serde::encode_to_vec(&state, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
         })
     }
 
@@ -280,14 +294,24 @@ mod mps {
         G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
     {
         // Deserialize round2 messages from other parties
-        let i0_msg2: KeygenMsg2<G> = bincode::deserialize(round2_messages[0].as_slice())
-            .map_err(|_| MpsError::DeserializationError)?;
-        let i1_msg2: KeygenMsg2<G> = bincode::deserialize(round2_messages[1].as_slice())
-            .map_err(|_| MpsError::DeserializationError)?;
+        let i0_msg2: KeygenMsg2<G> = bincode::serde::decode_from_slice(
+            round2_messages[0].as_slice(),
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+        let i1_msg2: KeygenMsg2<G> = bincode::serde::decode_from_slice(
+            round2_messages[1].as_slice(),
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
 
         // Deserialize state
         let state: DkgStateR2<G> =
-            bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
+            bincode::serde::decode_from_slice(state, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
 
         // Generate share
         let share = state
@@ -310,7 +334,8 @@ mod mps {
         let state = rem_prefix("mps-ed25519-dkg-round2-state$", &state.to_vec())?;
         let share = internal_dkg_round2_process::<EdwardsPoint>(&[i0_msg2, i1_msg2], &state)?;
         Ok(Share {
-            share: bincode::serialize(&share).map_err(|_| MpsError::SerializationError)?,
+            share: bincode::serde::encode_to_vec(&share, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
             pk: share.public_key.compress().to_bytes(),
             chaincode: share.root_chain_code,
         })
@@ -331,8 +356,10 @@ mod mps {
         };
 
         Ok(MsgState {
-            msg: bincode::serialize(&msg1).map_err(|_| MpsError::SerializationError)?,
-            state: bincode::serialize(&state).map_err(|_| MpsError::SerializationError)?,
+            msg: bincode::serde::encode_to_vec(&msg1, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+            state: bincode::serde::encode_to_vec(&state, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
         })
     }
 
@@ -347,7 +374,9 @@ mod mps {
     ) -> Result<MsgState, MpsError> {
         // Deserialize share
         let keyshare: Keyshare<EdwardsPoint> =
-            bincode::deserialize(share).map_err(|_| MpsError::DeserializationError)?;
+            bincode::serde::decode_from_slice(share, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
 
         // Create signer party
         let p0 = SignerParty::<DsgR0, EdwardsPoint>::new_with_format::<_, Bip32Public>(
@@ -377,11 +406,15 @@ mod mps {
     {
         // Parse state
         let state: DsgStateR1<G> =
-            bincode::deserialize(state).map_err(|_| MpsError::DeserializationError)?;
+            bincode::serde::decode_from_slice(state, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
         let i0_msg1: SignMsg1 =
-            bincode::deserialize(round1_message).map_err(|_| MpsError::DeserializationError)?;
+            bincode::serde::decode_from_slice(round1_message, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
         let msgs = vec![i0_msg1, state.msg];
 
         // Process all round1 messages together
@@ -397,8 +430,10 @@ mod mps {
         };
 
         Ok(MsgState {
-            msg: bincode::serialize(&msg2).map_err(|_| MpsError::SerializationError)?,
-            state: bincode::serialize(&state).map_err(|_| MpsError::SerializationError)?,
+            msg: bincode::serde::encode_to_vec(&msg2, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+            state: bincode::serde::encode_to_vec(&state, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
         })
     }
 
@@ -436,11 +471,15 @@ mod mps {
 
         // Parse state
         let state: DsgStateR2<EdwardsPoint> =
-            bincode::deserialize(&state).map_err(|_| MpsError::DeserializationError)?;
+            bincode::serde::decode_from_slice(&state, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
         let i0_msg2: SignMsg2<EdwardsPoint> =
-            bincode::deserialize(&round2_message).map_err(|_| MpsError::DeserializationError)?;
+            bincode::serde::decode_from_slice(&round2_message, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
         let msgs = vec![i0_msg2, state.msg];
 
         // Process all round2 messages together
@@ -461,11 +500,13 @@ mod mps {
         Ok(MsgState {
             msg: add_prefix(
                 "mps-ed25519-dsg-round3-message$",
-                &bincode::serialize(&msg3).map_err(|_| MpsError::SerializationError)?,
+                &bincode::serde::encode_to_vec(&msg3, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
             ),
             state: add_prefix(
                 "mps-ed25519-dsg-round3-state$",
-                &bincode::serialize(&state).map_err(|_| MpsError::SerializationError)?,
+                &bincode::serde::encode_to_vec(&state, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
             ),
         })
     }
@@ -484,11 +525,15 @@ mod mps {
 
         // Parse state
         let state: DsgStateR3<EdwardsPoint> =
-            bincode::deserialize(&state).map_err(|_| MpsError::DeserializationError)?;
+            bincode::serde::decode_from_slice(&state, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
 
         // Parse messages
         let i0_msg3: SignMsg3<EdwardsPoint> =
-            bincode::deserialize(&round3_message).map_err(|_| MpsError::DeserializationError)?;
+            bincode::serde::decode_from_slice(&round3_message, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
         let msgs = vec![i0_msg3, state.msg];
 
         // Process all round2 messages together

@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 all = "warn"
 
 [dependencies]
-bincode = "1.3"
+bincode = { version = "2.0.1", features = ["serde"] }
 crypto_box = "0.9"
 getrandom = { version = "0.2", features = ["js"] }
 js-sys = "0.3"
