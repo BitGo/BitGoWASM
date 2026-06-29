@@ -283,10 +283,12 @@ export class ZcashBitGoPsbt extends BitGoPsbt {
   /**
    * Extract the final Zcash transaction from a finalized PSBT
    *
+   * @param maxFeeRate - Optional max fee rate override in base units per 1000
+   *   virtual bytes (sat/kvB). See {@link BitGoPsbt.extractTransaction}.
    * @returns The extracted Zcash transaction instance
    * @throws Error if the PSBT is not fully finalized or extraction fails
    */
-  override extractTransaction(): ZcashTransaction {
-    return ZcashTransaction.fromWasm(this.wasm.extract_zcash_transaction());
+  override extractTransaction(maxFeeRate?: number): ZcashTransaction {
+    return ZcashTransaction.fromWasm(this.wasm.extract_zcash_transaction(maxFeeRate));
   }
 }

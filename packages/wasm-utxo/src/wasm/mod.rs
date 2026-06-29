@@ -4,6 +4,7 @@ mod bip322;
 mod dash_transaction;
 mod descriptor;
 mod ecpair;
+mod fees;
 mod psbt_ops;
 #[macro_use]
 mod psbt;
@@ -27,6 +28,7 @@ pub use bip322::Bip322Namespace;
 pub use dash_transaction::WasmDashTransaction;
 pub use descriptor::WrapDescriptor;
 pub use ecpair::WasmECPair;
+pub use fees::FeesNamespace;
 pub use fixed_script_wallet::{BitGoPsbt, FixedScriptWalletNamespace, WasmDimensions};
 pub use inscriptions::InscriptionsNamespace;
 pub use message::MessageNamespace;

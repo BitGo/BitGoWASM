@@ -13,6 +13,7 @@ export * as bip322 from "./bip322/index.js";
 export * as inscriptions from "./inscriptions.js";
 export * as message from "./message.js";
 export * as utxolibCompat from "./utxolibCompat.js";
+export * as fees from "./fees.js";
 export * as fixedScriptWallet from "./fixedScriptWallet/index.js";
 export * as descriptorWallet from "./descriptorWallet/index.js";
 export * as bip32 from "./bip32.js";

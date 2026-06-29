@@ -14,6 +14,7 @@ pub mod psbt_wallet_output;
 mod sighash;
 pub mod zcash_psbt;
 
+use crate::fees::FeeRateLimit;
 use crate::Network;
 pub use dash_psbt::DashBitGoPsbt;
 use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey, Txid};
@@ -337,6 +338,30 @@ pub(crate) fn make_psbt_with_xpubs(
     }
     psbt.xpub = xpub_map;
     psbt
+}
+
+/// Extract a `Transaction` from a rust-bitcoin `Psbt` applying a `FeeRateLimit`
+/// policy. Shared by the `BitcoinLike` and `Dash` branches (both hold an inner
+/// `Psbt`). `Default` is resolved against `network` before dispatch.
+fn extract_inner_with_fee_rate(
+    psbt: miniscript::bitcoin::psbt::Psbt,
+    limit: FeeRateLimit,
+    network: Network,
+) -> Result<miniscript::bitcoin::Transaction, String> {
+    use miniscript::bitcoin::psbt::ExtractTxError;
+    match limit.resolve(network) {
+        FeeRateLimit::Unlimited => Ok(psbt.extract_tx_unchecked_fee_rate()),
+        FeeRateLimit::Limited(max_fee_rate) => psbt
+            .extract_tx_with_fee_rate_limit(max_fee_rate)
+            .map_err(|e| match e {
+                ExtractTxError::AbsurdFeeRate { .. } => {
+                    format!("Failed to extract transaction: {}", e)
+                }
+                _ => format!("Failed to extract transaction: {}", e),
+            }),
+        // Resolved above; Default is never returned by resolve().
+        FeeRateLimit::Default => unreachable!("FeeRateLimit::Default resolved before dispatch"),
+    }
 }
 
 impl BitGoPsbt {
@@ -1357,10 +1382,11 @@ impl BitGoPsbt {
 
     /// Extract the finalized transaction bytes with network-appropriate serialization
     ///
-    /// This method extracts the fully-signed transaction from a finalized PSBT,
-    /// serializing it with the correct format for the network:
-    /// - For Zcash: includes version_group_id, expiry_height, and sapling fields
-    /// - For other networks: uses standard Bitcoin transaction serialization
+    /// Extract the fully-signed transaction from a finalized PSBT using the
+    /// per-coin default fee-rate limit from the `fees` module.
+    ///
+    /// Equivalent to `extract_tx_with_fee_rate(FeeRateLimit::Default)`. Preserved
+    /// for backward compatibility with existing callers.
     ///
     /// This method consumes the PSBT since the underlying `extract_tx()` requires ownership.
     ///
@@ -1371,48 +1397,94 @@ impl BitGoPsbt {
     /// * `Ok(Vec<u8>)` - The serialized transaction bytes
     /// * `Err(String)` - If transaction extraction fails
     pub fn extract_tx(self) -> Result<Vec<u8>, String> {
+        self.extract_tx_with_fee_rate(FeeRateLimit::Default)
+    }
+
+    /// Extract the fully-signed transaction from a finalized PSBT with an
+    /// explicit fee-rate policy.
+    ///
+    /// `FeeRateLimit::Default` resolves against the PSBT's network using
+    /// `fees::get_max_fee_rate_sat_per_kb` (e.g. DOGE → `Unlimited`, BTC →
+    /// `Limited(1e9 sat/kvB)`). `Unlimited` skips the absurd-fee check via
+    /// `Psbt::extract_tx_unchecked_fee_rate`; `Limited(rate)` enforces the
+    /// given threshold via `Psbt::extract_tx_with_fee_rate_limit`.
+    ///
+    /// This method consumes the PSBT since the underlying `extract_tx()` requires ownership.
+    ///
+    /// # Requirements
+    /// All inputs must be finalized before calling this method.
+    ///
+    /// # Returns
+    /// * `Ok(Vec<u8>)` - The serialized transaction bytes
+    /// * `Err(String)` - If transaction extraction fails (including absurd-fee
+    ///   rejection when a `Limited` policy is enforced)
+    pub fn extract_tx_with_fee_rate(self, limit: FeeRateLimit) -> Result<Vec<u8>, String> {
         use miniscript::bitcoin::consensus::serialize;
 
         match self {
-            BitGoPsbt::Zcash(zcash_psbt, _) => zcash_psbt
-                .extract_tx()
+            BitGoPsbt::Zcash(zcash_psbt, network) => zcash_psbt
+                .extract_tx_with_fee_rate(limit, network)
                 .map_err(|e| format!("Failed to extract transaction: {}", e)),
-            BitGoPsbt::BitcoinLike(psbt, _) | BitGoPsbt::Dash(DashBitGoPsbt { psbt, .. }, _) => {
-                let tx = psbt
-                    .extract_tx()
-                    .map_err(|e| format!("Failed to extract transaction: {}", e))?;
+            BitGoPsbt::BitcoinLike(psbt, network)
+            | BitGoPsbt::Dash(DashBitGoPsbt { psbt, .. }, network) => {
+                let tx = extract_inner_with_fee_rate(psbt, limit, network)?;
                 Ok(serialize(&tx))
             }
         }
     }
 
     /// Extract the Bitcoin transaction directly (for BitcoinLike networks only)
+    /// using the per-coin default fee-rate limit.
     ///
     /// # Returns
     /// * `Ok(Transaction)` - The extracted transaction
     /// * `Err(String)` - If not BitcoinLike or extraction fails
     pub fn extract_bitcoin_tx(self) -> Result<miniscript::bitcoin::Transaction, String> {
+        self.extract_bitcoin_tx_with_fee_rate(FeeRateLimit::Default)
+    }
+
+    /// Extract the Bitcoin transaction directly (for BitcoinLike networks only)
+    /// with an explicit fee-rate policy. See [`extract_tx_with_fee_rate`].
+    ///
+    /// # Returns
+    /// * `Ok(Transaction)` - The extracted transaction
+    /// * `Err(String)` - If not BitcoinLike or extraction fails
+    pub fn extract_bitcoin_tx_with_fee_rate(
+        self,
+        limit: FeeRateLimit,
+    ) -> Result<miniscript::bitcoin::Transaction, String> {
         match self {
-            BitGoPsbt::BitcoinLike(psbt, _) => psbt
-                .extract_tx()
-                .map_err(|e| format!("Failed to extract transaction: {}", e)),
+            BitGoPsbt::BitcoinLike(psbt, network) => {
+                extract_inner_with_fee_rate(psbt, limit, network)
+            }
             _ => Err("extract_bitcoin_tx only supported for BitcoinLike networks".to_string()),
         }
     }
 
-    /// Extract the Dash transaction parts directly
+    /// Extract the Dash transaction parts directly using the per-coin default
+    /// fee-rate limit.
     ///
     /// # Returns
     /// * `Ok(DashTransactionParts)` - The extracted transaction parts
     /// * `Err(String)` - If not Dash or extraction fails
     pub fn extract_dash_tx(self) -> Result<crate::dash::transaction::DashTransactionParts, String> {
+        self.extract_dash_tx_with_fee_rate(FeeRateLimit::Default)
+    }
+
+    /// Extract the Dash transaction parts directly with an explicit fee-rate
+    /// policy. See [`extract_tx_with_fee_rate`].
+    ///
+    /// # Returns
+    /// * `Ok(DashTransactionParts)` - The extracted transaction parts
+    /// * `Err(String)` - If not Dash or extraction fails
+    pub fn extract_dash_tx_with_fee_rate(
+        self,
+        limit: FeeRateLimit,
+    ) -> Result<crate::dash::transaction::DashTransactionParts, String> {
         use miniscript::bitcoin::consensus::serialize;
         match self {
-            BitGoPsbt::Dash(dash_psbt, _) => {
-                let tx = dash_psbt
-                    .psbt
-                    .extract_tx()
-                    .map_err(|e| format!("Failed to extract transaction: {}", e))?;
+            BitGoPsbt::Dash(dash_psbt, network) => {
+                let tx = extract_inner_with_fee_rate(dash_psbt.psbt, limit, network)?;
                 let tx_bytes = serialize(&tx);
                 crate::dash::transaction::decode_dash_transaction_parts(&tx_bytes)
                     .map_err(|e| format!("Failed to decode Dash transaction: {}", e))
@@ -1421,7 +1493,8 @@ impl BitGoPsbt {
         }
     }
 
-    /// Extract the Zcash transaction parts directly
+    /// Extract the Zcash transaction parts directly using the per-coin default
+    /// fee-rate limit.
     ///
     /// # Returns
     /// * `Ok(ZcashTransactionParts)` - The extracted transaction parts
@@ -1429,10 +1502,23 @@ impl BitGoPsbt {
     pub fn extract_zcash_tx(
         self,
     ) -> Result<crate::zcash::transaction::ZcashTransactionParts, String> {
+        self.extract_zcash_tx_with_fee_rate(FeeRateLimit::Default)
+    }
+
+    /// Extract the Zcash transaction parts directly with an explicit fee-rate
+    /// policy. See [`extract_tx_with_fee_rate`].
+    ///
+    /// # Returns
+    /// * `Ok(ZcashTransactionParts)` - The extracted transaction parts
+    /// * `Err(String)` - If not Zcash or extraction fails
+    pub fn extract_zcash_tx_with_fee_rate(
+        self,
+        limit: FeeRateLimit,
+    ) -> Result<crate::zcash::transaction::ZcashTransactionParts, String> {
         match self {
-            BitGoPsbt::Zcash(zcash_psbt, _) => {
+            BitGoPsbt::Zcash(zcash_psbt, network) => {
                 let bytes = zcash_psbt
-                    .extract_tx()
+                    .extract_tx_with_fee_rate(limit, network)
                     .map_err(|e| format!("Failed to extract transaction: {}", e))?;
                 crate::zcash::transaction::decode_zcash_transaction_parts(&bytes)
                     .map_err(|e| format!("Failed to decode Zcash transaction: {}", e))
@@ -5375,6 +5461,134 @@ mod tests {
         let decoded = deserialize::<miniscript::bitcoin::Transaction>(&extracted_bytes)
             .expect("decode extracted tx");
         assert_eq!(decoded.compute_txid(), extracted_tx.compute_txid());
+    }
+
+    /// Build a finalized single-input/single-output PSBT for `network` where the
+    /// fee (`input_value - output_value`) is deliberately absurd by Bitcoin
+    /// standards. Used to exercise the per-coin fee-rate policy on extraction.
+    fn build_finalized_absurd_fee_psbt(
+        network: Network,
+        input_value: u64,
+        output_value: u64,
+    ) -> BitGoPsbt {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use miniscript::bitcoin::bip32::{DerivationPath, Xpriv};
+        use miniscript::bitcoin::hashes::{sha256, Hash};
+        use miniscript::bitcoin::secp256k1::Secp256k1;
+        use miniscript::bitcoin::{Network as BitcoinNetwork, Txid};
+        use std::str::FromStr;
+
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("absurd_fee_seed"));
+        let mut psbt = BitGoPsbt::new(network, &wallet_keys, Some(2), Some(0));
+
+        let txid = Txid::all_zeros();
+        let vout = 0u32;
+        let script_id = ScriptId { chain: 0, index: 0 };
+        psbt.add_wallet_input(
+            txid,
+            vout,
+            input_value,
+            &wallet_keys,
+            script_id,
+            crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::WalletInputOptions::default(
+            ),
+        )
+        .expect("add_wallet_input");
+        psbt.add_wallet_output(0, 0, output_value, &wallet_keys)
+            .expect("add_wallet_output");
+
+        let secp = Secp256k1::new();
+        let seed = "absurd_fee_seed";
+        let user_seed_hash = sha256::Hash::hash(format!("{}.0", seed).as_bytes()).to_byte_array();
+        let bitgo_seed_hash = sha256::Hash::hash(format!("{}.2", seed).as_bytes()).to_byte_array();
+        let user_xpriv =
+            Xpriv::new_master(BitcoinNetwork::Testnet, &user_seed_hash).expect("user xpriv");
+        let bitgo_xpriv =
+            Xpriv::new_master(BitcoinNetwork::Testnet, &bitgo_seed_hash).expect("bitgo xpriv");
+        let user_path = DerivationPath::from_str("m/0/0/0/0").expect("derivation path");
+        let user_privkey = user_xpriv
+            .derive_priv(&secp, &user_path)
+            .expect("derive user xpriv")
+            .private_key;
+        let bitgo_privkey = bitgo_xpriv
+            .derive_priv(&secp, &user_path)
+            .expect("derive bitgo xpriv")
+            .private_key;
+
+        psbt.sign_with_privkey(0, &user_privkey)
+            .expect("sign_with_privkey");
+        psbt.sign_with_privkey(0, &bitgo_privkey)
+            .expect("sign_with_privkey (bitgo)");
+
+        psbt.finalize_mut(&secp).expect("finalize");
+        psbt
+    }
+
+    /// Regression for the tDOGE "absurdly high fee rate" extract failures: DOGE
+    /// fees in base units routinely exceed rust-bitcoin's BTC-calibrated
+    /// `DEFAULT_MAX_FEE_RATE` (25_000 sat/vB), so the per-coin default for DOGE
+    /// must be `Unlimited`. A finalized DOGE PSBT with an absurd fee must
+    /// extract successfully via the default `extract_tx()`.
+    #[test]
+    fn test_extract_tx_dogecoin_absurd_fee_default_succeeds() {
+        // input 1e19 sat, output 1 sat → fee ≈ 1e19 sat over a ~200 vB tx,
+        // far above BTC's 25_000 sat/vB threshold.
+        let psbt = build_finalized_absurd_fee_psbt(Network::Dogecoin, 1_000_000_000_000_000_000, 1);
+        let bytes = psbt
+            .extract_tx()
+            .expect("DOGE absurd-fee PSBT must extract under per-coin default (unlimited)");
+        assert!(!bytes.is_empty());
+    }
+
+    /// BTC must still reject an absurd fee under its per-coin default
+    /// (`1_000_000_000 sat/kvB = 1_000_000 sat/vB`). A fee of ~1e19 sat is
+    /// many orders of magnitude above that threshold.
+    #[test]
+    fn test_extract_tx_bitcoin_absurd_fee_default_rejects() {
+        let psbt = build_finalized_absurd_fee_psbt(Network::Bitcoin, 1_000_000_000_000_000_000, 1);
+        let err = psbt
+            .extract_tx()
+            .expect_err("BTC absurd-fee PSBT must be rejected under per-coin default");
+        assert!(
+            err.to_lowercase().contains("fee"),
+            "expected fee-related error, got: {err}"
+        );
+    }
+
+    /// An explicit `Unlimited` override must skip the absurd-fee check even for
+    /// BTC (mirrors DOGE's per-coin default and the JS `Infinity` override).
+    #[test]
+    fn test_extract_tx_bitcoin_absurd_fee_unlimited_succeeds() {
+        let psbt = build_finalized_absurd_fee_psbt(Network::Bitcoin, 1_000_000_000_000_000_000, 1);
+        let bytes = psbt
+            .extract_tx_with_fee_rate(crate::fees::FeeRateLimit::Unlimited)
+            .expect("Unlimited override must skip the absurd-fee check");
+        assert!(!bytes.is_empty());
+    }
+
+    /// An explicit low `Limited` override must reject an absurd-fee BTC PSBT.
+    #[test]
+    fn test_extract_tx_bitcoin_absurd_fee_low_limit_rejects() {
+        let psbt = build_finalized_absurd_fee_psbt(Network::Bitcoin, 1_000_000_000_000_000_000, 1);
+        let err = psbt
+            .extract_tx_with_fee_rate(crate::fees::FeeRateLimit::from_sat_per_vb(1))
+            .expect_err("low limit must reject absurd-fee PSBT");
+        assert!(
+            err.to_lowercase().contains("fee"),
+            "expected fee-related error, got: {err}"
+        );
+    }
+
+    /// A normal-fee BTC PSBT must extract under the per-coin default.
+    #[test]
+    fn test_extract_tx_bitcoin_normal_fee_default_succeeds() {
+        // 1 BTC in, 0.999 BTC out → 0.001 BTC fee = 100_000 sat over ~200 vB
+        // ≈ 500 sat/vB, well under the 1_000_000 sat/vB default.
+        let psbt = build_finalized_absurd_fee_psbt(Network::Bitcoin, 100_000_000, 99_900_000);
+        let bytes = psbt
+            .extract_tx()
+            .expect("normal-fee BTC PSBT must extract under default");
+        assert!(!bytes.is_empty());
     }
 
     #[test]

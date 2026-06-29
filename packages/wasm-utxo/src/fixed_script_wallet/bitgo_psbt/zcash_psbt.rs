@@ -154,13 +154,29 @@ impl ZcashBitGoPsbt {
         self.serialize_as_zcash_transaction(&self.psbt.unsigned_tx)
     }
 
-    /// Extract the finalized Zcash transaction bytes from the PSBT
+    /// Extract the finalized Zcash transaction bytes from the PSBT using the
+    /// per-coin default fee-rate limit.
     ///
-    /// This extracts the fully-signed transaction with Zcash-specific fields.
-    /// Must be called after all inputs have been finalized.
-    ///
-    /// This method consumes the PSBT to avoid cloning.
+    /// Equivalent to `extract_tx_with_fee_rate(FeeRateLimit::Default, network)`.
     pub fn extract_tx(self) -> Result<Vec<u8>, super::DeserializeError> {
+        let network = self.network;
+        self.extract_tx_with_fee_rate(crate::fees::FeeRateLimit::Default, network)
+    }
+
+    /// Extract the finalized Zcash transaction bytes from the PSBT with an
+    /// explicit fee-rate policy.
+    ///
+    /// `FeeRateLimit::Default` resolves against `network` via
+    /// `fees::get_max_fee_rate_sat_per_kb`. `Unlimited` skips the absurd-fee
+    /// check (`extract_tx_unchecked_fee_rate`); `Limited(rate)` enforces it
+    /// (`extract_tx_with_fee_rate_limit`).
+    ///
+    /// Must be called after all inputs have been finalized. Consumes the PSBT.
+    pub fn extract_tx_with_fee_rate(
+        self,
+        limit: crate::fees::FeeRateLimit,
+        network: crate::Network,
+    ) -> Result<Vec<u8>, super::DeserializeError> {
         use miniscript::bitcoin::psbt::ExtractTxError;
 
         // Capture Zcash-specific fields before consuming psbt
@@ -170,18 +186,32 @@ impl ZcashBitGoPsbt {
         let expiry_height = self.expiry_height.unwrap_or(0);
         let sapling_fields = self.sapling_fields;
 
-        let tx = self.psbt.extract_tx().map_err(|e| match e {
-            ExtractTxError::AbsurdFeeRate { .. } => {
-                super::DeserializeError::Network(format!("Absurd fee rate: {}", e))
+        let resolved = limit.resolve(network);
+        let tx = match resolved {
+            crate::fees::FeeRateLimit::Unlimited => self.psbt.extract_tx_unchecked_fee_rate(),
+            crate::fees::FeeRateLimit::Limited(max_fee_rate) => self
+                .psbt
+                .extract_tx_with_fee_rate_limit(max_fee_rate)
+                .map_err(|e| match e {
+                    ExtractTxError::AbsurdFeeRate { .. } => {
+                        super::DeserializeError::Network(format!("Absurd fee rate: {}", e))
+                    }
+                    ExtractTxError::MissingInputValue { .. } => {
+                        super::DeserializeError::Network(format!("Missing input value: {}", e))
+                    }
+                    ExtractTxError::SendingTooMuch { .. } => {
+                        super::DeserializeError::Network(format!("Sending too much: {}", e))
+                    }
+                    _ => super::DeserializeError::Network(format!(
+                        "Failed to extract transaction: {}",
+                        e
+                    )),
+                })?,
+            // Resolved above.
+            crate::fees::FeeRateLimit::Default => {
+                unreachable!("FeeRateLimit::Default resolved before dispatch")
             }
-            ExtractTxError::MissingInputValue { .. } => {
-                super::DeserializeError::Network(format!("Missing input value: {}", e))
-            }
-            ExtractTxError::SendingTooMuch { .. } => {
-                super::DeserializeError::Network(format!("Sending too much: {}", e))
-            }
-            _ => super::DeserializeError::Network(format!("Failed to extract transaction: {}", e)),
-        })?;
+        };
 
         let parts = crate::zcash::transaction::ZcashTransactionParts {
             transaction: tx,

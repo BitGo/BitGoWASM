@@ -1854,17 +1854,26 @@ impl BitGoPsbt {
     /// It extracts the fully signed transaction as a WASM transaction instance
     /// appropriate for the network (WasmTransaction, WasmDashTransaction, or WasmZcashTransaction).
     ///
+    /// # Fee-rate policy
+    /// - `max_fee_rate` omitted/`null` → use the per-coin default from the `fees`
+    ///   module (e.g. DOGE → unlimited, BTC → 1e9 sat/kvB).
+    /// - `max_fee_rate = Infinity` → skip the absurd-fee check entirely.
+    /// - `max_fee_rate = <finite>` → reject if the extracted fee rate exceeds
+    ///   `<max_fee_rate>` sat/kvB.
+    ///
     /// # Returns
     /// - `Ok(JsValue)` containing the WASM transaction instance
     /// - `Err(WasmUtxoError)` if the PSBT is not fully finalized or extraction fails
-    pub fn extract_transaction(&self) -> Result<JsValue, WasmUtxoError> {
+    pub fn extract_transaction(&self, max_fee_rate: Option<f64>) -> Result<JsValue, WasmUtxoError> {
         use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt as InnerBitGoPsbt;
+        let network = self.psbt.network();
+        let limit = crate::wasm::fees::fee_rate_limit_from_js(max_fee_rate, network);
         match &self.psbt {
             InnerBitGoPsbt::BitcoinLike(..) => {
                 let tx = self
                     .psbt
                     .clone()
-                    .extract_bitcoin_tx()
+                    .extract_bitcoin_tx_with_fee_rate(limit)
                     .map_err(|e| WasmUtxoError::new(&e))?;
                 Ok(crate::wasm::transaction::WasmTransaction::from_tx(tx).into())
             }
@@ -1872,7 +1881,7 @@ impl BitGoPsbt {
                 let parts = self
                     .psbt
                     .clone()
-                    .extract_dash_tx()
+                    .extract_dash_tx_with_fee_rate(limit)
                     .map_err(|e| WasmUtxoError::new(&e))?;
                 Ok(crate::wasm::dash_transaction::WasmDashTransaction::from_parts(parts).into())
             }
@@ -1880,7 +1889,7 @@ impl BitGoPsbt {
                 let parts = self
                     .psbt
                     .clone()
-                    .extract_zcash_tx()
+                    .extract_zcash_tx_with_fee_rate(limit)
                     .map_err(|e| WasmUtxoError::new(&e))?;
                 Ok(crate::wasm::transaction::WasmZcashTransaction::from_parts(parts).into())
             }
@@ -1891,13 +1900,18 @@ impl BitGoPsbt {
     ///
     /// This avoids re-parsing bytes by returning the transaction directly.
     /// Only valid for Bitcoin-like networks (not Dash or Zcash).
+    ///
+    /// See [`extract_transaction`] for the `max_fee_rate` policy.
     pub fn extract_bitcoin_transaction(
         &self,
+        max_fee_rate: Option<f64>,
     ) -> Result<crate::wasm::transaction::WasmTransaction, WasmUtxoError> {
+        let network = self.psbt.network();
+        let limit = crate::wasm::fees::fee_rate_limit_from_js(max_fee_rate, network);
         let tx = self
             .psbt
             .clone()
-            .extract_bitcoin_tx()
+            .extract_bitcoin_tx_with_fee_rate(limit)
             .map_err(|e| WasmUtxoError::new(&e))?;
         Ok(crate::wasm::transaction::WasmTransaction::from_tx(tx))
     }
@@ -1906,13 +1920,18 @@ impl BitGoPsbt {
     ///
     /// This avoids re-parsing bytes by returning the transaction directly.
     /// Only valid for Dash networks.
+    ///
+    /// See [`extract_transaction`] for the `max_fee_rate` policy.
     pub fn extract_dash_transaction(
         &self,
+        max_fee_rate: Option<f64>,
     ) -> Result<crate::wasm::dash_transaction::WasmDashTransaction, WasmUtxoError> {
+        let network = self.psbt.network();
+        let limit = crate::wasm::fees::fee_rate_limit_from_js(max_fee_rate, network);
         let parts = self
             .psbt
             .clone()
-            .extract_dash_tx()
+            .extract_dash_tx_with_fee_rate(limit)
             .map_err(|e| WasmUtxoError::new(&e))?;
         Ok(crate::wasm::dash_transaction::WasmDashTransaction::from_parts(parts))
     }
@@ -1921,13 +1940,18 @@ impl BitGoPsbt {
     ///
     /// This avoids re-parsing bytes by returning the transaction directly.
     /// Only valid for Zcash networks.
+    ///
+    /// See [`extract_transaction`] for the `max_fee_rate` policy.
     pub fn extract_zcash_transaction(
         &self,
+        max_fee_rate: Option<f64>,
     ) -> Result<crate::wasm::transaction::WasmZcashTransaction, WasmUtxoError> {
+        let network = self.psbt.network();
+        let limit = crate::wasm::fees::fee_rate_limit_from_js(max_fee_rate, network);
         let parts = self
             .psbt
             .clone()
-            .extract_zcash_tx()
+            .extract_zcash_tx_with_fee_rate(limit)
             .map_err(|e| WasmUtxoError::new(&e))?;
         Ok(crate::wasm::transaction::WasmZcashTransaction::from_parts(
             parts,
