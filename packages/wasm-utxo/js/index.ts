@@ -28,6 +28,7 @@ export function getWasmUtxoVersion(): WasmUtxoVersionInfo {
 }
 
 export { type CoinName, getMainnet, isMainnet, isTestnet, isCoinName } from "./coinName.js";
+export { requiresPrevTxForP2sh } from "./fixedScriptWallet/prevTx.js";
 export type { Triple } from "./triple.js";
 export type { AddressFormat } from "./address.js";
 export type { TapLeafScript, PreparedInscriptionRevealData } from "./inscriptions.js";
