@@ -959,12 +959,15 @@ export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddre
   /**
    * Extract the final transaction from a finalized PSBT
    *
+   * @param maxFeeRate Optional maximum fee rate in **sat/vB**. `Infinity` skips
+   *   the absurd-fee check; `undefined` uses rust-bitcoin's default check.
+   *   Callers holding sat/kB thresholds must divide by 1000 before passing.
    * @returns The extracted transaction instance
    * @throws Error if the PSBT is not fully finalized or extraction fails
    */
-  extractTransaction(): ITransaction {
+  extractTransaction(maxFeeRate?: number): ITransaction {
     const networkType = this._wasm.get_network_type();
-    const wasm: unknown = this._wasm.extract_transaction();
+    const wasm: unknown = this._wasm.extract_transaction(maxFeeRate);
 
     switch (networkType) {
       case "dash":

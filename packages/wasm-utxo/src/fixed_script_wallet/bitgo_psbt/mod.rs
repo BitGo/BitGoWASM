@@ -16,7 +16,7 @@ pub mod zcash_psbt;
 
 use crate::Network;
 pub use dash_psbt::DashBitGoPsbt;
-use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey, Txid};
+use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey, FeeRate, Txid};
 pub use propkv::{
     find_kv, get_zec_consensus_branch_id, BitGoKeyValue, ProprietaryKeySubtype,
     WasmUtxoVersionInfo, BITGO,
@@ -337,6 +337,45 @@ pub(crate) fn make_psbt_with_xpubs(
     }
     psbt.xpub = xpub_map;
     psbt
+}
+
+/// Fee-rate policy applied during PSBT extraction.
+///
+/// Controls how rust-bitcoin's absurd-fee-rate guard behaves when extracting a
+/// finalized transaction. This is pure plumbing — it carries no per-coin
+/// policy; callers that want a coin-aware default must resolve it themselves
+/// and pass [`ExtractFeePolicy::Limited`] or [`ExtractFeePolicy::Unchecked`].
+///
+/// All fee rates here are in **sat/vB** (rust-bitcoin's `FeeRate` unit). The
+/// wasm/JS boundary also uses **sat/vB**; callers holding sat/kB thresholds
+/// must convert (÷ 1000) before calling. See `fee_policy_from_js`.
+#[derive(Debug, Clone, Copy)]
+pub enum ExtractFeePolicy {
+    /// Use rust-bitcoin's stock absurd-fee-rate check (`Psbt::extract_tx`).
+    Default,
+    /// Skip the absurd-fee-rate check entirely (`Psbt::extract_tx_unchecked_fee_rate`).
+    Unchecked,
+    /// Enforce a maximum fee rate in **sat/vB**
+    /// (`Psbt::extract_tx_with_fee_rate_limit`).
+    Limited(FeeRate),
+}
+
+/// Extract a `Transaction` from a rust-bitcoin `Psbt` applying an
+/// [`ExtractFeePolicy`]. Shared by the `BitcoinLike` and `Dash` branches,
+/// which both hold an inner `Psbt`.
+fn extract_inner_with_fee_policy(
+    psbt: Psbt,
+    policy: ExtractFeePolicy,
+) -> Result<miniscript::bitcoin::Transaction, String> {
+    match policy {
+        ExtractFeePolicy::Default => psbt
+            .extract_tx()
+            .map_err(|e| format!("Failed to extract transaction: {}", e)),
+        ExtractFeePolicy::Unchecked => Ok(psbt.extract_tx_unchecked_fee_rate()),
+        ExtractFeePolicy::Limited(max_fee_rate_sat_per_vb) => psbt
+            .extract_tx_with_fee_rate_limit(max_fee_rate_sat_per_vb)
+            .map_err(|e| format!("Failed to extract transaction: {}", e)),
+    }
 }
 
 impl BitGoPsbt {
@@ -1371,16 +1410,30 @@ impl BitGoPsbt {
     /// * `Ok(Vec<u8>)` - The serialized transaction bytes
     /// * `Err(String)` - If transaction extraction fails
     pub fn extract_tx(self) -> Result<Vec<u8>, String> {
+        self.extract_tx_with_fee_policy(ExtractFeePolicy::Default)
+    }
+
+    /// Extract the fully-signed transaction from a finalized PSBT with an
+    /// explicit fee-rate [`policy`][ExtractFeePolicy].
+    ///
+    /// This method consumes the PSBT since the underlying `extract_tx()` requires ownership.
+    ///
+    /// # Requirements
+    /// All inputs must be finalized before calling this method.
+    ///
+    /// # Returns
+    /// * `Ok(Vec<u8>)` - The serialized transaction bytes
+    /// * `Err(String)` - If transaction extraction fails (including absurd-fee
+    ///   rejection when a [`Limited`][ExtractFeePolicy::Limited] policy is enforced)
+    pub fn extract_tx_with_fee_policy(self, policy: ExtractFeePolicy) -> Result<Vec<u8>, String> {
         use miniscript::bitcoin::consensus::serialize;
 
         match self {
             BitGoPsbt::Zcash(zcash_psbt, _) => zcash_psbt
-                .extract_tx()
+                .extract_tx_with_fee_policy(policy)
                 .map_err(|e| format!("Failed to extract transaction: {}", e)),
             BitGoPsbt::BitcoinLike(psbt, _) | BitGoPsbt::Dash(DashBitGoPsbt { psbt, .. }, _) => {
-                let tx = psbt
-                    .extract_tx()
-                    .map_err(|e| format!("Failed to extract transaction: {}", e))?;
+                let tx = extract_inner_with_fee_policy(psbt, policy)?;
                 Ok(serialize(&tx))
             }
         }
@@ -1392,10 +1445,21 @@ impl BitGoPsbt {
     /// * `Ok(Transaction)` - The extracted transaction
     /// * `Err(String)` - If not BitcoinLike or extraction fails
     pub fn extract_bitcoin_tx(self) -> Result<miniscript::bitcoin::Transaction, String> {
+        self.extract_bitcoin_tx_with_fee_policy(ExtractFeePolicy::Default)
+    }
+
+    /// Extract the Bitcoin transaction directly (for BitcoinLike networks only)
+    /// with an explicit fee-rate [`policy`][ExtractFeePolicy].
+    ///
+    /// # Returns
+    /// * `Ok(Transaction)` - The extracted transaction
+    /// * `Err(String)` - If not BitcoinLike or extraction fails
+    pub fn extract_bitcoin_tx_with_fee_policy(
+        self,
+        policy: ExtractFeePolicy,
+    ) -> Result<miniscript::bitcoin::Transaction, String> {
         match self {
-            BitGoPsbt::BitcoinLike(psbt, _) => psbt
-                .extract_tx()
-                .map_err(|e| format!("Failed to extract transaction: {}", e)),
+            BitGoPsbt::BitcoinLike(psbt, _) => extract_inner_with_fee_policy(psbt, policy),
             _ => Err("extract_bitcoin_tx only supported for BitcoinLike networks".to_string()),
         }
     }
@@ -1406,13 +1470,23 @@ impl BitGoPsbt {
     /// * `Ok(DashTransactionParts)` - The extracted transaction parts
     /// * `Err(String)` - If not Dash or extraction fails
     pub fn extract_dash_tx(self) -> Result<crate::dash::transaction::DashTransactionParts, String> {
+        self.extract_dash_tx_with_fee_policy(ExtractFeePolicy::Default)
+    }
+
+    /// Extract the Dash transaction parts directly with an explicit fee-rate
+    /// [`policy`][ExtractFeePolicy].
+    ///
+    /// # Returns
+    /// * `Ok(DashTransactionParts)` - The extracted transaction parts
+    /// * `Err(String)` - If not Dash or extraction fails
+    pub fn extract_dash_tx_with_fee_policy(
+        self,
+        policy: ExtractFeePolicy,
+    ) -> Result<crate::dash::transaction::DashTransactionParts, String> {
         use miniscript::bitcoin::consensus::serialize;
         match self {
             BitGoPsbt::Dash(dash_psbt, _) => {
-                let tx = dash_psbt
-                    .psbt
-                    .extract_tx()
-                    .map_err(|e| format!("Failed to extract transaction: {}", e))?;
+                let tx = extract_inner_with_fee_policy(dash_psbt.psbt, policy)?;
                 let tx_bytes = serialize(&tx);
                 crate::dash::transaction::decode_dash_transaction_parts(&tx_bytes)
                     .map_err(|e| format!("Failed to decode Dash transaction: {}", e))
@@ -1429,10 +1503,23 @@ impl BitGoPsbt {
     pub fn extract_zcash_tx(
         self,
     ) -> Result<crate::zcash::transaction::ZcashTransactionParts, String> {
+        self.extract_zcash_tx_with_fee_policy(ExtractFeePolicy::Default)
+    }
+
+    /// Extract the Zcash transaction parts directly with an explicit fee-rate
+    /// [`policy`][ExtractFeePolicy].
+    ///
+    /// # Returns
+    /// * `Ok(ZcashTransactionParts)` - The extracted transaction parts
+    /// * `Err(String)` - If not Zcash or extraction fails
+    pub fn extract_zcash_tx_with_fee_policy(
+        self,
+        policy: ExtractFeePolicy,
+    ) -> Result<crate::zcash::transaction::ZcashTransactionParts, String> {
         match self {
             BitGoPsbt::Zcash(zcash_psbt, _) => {
                 let bytes = zcash_psbt
-                    .extract_tx()
+                    .extract_tx_with_fee_policy(policy)
                     .map_err(|e| format!("Failed to extract transaction: {}", e))?;
                 crate::zcash::transaction::decode_zcash_transaction_parts(&bytes)
                     .map_err(|e| format!("Failed to decode Zcash transaction: {}", e))
@@ -4118,6 +4205,67 @@ mod tests {
             "Extracted transaction should match"
         );
     });
+
+    /// `extract_tx_with_fee_policy` must produce byte-identical output to the
+    /// default `extract_tx()` for a normal-fee PSBT across all three policies
+    /// (`Default`, `Unchecked`, `Limited`). This pins the param plumbing added
+    /// in this change without depending on per-coin fee policy.
+    #[test]
+    fn test_extract_tx_with_fee_policy_matches_default() {
+        use crate::fixed_script_wallet::test_utils::fixtures::{
+            self, FixtureNamespace, SignatureState, TxFormat,
+        };
+        use crate::Network;
+
+        let network = Network::Bitcoin;
+        let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
+            network.to_utxolib_name(),
+            SignatureState::Fullsigned,
+            TxFormat::Psbt,
+            FixtureNamespace::UtxolibCompat,
+        )
+        .expect("Failed to load fixture");
+        let mut bitgo_psbt = fixture
+            .to_bitgo_psbt(network)
+            .expect("Failed to convert to BitGo PSBT");
+
+        let secp = crate::bitcoin::secp256k1::Secp256k1::new();
+        bitgo_psbt
+            .finalize_mut(&secp)
+            .expect("Failed to finalize PSBT");
+
+        let default_bytes = bitgo_psbt.clone().extract_tx().expect("default extract");
+
+        // A high sat/vB ceiling that no normal-fee tx would trip.
+        let high_limit_sat_per_vb = ExtractFeePolicy::Limited(
+            miniscript::bitcoin::FeeRate::from_sat_per_vb_unchecked(1_000_000_000),
+        );
+
+        assert_eq!(
+            bitgo_psbt
+                .clone()
+                .extract_tx_with_fee_policy(ExtractFeePolicy::Default)
+                .expect("Default policy"),
+            default_bytes,
+            "Default policy must match extract_tx()"
+        );
+        assert_eq!(
+            bitgo_psbt
+                .clone()
+                .extract_tx_with_fee_policy(ExtractFeePolicy::Unchecked)
+                .expect("Unchecked policy"),
+            default_bytes,
+            "Unchecked policy must match extract_tx() on a normal-fee PSBT"
+        );
+        assert_eq!(
+            bitgo_psbt
+                .clone()
+                .extract_tx_with_fee_policy(high_limit_sat_per_vb)
+                .expect("Limited policy"),
+            default_bytes,
+            "Limited policy with a high sat/vB ceiling must match extract_tx()"
+        );
+    }
 
     /// Test extract_half_signed_legacy_tx for p2ms-based script types
     fn test_extract_half_signed_legacy_tx_for_script_type(

@@ -9,6 +9,7 @@ use wasm_bindgen::JsValue;
 
 use crate::address::networks::AddressFormat;
 use crate::error::WasmUtxoError;
+use crate::fixed_script_wallet::bitgo_psbt::ExtractFeePolicy;
 use crate::fixed_script_wallet::wallet_scripts::{chain_index_path, OutputScriptType};
 use crate::fixed_script_wallet::{Chain, Scope, WalletScripts};
 use crate::utxolib_compat::UtxolibNetwork;
@@ -22,14 +23,39 @@ use crate::wasm::wallet_keys::WasmRootWalletKeys;
 
 /// Parse a network from a string that can be either a utxolib name or a coin name
 fn parse_network(network_str: &str) -> Result<crate::networks::Network, WasmUtxoError> {
-    crate::networks::Network::from_utxolib_name(network_str)
-        .or_else(|| crate::networks::Network::from_coin_name(network_str))
+    crate::networks::Network::from_utxolib_name(network_str)        .or_else(|| crate::networks::Network::from_coin_name(network_str))
         .ok_or_else(|| {
             WasmUtxoError::new(&format!(
                 "Unknown network '{}'. Expected a utxolib name (e.g., 'bitcoin', 'testnet') or coin name (e.g., 'btc', 'tbtc')",
                 network_str
             ))
         })
+}
+
+/// Convert a JS-side `maxFeeRate` (sat/vB, `number | undefined | Infinity`)
+/// into an [`ExtractFeePolicy`] for the Rust extract path.
+///
+/// The wasm/JS boundary carries **sat/vB** — the same unit as rust-bitcoin's
+/// `FeeRate` — so no conversion happens inside wasm-utxo. Callers that hold
+/// sat/kB thresholds (e.g. wallet-platform's `maxFeeRateSatPerKB`) must divide
+/// by 1000 before calling.
+///
+/// - `undefined` / `None` → [`ExtractFeePolicy::Default`] (rust-bitcoin's stock
+///   absurd-fee check).
+/// - `Infinity` → [`ExtractFeePolicy::Unchecked`] (skip the check).
+/// - finite non-negative → [`ExtractFeePolicy::Limited`] (sat/vB passed through).
+/// - `NaN` / negative → [`ExtractFeePolicy::Default`] (defensive fallback).
+fn fee_policy_from_js(max_fee_rate_sat_per_vb: Option<f64>) -> ExtractFeePolicy {
+    use miniscript::bitcoin::FeeRate;
+
+    match max_fee_rate_sat_per_vb {
+        None => ExtractFeePolicy::Default,
+        Some(sat_per_vb) if sat_per_vb.is_infinite() => ExtractFeePolicy::Unchecked,
+        Some(sat_per_vb) if sat_per_vb.is_finite() && sat_per_vb >= 0.0 => {
+            ExtractFeePolicy::Limited(FeeRate::from_sat_per_vb_unchecked(sat_per_vb as u64))
+        }
+        _ => ExtractFeePolicy::Default,
+    }
 }
 
 #[wasm_bindgen]
@@ -1857,14 +1883,18 @@ impl BitGoPsbt {
     /// # Returns
     /// - `Ok(JsValue)` containing the WASM transaction instance
     /// - `Err(WasmUtxoError)` if the PSBT is not fully finalized or extraction fails
-    pub fn extract_transaction(&self) -> Result<JsValue, WasmUtxoError> {
+    pub fn extract_transaction(
+        &self,
+        max_fee_rate_sat_per_vb: Option<f64>,
+    ) -> Result<JsValue, WasmUtxoError> {
         use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt as InnerBitGoPsbt;
+        let policy = fee_policy_from_js(max_fee_rate_sat_per_vb);
         match &self.psbt {
             InnerBitGoPsbt::BitcoinLike(..) => {
                 let tx = self
                     .psbt
                     .clone()
-                    .extract_bitcoin_tx()
+                    .extract_bitcoin_tx_with_fee_policy(policy)
                     .map_err(|e| WasmUtxoError::new(&e))?;
                 Ok(crate::wasm::transaction::WasmTransaction::from_tx(tx).into())
             }
@@ -1872,7 +1902,7 @@ impl BitGoPsbt {
                 let parts = self
                     .psbt
                     .clone()
-                    .extract_dash_tx()
+                    .extract_dash_tx_with_fee_policy(policy)
                     .map_err(|e| WasmUtxoError::new(&e))?;
                 Ok(crate::wasm::dash_transaction::WasmDashTransaction::from_parts(parts).into())
             }
@@ -1880,7 +1910,7 @@ impl BitGoPsbt {
                 let parts = self
                     .psbt
                     .clone()
-                    .extract_zcash_tx()
+                    .extract_zcash_tx_with_fee_policy(policy)
                     .map_err(|e| WasmUtxoError::new(&e))?;
                 Ok(crate::wasm::transaction::WasmZcashTransaction::from_parts(parts).into())
             }
@@ -1893,11 +1923,12 @@ impl BitGoPsbt {
     /// Only valid for Bitcoin-like networks (not Dash or Zcash).
     pub fn extract_bitcoin_transaction(
         &self,
+        max_fee_rate_sat_per_vb: Option<f64>,
     ) -> Result<crate::wasm::transaction::WasmTransaction, WasmUtxoError> {
         let tx = self
             .psbt
             .clone()
-            .extract_bitcoin_tx()
+            .extract_bitcoin_tx_with_fee_policy(fee_policy_from_js(max_fee_rate_sat_per_vb))
             .map_err(|e| WasmUtxoError::new(&e))?;
         Ok(crate::wasm::transaction::WasmTransaction::from_tx(tx))
     }
@@ -1908,11 +1939,12 @@ impl BitGoPsbt {
     /// Only valid for Dash networks.
     pub fn extract_dash_transaction(
         &self,
+        max_fee_rate_sat_per_vb: Option<f64>,
     ) -> Result<crate::wasm::dash_transaction::WasmDashTransaction, WasmUtxoError> {
         let parts = self
             .psbt
             .clone()
-            .extract_dash_tx()
+            .extract_dash_tx_with_fee_policy(fee_policy_from_js(max_fee_rate_sat_per_vb))
             .map_err(|e| WasmUtxoError::new(&e))?;
         Ok(crate::wasm::dash_transaction::WasmDashTransaction::from_parts(parts))
     }
@@ -1923,11 +1955,12 @@ impl BitGoPsbt {
     /// Only valid for Zcash networks.
     pub fn extract_zcash_transaction(
         &self,
+        max_fee_rate_sat_per_vb: Option<f64>,
     ) -> Result<crate::wasm::transaction::WasmZcashTransaction, WasmUtxoError> {
         let parts = self
             .psbt
             .clone()
-            .extract_zcash_tx()
+            .extract_zcash_tx_with_fee_policy(fee_policy_from_js(max_fee_rate_sat_per_vb))
             .map_err(|e| WasmUtxoError::new(&e))?;
         Ok(crate::wasm::transaction::WasmZcashTransaction::from_parts(
             parts,
