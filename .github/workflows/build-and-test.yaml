@@ -155,29 +155,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: ${{ fromJson(needs.detect-changes.outputs.packages) }}
-        include:
-          - package: wasm-utxo
-            needs-wasm-pack: true
-            has-wasm-pack-tests: true
-          - package: wasm-bip32
-            needs-wasm-pack: false
-            has-wasm-pack-tests: false
-          - package: wasm-mps
-            needs-wasm-pack: false
-            has-wasm-pack-tests: false
-          - package: wasm-solana
-            needs-wasm-pack: false
-            has-wasm-pack-tests: false
-          - package: wasm-dot
-            needs-wasm-pack: false
-            has-wasm-pack-tests: false
-          - package: wasm-ton
-            needs-wasm-pack: false
-            has-wasm-pack-tests: false
-          - package: wasm-privacy-coin
-            needs-wasm-pack: false
-            has-wasm-pack-tests: false
+        # `detect-changes` emits an array of objects
+        # [{package, needs-wasm-pack, has-wasm-pack-tests}, ...] filtered to
+        # changed packages. Using `include:` here (not a static list keyed on
+        # `package`) is what makes the matrix actually shrink: a workflow
+        # `include:` entry whose `package` conflicts with the base matrix
+        # spawns a NEW job instead of being filtered, which previously
+        # re-added every package on every PR.
+        include: ${{ fromJson(needs.detect-changes.outputs.packages) }}
     steps:
       - uses: actions/checkout@v4
         with:
