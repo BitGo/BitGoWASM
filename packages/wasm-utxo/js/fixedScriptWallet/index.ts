@@ -14,6 +14,9 @@ export {
 } from "./scriptType.js";
 export { ChainCode, chainCodes, assertChainCode, type Scope } from "./chains.js";
 
+// Previous-transaction inclusion policy (pure JS, no WASM init)
+export { requiresPrevTxForP2sh } from "./prevTx.js";
+
 // Bitcoin-like PSBT (for all non-Zcash networks)
 export {
   BitGoPsbt,
