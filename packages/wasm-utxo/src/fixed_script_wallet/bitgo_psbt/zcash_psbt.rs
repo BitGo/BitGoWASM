@@ -161,6 +161,17 @@ impl ZcashBitGoPsbt {
     ///
     /// This method consumes the PSBT to avoid cloning.
     pub fn extract_tx(self) -> Result<Vec<u8>, super::DeserializeError> {
+        self.extract_tx_with_fee_policy(super::ExtractFeePolicy::Default)
+    }
+
+    /// Extract the finalized Zcash transaction bytes from the PSBT with an
+    /// explicit fee-rate [`policy`][super::ExtractFeePolicy].
+    ///
+    /// This method consumes the PSBT to avoid cloning.
+    pub fn extract_tx_with_fee_policy(
+        self,
+        policy: super::ExtractFeePolicy,
+    ) -> Result<Vec<u8>, super::DeserializeError> {
         use miniscript::bitcoin::psbt::ExtractTxError;
 
         // Capture Zcash-specific fields before consuming psbt
@@ -170,7 +181,7 @@ impl ZcashBitGoPsbt {
         let expiry_height = self.expiry_height.unwrap_or(0);
         let sapling_fields = self.sapling_fields;
 
-        let tx = self.psbt.extract_tx().map_err(|e| match e {
+        let map_extract_err = |e: ExtractTxError| match e {
             ExtractTxError::AbsurdFeeRate { .. } => {
                 super::DeserializeError::Network(format!("Absurd fee rate: {}", e))
             }
@@ -181,7 +192,16 @@ impl ZcashBitGoPsbt {
                 super::DeserializeError::Network(format!("Sending too much: {}", e))
             }
             _ => super::DeserializeError::Network(format!("Failed to extract transaction: {}", e)),
-        })?;
+        };
+
+        let tx = match policy {
+            super::ExtractFeePolicy::Default => self.psbt.extract_tx().map_err(map_extract_err)?,
+            super::ExtractFeePolicy::Unchecked => self.psbt.extract_tx_unchecked_fee_rate(),
+            super::ExtractFeePolicy::Limited(max_fee_rate_sat_per_vb) => self
+                .psbt
+                .extract_tx_with_fee_rate_limit(max_fee_rate_sat_per_vb)
+                .map_err(map_extract_err)?,
+        };
 
         let parts = crate::zcash::transaction::ZcashTransactionParts {
             transaction: tx,
