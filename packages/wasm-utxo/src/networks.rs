@@ -306,6 +306,30 @@ impl Network {
         !self.is_mainnet()
     }
 
+    /// Whether a non-segwit (legacy: P2PKH/P2SH/bare) transparent input on this network needs
+    /// the full previous transaction (`non_witness_utxo`) to be signed/finalized safely, or can
+    /// rely on `witness_utxo` alone.
+    ///
+    /// `false` for value-committing coins whose sighash already commits the input amount,
+    /// making `non_witness_utxo` cryptographically pointless (BIP174's rationale for requiring
+    /// it — protecting against a lying `witness_utxo` misreporting the spent amount — doesn't
+    /// apply):
+    /// - Zcash (`zec`/`tzec`): the ZIP-243 sighash commits the amount.
+    /// - BCH family (`bch`/`bcha`/`bsv`/`btg` + testnets): the replay-protected BIP-143/FORKID
+    ///   sighash commits the amount.
+    ///
+    /// Mirrors `requiresPrevTxForP2sh` in `js/fixedScriptWallet/prevTx.ts` — keep both in sync.
+    pub fn requires_prev_tx_for_legacy_input(self) -> bool {
+        !matches!(
+            self.mainnet(),
+            Network::Zcash
+                | Network::BitcoinCash
+                | Network::Ecash
+                | Network::BitcoinSV
+                | Network::BitcoinGold
+        )
+    }
+
     /// Convert to bitcoin crate Network type for address encoding
     pub fn to_bitcoin_network(self) -> crate::bitcoin::Network {
         use crate::bitcoin::Network as BitcoinNetwork;
@@ -399,6 +423,38 @@ mod tests {
                 if i != j {
                     assert_ne!(network1, network2);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_requires_prev_tx_for_legacy_input() {
+        // Mirrors the JS test matrix in test/fixedScript/prevTx.ts
+        let value_committing = [
+            Network::Zcash,
+            Network::ZcashTestnet,
+            Network::BitcoinCash,
+            Network::BitcoinCashTestnet,
+            Network::Ecash,
+            Network::EcashTestnet,
+            Network::BitcoinSV,
+            Network::BitcoinSVTestnet,
+            Network::BitcoinGold,
+            Network::BitcoinGoldTestnet,
+        ];
+        for network in value_committing {
+            assert!(
+                !network.requires_prev_tx_for_legacy_input(),
+                "{network} should not require prevTx"
+            );
+        }
+
+        for network in Network::ALL {
+            if !value_committing.contains(network) {
+                assert!(
+                    network.requires_prev_tx_for_legacy_input(),
+                    "{network} should require prevTx"
+                );
             }
         }
     }
