@@ -330,6 +330,21 @@ impl Network {
         )
     }
 
+    /// Returns the SIGHASH_FORKID value for networks that use it (`Psbt::sign_forkid` /
+    /// `finalize_mut_with_fork_id`'s `fork_id` parameter), or `None` for plain-sighash networks
+    /// (`Psbt::sign` / plain finalize).
+    ///
+    /// - Bitcoin Cash, Ecash, Bitcoin SV: fork_id = 0
+    /// - Bitcoin Gold: fork_id = 79
+    /// - All other networks: `None`
+    pub fn sighash_fork_id(self) -> Option<u32> {
+        match self.mainnet() {
+            Network::BitcoinCash | Network::Ecash | Network::BitcoinSV => Some(0),
+            Network::BitcoinGold => Some(79),
+            _ => None,
+        }
+    }
+
     /// Convert to bitcoin crate Network type for address encoding
     pub fn to_bitcoin_network(self) -> crate::bitcoin::Network {
         use crate::bitcoin::Network as BitcoinNetwork;
