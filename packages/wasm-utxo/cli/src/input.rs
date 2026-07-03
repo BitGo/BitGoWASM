@@ -3,6 +3,18 @@ use base64::Engine;
 use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
+use std::str::FromStr;
+use wasm_utxo::bitcoin::network::Network as BitcoinNetwork;
+use wasm_utxo::bitcoin::PrivateKey;
+
+/// Parse a private key given as WIF or raw hex bytes.
+pub fn parse_private_key(s: &str) -> Result<PrivateKey> {
+    if let Ok(pk) = PrivateKey::from_str(s) {
+        return Ok(pk);
+    }
+    let bytes = hex::decode(s).context("private key must be WIF or hex")?;
+    PrivateKey::from_slice(&bytes, BitcoinNetwork::Bitcoin).context("invalid private key bytes")
+}
 
 /// Decode input bytes, attempting to interpret as base64, hex, or raw bytes
 pub fn decode_input(raw_bytes: &[u8]) -> Result<Vec<u8>> {

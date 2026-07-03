@@ -68,6 +68,29 @@ wasm-utxo-cli address encode 0014e8df018c7e326cc253faac7e46cdc51e68542c42
 # Output: bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq
 ```
 
+#### Derive an address from a descriptor
+
+```bash
+wasm-utxo-cli address from-descriptor <DESCRIPTOR> --network <NETWORK>
+```
+
+The descriptor may name a plain public key or embed a private key directly (e.g. a WIF) —
+either way, the resulting address is derived from the corresponding public key. Works for any
+network, not just Bitcoin.
+
+**Examples:**
+
+```bash
+# BTC: derive a P2PKH address from a public key
+wasm-utxo-cli address from-descriptor "pkh(039ab0771c5f88913208a26f81ab8223e98d25176e4648a5a2bb8ff79cf1c5198b)" --network btc
+# Output: 1GwwqAWsJzDHMZ9ceJqrJDfch4gsro4c3x
+
+# Zcash: derive a t-address directly from a WIF private key (e.g. for zebrad's miner_address on
+# regtest — Zcash regtest reuses testnet address prefixes, so pass --network tzec)
+wasm-utxo-cli address from-descriptor "pkh(KzEGYtKcbhYwUWcZygbsqmF31f3iV7HC3iUQug7MBecwCz9hm1Tv)" --network tzec
+# Output: tmRfJALRQfyWP6SPxFTxiHhSHYhxn7rwkLv
+```
+
 ### PSBT Operations
 
 #### Parse and inspect a PSBT
