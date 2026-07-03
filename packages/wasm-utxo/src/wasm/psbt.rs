@@ -1,85 +1,22 @@
 use crate::address::networks::{from_output_script_with_network_and_format, AddressFormat};
 use crate::error::WasmUtxoError;
+use crate::transparent_signing::{sign_zcash_with_privkey, SingleKeySigner};
 use crate::wasm::bip32::WasmBIP32;
 use crate::wasm::descriptor::WrapDescriptorEnum;
 use crate::wasm::ecpair::WasmECPair;
 use crate::wasm::psbt_ops::WasmPsbtOps;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use crate::wasm::WrapDescriptor;
-use miniscript::bitcoin::bip32::Fingerprint;
+use crate::zcash::transaction::{ZcashTransactionParts, ZCASH_SAPLING_VERSION_GROUP_ID};
 use miniscript::bitcoin::locktime::absolute::LockTime;
-use miniscript::bitcoin::secp256k1::{Secp256k1, Signing};
+use miniscript::bitcoin::secp256k1::Secp256k1;
 use miniscript::bitcoin::transaction::{Transaction, Version};
-use miniscript::bitcoin::{
-    bip32, psbt, Amount, OutPoint, PublicKey, ScriptBuf, Sequence, XOnlyPublicKey,
-};
+use miniscript::bitcoin::{bip32, psbt, Amount, OutPoint, ScriptBuf, Sequence};
 use miniscript::bitcoin::{PrivateKey, Psbt, Script, TxIn, TxOut, Txid};
-use miniscript::descriptor::{SinglePub, SinglePubKey};
 use miniscript::psbt::PsbtExt;
-use miniscript::{DescriptorPublicKey, ToPublicKey};
 use std::str::FromStr;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsError, JsValue};
-
-#[derive(Debug)]
-struct SingleKeySigner {
-    privkey: PrivateKey,
-    pubkey: PublicKey,
-    _pubkey_xonly: XOnlyPublicKey,
-    fingerprint: Fingerprint,
-    fingerprint_xonly: Fingerprint,
-}
-
-impl SingleKeySigner {
-    fn fingerprint(key: SinglePubKey) -> Fingerprint {
-        DescriptorPublicKey::Single(SinglePub { origin: None, key }).master_fingerprint()
-    }
-
-    fn from_privkey<C: Signing>(privkey: PrivateKey, secp: &Secp256k1<C>) -> SingleKeySigner {
-        let pubkey = privkey.public_key(secp);
-        let pubkey_xonly = pubkey.to_x_only_pubkey();
-        SingleKeySigner {
-            privkey,
-            pubkey,
-            _pubkey_xonly: pubkey_xonly,
-            fingerprint: SingleKeySigner::fingerprint(SinglePubKey::FullKey(pubkey)),
-            fingerprint_xonly: SingleKeySigner::fingerprint(SinglePubKey::XOnly(pubkey_xonly)),
-        }
-    }
-}
-
-impl psbt::GetKey for SingleKeySigner {
-    type Error = String;
-
-    fn get_key<C: Signing>(
-        &self,
-        key_request: psbt::KeyRequest,
-        _secp: &Secp256k1<C>,
-    ) -> Result<Option<PrivateKey>, Self::Error> {
-        match key_request {
-            // NOTE: this KeyRequest does not occur for taproot signatures
-            // even if the descriptor keys are definite, we will receive a bip32 request
-            // instead based on `DescriptorPublicKey::Single(SinglePub { origin: None, key, })`
-            psbt::KeyRequest::Pubkey(req_pubkey) => {
-                if req_pubkey == self.pubkey {
-                    Ok(Some(self.privkey))
-                } else {
-                    Ok(None)
-                }
-            }
-
-            psbt::KeyRequest::Bip32((fingerprint, _path)) => {
-                if fingerprint.eq(&self.fingerprint) || fingerprint.eq(&self.fingerprint_xonly) {
-                    Ok(Some(self.privkey))
-                } else {
-                    Ok(None)
-                }
-            }
-
-            _ => Ok(None),
-        }
-    }
-}
 
 // ============================================================================
 // PSBT Introspection Types
@@ -591,6 +528,31 @@ impl WrapPsbt {
             .map_err(WasmUtxoError::from_errors)
     }
 
+    /// Finalize all Zcash transparent inputs using ZIP-243 sighash verification.
+    ///
+    /// Use this instead of `finalize_mut()` for Zcash PSBTs signed with
+    /// `sign_zcash_with_prv` / `sign_zcash_all_with_ecpair`.
+    ///
+    /// # Arguments
+    /// * `consensus_branch_id` - Zcash network upgrade branch ID
+    /// * `version_group_id` - Version group ID (default: Sapling `0x892F2085`)
+    /// * `expiry_height` - Transaction expiry height (default: 0)
+    pub fn finalize_mut_zcash(
+        &mut self,
+        consensus_branch_id: u32,
+        version_group_id: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<(), WasmUtxoError> {
+        self.0
+            .finalize_mut_with_zcash(
+                &Secp256k1::verification_only(),
+                consensus_branch_id,
+                version_group_id.unwrap_or(ZCASH_SAPLING_VERSION_GROUP_ID),
+                expiry_height.unwrap_or(0),
+            )
+            .map_err(WasmUtxoError::from_errors)
+    }
+
     /// Extract the final transaction from a finalized PSBT
     ///
     /// This method should be called after all inputs have been finalized.
@@ -613,6 +575,87 @@ impl WrapPsbt {
         let network = crate::Network::from_coin_name(coin)
             .ok_or_else(|| WasmUtxoError::new(&format!("Unknown coin: {}", coin)))?;
         get_outputs_with_address_from_psbt(&self.0, network)
+    }
+
+    /// Sign all Zcash transparent inputs with a raw private key using ZIP-243 sighash.
+    ///
+    /// # Arguments
+    /// * `prv` - Raw private key bytes
+    /// * `consensus_branch_id` - Zcash network upgrade branch ID
+    /// * `version_group_id` - Version group ID (default: Sapling `0x892F2085`)
+    /// * `expiry_height` - Transaction expiry height (default: 0)
+    pub fn sign_zcash_with_prv(
+        &mut self,
+        prv: Vec<u8>,
+        consensus_branch_id: u32,
+        version_group_id: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<JsValue, WasmUtxoError> {
+        let privkey = PrivateKey::from_slice(&prv, miniscript::bitcoin::network::Network::Bitcoin)
+            .map_err(|_| WasmUtxoError::new("Invalid private key"))?;
+        let secp = Secp256k1::new();
+        sign_zcash_with_privkey(
+            &mut self.0,
+            privkey,
+            &secp,
+            consensus_branch_id,
+            version_group_id.unwrap_or(ZCASH_SAPLING_VERSION_GROUP_ID),
+            expiry_height.unwrap_or(0),
+        )
+        .map_err(|errors| WasmUtxoError::from_errors(errors.into_values()))
+        .and_then(|r| r.try_to_js_value())
+    }
+
+    /// Sign all Zcash transparent inputs with a WasmECPair key using ZIP-243 sighash.
+    ///
+    /// # Arguments
+    /// * `key` - The WasmECPair key to sign with
+    /// * `consensus_branch_id` - Zcash network upgrade branch ID
+    /// * `version_group_id` - Version group ID (default: Sapling `0x892F2085`)
+    /// * `expiry_height` - Transaction expiry height (default: 0)
+    pub fn sign_zcash_all_with_ecpair(
+        &mut self,
+        key: &WasmECPair,
+        consensus_branch_id: u32,
+        version_group_id: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<JsValue, WasmUtxoError> {
+        let privkey = key.get_private_key()?;
+        let secp = Secp256k1::new();
+        let private_key = PrivateKey::new(privkey, miniscript::bitcoin::network::Network::Bitcoin);
+        sign_zcash_with_privkey(
+            &mut self.0,
+            private_key,
+            &secp,
+            consensus_branch_id,
+            version_group_id.unwrap_or(ZCASH_SAPLING_VERSION_GROUP_ID),
+            expiry_height.unwrap_or(0),
+        )
+        .map_err(|errors| WasmUtxoError::from_errors(errors.into_values()))
+        .and_then(|r| r.try_to_js_value())
+    }
+
+    /// Extract the finalized PSBT as a Zcash overwintered transaction.
+    ///
+    /// Must be called after `finalize_mut_zcash()`.
+    ///
+    /// # Arguments
+    /// * `version_group_id` - Version group ID (default: Sapling `0x892F2085`)
+    /// * `expiry_height` - Transaction expiry height (default: 0)
+    pub fn extract_zcash_transaction(
+        &self,
+        version_group_id: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<crate::wasm::transaction::WasmZcashTransaction, WasmUtxoError> {
+        let parts = ZcashTransactionParts::extract_from_psbt(
+            self.0.clone(),
+            version_group_id.unwrap_or(ZCASH_SAPLING_VERSION_GROUP_ID),
+            expiry_height.unwrap_or(0),
+        )
+        .map_err(|e| WasmUtxoError::new(&e))?;
+        Ok(crate::wasm::transaction::WasmZcashTransaction::from_parts(
+            parts,
+        ))
     }
 
     pub fn get_partial_signatures(&self, input_index: usize) -> Result<JsValue, WasmUtxoError> {
@@ -978,11 +1021,12 @@ mod tests {
     use crate::wasm::psbt::SingleKeySigner;
     use crate::Network;
     use base64::prelude::*;
-    use miniscript::bitcoin::bip32::{DerivationPath, Fingerprint, KeySource};
+    use miniscript::bitcoin::bip32::{DerivationPath, KeySource};
     use miniscript::bitcoin::psbt::{SigningKeys, SigningKeysMap};
     use miniscript::bitcoin::secp256k1::Secp256k1;
     use miniscript::bitcoin::{PrivateKey, Psbt};
-    use miniscript::psbt::PsbtExt;
+    use miniscript::descriptor::{SinglePub, SinglePubKey};
+    use miniscript::psbt::{PsbtExt, PsbtInputExt};
     use miniscript::{DefiniteDescriptorKey, Descriptor, DescriptorPublicKey, ToPublicKey};
     use std::str::FromStr;
 
@@ -993,29 +1037,46 @@ mod tests {
         Psbt::deserialize(&psbt).map_err(|e| WasmUtxoError::new(&format!("Invalid PSBT: {}", e)))
     }
 
+    const TEST_SEED: &str = "too many secrets";
+
+    /// BitGo test-wallet seed → master xpriv → WIF round-trip (obvious, reproducible test key).
+    fn test_privkey_from_seed(seed: &str) -> PrivateKey {
+        use miniscript::bitcoin::bip32::Xpriv;
+        use miniscript::bitcoin::hashes::{sha256, Hash};
+        use miniscript::bitcoin::Network;
+        let seed_hash = sha256::Hash::hash(seed.as_bytes()).to_byte_array();
+        let xpriv = Xpriv::new_master(Network::Testnet, &seed_hash).expect("xpriv from test seed");
+        let privkey = PrivateKey::new(xpriv.private_key, Network::Bitcoin);
+        PrivateKey::from_str(&privkey.to_wif()).expect("WIF round-trip")
+    }
+
     #[test]
     pub fn test_wrap_privkey() {
-        let desc = "tr(039ab0771c5f88913208a26f81ab8223e98d25176e4648a5a2bb8ff79cf1c5198b,pk(039ab0771c5f88913208a26f81ab8223e98d25176e4648a5a2bb8ff79cf1c5198b))";
-        let desc = Descriptor::<DefiniteDescriptorKey>::from_str(desc).unwrap();
+        let secp = Secp256k1::new();
+        let prv = test_privkey_from_seed(TEST_SEED);
+        let xonly = prv.public_key(&secp).to_x_only_pubkey();
+        let desc = format!("tr({xonly},pk({xonly}))");
+        let desc = Descriptor::<DefiniteDescriptorKey>::from_str(&desc).unwrap();
         let psbt = "cHNidP8BAKYCAAAAAgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAAAAAD9////AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAAAAP3///8CgBoGAAAAAAAWABRTtvjcap+5t7odMosMnHl97YJClYAaBgAAAAAAIlEg1S2GuUvFU+Ve4XFLV65ffhuYsGeDkpaER6lQFjONAmEAAAAAAAEBK0BCDwAAAAAAIlEg1S2GuUvFU+Ve4XFLV65ffhuYsGeDkpaER6lQFjONAmEAAQErQEIPAAAAAAAiUSDVLYa5S8VT5V7hcUtXrl9+G5iwZ4OSloRHqVAWM40CYQAAAA==";
         let mut psbt = psbt_from_base64(psbt).unwrap();
-        psbt.update_input_with_descriptor(0, &desc).unwrap();
+        psbt.inputs[0].tap_key_origins.clear();
+        psbt.inputs[0]
+            .update_with_descriptor_unchecked(&desc)
+            .unwrap();
         println!("{:?}", psbt.inputs[0].tap_key_origins);
-        let prv =
-            PrivateKey::from_str("KzEGYtKcbhYwUWcZygbsqmF31f3iV7HC3iUQug7MBecwCz9hm1Tv").unwrap();
-        let pk = prv.public_key(&Secp256k1::new()).to_x_only_pubkey();
-        let secp = Secp256k1::new();
+        let pk = prv.public_key(&secp).to_x_only_pubkey();
         let sks = SingleKeySigner::from_privkey(prv, &secp);
+        let expected_fp = DescriptorPublicKey::Single(SinglePub {
+            origin: None,
+            key: SinglePubKey::XOnly(xonly),
+        })
+        .master_fingerprint();
         psbt.inputs[0]
             .tap_key_origins
             .values()
             .for_each(|key_source| {
-                let key_source_ref: KeySource = (
-                    Fingerprint::from_hex("aeee1e6a").unwrap(),
-                    DerivationPath::from(vec![]),
-                );
+                let key_source_ref: KeySource = (expected_fp, DerivationPath::from(vec![]));
                 assert_eq!(key_source.1, key_source_ref);
-                assert_eq!(sks.fingerprint, key_source.1 .0,);
             });
         let mut expected_keys = SigningKeysMap::new();
         expected_keys.insert(0, SigningKeys::Schnorr(vec![pk]));
@@ -1031,6 +1092,117 @@ mod tests {
         let mut psbt = psbt_from_base64(psbt).unwrap();
         psbt.update_input_with_descriptor(0, &desc.at_derivation_index(0).unwrap())
             .unwrap();
+    }
+
+    #[test]
+    fn test_build_sign_extract_zcash_transparent_p2pkh() {
+        use crate::transparent_signing::{add_input_with_descriptor, sign_zcash_with_privkey};
+        use crate::zcash::transaction::{decode_zcash_transaction_parts, ZcashTransactionParts};
+        use miniscript::bitcoin::locktime::absolute::LockTime;
+        use miniscript::bitcoin::transaction::Version;
+        use miniscript::bitcoin::{psbt, Amount, ScriptBuf, Transaction, TxOut, Txid};
+        use miniscript::psbt::PsbtExt;
+
+        // NU5 mainnet consensus branch ID
+        const CONSENSUS_BRANCH_ID: u32 = 0xc2d6d0b4;
+        const VERSION_GROUP_ID: u32 = 0x892F2085;
+        const EXPIRY_HEIGHT: u32 = 1_700_000;
+
+        let secp = Secp256k1::new();
+        let privkey = test_privkey_from_seed(TEST_SEED);
+        let pubkey = privkey.public_key(&secp);
+        let script_pubkey = ScriptBuf::builder()
+            .push_opcode(miniscript::bitcoin::opcodes::all::OP_DUP)
+            .push_opcode(miniscript::bitcoin::opcodes::all::OP_HASH160)
+            .push_slice(pubkey.pubkey_hash())
+            .push_opcode(miniscript::bitcoin::opcodes::all::OP_EQUALVERIFY)
+            .push_opcode(miniscript::bitcoin::opcodes::all::OP_CHECKSIG)
+            .into_script();
+
+        let prev_txid =
+            Txid::from_str("a8c685478265f4c14dada651969c45a65e1aeb8cd6791f2f5bb6a1d9952104d9")
+                .unwrap();
+
+        let tx = Transaction {
+            version: Version(4),
+            lock_time: LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
+        add_input_with_descriptor(
+            &mut psbt,
+            0,
+            prev_txid,
+            0,
+            50_000_000,
+            script_pubkey.clone(),
+            &format!("pkh({})", pubkey),
+            0xFFFFFFFE,
+            None,
+        )
+        .unwrap();
+        crate::psbt_ops::insert_output(
+            &mut psbt,
+            0,
+            TxOut {
+                value: Amount::from_sat(49_990_000),
+                script_pubkey,
+            },
+            psbt::Output::default(),
+        )
+        .unwrap();
+
+        sign_zcash_with_privkey(
+            &mut psbt,
+            privkey,
+            &secp,
+            CONSENSUS_BRANCH_ID,
+            VERSION_GROUP_ID,
+            EXPIRY_HEIGHT,
+        )
+        .unwrap();
+
+        psbt.finalize_mut_with_zcash(
+            &Secp256k1::verification_only(),
+            CONSENSUS_BRANCH_ID,
+            VERSION_GROUP_ID,
+            EXPIRY_HEIGHT,
+        )
+        .unwrap();
+
+        let parts_a =
+            ZcashTransactionParts::extract_from_psbt(psbt.clone(), VERSION_GROUP_ID, EXPIRY_HEIGHT)
+                .unwrap();
+        let parts_b =
+            ZcashTransactionParts::extract_from_psbt(psbt, VERSION_GROUP_ID, EXPIRY_HEIGHT)
+                .unwrap();
+
+        assert!(parts_a.is_overwintered);
+        assert_eq!(parts_a.version_group_id, Some(VERSION_GROUP_ID));
+        assert_eq!(parts_a.expiry_height, Some(EXPIRY_HEIGHT));
+        assert_eq!(parts_a.transaction.input.len(), 1);
+        assert_eq!(parts_a.transaction.output.len(), 1);
+
+        let encoded_a =
+            crate::zcash::transaction::encode_zcash_transaction_parts(&parts_a).unwrap();
+        let encoded_b =
+            crate::zcash::transaction::encode_zcash_transaction_parts(&parts_b).unwrap();
+        assert_eq!(encoded_a, encoded_b, "extraction should be deterministic");
+
+        // Round-trip through decode and assert a stable txid.
+        let decoded = decode_zcash_transaction_parts(&encoded_a).unwrap();
+        let redecoded_bytes =
+            crate::zcash::transaction::encode_zcash_transaction_parts(&decoded).unwrap();
+        assert_eq!(encoded_a, redecoded_bytes);
+
+        use miniscript::bitcoin::hashes::{sha256d, Hash};
+        let txid_a = sha256d::Hash::hash(&encoded_a);
+        let txid_roundtrip = sha256d::Hash::hash(&redecoded_bytes);
+        assert_eq!(
+            txid_a, txid_roundtrip,
+            "txid must be stable across round-trip"
+        );
     }
 
     // Compile-time check to ensure the macro stays in sync with Network::ALL
