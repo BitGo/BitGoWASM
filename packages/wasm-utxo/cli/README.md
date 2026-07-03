@@ -125,6 +125,54 @@ The output displays a hierarchical tree view of the PSBT structure, including:
 - Per-output fields (scripts, derivation paths)
 - Decoded transaction details
 
+#### Build and sign a transparent transaction
+
+Four composable subcommands — `create`, `add-input`, `add-output`, `sign` — each read a PSBT
+from a file or stdin (`-`) and print the result as hex, so they pipe together into a full
+build-and-sign flow for a single-key transparent (non-segwit) transaction. Works for any
+network; the sighash algorithm used by `sign` (plain, FORKID, or Zcash ZIP-243) is selected by
+`--network`.
+
+```bash
+wasm-utxo-cli psbt create [--version <VERSION>] [--lock-time <LOCK_TIME>]
+wasm-utxo-cli psbt add-input <PATH> --network <NETWORK> --txid <TXID> --vout <VOUT> \
+  --value <VALUE> --script <SCRIPT_HEX> --descriptor <DESCRIPTOR> [--prev-tx <PREV_TX_HEX>]
+wasm-utxo-cli psbt add-output <PATH> (--address <ADDRESS> --network <NETWORK> | --script <SCRIPT_HEX>) --value <VALUE>
+wasm-utxo-cli psbt sign <PATH> --network <NETWORK> --privkey <PRIVKEY> [--consensus-branch-id <ID>]
+```
+
+`add-input` requires `--prev-tx` (the full previous transaction, hex-encoded) unless
+`--network` is a value-committing network (Zcash, BCH family) whose sighash already commits the
+spent amount — see `Network::requires_prev_tx_for_legacy_input` in the `wasm-utxo` library.
+
+**Examples:**
+
+```bash
+# BTC: spend a P2PKH coinbase-style output, providing the full previous transaction
+wasm-utxo-cli psbt create \
+  | wasm-utxo-cli psbt add-input - --network btc \
+      --txid e6a6e7f5551af932bc3813d920c52d61ec39fbad2e5585a018cce7dcbdd4ec72 --vout 0 \
+      --value 50000000 --script 76a914aeee1e6ae364e64b1b36acd53df55bd8d750485888ac \
+      --descriptor "pkh(039ab0771c5f88913208a26f81ab8223e98d25176e4648a5a2bb8ff79cf1c5198b)" \
+      --prev-tx 010000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0180f0fa02000000001976a914aeee1e6ae364e64b1b36acd53df55bd8d750485888ac00000000 \
+  | wasm-utxo-cli psbt add-output - --script 76a914aeee1e6ae364e64b1b36acd53df55bd8d750485888ac --value 49990000 \
+  | wasm-utxo-cli psbt sign - --network btc --privkey KzEGYtKcbhYwUWcZygbsqmF31f3iV7HC3iUQug7MBecwCz9hm1Tv
+# Output: a plain-sighash signed BTC transaction, hex-encoded
+
+# Zcash: spend a transparent P2PKH coinbase output for regtest fixture generation
+# (e.g. for a zebrad-mined UTXO to broadcast via sendrawtransaction). No --prev-tx needed —
+# ZIP-243 sighash commits the input amount.
+wasm-utxo-cli psbt create --lock-time 0 \
+  | wasm-utxo-cli psbt add-input - --network tzec \
+      --txid a8c685478265f4c14dada651969c45a65e1aeb8cd6791f2f5bb6a1d9952104d9 --vout 0 \
+      --value 50000000 --script 76a914aeee1e6ae364e64b1b36acd53df55bd8d750485888ac \
+      --descriptor "pkh(039ab0771c5f88913208a26f81ab8223e98d25176e4648a5a2bb8ff79cf1c5198b)" \
+  | wasm-utxo-cli psbt add-output - --script 76a914aeee1e6ae364e64b1b36acd53df55bd8d750485888ac --value 49990000 \
+  | wasm-utxo-cli psbt sign - --network tzec --privkey KzEGYtKcbhYwUWcZygbsqmF31f3iV7HC3iUQug7MBecwCz9hm1Tv \
+      --consensus-branch-id 0xc2d6d0b4
+# Output: a signed Zcash overwintered (NU5) transaction, hex-encoded
+```
+
 ### Supported Networks
 
 The CLI supports the following networks (use with `--network` flag):

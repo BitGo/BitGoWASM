@@ -16,6 +16,17 @@ pub fn parse_private_key(s: &str) -> Result<PrivateKey> {
     PrivateKey::from_slice(&bytes, BitcoinNetwork::Bitcoin).context("invalid private key bytes")
 }
 
+/// Parse a `u32` given as decimal or `0x`-prefixed hex.
+pub fn parse_u32_flexible(s: &str) -> Result<u32> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).with_context(|| format!("invalid hex u32: {s}"))
+    } else {
+        s.parse::<u32>()
+            .with_context(|| format!("invalid u32: {s}"))
+    }
+}
+
 /// Decode input bytes, attempting to interpret as base64, hex, or raw bytes
 pub fn decode_input(raw_bytes: &[u8]) -> Result<Vec<u8>> {
     // Try to interpret as text first (for base64/hex encoded input)
