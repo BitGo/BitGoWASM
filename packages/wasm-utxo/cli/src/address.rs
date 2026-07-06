@@ -1,7 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Subcommand;
 use wasm_utxo::bitcoin::Script;
-use wasm_utxo::{from_output_script_with_network, to_output_script_with_network, Network};
+use wasm_utxo::{
+    from_output_script_with_network, script_pubkey_from_descriptor, to_output_script_with_network,
+    Network,
+};
 
 use crate::network::NetworkArg;
 
@@ -23,6 +26,15 @@ pub enum AddressCommand {
         #[arg(short, long, value_enum)]
         network: NetworkArg,
     },
+    /// Print the address for a descriptor, which may embed a private key (e.g. `pkh(<wif>)`,
+    /// `wpkh(<wif>)`)
+    FromDescriptor {
+        /// Descriptor, e.g. `pkh(<privkey>)`
+        descriptor: String,
+        /// Network (btc, tbtc, ltc, bch, zec, tzec, etc.)
+        #[arg(short, long, value_enum)]
+        network: NetworkArg,
+    },
 }
 
 pub fn handle_command(command: AddressCommand) -> Result<()> {
@@ -41,6 +53,17 @@ pub fn handle_command(command: AddressCommand) -> Result<()> {
             let script_obj = Script::from_bytes(&script_bytes);
             let address = from_output_script_with_network(script_obj, network)
                 .context("Failed to encode output script to address")?;
+            println!("{}", address);
+            Ok(())
+        }
+        AddressCommand::FromDescriptor {
+            descriptor,
+            network,
+        } => {
+            let network: Network = network.into();
+            let script = script_pubkey_from_descriptor(&descriptor).map_err(|e| anyhow!(e))?;
+            let address = from_output_script_with_network(&script, network)
+                .context("Failed to encode address")?;
             println!("{}", address);
             Ok(())
         }

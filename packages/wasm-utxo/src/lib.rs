@@ -13,6 +13,7 @@ pub mod paygo;
 pub mod psbt_ops;
 #[cfg(test)]
 mod test_utils;
+pub mod transparent_signing;
 pub mod zcash;
 
 // re-export bitcoin from the miniscript crate
@@ -25,6 +26,11 @@ pub use address::{
 };
 
 pub use networks::Network;
+pub use transparent_signing::{
+    add_input_with_descriptor, finalize_and_encode_transaction,
+    finalize_and_encode_zcash_transaction, script_pubkey_from_descriptor, sign_with_privkey,
+    sign_zcash_with_privkey,
+};
 pub mod wasm;
 pub use wasm::{
     WasmBIP32, WasmECPair, WasmRootWalletKeys, WrapDescriptor, WrapMiniscript, WrapPsbt,

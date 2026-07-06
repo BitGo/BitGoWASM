@@ -27,6 +27,40 @@ pub struct ZcashTransactionParts {
     pub sapling_fields: Vec<u8>,
 }
 
+impl ZcashTransactionParts {
+    /// Wrap an already-extracted Bitcoin-compatible transaction as Zcash overwintered
+    /// transaction parts, mirroring `ZcashBitGoPsbt::extract_tx`.
+    pub fn from_extracted_transaction(
+        transaction: Transaction,
+        version_group_id: u32,
+        expiry_height: u32,
+    ) -> Self {
+        ZcashTransactionParts {
+            transaction,
+            is_overwintered: true,
+            version_group_id: Some(version_group_id),
+            expiry_height: Some(expiry_height),
+            sapling_fields: vec![0u8; 11],
+        }
+    }
+
+    /// Extract a finalized PSBT as Zcash overwintered transaction parts.
+    pub fn extract_from_psbt(
+        psbt: miniscript::bitcoin::psbt::Psbt,
+        version_group_id: u32,
+        expiry_height: u32,
+    ) -> Result<Self, String> {
+        let tx = psbt
+            .extract_tx()
+            .map_err(|e| format!("Failed to extract transaction: {}", e))?;
+        Ok(Self::from_extracted_transaction(
+            tx,
+            version_group_id,
+            expiry_height,
+        ))
+    }
+}
+
 /// Zcash transaction metadata extracted from transaction bytes
 ///
 /// This struct provides the Zcash-specific fields without requiring

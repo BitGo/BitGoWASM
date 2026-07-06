@@ -21,7 +21,7 @@ pub use propkv::{
     find_kv, get_zec_consensus_branch_id, BitGoKeyValue, ProprietaryKeySubtype,
     WasmUtxoVersionInfo, BITGO,
 };
-pub use sighash::{get_sighash_fork_id, validate_sighash_type};
+pub use sighash::validate_sighash_type;
 pub use zcash_psbt::{
     decode_zcash_transaction_meta, ZcashBitGoPsbt, ZcashTransactionMeta,
     ZCASH_SAPLING_VERSION_GROUP_ID,
@@ -703,7 +703,7 @@ impl BitGoPsbt {
         input: &FixedScriptInput,
     ) -> Result<(), String> {
         let ctx = SighashContext::Bitcoin {
-            fork_id: sighash::get_sighash_fork_id(self.network()),
+            fork_id: self.network().sighash_fork_id(),
         };
         input.apply_signatures(self.psbt_mut(), index, &ctx)
     }
@@ -1653,7 +1653,7 @@ impl BitGoPsbt {
                     return Ok(());
                 }
 
-                let fork_id = sighash::get_sighash_fork_id(*network);
+                let fork_id = (*network).sighash_fork_id();
 
                 // Finalize with fork_id support for FORKID networks
                 psbt.finalize_inp_mut_with_fork_id(secp, input_index, fork_id)
@@ -1671,7 +1671,7 @@ impl BitGoPsbt {
                     return Ok(());
                 }
 
-                let fork_id = sighash::get_sighash_fork_id(*network);
+                let fork_id = (*network).sighash_fork_id();
 
                 // Finalize with fork_id support for FORKID networks
                 psbt.finalize_inp_mut_with_fork_id(secp, input_index, fork_id)
@@ -2766,7 +2766,7 @@ impl BitGoPsbt {
             .map(|(_, v)| v)
             .unwrap_or(miniscript::bitcoin::Amount::ZERO);
 
-        let fork_id = sighash::get_sighash_fork_id(network);
+        let fork_id = network.sighash_fork_id();
 
         // Compute sighash based on network type
         let mut cache = SighashCache::new(&psbt.unsigned_tx);
@@ -2972,7 +2972,7 @@ impl BitGoPsbt {
             };
         }
 
-        let fork_id = sighash::get_sighash_fork_id(network);
+        let fork_id = network.sighash_fork_id();
 
         let message = if let Some(fork_id) = fork_id {
             // BCH-style BIP143 sighash with FORKID
@@ -3062,7 +3062,7 @@ impl BitGoPsbt {
                     }
                 }
 
-                let fork_id = sighash::get_sighash_fork_id(*network);
+                let fork_id = (*network).sighash_fork_id();
 
                 // Fall back to ECDSA signature verification for legacy/SegWit inputs
                 psbt_wallet_input::verify_ecdsa_signature(
@@ -3113,7 +3113,7 @@ impl BitGoPsbt {
                     }
                 }
 
-                let fork_id = sighash::get_sighash_fork_id(*network);
+                let fork_id = (*network).sighash_fork_id();
                 psbt_wallet_input::verify_ecdsa_signature(
                     secp,
                     psbt,
