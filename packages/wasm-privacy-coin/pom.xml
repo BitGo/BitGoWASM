@@ -6,7 +6,7 @@
 
   <groupId>com.bitgo</groupId>
   <artifactId>wasm-privacy-coin</artifactId>
-  <version>0.1.0</version>
+  <version>${revision}${changelist}</version>
   <packaging>jar</packaging>
 
   <description>WASM module for shielded merkle tree operations</description>
@@ -15,6 +15,8 @@
     <maven.compiler.source>17</maven.compiler.source>
     <maven.compiler.target>17</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <revision>0.1.0</revision>
+    <changelist>-SNAPSHOT</changelist>
   </properties>
 
   <dependencies>
