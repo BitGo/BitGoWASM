@@ -23,6 +23,7 @@ pub enum NetworkUpgrade {
     Nu6,
     Nu6_1,
     Nu6_2,
+    Nu6_3,
 }
 
 /// Parameters for a single network upgrade
@@ -45,6 +46,7 @@ impl NetworkUpgrade {
         NetworkUpgrade::Nu6,
         NetworkUpgrade::Nu6_1,
         NetworkUpgrade::Nu6_2,
+        NetworkUpgrade::Nu6_3,
     ];
 
     /// Get the parameters for this network upgrade
@@ -98,6 +100,12 @@ impl NetworkUpgrade {
                 branch_id: 0x5437f330,
                 mainnet_activation_height: 3364600,
                 testnet_activation_height: 4052000,
+            },
+            // https://zips.z.cash/zip-0255
+            NetworkUpgrade::Nu6_3 => UpgradeParams {
+                branch_id: 0x37a5165b,
+                mainnet_activation_height: 3428143,
+                testnet_activation_height: 4134000,
             },
         }
     }
@@ -188,6 +196,7 @@ mod tests {
                 NetworkUpgrade::Nu6 => ZebraNetworkUpgrade::Nu6,
                 NetworkUpgrade::Nu6_1 => ZebraNetworkUpgrade::Nu6_1,
                 NetworkUpgrade::Nu6_2 => ZebraNetworkUpgrade::Nu6_2,
+                NetworkUpgrade::Nu6_3 => ZebraNetworkUpgrade::Nu6_3,
             }
         }
 
@@ -206,6 +215,7 @@ mod tests {
                 ZebraNetworkUpgrade::Nu6 => Some(NetworkUpgrade::Nu6),
                 ZebraNetworkUpgrade::Nu6_1 => Some(NetworkUpgrade::Nu6_1),
                 ZebraNetworkUpgrade::Nu6_2 => Some(NetworkUpgrade::Nu6_2),
+                ZebraNetworkUpgrade::Nu6_3 => Some(NetworkUpgrade::Nu6_3),
                 #[cfg(any(test, feature = "zebra-test"))]
                 ZebraNetworkUpgrade::Nu7 => None,
                 #[cfg(zcash_unstable = "zfuture")]
