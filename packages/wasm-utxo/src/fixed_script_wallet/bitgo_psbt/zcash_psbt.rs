@@ -9,7 +9,8 @@ use miniscript::bitcoin::{Transaction, VarInt};
 use std::io::Read;
 
 pub use crate::zcash::transaction::{
-    decode_zcash_transaction_meta, ZcashTransactionMeta, ZCASH_SAPLING_VERSION_GROUP_ID,
+    decode_zcash_transaction_meta, ZcashTransactionMeta, ZCASH_NU5_VERSION_GROUP_ID,
+    ZCASH_SAPLING_VERSION_GROUP_ID,
 };
 
 /// A Zcash-compatible PSBT that can handle overwintered transactions
@@ -135,15 +136,27 @@ impl ZcashBitGoPsbt {
         &self,
         tx: &Transaction,
     ) -> Result<Vec<u8>, super::DeserializeError> {
+        let vgid = self
+            .version_group_id
+            .unwrap_or(ZCASH_SAPLING_VERSION_GROUP_ID);
+        let consensus_branch_id = if vgid == ZCASH_NU5_VERSION_GROUP_ID {
+            Some(
+                super::propkv::get_zec_consensus_branch_id(&self.psbt).ok_or_else(|| {
+                    super::DeserializeError::Network(
+                        "v5 transaction requires consensus_branch_id".to_string(),
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
         let parts = crate::zcash::transaction::ZcashTransactionParts {
             transaction: tx.clone(),
             is_overwintered: true,
-            version_group_id: Some(
-                self.version_group_id
-                    .unwrap_or(ZCASH_SAPLING_VERSION_GROUP_ID),
-            ),
+            version_group_id: Some(vgid),
             expiry_height: Some(self.expiry_height.unwrap_or(0)),
             sapling_fields: self.sapling_fields.clone(),
+            consensus_branch_id,
         };
         crate::zcash::transaction::encode_zcash_transaction_parts(&parts)
             .map_err(super::DeserializeError::Network)
@@ -180,6 +193,7 @@ impl ZcashBitGoPsbt {
             .unwrap_or(ZCASH_SAPLING_VERSION_GROUP_ID);
         let expiry_height = self.expiry_height.unwrap_or(0);
         let sapling_fields = self.sapling_fields;
+        let stored_branch_id = super::propkv::get_zec_consensus_branch_id(&self.psbt);
 
         let map_extract_err = |e: ExtractTxError| match e {
             ExtractTxError::AbsurdFeeRate { .. } => {
@@ -203,21 +217,38 @@ impl ZcashBitGoPsbt {
                 .map_err(map_extract_err)?,
         };
 
+        let consensus_branch_id = if version_group_id == ZCASH_NU5_VERSION_GROUP_ID {
+            Some(stored_branch_id.ok_or_else(|| {
+                super::DeserializeError::Network(
+                    "v5 transaction requires consensus_branch_id".to_string(),
+                )
+            })?)
+        } else {
+            None
+        };
         let parts = crate::zcash::transaction::ZcashTransactionParts {
             transaction: tx,
             is_overwintered: true,
             version_group_id: Some(version_group_id),
             expiry_height: Some(expiry_height),
             sapling_fields,
+            consensus_branch_id,
         };
         crate::zcash::transaction::encode_zcash_transaction_parts(&parts)
             .map_err(super::DeserializeError::Network)
     }
 
-    /// Compute the transaction ID for the unsigned Zcash transaction
+    /// Compute the transaction ID for the unsigned Zcash transaction.
     ///
-    /// The txid is the double SHA256 of the full Zcash transaction bytes.
+    /// v4 (Sapling): double SHA-256 of the serialized transaction bytes.
+    /// v5 (NU5/ZIP-225): ZIP-244 recursive BLAKE2b hash tree — not yet implemented.
     pub fn compute_txid(&self) -> Result<[u8; 32], super::DeserializeError> {
+        if self.version_group_id == Some(ZCASH_NU5_VERSION_GROUP_ID) {
+            return Err(super::DeserializeError::Network(
+                "compute_txid for v5 transactions requires ZIP-244, which is not yet implemented"
+                    .to_string(),
+            ));
+        }
         use miniscript::bitcoin::hashes::{sha256d, Hash};
         let tx_bytes = self.extract_unsigned_zcash_transaction()?;
         let hash = sha256d::Hash::hash(&tx_bytes);

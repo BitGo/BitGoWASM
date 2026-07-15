@@ -570,6 +570,13 @@ pub fn zcash_psbt_to_node(zcash_psbt: &ZcashBitGoPsbt, network: Network) -> Node
         version_group_id: zcash_psbt.version_group_id,
         expiry_height: zcash_psbt.expiry_height,
         sapling_fields: zcash_psbt.sapling_fields.clone(),
+        consensus_branch_id: if zcash_psbt.version_group_id
+            == Some(crate::zcash::transaction::ZCASH_NU5_VERSION_GROUP_ID)
+        {
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_zec_consensus_branch_id(psbt)
+        } else {
+            None
+        },
     };
     psbt_node.add_child(zcash_tx_to_node(&parts, network));
 

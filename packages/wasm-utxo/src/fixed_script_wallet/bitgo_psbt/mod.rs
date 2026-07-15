@@ -1570,6 +1570,7 @@ impl BitGoPsbt {
                     ),
                     expiry_height: Some(zcash_psbt.expiry_height.unwrap_or(0)),
                     sapling_fields: zcash_psbt.sapling_fields.clone(),
+                    consensus_branch_id: None,
                 };
                 crate::zcash::transaction::encode_zcash_transaction_parts(&parts)
             }
