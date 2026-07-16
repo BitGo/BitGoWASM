@@ -186,8 +186,9 @@ pub unsafe extern "C" fn append_commitments(ptr: *const u8, len: u32) -> i32 {
                     Some(tree) => {
                         let commitments: Vec<Vec<u8>> =
                             req.commitments.iter().map(|b| b.to_vec()).collect();
+                        let owned = req.owned;
                         let exp = expected_root.as_deref();
-                        match tree.append_commitments(req.block_height, commitments, exp) {
+                        match tree.append_commitments(req.block_height, commitments, owned, exp) {
                             Ok(root) => write_ok_bytes(root),
                             Err(e) => {
                                 let (code, msg) = split_error(&e);

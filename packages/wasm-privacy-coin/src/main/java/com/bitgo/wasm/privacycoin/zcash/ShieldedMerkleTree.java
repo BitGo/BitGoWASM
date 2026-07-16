@@ -100,12 +100,14 @@ public final class ShieldedMerkleTree implements AutoCloseable {
    *
    * @param blockHeight   block height (u32 range)
    * @param commitments   shielded note commitment values (cmx) for this block
+   * @param owned         per-commitment ownership flags; {@code null} or shorter list → remaining are false
    * @param expectedRoot  root to verify against; {@code null} to skip
    * @return computed root after appending
    * @throws WasmException with code {@code ROOT_MISMATCH} if verification fails
    */
   public ShieldedRoot appendCommitments(
-      long blockHeight, List<ShieldedCommitment> commitments, ShieldedRoot expectedRoot) {
+      long blockHeight, List<ShieldedCommitment> commitments, List<Boolean> owned,
+      ShieldedRoot expectedRoot) {
     requireU32(blockHeight, "blockHeight");
     Objects.requireNonNull(commitments, "commitments must not be null");
 
@@ -115,17 +117,15 @@ public final class ShieldedMerkleTree implements AutoCloseable {
         .addAllCommitments(commitments.stream()
             .map(c -> ByteString.copyFrom(c.bytes()))
             .toList());
+    if (owned != null && !owned.isEmpty()) {
+      req.addAllOwned(owned);
+    }
     if (expectedRoot != null) {
       req.setExpectedRoot(ByteString.copyFrom(expectedRoot.bytes()));
     }
 
     Response r = bridge.call("append_commitments", req.build().toByteArray());
     return ShieldedRoot.of(unwrap(r, resp -> resp.getBytesValue().toByteArray()));
-  }
-
-  /** Convenience overload — appends without root verification. */
-  public ShieldedRoot appendCommitments(long blockHeight, List<ShieldedCommitment> commitments) {
-    return appendCommitments(blockHeight, commitments, null);
   }
 
   /**

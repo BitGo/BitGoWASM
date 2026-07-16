@@ -35,11 +35,11 @@ class ShieldedMerkleTreeTest {
       "0101000000000000000000000000000000000000000000000000000000000000000000");
 
   /**
-   * A valid 32-byte Orchard commitment (Pallas base field element = 1, LE-encoded).
+   * Valid 32-byte Orchard commitments (Pallas base field elements 1, 2, 3 LE-encoded).
+   * All three are below the Pallas base field prime and therefore valid field elements.
    */
   private static final ShieldedCommitment CMX = ShieldedCommitment.of(HexFormat.of().parseHex(
       "0100000000000000000000000000000000000000000000000000000000000000"));
-
   // -------------------------------------------------------------------------
   // ping
   // -------------------------------------------------------------------------
@@ -130,14 +130,14 @@ class ShieldedMerkleTreeTest {
   void appendCommitments_nullCommitmentsList_throwsNullPointerException() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
       assertThrows(NullPointerException.class, () ->
-          tree.appendCommitments(1L, null));
+          tree.appendCommitments(1L, null, List.of(), null));
     }
   }
 
   @Test
   void appendCommitments_emptyBlock_returnsRoot() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      ShieldedRoot root = tree.appendCommitments(1L, Collections.emptyList());
+      ShieldedRoot root = tree.appendCommitments(1L, Collections.emptyList(), List.of(), null);
       assertNotNull(root);
       assertEquals(ShieldedRoot.SIZE, root.bytes().length);
     }
@@ -146,7 +146,7 @@ class ShieldedMerkleTreeTest {
   @Test
   void appendCommitments_emptyBlock_doesNotChangeLeafCount() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      tree.appendCommitments(1L, Collections.emptyList());
+      tree.appendCommitments(1L, Collections.emptyList(), List.of(), null);
       MerkleTreeInfo info = tree.getInfo();
       assertEquals(0L, info.leafCount);
       assertEquals(Long.valueOf(1L), info.tipHeight);
@@ -156,9 +156,9 @@ class ShieldedMerkleTreeTest {
   @Test
   void appendCommitments_multipleEmptyBlocks_incrementsCheckpointCount() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      tree.appendCommitments(1L, Collections.emptyList());
-      tree.appendCommitments(2L, Collections.emptyList());
-      tree.appendCommitments(3L, Collections.emptyList());
+      tree.appendCommitments(1L, Collections.emptyList(), List.of(), null);
+      tree.appendCommitments(2L, Collections.emptyList(), List.of(), null);
+      tree.appendCommitments(3L, Collections.emptyList(), List.of(), null);
       MerkleTreeInfo info = tree.getInfo();
       assertEquals(Long.valueOf(3L), info.tipHeight);
       assertEquals(3, info.checkpointCount);
@@ -173,7 +173,7 @@ class ShieldedMerkleTreeTest {
   @Test
   void appendCommitments_withCommitment_increasesLeafCount() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      tree.appendCommitments(1L, List.of(CMX));
+      tree.appendCommitments(1L, List.of(CMX), List.of(), null);
       MerkleTreeInfo info = tree.getInfo();
       assertEquals(1L, info.leafCount);
       assertEquals(Long.valueOf(1L), info.tipHeight);
@@ -183,8 +183,8 @@ class ShieldedMerkleTreeTest {
   @Test
   void appendCommitments_twoBlocks_leafCountAccumulates() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      tree.appendCommitments(1L, List.of(CMX));
-      tree.appendCommitments(2L, List.of(CMX));
+      tree.appendCommitments(1L, List.of(CMX), List.of(), null);
+      tree.appendCommitments(2L, List.of(CMX), List.of(), null);
       MerkleTreeInfo info = tree.getInfo();
       assertEquals(2L, info.leafCount);
       assertEquals(Long.valueOf(2L), info.tipHeight);
@@ -195,8 +195,8 @@ class ShieldedMerkleTreeTest {
   @Test
   void appendCommitments_twoBlocks_rootChanges() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      ShieldedRoot root1 = tree.appendCommitments(1L, List.of(CMX));
-      ShieldedRoot root2 = tree.appendCommitments(2L, List.of(CMX));
+      ShieldedRoot root1 = tree.appendCommitments(1L, List.of(CMX), List.of(), null);
+      ShieldedRoot root2 = tree.appendCommitments(2L, List.of(CMX), List.of(), null);
       assertNotEquals(root1, root2, "Root must change when new leaves are appended");
     }
   }
@@ -206,10 +206,10 @@ class ShieldedMerkleTreeTest {
     // Two fresh trees given the same commitment produce the same root.
     ShieldedRoot root1, root2;
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      root1 = tree.appendCommitments(1L, List.of(CMX));
+      root1 = tree.appendCommitments(1L, List.of(CMX), List.of(), null);
     }
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      root2 = tree.appendCommitments(1L, List.of(CMX));
+      root2 = tree.appendCommitments(1L, List.of(CMX), List.of(), null);
     }
     assertEquals(root1, root2);
   }
@@ -219,10 +219,10 @@ class ShieldedMerkleTreeTest {
     // Capture actual root first, then confirm passing it as expectedRoot doesn't throw.
     ShieldedRoot actualRoot;
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      actualRoot = tree.appendCommitments(1L, List.of(CMX));
+      actualRoot = tree.appendCommitments(1L, List.of(CMX), List.of(), null);
     }
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      ShieldedRoot returned = tree.appendCommitments(1L, List.of(CMX), actualRoot);
+      ShieldedRoot returned = tree.appendCommitments(1L, List.of(CMX), List.of(), actualRoot);
       assertEquals(actualRoot, returned);
     }
   }
@@ -232,7 +232,7 @@ class ShieldedMerkleTreeTest {
     ShieldedRoot wrongRoot = ShieldedRoot.of(new byte[ShieldedRoot.SIZE]);
     WasmException ex = assertThrows(WasmException.class, () -> {
       try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-        tree.appendCommitments(1L, List.of(CMX), wrongRoot);
+        tree.appendCommitments(1L, List.of(CMX), List.of(), wrongRoot);
       }
     });
     assertEquals("ROOT_MISMATCH", ex.getErrorCode());
@@ -241,7 +241,7 @@ class ShieldedMerkleTreeTest {
   @Test
   void appendCommitments_multipleCommitmentsInOneBlock_allLeavesCounted() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      tree.appendCommitments(1L, List.of(CMX, CMX, CMX));
+      tree.appendCommitments(1L, List.of(CMX, CMX, CMX), List.of(), null);
       MerkleTreeInfo info = tree.getInfo();
       assertEquals(3L, info.leafCount);
       assertEquals(1, info.checkpointCount);
@@ -255,8 +255,8 @@ class ShieldedMerkleTreeTest {
   @Test
   void truncateToCheckpoint_rollsBackTipHeightAndLeafCount() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      tree.appendCommitments(1L, List.of(CMX));
-      tree.appendCommitments(2L, List.of(CMX));
+      tree.appendCommitments(1L, List.of(CMX), List.of(), null);
+      tree.appendCommitments(2L, List.of(CMX), List.of(), null);
 
       tree.truncateToCheckpoint(1L);
 
@@ -270,8 +270,8 @@ class ShieldedMerkleTreeTest {
   void truncateToCheckpoint_returnsRootMatchingOriginalAppend() {
     ShieldedRoot rootAt1;
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      rootAt1 = tree.appendCommitments(1L, List.of(CMX));
-      tree.appendCommitments(2L, List.of(CMX));
+      rootAt1 = tree.appendCommitments(1L, List.of(CMX), List.of(), null);
+      tree.appendCommitments(2L, List.of(CMX), List.of(), null);
 
       ShieldedRoot restoredRoot = tree.truncateToCheckpoint(1L);
       assertEquals(rootAt1, restoredRoot);
@@ -282,7 +282,7 @@ class ShieldedMerkleTreeTest {
   void truncateToCheckpoint_unknownHeight_throwsCheckpointNotFound() {
     WasmException ex = assertThrows(WasmException.class, () -> {
       try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-        tree.appendCommitments(100L, Collections.emptyList());
+        tree.appendCommitments(100L, Collections.emptyList(), List.of(), null);
         tree.truncateToCheckpoint(999L);
       }
     });
@@ -297,7 +297,7 @@ class ShieldedMerkleTreeTest {
   void saveAndLoad_roundTrip_infoFieldsSurvive() {
     TreeState savedState;
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      tree.appendCommitments(100L, Collections.emptyList());
+      tree.appendCommitments(100L, Collections.emptyList(), List.of(), null);
       savedState = tree.save();
     }
     try (ShieldedMerkleTree restored = ShieldedMerkleTree.fromState(savedState)) {
@@ -312,7 +312,7 @@ class ShieldedMerkleTreeTest {
   void saveAndLoad_withLeaves_preservesLeafCount() {
     TreeState savedState;
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      tree.appendCommitments(1L, List.of(CMX, CMX));
+      tree.appendCommitments(1L, List.of(CMX, CMX), List.of(), null);
       savedState = tree.save();
     }
     try (ShieldedMerkleTree restored = ShieldedMerkleTree.fromState(savedState)) {
@@ -326,11 +326,11 @@ class ShieldedMerkleTreeTest {
   void saveAndLoad_restoredTreeCanContinueAppending() {
     TreeState savedState;
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      tree.appendCommitments(1L, List.of(CMX));
+      tree.appendCommitments(1L, List.of(CMX), List.of(), null);
       savedState = tree.save();
     }
     try (ShieldedMerkleTree restored = ShieldedMerkleTree.fromState(savedState)) {
-      assertDoesNotThrow(() -> restored.appendCommitments(2L, List.of(CMX)));
+      assertDoesNotThrow(() -> restored.appendCommitments(2L, List.of(CMX), List.of(), null));
       MerkleTreeInfo info = restored.getInfo();
       assertEquals(2L, info.leafCount);
       assertEquals(Long.valueOf(2L), info.tipHeight);
@@ -342,7 +342,7 @@ class ShieldedMerkleTreeTest {
     // Verify TreeState.bytes() / TreeState.of() round-trips without data loss.
     TreeState saved;
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      tree.appendCommitments(5L, List.of(CMX));
+      tree.appendCommitments(5L, List.of(CMX), List.of(), null);
       saved = tree.save();
     }
     TreeState restored = TreeState.of(saved.bytes());
@@ -362,11 +362,11 @@ class ShieldedMerkleTreeTest {
   @Test
   void truncateToCheckpoint_treeIsUsableAfterRollback() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-      tree.appendCommitments(1L, List.of(CMX));
-      tree.appendCommitments(2L, List.of(CMX));
+      tree.appendCommitments(1L, List.of(CMX), List.of(), null);
+      tree.appendCommitments(2L, List.of(CMX), List.of(), null);
       tree.truncateToCheckpoint(1L);
 
-      ShieldedRoot root = tree.appendCommitments(3L, List.of(CMX));
+      ShieldedRoot root = tree.appendCommitments(3L, List.of(CMX), List.of(), null);
       assertEquals(ShieldedRoot.SIZE, root.bytes().length);
       MerkleTreeInfo info = tree.getInfo();
       assertEquals(Long.valueOf(3L), info.tipHeight);
@@ -382,7 +382,7 @@ class ShieldedMerkleTreeTest {
   void appendCommitments_negativeBlockHeight_throwsIllegalArgumentException() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
       assertThrows(IllegalArgumentException.class, () ->
-          tree.appendCommitments(-1L, Collections.emptyList()));
+          tree.appendCommitments(-1L, Collections.emptyList(), List.of(), null));
     }
   }
 
@@ -390,7 +390,7 @@ class ShieldedMerkleTreeTest {
   void appendCommitments_blockHeightAboveU32Max_throwsIllegalArgumentException() {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
       assertThrows(IllegalArgumentException.class, () ->
-          tree.appendCommitments(0x1_0000_0000L, Collections.emptyList()));
+          tree.appendCommitments(0x1_0000_0000L, Collections.emptyList(), List.of(), null));
     }
   }
 
@@ -411,11 +411,12 @@ class ShieldedMerkleTreeTest {
     try (ShieldedMerkleTree tree1 = ShieldedMerkleTree.fromState(EMPTY_STATE);
          ShieldedMerkleTree tree2 = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
 
-      tree1.appendCommitments(1L, List.of(CMX));
+      tree1.appendCommitments(1L, List.of(CMX), List.of(), null);
 
       MerkleTreeInfo info2 = tree2.getInfo();
       assertNull(info2.tipHeight);
       assertEquals(0L, info2.leafCount);
     }
   }
+
 }

@@ -425,6 +425,7 @@ impl OwnedTree {
         &mut self,
         block_height: u32,
         commitments: Vec<Vec<u8>>,
+        owned: Vec<bool>,
         expected_root: Option<&[u8]>,
     ) -> Result<Vec<u8>, String> {
         if commitments.is_empty() {
@@ -439,6 +440,14 @@ impl OwnedTree {
             return get_checkpoint_root_bytes(&self.tree);
         }
 
+        if !owned.is_empty() && owned.len() != commitments.len() {
+            return Err(format!(
+                "owned length {} does not match commitments length {}",
+                owned.len(),
+                commitments.len()
+            ));
+        }
+
         // Validate ALL commitments before mutating any tree state.
         // This prevents a partial-append scenario where some leaves are inserted and then
         // an invalid commitment causes an error, leaving the tree in an inconsistent state
@@ -449,11 +458,18 @@ impl OwnedTree {
 
         let last_idx = hashes.len() - 1;
         for (i, hash) in hashes.into_iter().enumerate() {
+            let is_owned = owned.get(i).copied().unwrap_or(false);
             let retention = if i == last_idx {
                 Retention::Checkpoint {
                     id: block_height,
-                    marking: Marking::None,
+                    marking: if is_owned {
+                        Marking::Marked
+                    } else {
+                        Marking::None
+                    },
                 }
+            } else if is_owned {
+                Retention::Marked
             } else {
                 Retention::Ephemeral
             };
@@ -512,5 +528,95 @@ impl OwnedTree {
             .checkpoint_count()
             .map_err(|e| format!("checkpoint_count error: {:?}", e))?;
         Ok((self.tip_height, self.leaf_count, checkpoint_count as u32))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const F_CHECKPOINT: u8 = 1;
+    const F_MARKED: u8 = 2;
+    const F_CHECKPOINT_MARKED: u8 = 3;
+
+    fn empty_tree() -> OwnedTree {
+        let json = r#"{"shards":[],"cap":{"type":"Nil"},"checkpoints":[],"tip_height":null,"leaf_count":0}"#;
+        OwnedTree::from_state(json.as_bytes()).expect("empty state")
+    }
+
+    fn cmx(byte: u8) -> Vec<u8> {
+        let mut v = vec![0u8; 32];
+        v[0] = byte;
+        v
+    }
+
+    fn find_leaf_f(node: &TreeNode, target_h: &str) -> Option<u8> {
+        match node {
+            TreeNode::Leaf { h, f } if h == target_h => Some(*f),
+            TreeNode::Parent { l, r, .. } => {
+                find_leaf_f(l, target_h).or_else(|| find_leaf_f(r, target_h))
+            }
+            _ => None,
+        }
+    }
+
+    fn find_f_in_state(state: &PersistedShardTreeState, target_h: &str) -> Option<u8> {
+        for shard in &state.shards {
+            if let Some(f) = find_leaf_f(&shard.tree, target_h) {
+                return Some(f);
+            }
+        }
+        find_leaf_f(&state.cap, target_h)
+    }
+
+    #[test]
+    fn owned_flags_set_correct_retention() {
+        let cmx1_hex = "0100000000000000000000000000000000000000000000000000000000000000";
+        let cmx3_hex = "0300000000000000000000000000000000000000000000000000000000000000";
+
+        let mut tree = empty_tree();
+        tree.append_commitments(
+            1,
+            vec![cmx(1), cmx(2), cmx(3)],
+            vec![true, false, true],
+            None,
+        )
+        .unwrap();
+        let state = extract_state(&tree.tree, tree.tip_height, tree.leaf_count).unwrap();
+
+        assert_eq!(
+            find_f_in_state(&state, cmx1_hex),
+            Some(F_MARKED),
+            "CMX: owned, not last → MARKED"
+        );
+        assert_eq!(
+            find_f_in_state(&state, cmx3_hex),
+            Some(F_CHECKPOINT_MARKED),
+            "CMX_3: owned, last → CHECKPOINT|MARKED"
+        );
+    }
+
+    #[test]
+    fn not_owned_last_leaf_is_checkpoint_only() {
+        let cmx_hex = "0100000000000000000000000000000000000000000000000000000000000000";
+
+        let mut tree = empty_tree();
+        tree.append_commitments(1, vec![cmx(1)], vec![false], None)
+            .unwrap();
+        let state = extract_state(&tree.tree, tree.tip_height, tree.leaf_count).unwrap();
+
+        assert_eq!(
+            find_f_in_state(&state, cmx_hex),
+            Some(F_CHECKPOINT),
+            "not owned, last → CHECKPOINT"
+        );
+    }
+
+    #[test]
+    fn owned_length_mismatch_returns_err() {
+        let mut tree = empty_tree();
+        let result =
+            tree.append_commitments(1, vec![cmx(1), cmx(2)], vec![true, false, true], None);
+        assert!(result.is_err());
     }
 }
