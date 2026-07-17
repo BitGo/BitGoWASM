@@ -157,15 +157,14 @@ Implements `AutoCloseable`. Always use in try-with-resources.
 
 #### Instance methods
 
-| Method                                                                                                 | Returns          | Description                                                     |
-| ------------------------------------------------------------------------------------------------------ | ---------------- | --------------------------------------------------------------- |
-| `ping()`                                                                                               | `void`           | Verifies the WASM module is alive                               |
-| `appendCommitments(long blockHeight, List<ShieldedCommitment> commitments)`                            | `ShieldedRoot`   | Append cmx values, checkpoint the tree, return the new root     |
-| `appendCommitments(long blockHeight, List<ShieldedCommitment> commitments, ShieldedRoot expectedRoot)` | `ShieldedRoot`   | Same, with optional root verification                           |
-| `truncateToCheckpoint(long blockHeight)`                                                               | `ShieldedRoot`   | Roll back to a prior checkpoint, return the root at that height |
-| `save()`                                                                                               | `TreeState`      | Serialize tree state for persistence                            |
-| `getInfo()`                                                                                            | `MerkleTreeInfo` | Return tip height, leaf count, checkpoint count                 |
-| `close()`                                                                                              | `void`           | Drop the in-WASM tree and release the Chicory instance          |
+| Method                                                                                                                      | Returns          | Description                                                                                                                                                                                    |
+| --------------------------------------------------------------------------------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ping()`                                                                                                                    | `void`           | Verifies the WASM module is alive                                                                                                                                                              |
+| `appendCommitments(long blockHeight, List<ShieldedCommitment> commitments, List<Boolean> owned, ShieldedRoot expectedRoot)` | `ShieldedRoot`   | Append cmx values, checkpoint the tree; `owned` marks which commitments belong to this wallet (pass `List.of()` if unused); `expectedRoot` is optional root verification (pass `null` to skip) |
+| `truncateToCheckpoint(long blockHeight)`                                                                                    | `ShieldedRoot`   | Roll back to a prior checkpoint, return the root at that height                                                                                                                                |
+| `save()`                                                                                                                    | `TreeState`      | Serialize tree state for persistence                                                                                                                                                           |
+| `getInfo()`                                                                                                                 | `MerkleTreeInfo` | Return tip height, leaf count, checkpoint count                                                                                                                                                |
+| `close()`                                                                                                                   | `void`           | Drop the in-WASM tree and release the Chicory instance                                                                                                                                         |
 
 **`blockHeight`** must be in the range `[0, 4_294_967_295]` (Rust `u32`). Passing a
 negative value or a value above `0xFFFFFFFFL` throws `IllegalArgumentException`
@@ -275,9 +274,9 @@ ShieldedCommitment cmx = ShieldedCommitment.of(HexFormat.of().parseHex(
     "0100000000000000000000000000000000000000000000000000000000000000"));
 
 try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(savedState)) {
-    ShieldedRoot root = tree.appendCommitments(2_500_001L, List.of(cmx));
+    ShieldedRoot root = tree.appendCommitments(2_500_001L, List.of(cmx), List.of(), null);
     // Empty block — still creates a checkpoint
-    tree.appendCommitments(2_500_002L, Collections.emptyList());
+    tree.appendCommitments(2_500_002L, Collections.emptyList(), List.of(), null);
 }
 ```
 
@@ -287,7 +286,7 @@ try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(savedState)) {
 ShieldedRoot expected = ShieldedRoot.of(expectedRootBytes);
 
 try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(savedState)) {
-    ShieldedRoot root = tree.appendCommitments(2_500_001L, cmxList, expected);
+    ShieldedRoot root = tree.appendCommitments(2_500_001L, cmxList, List.of(), expected);
     // root.equals(expected) is guaranteed
 }
 ```
@@ -299,7 +298,7 @@ try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(savedState)) {
 ```java
 byte[] snapshot;
 try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(emptyState)) {
-    tree.appendCommitments(100L, List.of(cmx));
+    tree.appendCommitments(100L, List.of(cmx), List.of(), null);
     snapshot = tree.save().bytes();
 }
 
@@ -313,8 +312,8 @@ try (ShieldedMerkleTree restored = ShieldedMerkleTree.fromState(TreeState.of(sna
 
 ```java
 try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(savedState)) {
-    ShieldedRoot root100 = tree.appendCommitments(100L, List.of(cmx));
-    tree.appendCommitments(101L, List.of(cmx));
+    ShieldedRoot root100 = tree.appendCommitments(100L, List.of(cmx), List.of(), null);
+    tree.appendCommitments(101L, List.of(cmx), List.of(), null);
 
     ShieldedRoot restoredRoot = tree.truncateToCheckpoint(100L);
     // restoredRoot.equals(root100)

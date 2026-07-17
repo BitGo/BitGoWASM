@@ -15,6 +15,7 @@ message AppendCommitmentsRequest {
   uint32 block_height        = 1;
   repeated bytes commitments = 2;  // each exactly 32 bytes (cmx)
   optional bytes expected_root = 3; // 32 bytes; absent = skip verification
+  repeated bool owned        = 4;  // per-commitment ownership flag; absent/empty = all not-owned
 }
 
 message TruncateRequest {
