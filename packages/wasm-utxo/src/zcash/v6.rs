@@ -38,6 +38,21 @@ pub const ZTXID_IRONWOOD_MEMOS_PERSONAL: &[u8; 16] = b"ZTxIdIrnActMH_v6";
 pub const ZTXID_IRONWOOD_NONCOMPACT_PERSONAL: &[u8; 16] = b"ZTxIdIrnActNH_v6";
 /// ZIP-244 personalization for the (v6-personalized) Orchard slot digest.
 pub const ZTXID_ORCHARD_V6_HASH_PERSONAL: &[u8; 16] = b"ZTxIdOrchardH_v6";
+/// ZIP-244 personalization for the header digest.
+pub const ZTXID_HEADERS_PERSONAL: &[u8; 16] = b"ZTxIdHeadersHash";
+/// ZIP-244 personalization for the transparent digest.
+pub const ZTXID_TRANSPARENT_PERSONAL: &[u8; 16] = b"ZTxIdTranspaHash";
+/// ZIP-244 personalization for the prevouts sub-digest.
+pub const ZTXID_PREVOUTS_PERSONAL: &[u8; 16] = b"ZTxIdPrevoutHash";
+/// ZIP-244 personalization for the sequences sub-digest.
+pub const ZTXID_SEQUENCE_PERSONAL: &[u8; 16] = b"ZTxIdSequencHash";
+/// ZIP-244 personalization for the outputs sub-digest.
+pub const ZTXID_OUTPUTS_PERSONAL: &[u8; 16] = b"ZTxIdOutputsHash";
+/// ZIP-244 personalization for the sapling digest.
+pub const ZTXID_SAPLING_PERSONAL: &[u8; 16] = b"ZTxIdSaplingHash";
+/// ZIP-244 outer txid personalization prefix; the 4-byte consensus branch id
+/// (little-endian) is appended to form the full 16-byte personalization.
+pub const ZCASH_TXID_PERSONAL_PREFIX: &[u8; 12] = b"ZcashTxHash_";
 
 /// Boundary between the compact note plaintext and the memo inside `encCiphertext`.
 const ENC_COMPACT_END: usize = 52;
@@ -209,6 +224,99 @@ pub fn ironwood_digest(bundle: Option<&IronwoodBundle>) -> [u8; 32] {
 /// empty personalized digest.
 pub fn orchard_v6_empty_digest() -> [u8; 32] {
     blake2b_256_personal(&[], ZTXID_ORCHARD_V6_HASH_PERSONAL)
+}
+
+/// ZIP-244 header digest: version, versionGroupId, consensusBranchId, lockTime, expiryHeight.
+fn header_digest(tx: &ZcashV6Transaction) -> [u8; 32] {
+    let mut data = Vec::with_capacity(20);
+    data.extend_from_slice(&ZCASH_V6_VERSION_HEADER.to_le_bytes());
+    data.extend_from_slice(&tx.version_group_id.to_le_bytes());
+    data.extend_from_slice(&tx.consensus_branch_id.to_le_bytes());
+    data.extend_from_slice(&tx.transparent.lock_time.to_consensus_u32().to_le_bytes());
+    data.extend_from_slice(&tx.expiry_height.to_le_bytes());
+    blake2b_256_personal(&data, ZTXID_HEADERS_PERSONAL)
+}
+
+/// ZIP-244 transparent (txid) digest.
+///
+/// When the transaction has neither transparent inputs nor outputs, this is the
+/// empty personalized hash. Otherwise it combines the prevouts, sequences, and
+/// outputs sub-digests (each computed over an empty input list when the
+/// corresponding component is absent, e.g. the unshield case).
+fn transparent_txid_digest(tx: &ZcashV6Transaction) -> [u8; 32] {
+    use miniscript::bitcoin::consensus::Encodable;
+
+    let inputs = &tx.transparent.input;
+    let outputs = &tx.transparent.output;
+
+    if inputs.is_empty() && outputs.is_empty() {
+        return blake2b_256_personal(&[], ZTXID_TRANSPARENT_PERSONAL);
+    }
+
+    let mut prevouts = Vec::new();
+    let mut sequences = Vec::new();
+    for txin in inputs {
+        txin.previous_output
+            .consensus_encode(&mut prevouts)
+            .expect("vec write is infallible");
+        txin.sequence
+            .consensus_encode(&mut sequences)
+            .expect("vec write is infallible");
+    }
+    let mut outputs_data = Vec::new();
+    for txout in outputs {
+        txout
+            .consensus_encode(&mut outputs_data)
+            .expect("vec write is infallible");
+    }
+
+    let prevouts_hash = blake2b_256_personal(&prevouts, ZTXID_PREVOUTS_PERSONAL);
+    let sequence_hash = blake2b_256_personal(&sequences, ZTXID_SEQUENCE_PERSONAL);
+    let outputs_hash = blake2b_256_personal(&outputs_data, ZTXID_OUTPUTS_PERSONAL);
+
+    let mut data = Vec::with_capacity(96);
+    data.extend_from_slice(&prevouts_hash);
+    data.extend_from_slice(&sequence_hash);
+    data.extend_from_slice(&outputs_hash);
+    blake2b_256_personal(&data, ZTXID_TRANSPARENT_PERSONAL)
+}
+
+/// Compute the ZIP-244 v6 txid: the five-component BLAKE2b hash tree.
+///
+/// ```text
+/// txid = BLAKE2b-256("ZcashTxHash_" ‖ consensusBranchId(LE),
+///          header_digest ‖ transparent_digest ‖ sapling_digest
+///          ‖ orchard_v6_digest ‖ ironwood_digest)
+/// ```
+///
+/// The result is in internal byte order (as with the v4 sha256d txid); reverse it
+/// for display.
+pub fn compute_v6_txid(tx: &ZcashV6Transaction) -> [u8; 32] {
+    let header = header_digest(tx);
+    let transparent = transparent_txid_digest(tx);
+    // Sapling bundle is empty for all BitGo flows.
+    let sapling = blake2b_256_personal(&[], ZTXID_SAPLING_PERSONAL);
+    let orchard = orchard_v6_empty_digest();
+    let ironwood = ironwood_digest(tx.ironwood_bundle.as_ref());
+
+    let mut data = Vec::with_capacity(32 * 5);
+    data.extend_from_slice(&header);
+    data.extend_from_slice(&transparent);
+    data.extend_from_slice(&sapling);
+    data.extend_from_slice(&orchard);
+    data.extend_from_slice(&ironwood);
+
+    let mut personal = [0u8; 16];
+    personal[..12].copy_from_slice(ZCASH_TXID_PERSONAL_PREFIX);
+    personal[12..].copy_from_slice(&tx.consensus_branch_id.to_le_bytes());
+
+    blake2b_256_personal(&data, &personal)
+}
+
+/// Decode raw v6 transaction bytes and compute their ZIP-244 txid.
+pub fn compute_v6_txid_from_bytes(bytes: &[u8]) -> Result<[u8; 32], String> {
+    let tx = decode_v6_transaction(bytes)?;
+    Ok(compute_v6_txid(&tx))
 }
 
 /// A fully parsed Zcash v6 (Ironwood) transaction.
@@ -662,6 +770,60 @@ mod tests {
         assert_eq!(ZTXID_IRONWOOD_MEMOS_PERSONAL.len(), 16);
         assert_eq!(ZTXID_IRONWOOD_NONCOMPACT_PERSONAL.len(), 16);
         assert_eq!(ZTXID_ORCHARD_V6_HASH_PERSONAL.len(), 16);
+    }
+
+    /// Real testnet shielding transaction (branch id 37a5165b), captured from the
+    /// Ironwood reference sandbox: 2 transparent inputs, 0 outputs, 1 Ironwood action.
+    const GOLDEN_RAWTX_HEX: &str = include_str!("testdata_v6_shield_rawtx.hex");
+    /// Its txid, in display (reversed) byte order.
+    const GOLDEN_TXID_DISPLAY: &str = include_str!("testdata_v6_shield_txid.hex");
+
+    #[test]
+    fn golden_shield_tx_parses_and_round_trips() {
+        let raw = hex::decode(GOLDEN_RAWTX_HEX.trim()).unwrap();
+        let tx = decode_v6_transaction(&raw).unwrap();
+
+        assert_eq!(tx.version_group_id, ZCASH_IRONWOOD_VERSION_GROUP_ID);
+        assert_eq!(tx.consensus_branch_id, 0x37a5165b);
+        assert_eq!(tx.expiry_height, 0);
+        assert_eq!(tx.transparent.input.len(), 2);
+        assert_eq!(tx.transparent.output.len(), 0);
+
+        let bundle = tx
+            .ironwood_bundle
+            .as_ref()
+            .expect("ironwood bundle present");
+        assert_eq!(bundle.actions.len(), 1);
+        assert_eq!(bundle.flags, 0x07);
+        assert_eq!(bundle.value_balance, -314_030_000);
+        assert_eq!(bundle.proof.len(), 4992);
+        assert_eq!(
+            hex::encode(bundle.anchor),
+            "078ea7c31d1eba2b82661ab6f5d6678b5c1e1d402ab1045a515c73ba7bee4535"
+        );
+        assert_eq!(
+            hex::encode(bundle.actions[0].cmx),
+            "fd897aeef33102e7142210f8ac1d3ea964a53f935fd6683d04f26ac6e359e80d"
+        );
+        // The action's on-wire nullifier field doubles as the paired output note's
+        // `rho` input (see IronwoodAction::nullifier docs) — hence it equals the
+        // reference's output_note.rho, not output_note.nullifier.
+        assert_eq!(
+            hex::encode(bundle.actions[0].nullifier),
+            "e1316540f064433e164b1f85da6bd16317e1462db3a91b866600d62ab9d4c926"
+        );
+
+        // Re-encode must be byte-identical to the captured wire bytes.
+        assert_eq!(encode_v6_transaction(&tx).unwrap(), raw);
+    }
+
+    #[test]
+    fn golden_shield_tx_txid_matches() {
+        let raw = hex::decode(GOLDEN_RAWTX_HEX.trim()).unwrap();
+        // compute_v6_txid returns internal byte order; the canonical txid is displayed reversed.
+        let mut internal = compute_v6_txid_from_bytes(&raw).unwrap();
+        internal.reverse();
+        assert_eq!(hex::encode(internal), GOLDEN_TXID_DISPLAY.trim());
     }
 
     #[test]

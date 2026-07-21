@@ -2020,3 +2020,15 @@ pub fn zcash_branch_id_for_height(network: &str, height: u32) -> Result<Option<u
     };
     Ok(crate::zcash::branch_id_for_height(height, is_mainnet))
 }
+
+/// Compute the ZIP-244 txid of a Zcash v6 (Ironwood/NU6.3) transaction.
+///
+/// Accepts raw v6 transaction bytes and returns the 32-byte txid in internal
+/// (non-reversed) byte order — reverse for the canonical display form.
+/// Throws if the bytes are not a valid v6 transaction.
+#[wasm_bindgen]
+pub fn zcash_compute_v6_txid(tx_bytes: &[u8]) -> Result<Vec<u8>, JsValue> {
+    crate::zcash::v6::compute_v6_txid_from_bytes(tx_bytes)
+        .map(|h| h.to_vec())
+        .map_err(|e| JsValue::from_str(&e))
+}
