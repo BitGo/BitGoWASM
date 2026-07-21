@@ -826,6 +826,44 @@ mod tests {
         assert_eq!(hex::encode(internal), GOLDEN_TXID_DISPLAY.trim());
     }
 
+    /// Assert a captured mainnet/testnet v6 transaction parses, re-encodes
+    /// byte-identically, and reproduces its canonical (display-order) txid.
+    fn assert_golden(raw_hex: &str, txid_display: &str) {
+        let raw = hex::decode(raw_hex.trim()).unwrap();
+        let tx = decode_v6_transaction(&raw).unwrap();
+        assert_eq!(tx.version_group_id, ZCASH_IRONWOOD_VERSION_GROUP_ID);
+        assert_eq!(
+            encode_v6_transaction(&tx).unwrap(),
+            raw,
+            "re-encode must be byte-identical"
+        );
+        let mut internal = compute_v6_txid(&tx);
+        internal.reverse();
+        assert_eq!(hex::encode(internal), txid_display.trim(), "txid mismatch");
+    }
+
+    #[test]
+    fn golden_selfsend_tx_parses_and_txid_matches() {
+        // Ironwood -> Ironwood self-send: no transparent inputs or outputs
+        // (exercises the empty transparent digest branch).
+        let raw = include_str!("testdata_v6_selfsend_rawtx.hex");
+        let txid = include_str!("testdata_v6_selfsend_txid.hex");
+        assert_golden(raw, txid);
+
+        let tx = decode_v6_transaction(&hex::decode(raw.trim()).unwrap()).unwrap();
+        assert!(tx.transparent.input.is_empty());
+        assert!(tx.transparent.output.is_empty());
+        assert_eq!(tx.ironwood_bundle.unwrap().actions.len(), 1);
+    }
+
+    #[test]
+    fn golden_shield_1zec_tx_parses_and_txid_matches() {
+        // Transparent -> Ironwood shielding of 1 ZEC.
+        let raw = include_str!("testdata_v6_shield1zec_rawtx.hex");
+        let txid = include_str!("testdata_v6_shield1zec_txid.hex");
+        assert_golden(raw, txid);
+    }
+
     #[test]
     fn spend_auth_sig_count_mismatch_errors() {
         let tx = ZcashV6Transaction {
