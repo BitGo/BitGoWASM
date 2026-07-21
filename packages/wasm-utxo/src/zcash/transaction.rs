@@ -126,6 +126,16 @@ pub fn decode_zcash_transaction_parts(bytes: &[u8]) -> Result<ZcashTransactionPa
         None
     };
 
+    // The v6 (Ironwood/NU6.3) wire format reorders the header (consensusBranchId,
+    // lockTime, expiryHeight move to the front) and is not a v4 tail extension.
+    // Route callers to the dedicated v6 codec instead of mis-parsing.
+    if version_group_id == Some(ZCASH_IRONWOOD_VERSION_GROUP_ID) {
+        return Err(
+            "v6 (Ironwood) transaction detected; use crate::zcash::v6::decode_v6_transaction"
+                .to_string(),
+        );
+    }
+
     // Read inputs
     let inputs: Vec<TxIn> =
         Vec::consensus_decode(&mut slice).map_err(|e| format!("Failed to decode inputs: {}", e))?;
