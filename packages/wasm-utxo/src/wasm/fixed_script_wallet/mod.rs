@@ -2051,3 +2051,42 @@ pub fn zcash_parse_unified_address(
     crate::zcash::unified_address::parse_unified_address(address, network, ironwood)
         .map_err(|e| JsValue::from_str(&e))
 }
+
+/// Resolve a single component of a ZIP-316 Unified Address.
+///
+/// `network`: "zcash"/"zec" (mainnet) or "zcashTest"/"tzec" (testnet).
+///
+/// * `resolve_shielded = true` → the shielded (Orchard/Ironwood) receiver's raw 43
+///   bytes (11-byte diversifier + 32-byte pk_d).
+/// * `resolve_shielded = false` → the transparent receiver as scriptPubKey bytes.
+///
+/// Throws if the address is malformed or lacks a receiver of the requested type.
+#[wasm_bindgen]
+pub fn zcash_resolve_unified_address_component(
+    address: &str,
+    network: &str,
+    resolve_shielded: bool,
+) -> Result<Vec<u8>, JsValue> {
+    crate::zcash::unified_address::resolve_unified_address_component(
+        address,
+        network,
+        resolve_shielded,
+    )
+    .map_err(|e| JsValue::from_str(&e))
+}
+
+/// Determine whether `candidate` is a component of the Unified Address `unified`.
+///
+/// `unified` must be a Unified Address. `candidate` may be another Unified Address
+/// (true iff all its receivers are contained in `unified`) or a transparent Zcash
+/// address (true iff `unified`'s transparent receiver matches it). Both must belong
+/// to `network` ("zcash"/"zec" or "zcashTest"/"tzec").
+#[wasm_bindgen]
+pub fn zcash_is_address_component_of(
+    unified: &str,
+    candidate: &str,
+    network: &str,
+) -> Result<bool, JsValue> {
+    crate::zcash::unified_address::is_address_component_of(unified, candidate, network)
+        .map_err(|e| JsValue::from_str(&e))
+}

@@ -259,6 +259,88 @@ pub fn parse_unified_address(
     }
 }
 
+/// Resolve a single component of a Unified Address.
+///
+/// This is the intent-named form of [`parse_unified_address`]:
+/// * `resolve_shielded = true` → the shielded (Orchard/Ironwood) receiver's raw 43
+///   bytes (11-byte diversifier + 32-byte `pk_d`).
+/// * `resolve_shielded = false` → the transparent receiver as scriptPubKey bytes.
+pub fn resolve_unified_address_component(
+    address: &str,
+    network: &str,
+    resolve_shielded: bool,
+) -> Result<Vec<u8>, String> {
+    parse_unified_address(address, network, resolve_shielded)
+}
+
+/// Reduce a transparent Zcash address string to its `(typecode, hash20)` receiver
+/// form: P2PKH → `(0x00, pubkey_hash)`, P2SH → `(0x01, script_hash)`.
+fn transparent_address_to_receiver(address: &str, network: &str) -> Result<(u64, Vec<u8>), String> {
+    use crate::address::{AddressCodec, ZCASH, ZCASH_TEST};
+
+    let codec = match network {
+        "zcash" | "zec" => &ZCASH,
+        "zcashTest" | "tzec" => &ZCASH_TEST,
+        _ => {
+            return Err(format!(
+                "transparent address comparison is only supported on zec/tzec, not {:?}",
+                network
+            ))
+        }
+    };
+    let script = codec
+        .decode(address)
+        .map_err(|e| format!("invalid transparent Zcash address: {}", e))?;
+    let bytes = script.as_bytes();
+    if script.is_p2pkh() {
+        Ok((TYPECODE_P2PKH, bytes[3..23].to_vec()))
+    } else if script.is_p2sh() {
+        Ok((TYPECODE_P2SH, bytes[2..22].to_vec()))
+    } else {
+        Err("transparent address is neither P2PKH nor P2SH".to_string())
+    }
+}
+
+/// Determine whether `candidate` is contained within the unified address `unified`.
+///
+/// `unified` must be a Unified Address. `candidate` may be either:
+/// * another Unified Address — returns `true` iff every one of its receivers is also
+///   present (same typecode and data) in `unified`; or
+/// * a transparent Zcash address (base58check) — returns `true` iff `unified`'s
+///   transparent receiver matches it.
+///
+/// Both addresses must belong to `network`.
+pub fn is_address_component_of(
+    unified: &str,
+    candidate: &str,
+    network: &str,
+) -> Result<bool, String> {
+    let expected_hrp = hrp_for_network(network)?;
+    let container = decode_receivers(unified, expected_hrp)?;
+
+    let contains = |typecode: u64, data: &[u8]| -> bool {
+        container
+            .iter()
+            .any(|r| r.typecode == typecode && r.data == data)
+    };
+
+    // A unified `candidate` starts with the network's HRP followed by the bech32
+    // separator '1'; anything else is treated as a transparent base58check address.
+    let ua_prefix = format!("{}1", expected_hrp);
+    if candidate.starts_with(&ua_prefix) {
+        let candidate_receivers = decode_receivers(candidate, expected_hrp)?;
+        if candidate_receivers.is_empty() {
+            return Ok(false);
+        }
+        Ok(candidate_receivers
+            .iter()
+            .all(|r| contains(r.typecode, &r.data)))
+    } else {
+        let (typecode, hash) = transparent_address_to_receiver(candidate, network)?;
+        Ok(contains(typecode, &hash))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +408,60 @@ mod tests {
         chars[idx] = if chars[idx] == 'q' { 'p' } else { 'q' };
         let corrupted: String = chars.into_iter().collect();
         assert!(parse_unified_address(&corrupted, "zec", true).is_err());
+    }
+
+    // Real testnet wallet vector (wallet-data/testnet-wallet-full.json). The unified
+    // address, its transparent address, and its raw Ironwood/Orchard receiver all
+    // belong to the same wallet.
+    const TN_UA: &str = "utest1w5m0qcnp8egl8qa296n70n8nvj0tqnzk90p7f48v7mjhhdrdqs8vgqydslg5plmzefawefnpmgmlm6hcy38m972erwxs04s02cq2prhguz8kqly75m6zjy56m08d5jnycgtpqtjeprte576gkmrxyszepgx76yzuwhh7m4lfz9jaq7unjk0x5ant46juxz73hsc6q4v3dqtzww00vps";
+    const TN_TRANSPARENT: &str = "tmM4DvLVJKXZt5ydn1tqYTHvahpKSwgjuRk";
+    const TN_IRONWOOD_RAW: &str =
+        "d632c28aa0831d671be17709a42c9627e2eb687a1b2a55768ea470c9bae7499cd0bd3d0eb0484e307236b5";
+    const TN_PKH: &str = "7c6b843a25873c036aff575516e3802bcc47f634";
+
+    /// Encode a 20-byte pubkey hash as a testnet P2PKH Zcash address.
+    fn tn_p2pkh_address(pkh_hex: &str) -> String {
+        use crate::address::{AddressCodec, ZCASH_TEST};
+        use miniscript::bitcoin::{hashes::Hash, PubkeyHash, ScriptBuf};
+        let hash: [u8; 20] = hex::decode(pkh_hex).unwrap().try_into().unwrap();
+        let script = ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array(hash));
+        ZCASH_TEST.encode(&script).unwrap()
+    }
+
+    #[test]
+    fn resolve_component_shielded_and_transparent() {
+        let shielded = resolve_unified_address_component(TN_UA, "tzec", true).unwrap();
+        assert_eq!(hex::encode(&shielded), TN_IRONWOOD_RAW);
+
+        let transparent = resolve_unified_address_component(TN_UA, "tzec", false).unwrap();
+        assert_eq!(
+            transparent,
+            super::p2pkh_script(&hex::decode(TN_PKH).unwrap())
+        );
+    }
+
+    #[test]
+    fn transparent_address_is_component_of_ua() {
+        assert!(is_address_component_of(TN_UA, TN_TRANSPARENT, "tzec").unwrap());
+        // Sanity: the vector's transparent address round-trips to the wallet PKH.
+        assert_eq!(tn_p2pkh_address(TN_PKH), TN_TRANSPARENT);
+    }
+
+    #[test]
+    fn foreign_transparent_address_is_not_a_component() {
+        // A valid testnet address whose hash is not in the UA.
+        let other = tn_p2pkh_address("00112233445566778899aabbccddeeff00112233");
+        assert!(!is_address_component_of(TN_UA, &other, "tzec").unwrap());
+    }
+
+    #[test]
+    fn ua_is_component_of_itself() {
+        assert!(is_address_component_of(TN_UA, TN_UA, "tzec").unwrap());
+    }
+
+    #[test]
+    fn component_check_rejects_cross_network() {
+        // Mainnet UA container queried on testnet must fail on the HRP check.
+        assert!(is_address_component_of(UA, TN_TRANSPARENT, "tzec").is_err());
     }
 }

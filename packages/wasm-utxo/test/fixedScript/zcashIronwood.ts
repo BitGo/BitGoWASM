@@ -36,6 +36,41 @@ describe("ZcashBitGoPsbt Ironwood (v6) helpers", function () {
     });
   });
 
+  // Real testnet wallet vector (wallet-data/testnet-wallet-full.json).
+  const TN_UA =
+    "utest1w5m0qcnp8egl8qa296n70n8nvj0tqnzk90p7f48v7mjhhdrdqs8vgqydslg5plmzefawefnpmgmlm6hcy38m972erwxs04s02cq2prhguz8kqly75m6zjy56m08d5jnycgtpqtjeprte576gkmrxyszepgx76yzuwhh7m4lfz9jaq7unjk0x5ant46juxz73hsc6q4v3dqtzww00vps";
+  const TN_TRANSPARENT = "tmM4DvLVJKXZt5ydn1tqYTHvahpKSwgjuRk";
+  const TN_IRONWOOD_RAW =
+    "d632c28aa0831d671be17709a42c9627e2eb687a1b2a55768ea470c9bae7499cd0bd3d0eb0484e307236b5";
+  const TN_PKH = "7c6b843a25873c036aff575516e3802bcc47f634";
+
+  describe("resolveUnifiedAddressComponent", function () {
+    it("resolves the shielded (Ironwood) component", function () {
+      const out = ZcashBitGoPsbt.resolveUnifiedAddressComponent(TN_UA, "tzec", true);
+      assert.strictEqual(hex(out), TN_IRONWOOD_RAW);
+    });
+
+    it("resolves the transparent component as a scriptPubKey", function () {
+      const out = ZcashBitGoPsbt.resolveUnifiedAddressComponent(TN_UA, "tzec", false);
+      assert.strictEqual(hex(out), `76a914${TN_PKH}88ac`);
+    });
+  });
+
+  describe("isAddressComponentOf", function () {
+    it("recognizes the transparent address as a component", function () {
+      assert.strictEqual(ZcashBitGoPsbt.isAddressComponentOf(TN_UA, TN_TRANSPARENT, "tzec"), true);
+    });
+
+    it("recognizes the unified address as a component of itself", function () {
+      assert.strictEqual(ZcashBitGoPsbt.isAddressComponentOf(TN_UA, TN_UA, "tzec"), true);
+    });
+
+    it("throws when the addresses are on the wrong network", function () {
+      // Mainnet UA container queried on testnet.
+      assert.throws(() => ZcashBitGoPsbt.isAddressComponentOf(UA, TN_TRANSPARENT, "tzec"));
+    });
+  });
+
   describe("computeV6Txid", function () {
     it("matches the golden shielding transaction txid", function () {
       const rawHex = fs

@@ -2,7 +2,9 @@ import {
   BitGoPsbt as WasmBitGoPsbt,
   zcash_branch_id_for_height,
   zcash_compute_v6_txid,
+  zcash_is_address_component_of,
   zcash_parse_unified_address,
+  zcash_resolve_unified_address_component,
 } from "../wasm/wasm_utxo.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
 import { BitGoPsbt, type CreateEmptyOptions, type HydrationUnspent } from "./BitGoPsbt.js";
@@ -314,6 +316,44 @@ export class ZcashBitGoPsbt extends BitGoPsbt {
     ironwood: boolean,
   ): Uint8Array {
     return zcash_parse_unified_address(address, network, ironwood);
+  }
+
+  /**
+   * Resolve a single component of a ZIP-316 Unified Address.
+   *
+   * @param address - The Bech32m unified address string
+   * @param network - Zcash network name ("zcash", "zcashTest", "zec", "tzec")
+   * @param resolveShieldedComponent - `true` → the shielded (Ironwood/Orchard)
+   *   receiver (43 bytes: diversifier + pk_d); `false` → the transparent receiver
+   *   as scriptPubKey bytes (P2PKH/P2SH)
+   * @returns The requested component's bytes
+   * @throws If the address is malformed or lacks a receiver of the requested type
+   */
+  static resolveUnifiedAddressComponent(
+    address: string,
+    network: ZcashNetworkName,
+    resolveShieldedComponent: boolean,
+  ): Uint8Array {
+    return zcash_resolve_unified_address_component(address, network, resolveShieldedComponent);
+  }
+
+  /**
+   * Determine whether `candidate` is a component of the Unified Address `unified`.
+   *
+   * @param unified - A ZIP-316 Unified Address (the container)
+   * @param candidate - Either another Unified Address (matches if all of its
+   *   receivers are contained in `unified`) or a transparent Zcash address (matches
+   *   if `unified`'s transparent receiver equals it)
+   * @param network - Zcash network name; both addresses must belong to it
+   * @returns `true` if `candidate` is contained in `unified`
+   * @throws If either address is malformed or on the wrong network
+   */
+  static isAddressComponentOf(
+    unified: string,
+    candidate: string,
+    network: ZcashNetworkName,
+  ): boolean {
+    return zcash_is_address_component_of(unified, candidate, network);
   }
 
   /**
