@@ -45,7 +45,7 @@ public final class ShieldedMerkleTree implements AutoCloseable {
       ok = true;
       return new ShieldedMerkleTree(bridge);
     } finally {
-      if (!ok) bridge.close();
+      if (!ok) bridge.discard();
     }
   }
 
@@ -193,11 +193,7 @@ public final class ShieldedMerkleTree implements AutoCloseable {
 
   @Override
   public void close() {
-    try {
-      bridge.call("drop_tree");
-    } catch (Exception ignored) {
-      // Best-effort: drop the in-WASM tree before the instance goes away.
-    }
+    // WasmBridge.close() drops the in-WASM tree and returns the Instance to the pool.
     bridge.close();
   }
 }

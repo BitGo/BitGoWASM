@@ -20,11 +20,36 @@
   </properties>
 
   <dependencies>
-    <!-- Chicory: pure-JVM WASM runtime, no native/JNI dependency -->
+    <!-- Chicory: pure-JVM WASM runtime, no native/JNI dependency. -->
     <dependency>
       <groupId>com.dylibso.chicory</groupId>
       <artifactId>runtime</artifactId>
-      <version>1.1.1</version>
+      <version>1.7.5</version>
+    </dependency>
+
+    <!-- Chicory compiler: JIT-compiles WASM functions to JVM bytecode at runtime,
+         ~10x faster than the default interpreter for compute-heavy modules. -->
+    <dependency>
+      <groupId>com.dylibso.chicory</groupId>
+      <artifactId>compiler</artifactId>
+      <version>1.7.5</version>
+    </dependency>
+
+    <!-- ASM: required by the Chicory compiler for bytecode generation -->
+    <dependency>
+      <groupId>org.ow2.asm</groupId>
+      <artifactId>asm</artifactId>
+      <version>9.9.1</version>
+    </dependency>
+    <dependency>
+      <groupId>org.ow2.asm</groupId>
+      <artifactId>asm-commons</artifactId>
+      <version>9.9.1</version>
+    </dependency>
+    <dependency>
+      <groupId>org.ow2.asm</groupId>
+      <artifactId>asm-util</artifactId>
+      <version>9.9.1</version>
     </dependency>
 
     <!-- Protobuf runtime for reading/writing proto messages -->
