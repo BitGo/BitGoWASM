@@ -1,4 +1,9 @@
-import { BitGoPsbt as WasmBitGoPsbt, zcash_branch_id_for_height } from "../wasm/wasm_utxo.js";
+import {
+  BitGoPsbt as WasmBitGoPsbt,
+  zcash_branch_id_for_height,
+  zcash_compute_v6_txid,
+  zcash_parse_unified_address,
+} from "../wasm/wasm_utxo.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
 import { BitGoPsbt, type CreateEmptyOptions, type HydrationUnspent } from "./BitGoPsbt.js";
 import { ZcashTransaction, type ITransaction } from "../transaction.js";
@@ -278,6 +283,37 @@ export class ZcashBitGoPsbt extends BitGoPsbt {
    */
   static branchIdForHeight(network: ZcashNetworkName, height: number): number | undefined {
     return zcash_branch_id_for_height(network, height);
+  }
+
+  /**
+   * Compute the ZIP-244 txid of a Zcash v6 (Ironwood/NU6.3) transaction.
+   *
+   * @param txBytes - Raw v6 transaction bytes
+   * @returns The 32-byte txid in internal byte order (reverse for display)
+   * @throws If the bytes are not a valid v6 transaction
+   */
+  static computeV6Txid(txBytes: Uint8Array): Uint8Array {
+    return zcash_compute_v6_txid(txBytes);
+  }
+
+  /**
+   * Parse a ZIP-316 Unified Address and return the requested receiver bytes.
+   *
+   * Ironwood reuses the existing Orchard receiver (typecode 0x03).
+   *
+   * @param address - The Bech32m unified address string
+   * @param network - Zcash network name ("zcash", "zcashTest", "zec", "tzec")
+   * @param ironwood - `true` → Orchard/Ironwood receiver (43 bytes: diversifier +
+   *   pk_d); `false` → transparent receiver as scriptPubKey bytes (P2PKH/P2SH)
+   * @returns The receiver bytes
+   * @throws If the address is malformed or lacks a receiver of the requested type
+   */
+  static parseUnifiedAddress(
+    address: string,
+    network: ZcashNetworkName,
+    ironwood: boolean,
+  ): Uint8Array {
+    return zcash_parse_unified_address(address, network, ironwood);
   }
 
   /**

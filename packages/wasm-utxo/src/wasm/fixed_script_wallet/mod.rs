@@ -2032,3 +2032,22 @@ pub fn zcash_compute_v6_txid(tx_bytes: &[u8]) -> Result<Vec<u8>, JsValue> {
         .map(|h| h.to_vec())
         .map_err(|e| JsValue::from_str(&e))
 }
+
+/// Parse a ZIP-316 Unified Address and return the requested receiver bytes.
+///
+/// `network`: "zcash"/"zec" (mainnet) or "zcashTest"/"tzec" (testnet).
+///
+/// * `ironwood = true` → the Orchard receiver's raw 43 bytes (11-byte diversifier +
+///   32-byte pk_d); Ironwood reuses the Orchard receiver.
+/// * `ironwood = false` → the transparent receiver as scriptPubKey bytes (P2PKH/P2SH).
+///
+/// Throws if the address is malformed or lacks a receiver of the requested type.
+#[wasm_bindgen]
+pub fn zcash_parse_unified_address(
+    address: &str,
+    network: &str,
+    ironwood: bool,
+) -> Result<Vec<u8>, JsValue> {
+    crate::zcash::unified_address::parse_unified_address(address, network, ironwood)
+        .map_err(|e| JsValue::from_str(&e))
+}
