@@ -23,9 +23,26 @@
 //! Sapling or Orchard bundles are rejected with a clear error rather than
 //! mis-parsed, since no BitGo flow emits them.
 
+use super::blake2b::blake2b_256_personal;
 use super::transaction::{ZCASH_IRONWOOD_VERSION_GROUP_ID, ZCASH_V6_VERSION_HEADER};
 use miniscript::bitcoin::consensus::{Decodable, Encodable};
 use miniscript::bitcoin::{Transaction, TxIn, TxOut, VarInt};
+
+/// ZIP-244 personalization for the Ironwood bundle digest.
+pub const ZTXID_IRONWOOD_HASH_PERSONAL: &[u8; 16] = b"ZTxIdIronwd_H_v6";
+/// ZIP-244 personalization for the Ironwood compact-actions sub-digest.
+pub const ZTXID_IRONWOOD_COMPACT_PERSONAL: &[u8; 16] = b"ZTxIdIrnActCH_v6";
+/// ZIP-244 personalization for the Ironwood memos sub-digest.
+pub const ZTXID_IRONWOOD_MEMOS_PERSONAL: &[u8; 16] = b"ZTxIdIrnActMH_v6";
+/// ZIP-244 personalization for the Ironwood non-compact actions sub-digest.
+pub const ZTXID_IRONWOOD_NONCOMPACT_PERSONAL: &[u8; 16] = b"ZTxIdIrnActNH_v6";
+/// ZIP-244 personalization for the (v6-personalized) Orchard slot digest.
+pub const ZTXID_ORCHARD_V6_HASH_PERSONAL: &[u8; 16] = b"ZTxIdOrchardH_v6";
+
+/// Boundary between the compact note plaintext and the memo inside `encCiphertext`.
+const ENC_COMPACT_END: usize = 52;
+/// Boundary between the memo and the Poly1305 tag inside `encCiphertext`.
+const ENC_MEMO_END: usize = 564;
 
 /// Serialized size of a single Ironwood action on the wire.
 pub const IRONWOOD_ACTION_SIZE: usize = 820;
@@ -124,6 +141,74 @@ pub struct IronwoodBundle {
     pub spend_auth_sigs: Vec<[u8; 64]>,
     /// RedPallas binding signature (server-provided).
     pub binding_sig: [u8; 64],
+}
+
+impl IronwoodBundle {
+    /// Compute the ZIP-244 `ironwood_digest` over this bundle.
+    ///
+    /// Per ZIP-244 the digest is a three-way split over the per-action byte ranges,
+    /// combined with the flag byte and (little-endian) value balance:
+    ///
+    /// ```text
+    /// compactHash    = BLAKE2b("ZTxIdIrnActCH_v6", per-action: nullifier ‖ cmx ‖ epk ‖ enc[0..52])
+    /// memosHash      = BLAKE2b("ZTxIdIrnActMH_v6", per-action: enc[52..564])
+    /// noncompactHash = BLAKE2b("ZTxIdIrnActNH_v6", per-action: cv ‖ rk ‖ enc[564..580] ‖ outCiphertext)
+    /// ironwood_digest = BLAKE2b("ZTxIdIronwd_H_v6",
+    ///     compactHash ‖ memosHash ‖ noncompactHash ‖ flags ‖ valueBalance)
+    /// ```
+    ///
+    /// The anchor, proof, and signatures are intentionally excluded — the digest
+    /// covers action data only (see ZIP-244 §"Ironwood bundle digest").
+    pub fn digest(&self) -> [u8; 32] {
+        let mut compact = Vec::new();
+        let mut memos = Vec::new();
+        let mut noncompact = Vec::new();
+
+        for a in &self.actions {
+            compact.extend_from_slice(&a.nullifier);
+            compact.extend_from_slice(&a.cmx);
+            compact.extend_from_slice(&a.ephemeral_key);
+            compact.extend_from_slice(&a.enc_ciphertext[..ENC_COMPACT_END]);
+
+            memos.extend_from_slice(&a.enc_ciphertext[ENC_COMPACT_END..ENC_MEMO_END]);
+
+            noncompact.extend_from_slice(&a.cv);
+            noncompact.extend_from_slice(&a.rk);
+            noncompact.extend_from_slice(&a.enc_ciphertext[ENC_MEMO_END..]);
+            noncompact.extend_from_slice(&a.out_ciphertext);
+        }
+
+        let compact_hash = blake2b_256_personal(&compact, ZTXID_IRONWOOD_COMPACT_PERSONAL);
+        let memos_hash = blake2b_256_personal(&memos, ZTXID_IRONWOOD_MEMOS_PERSONAL);
+        let noncompact_hash = blake2b_256_personal(&noncompact, ZTXID_IRONWOOD_NONCOMPACT_PERSONAL);
+
+        let mut body = Vec::with_capacity(32 * 3 + 1 + 8);
+        body.extend_from_slice(&compact_hash);
+        body.extend_from_slice(&memos_hash);
+        body.extend_from_slice(&noncompact_hash);
+        body.push(self.flags);
+        body.extend_from_slice(&self.value_balance.to_le_bytes());
+
+        blake2b_256_personal(&body, ZTXID_IRONWOOD_HASH_PERSONAL)
+    }
+}
+
+/// ZIP-244 `ironwood_digest` for a v6 transaction's Ironwood slot.
+///
+/// An absent bundle (`nActionsIronwood = 0`) hashes to the empty personalized digest.
+pub fn ironwood_digest(bundle: Option<&IronwoodBundle>) -> [u8; 32] {
+    match bundle {
+        Some(b) => b.digest(),
+        None => blake2b_256_personal(&[], ZTXID_IRONWOOD_HASH_PERSONAL),
+    }
+}
+
+/// ZIP-244 digest for the (empty) v6 Orchard slot.
+///
+/// BitGo Ironwood flows never populate the Orchard v6 slot, so this is always the
+/// empty personalized digest.
+pub fn orchard_v6_empty_digest() -> [u8; 32] {
+    blake2b_256_personal(&[], ZTXID_ORCHARD_V6_HASH_PERSONAL)
 }
 
 /// A fully parsed Zcash v6 (Ironwood) transaction.
@@ -497,6 +582,86 @@ mod tests {
         let mut bytes = encode_v6_transaction(&tx).unwrap();
         bytes.push(0xff);
         assert!(decode_v6_transaction(&bytes).is_err());
+    }
+
+    fn sample_bundle() -> IronwoodBundle {
+        IronwoodBundle {
+            actions: vec![sample_action(1), sample_action(50)],
+            flags: 0x07,
+            value_balance: -1000,
+            anchor: [9u8; 32],
+            proof: vec![0xabu8; 300],
+            spend_auth_sigs: vec![[1u8; 64], [2u8; 64]],
+            binding_sig: [7u8; 64],
+        }
+    }
+
+    #[test]
+    fn digest_is_deterministic() {
+        let b = sample_bundle();
+        assert_eq!(b.digest(), b.digest());
+    }
+
+    #[test]
+    fn digest_excludes_anchor_proof_and_sigs() {
+        let b = sample_bundle();
+        let base = b.digest();
+
+        let mut b2 = b.clone();
+        b2.anchor = [0xffu8; 32];
+        b2.proof = vec![0u8; 10];
+        b2.spend_auth_sigs = vec![[9u8; 64], [9u8; 64]];
+        b2.binding_sig = [0xeeu8; 64];
+        assert_eq!(
+            b2.digest(),
+            base,
+            "anchor/proof/sigs must not affect the digest"
+        );
+    }
+
+    #[test]
+    fn digest_depends_on_flags_and_value_balance() {
+        let b = sample_bundle();
+        let base = b.digest();
+
+        let mut b_flags = b.clone();
+        b_flags.flags = 0x03;
+        assert_ne!(b_flags.digest(), base);
+
+        let mut b_vb = b.clone();
+        b_vb.value_balance = 1000;
+        assert_ne!(b_vb.digest(), base);
+    }
+
+    #[test]
+    fn digest_depends_on_action_data() {
+        let b = sample_bundle();
+        let base = b.digest();
+
+        let mut b2 = b.clone();
+        b2.actions[0].cmx = [0xaau8; 32];
+        assert_ne!(b2.digest(), base);
+    }
+
+    #[test]
+    fn empty_ironwood_digest_is_empty_personalized_hash() {
+        let expected = super::blake2b_256_personal(&[], super::ZTXID_IRONWOOD_HASH_PERSONAL);
+        assert_eq!(ironwood_digest(None), expected);
+    }
+
+    #[test]
+    fn ironwood_digest_dispatches_to_bundle() {
+        let b = sample_bundle();
+        assert_eq!(ironwood_digest(Some(&b)), b.digest());
+    }
+
+    #[test]
+    fn personalization_strings_are_16_bytes() {
+        assert_eq!(ZTXID_IRONWOOD_HASH_PERSONAL.len(), 16);
+        assert_eq!(ZTXID_IRONWOOD_COMPACT_PERSONAL.len(), 16);
+        assert_eq!(ZTXID_IRONWOOD_MEMOS_PERSONAL.len(), 16);
+        assert_eq!(ZTXID_IRONWOOD_NONCOMPACT_PERSONAL.len(), 16);
+        assert_eq!(ZTXID_ORCHARD_V6_HASH_PERSONAL.len(), 16);
     }
 
     #[test]
