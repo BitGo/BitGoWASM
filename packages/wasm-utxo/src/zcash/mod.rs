@@ -9,6 +9,7 @@
 //!
 //! Tests verify parity with `zebra-chain` crate.
 
+pub mod blake2b;
 pub mod transaction;
 
 /// Zcash network upgrade identifiers
