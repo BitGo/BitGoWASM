@@ -10,8 +10,8 @@ use super::{
     BITCOIN_CASH_TESTNET_CASHADDR, BITCOIN_GOLD, BITCOIN_GOLD_BECH32, BITCOIN_GOLD_TESTNET,
     BITCOIN_GOLD_TESTNET_BECH32, BITCOIN_SV, BITCOIN_SV_TESTNET, DASH, DASH_TEST, DOGECOIN,
     DOGECOIN_TEST, ECASH, ECASH_CASHADDR, ECASH_TEST, ECASH_TEST_CASHADDR, LITECOIN,
-    LITECOIN_BECH32, LITECOIN_TEST, LITECOIN_TEST_BECH32, REGTEST, REGTEST_BECH32, TESTNET,
-    TESTNET_BECH32, ZCASH, ZCASH_TEST,
+    LITECOIN_BECH32, LITECOIN_TEST, LITECOIN_TEST_BECH32, PEARL_BECH32, PEARL_TEST_BECH32, REGTEST,
+    REGTEST_BECH32, TESTNET, TESTNET_BECH32, ZCASH, ZCASH_TEST,
 };
 use crate::bitcoin::Script;
 use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
@@ -46,6 +46,9 @@ fn get_decode_codecs(network: Network) -> Vec<&'static dyn AddressCodec> {
         Network::LitecoinTestnet => vec![&LITECOIN_TEST, &LITECOIN_TEST_BECH32],
         Network::Zcash => vec![&ZCASH],
         Network::ZcashTestnet => vec![&ZCASH_TEST],
+        // Pearl is Taproot-only; bech32m addresses only, no legacy codecs.
+        Network::Pearl => vec![&PEARL_BECH32],
+        Network::PearlTestnet => vec![&PEARL_TEST_BECH32],
     }
 }
 
@@ -184,7 +187,10 @@ impl Network {
         // Litecoin: has apparent taproot support, but we have not enabled it in this library yet.
         // - https://github.com/litecoin-project/litecoin/blob/v0.21.4/src/chainparams.cpp#L89-L92
         // - https://github.com/litecoin-project/litecoin/blob/v0.21.4/src/script/interpreter.h#L129-L131
-        let taproot = segwit && matches!(self.mainnet(), Network::Bitcoin);
+        //
+        // Pearl: Taproot-only btcd fork (no segwit v0 on-chain).
+        // - https://github.com/pearl-research-labs/pearl/blob/v1.1.6/node/chaincfg/params.go
+        let taproot = matches!(self.mainnet(), Network::Bitcoin | Network::Pearl);
 
         // P2MR (BIP-360) support:
         // Enabled on all Bitcoin networks (mainnet + testnets) for address encoding.
@@ -295,6 +301,9 @@ fn get_encode_codec(
         }
         Network::Zcash => Ok(&ZCASH),
         Network::ZcashTestnet => Ok(&ZCASH_TEST),
+        // Pearl is Taproot-only; assert_support() already rejects non-P2TR scripts above.
+        Network::Pearl => Ok(&PEARL_BECH32),
+        Network::PearlTestnet => Ok(&PEARL_TEST_BECH32),
     }
 }
 

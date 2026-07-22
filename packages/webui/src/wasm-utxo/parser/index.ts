@@ -53,6 +53,8 @@ const networkLabels: Record<CoinName, string> = {
   tdoge: "Dogecoin Testnet",
   zec: "Zcash",
   tzec: "Zcash Testnet",
+  pearl: "Pearl",
+  tpearl: "Pearl Testnet",
 };
 
 /**
