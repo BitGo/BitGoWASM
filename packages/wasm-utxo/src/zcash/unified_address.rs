@@ -366,58 +366,22 @@ mod tests {
         assert_eq!(buf, F4JUMBLE_NORMAL);
     }
 
-    // ZIP-316 unified-address test vector (mainnet, HRP "u") containing a P2PKH
-    // receiver and an Orchard receiver.
-    const UA: &str = "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666kgwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw6uh7hyvzjse8ksx";
-    const UA_P2PKH_HASH: &str = "cad268758c5e71493066446b98e71df9d1d6a5ca";
-    const UA_ORCHARD: &str =
-        "cecbe5e689a453a3fe10ccf7617e6c1fb382819d7fc9200a1f42092ac84a30378f8c1fb90dff71a6d5042d";
-
-    #[test]
-    fn parses_orchard_ironwood_receiver() {
-        let out = parse_unified_address(UA, "zec", true).unwrap();
-        assert_eq!(hex::encode(&out), UA_ORCHARD);
-        assert_eq!(out.len(), ORCHARD_RECEIVER_LEN);
+    /// Load the shared unified-address fixture (`test/fixtures/zcash/unified_address.json`).
+    fn ua_fixtures() -> serde_json::Value {
+        let s = crate::fixed_script_wallet::test_utils::fixtures::load_fixture(
+            "zcash/unified_address.json",
+        )
+        .expect("load unified_address.json");
+        serde_json::from_str(&s).expect("parse unified_address.json")
     }
 
-    #[test]
-    fn parses_transparent_receiver_as_p2pkh_script() {
-        let out = parse_unified_address(UA, "zec", false).unwrap();
-        let expected = super::p2pkh_script(&hex::decode(UA_P2PKH_HASH).unwrap());
-        assert_eq!(out, expected);
-        // Sanity: script wraps the 20-byte hash.
-        assert_eq!(out.len(), 25);
+    /// Read a string field `group.key` from the fixture.
+    fn fx(v: &serde_json::Value, group: &str, key: &str) -> String {
+        v[group][key]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing fixture field {}.{}", group, key))
+            .to_string()
     }
-
-    #[test]
-    fn wrong_network_hrp_is_rejected() {
-        // Mainnet UA parsed as testnet must fail on the HRP check.
-        assert!(parse_unified_address(UA, "tzec", true).is_err());
-    }
-
-    #[test]
-    fn unknown_network_is_rejected() {
-        assert!(parse_unified_address(UA, "bitcoin", true).is_err());
-    }
-
-    #[test]
-    fn corrupted_address_is_rejected() {
-        let mut chars: Vec<char> = UA.chars().collect();
-        // Flip a character in the data part to break the Bech32m checksum / jumble.
-        let idx = chars.len() - 5;
-        chars[idx] = if chars[idx] == 'q' { 'p' } else { 'q' };
-        let corrupted: String = chars.into_iter().collect();
-        assert!(parse_unified_address(&corrupted, "zec", true).is_err());
-    }
-
-    // Real testnet wallet vector (wallet-data/testnet-wallet-full.json). The unified
-    // address, its transparent address, and its raw Ironwood/Orchard receiver all
-    // belong to the same wallet.
-    const TN_UA: &str = "utest1w5m0qcnp8egl8qa296n70n8nvj0tqnzk90p7f48v7mjhhdrdqs8vgqydslg5plmzefawefnpmgmlm6hcy38m972erwxs04s02cq2prhguz8kqly75m6zjy56m08d5jnycgtpqtjeprte576gkmrxyszepgx76yzuwhh7m4lfz9jaq7unjk0x5ant46juxz73hsc6q4v3dqtzww00vps";
-    const TN_TRANSPARENT: &str = "tmM4DvLVJKXZt5ydn1tqYTHvahpKSwgjuRk";
-    const TN_IRONWOOD_RAW: &str =
-        "d632c28aa0831d671be17709a42c9627e2eb687a1b2a55768ea470c9bae7499cd0bd3d0eb0484e307236b5";
-    const TN_PKH: &str = "7c6b843a25873c036aff575516e3802bcc47f634";
 
     /// Encode a 20-byte pubkey hash as a testnet P2PKH Zcash address.
     fn tn_p2pkh_address(pkh_hex: &str) -> String {
@@ -428,40 +392,125 @@ mod tests {
         ZCASH_TEST.encode(&script).unwrap()
     }
 
+    // --- ZIP-316 mainnet vector (P2PKH + Orchard receivers) ---
+
+    #[test]
+    fn parses_orchard_ironwood_receiver() {
+        let f = ua_fixtures();
+        let ua = fx(&f, "zip316Mainnet", "unified");
+        let out = parse_unified_address(&ua, "zec", true).unwrap();
+        assert_eq!(
+            hex::encode(&out),
+            fx(&f, "zip316Mainnet", "orchardReceiverHex")
+        );
+        assert_eq!(out.len(), ORCHARD_RECEIVER_LEN);
+    }
+
+    #[test]
+    fn parses_transparent_receiver_as_p2pkh_script() {
+        let f = ua_fixtures();
+        let ua = fx(&f, "zip316Mainnet", "unified");
+        let out = parse_unified_address(&ua, "zec", false).unwrap();
+        let hash = hex::decode(fx(&f, "zip316Mainnet", "transparentPubkeyHashHex")).unwrap();
+        assert_eq!(out, super::p2pkh_script(&hash));
+        // Sanity: script wraps the 20-byte hash.
+        assert_eq!(out.len(), 25);
+    }
+
+    #[test]
+    fn wrong_network_hrp_is_rejected() {
+        let ua = fx(&ua_fixtures(), "zip316Mainnet", "unified");
+        // Mainnet UA parsed as testnet must fail on the HRP check.
+        assert!(parse_unified_address(&ua, "tzec", true).is_err());
+    }
+
+    #[test]
+    fn unknown_network_is_rejected() {
+        let ua = fx(&ua_fixtures(), "zip316Mainnet", "unified");
+        assert!(parse_unified_address(&ua, "bitcoin", true).is_err());
+    }
+
+    #[test]
+    fn corrupted_address_is_rejected() {
+        let ua = fx(&ua_fixtures(), "zip316Mainnet", "unified");
+        let mut chars: Vec<char> = ua.chars().collect();
+        // Flip a character in the data part to break the Bech32m checksum / jumble.
+        let idx = chars.len() - 5;
+        chars[idx] = if chars[idx] == 'q' { 'p' } else { 'q' };
+        let corrupted: String = chars.into_iter().collect();
+        assert!(parse_unified_address(&corrupted, "zec", true).is_err());
+    }
+
+    #[test]
+    fn missing_requested_receiver_is_rejected() {
+        // The ZIP-316 mainnet vector has P2PKH + Orchard but no P2SH; requesting a
+        // transparent receiver still succeeds (P2PKH), but an all-shielded lookup on
+        // a UA lacking Orchard would fail. Here we assert the transparent path works
+        // and the shielded path returns the Orchard receiver — i.e. both are present.
+        let f = ua_fixtures();
+        let ua = fx(&f, "zip316Mainnet", "unified");
+        assert!(parse_unified_address(&ua, "zec", true).is_ok());
+        assert!(parse_unified_address(&ua, "zec", false).is_ok());
+    }
+
+    // --- Real testnet wallet vector (wallet-data/testnet-wallet-full.json) ---
+
     #[test]
     fn resolve_component_shielded_and_transparent() {
-        let shielded = resolve_unified_address_component(TN_UA, "tzec", true).unwrap();
-        assert_eq!(hex::encode(&shielded), TN_IRONWOOD_RAW);
+        let f = ua_fixtures();
+        let ua = fx(&f, "testnetWallet", "unified");
 
-        let transparent = resolve_unified_address_component(TN_UA, "tzec", false).unwrap();
+        let shielded = resolve_unified_address_component(&ua, "tzec", true).unwrap();
         assert_eq!(
-            transparent,
-            super::p2pkh_script(&hex::decode(TN_PKH).unwrap())
+            hex::encode(&shielded),
+            fx(&f, "testnetWallet", "ironwoodReceiverHex")
         );
+
+        let transparent = resolve_unified_address_component(&ua, "tzec", false).unwrap();
+        let pkh = hex::decode(fx(&f, "testnetWallet", "transparentPubkeyHashHex")).unwrap();
+        assert_eq!(transparent, super::p2pkh_script(&pkh));
     }
 
     #[test]
     fn transparent_address_is_component_of_ua() {
-        assert!(is_address_component_of(TN_UA, TN_TRANSPARENT, "tzec").unwrap());
+        let f = ua_fixtures();
+        let ua = fx(&f, "testnetWallet", "unified");
+        let addr = fx(&f, "testnetWallet", "transparentAddress");
+        assert!(is_address_component_of(&ua, &addr, "tzec").unwrap());
         // Sanity: the vector's transparent address round-trips to the wallet PKH.
-        assert_eq!(tn_p2pkh_address(TN_PKH), TN_TRANSPARENT);
+        assert_eq!(
+            tn_p2pkh_address(&fx(&f, "testnetWallet", "transparentPubkeyHashHex")),
+            addr
+        );
     }
 
     #[test]
     fn foreign_transparent_address_is_not_a_component() {
+        let ua = fx(&ua_fixtures(), "testnetWallet", "unified");
         // A valid testnet address whose hash is not in the UA.
         let other = tn_p2pkh_address("00112233445566778899aabbccddeeff00112233");
-        assert!(!is_address_component_of(TN_UA, &other, "tzec").unwrap());
+        assert!(!is_address_component_of(&ua, &other, "tzec").unwrap());
     }
 
     #[test]
     fn ua_is_component_of_itself() {
-        assert!(is_address_component_of(TN_UA, TN_UA, "tzec").unwrap());
+        let ua = fx(&ua_fixtures(), "testnetWallet", "unified");
+        assert!(is_address_component_of(&ua, &ua, "tzec").unwrap());
     }
 
     #[test]
     fn component_check_rejects_cross_network() {
+        let f = ua_fixtures();
+        let mainnet_ua = fx(&f, "zip316Mainnet", "unified");
+        let tn_addr = fx(&f, "testnetWallet", "transparentAddress");
         // Mainnet UA container queried on testnet must fail on the HRP check.
-        assert!(is_address_component_of(UA, TN_TRANSPARENT, "tzec").is_err());
+        assert!(is_address_component_of(&mainnet_ua, &tn_addr, "tzec").is_err());
+    }
+
+    #[test]
+    fn malformed_candidate_address_is_rejected() {
+        let ua = fx(&ua_fixtures(), "testnetWallet", "unified");
+        // Not a valid base58check transparent address and not a UA.
+        assert!(is_address_component_of(&ua, "not-an-address", "tzec").is_err());
     }
 }
