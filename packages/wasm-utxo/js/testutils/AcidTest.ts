@@ -179,8 +179,8 @@ export class AcidTest {
     // Filter inputs based on network support
     const inputs: Input[] = inputScriptTypes
       .filter((scriptType) => {
-        // p2shP2pk is always supported (single-sig replay protection)
-        if (scriptType === "p2shP2pk") return true;
+        // p2shP2pk requires legacy (P2SH) support
+        if (scriptType === "p2shP2pk") return supportsScriptType(coin, "p2sh");
 
         // Map input script types to output script types for support check
         if (scriptType === "p2trMusig2KeyPath" || scriptType === "p2trMusig2ScriptPath") {
@@ -206,11 +206,15 @@ export class AcidTest {
         value: BigInt(900 + index * 100), // Deterministic amounts
       }));
 
-    // Test other wallet output (with derivation info)
-    outputs.push({ scriptType: "p2sh", value: BigInt(800), walletKeys: otherWalletKeys });
+    // Test other wallet output (with derivation info) — only on legacy-supporting networks
+    if (supportsScriptType(coin, "p2sh")) {
+      outputs.push({ scriptType: "p2sh", value: BigInt(800), walletKeys: otherWalletKeys });
+    }
 
-    // Test non-wallet output (no derivation info)
-    outputs.push({ scriptType: "p2sh", value: BigInt(700), walletKeys: null });
+    // Test non-wallet output (no derivation info) — only on legacy-supporting networks
+    if (supportsScriptType(coin, "p2sh")) {
+      outputs.push({ scriptType: "p2sh", value: BigInt(700), walletKeys: null });
+    }
 
     // Test OP_RETURN output
     outputs.push({ opReturn: "setec astronomy", value: BigInt(0) });

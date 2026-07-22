@@ -412,7 +412,9 @@ impl BitGoPsbt {
             | Network::Dogecoin
             | Network::DogecoinTestnet
             | Network::Litecoin
-            | Network::LitecoinTestnet => Ok(BitGoPsbt::BitcoinLike(
+            | Network::LitecoinTestnet
+            | Network::Pearl
+            | Network::PearlTestnet => Ok(BitGoPsbt::BitcoinLike(
                 Psbt::deserialize(psbt_bytes)?,
                 network,
             )),
@@ -1825,7 +1827,7 @@ impl BitGoPsbt {
         &'a mut self,
         input_index: usize,
     ) -> Result<p2tr_musig2_input::Musig2Context<'a>, String> {
-        if self.network().mainnet() != Network::Bitcoin {
+        if !matches!(self.network().mainnet(), Network::Bitcoin | Network::Pearl) {
             return Err("MuSig2 not supported for non-Bitcoin networks".to_string());
         }
 

@@ -454,6 +454,7 @@ mod tests {
 
         // Test segwit rejection: try to create P2wsh on a network without segwit support
         let no_segwit_support = OutputScriptSupport {
+            legacy: true,
             segwit: false,
             taproot: false,
             p2mr: false,
@@ -478,6 +479,7 @@ mod tests {
 
         // Test taproot rejection: try to create P2tr on a network without taproot support
         let no_taproot_support = OutputScriptSupport {
+            legacy: true,
             segwit: true,
             taproot: false,
             p2mr: false,
