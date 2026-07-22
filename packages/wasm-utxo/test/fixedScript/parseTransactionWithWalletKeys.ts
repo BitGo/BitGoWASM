@@ -1,6 +1,10 @@
 import assert from "node:assert";
 import { fixedScriptWallet, isWasmUtxoError } from "../../js/index.js";
-import { BitGoPsbt, InputScriptType } from "../../js/fixedScriptWallet/index.js";
+import {
+  BitGoPsbt,
+  InputScriptType,
+  supportsScriptType,
+} from "../../js/fixedScriptWallet/index.js";
 import type { RootWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
 import type { ECPair } from "../../js/index.js";
 import {
@@ -148,12 +152,13 @@ describe("parseTransactionWithWalletKeys", function () {
               expectedOpReturn.toString("hex"),
             );
 
-            // Fixtures now have 3 external outputs
+            // Fixtures have 3 external outputs for legacy-supporting coins (other-wallet P2SH + null-wallet P2SH + OP_RETURN),
+            // or 1 external output for taproot-only coins like Pearl (OP_RETURN only)
             assert.ok(internalOutputs.length > 0, "Should have internal outputs (have scriptId)");
             assert.strictEqual(
               externalOutputs.length,
-              3,
-              "Should have 3 external outputs in test fixture",
+              supportsScriptType(networkName, "p2sh") ? 3 : 1,
+              "Should have correct number of external outputs in test fixture",
             );
 
             // Verify all outputs have proper structure
@@ -178,9 +183,12 @@ describe("parseTransactionWithWalletKeys", function () {
               }
             });
 
-            // Verify spend amount (should be > 0 since there are external outputs)
-            // AcidTest uses other wallet (800) + null wallet (700) = 1500
-            assert.strictEqual(parsed.spendAmount, 800n + 700n);
+            // Verify spend amount: AcidTest uses other wallet (800) + null wallet (700) = 1500
+            // Taproot-only coins (e.g. Pearl) have no legacy outputs so spend amount is 0
+            assert.strictEqual(
+              parsed.spendAmount,
+              supportsScriptType(networkName, "p2sh") ? 800n + 700n : 0n,
+            );
 
             // Verify miner fee calculation
             const totalInputValue = parsed.inputs.reduce((sum, i) => sum + i.value, 0n);
@@ -288,22 +296,26 @@ describe("parseTransactionWithWalletKeys", function () {
             // Find outputs that belong to the other wallet keys (scriptId !== null)
             const otherWalletOutputs = parsedOutputs.filter((o) => o.scriptId !== null);
 
-            // Should have exactly one output for the other wallet keys
+            // Legacy-supporting coins have one P2SH output for the other wallet keys;
+            // taproot-only coins (e.g. Pearl) have none
             assert.strictEqual(
               otherWalletOutputs.length,
-              1,
-              "Should have exactly one output belonging to the other wallet keys",
+              supportsScriptType(networkName, "p2sh") ? 1 : 0,
+              "Should have correct number of outputs belonging to the other wallet keys",
             );
 
             // Verify that this output is marked as external (scriptId === null) under regular wallet keys
-            const otherWalletOutputIndex = parsedOutputs.findIndex((o) => o.scriptId !== null);
-            const sameOutputWithRegularKeys = originalParsedOutputs[otherWalletOutputIndex];
+            // (only applicable for legacy-supporting coins that have a P2SH other-wallet output)
+            if (supportsScriptType(networkName, "p2sh")) {
+              const otherWalletOutputIndex = parsedOutputs.findIndex((o) => o.scriptId !== null);
+              const sameOutputWithRegularKeys = originalParsedOutputs[otherWalletOutputIndex];
 
-            assert.strictEqual(
-              sameOutputWithRegularKeys.scriptId,
-              null,
-              "The output belonging to other wallet keys should be marked as external (scriptId === null) when parsed with regular wallet keys",
-            );
+              assert.strictEqual(
+                sameOutputWithRegularKeys.scriptId,
+                null,
+                "The output belonging to other wallet keys should be marked as external (scriptId === null) when parsed with regular wallet keys",
+              );
+            }
           });
         });
       });

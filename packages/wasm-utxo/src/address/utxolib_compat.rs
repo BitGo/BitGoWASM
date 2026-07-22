@@ -40,7 +40,9 @@ impl UtxolibNetwork {
                 .is_some_and(|bech32| bech32 == "bc" || bech32 == "tb");
 
         // P2MR not supported via utxolib compat layer (only via Network enum)
+        // All networks exposed via utxolib compat support legacy scripts
         OutputScriptSupport {
+            legacy: true,
             segwit,
             taproot,
             p2mr: false,

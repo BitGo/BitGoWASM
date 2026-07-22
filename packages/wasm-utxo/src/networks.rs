@@ -54,6 +54,12 @@ pub enum Network {
     // https://github.com/zcash/zcash/blob/master/src/chainparams.cpp
     Zcash,
     ZcashTestnet,
+
+    // https://github.com/pearl-research-labs/pearl/blob/v1.1.6/node/chaincfg/params.go
+    // Taproot-only chain (btcd fork), ZK-PoW (Plonky2/STARK), P2TR script-path multisig.
+    // No legacy outputs (no P2PKH/P2SH/P2WPKH/P2WSH). Bech32m only.
+    Pearl,
+    PearlTestnet,
 }
 
 impl Network {
@@ -81,6 +87,8 @@ impl Network {
         Network::LitecoinTestnet,
         Network::Zcash,
         Network::ZcashTestnet,
+        Network::Pearl,
+        Network::PearlTestnet,
     ];
 
     /// Returns the canonical string name of this network
@@ -108,6 +116,8 @@ impl Network {
             Network::LitecoinTestnet => "LitecoinTestnet",
             Network::Zcash => "Zcash",
             Network::ZcashTestnet => "ZcashTestnet",
+            Network::Pearl => "Pearl",
+            Network::PearlTestnet => "PearlTestnet",
         }
     }
 
@@ -143,6 +153,9 @@ impl Network {
 
             "Zcash" => Some(Network::Zcash),
             "ZcashTestnet" => Some(Network::ZcashTestnet),
+
+            "Pearl" => Some(Network::Pearl),
+            "PearlTestnet" => Some(Network::PearlTestnet),
 
             _ => None,
         }
@@ -203,6 +216,9 @@ impl Network {
             Network::LitecoinTestnet => "litecoinTest",
             Network::Zcash => "zcash",
             Network::ZcashTestnet => "zcashTest",
+            // Pearl is not yet in @bitgo/utxo-lib; names reserved for future wiring.
+            Network::Pearl => "pearl",
+            Network::PearlTestnet => "pearlTest",
         }
     }
 
@@ -231,6 +247,8 @@ impl Network {
             "tltc" => Some(Network::LitecoinTestnet),
             "zec" => Some(Network::Zcash),
             "tzec" => Some(Network::ZcashTestnet),
+            "pearl" => Some(Network::Pearl),
+            "tpearl" => Some(Network::PearlTestnet),
             _ => None,
         }
     }
@@ -260,6 +278,8 @@ impl Network {
             Network::LitecoinTestnet => "tltc",
             Network::Zcash => "zec",
             Network::ZcashTestnet => "tzec",
+            Network::Pearl => "pearl",
+            Network::PearlTestnet => "tpearl",
         }
     }
 
@@ -295,6 +315,9 @@ impl Network {
 
             Network::Zcash => Network::Zcash,
             Network::ZcashTestnet => Network::Zcash,
+
+            Network::Pearl => Network::Pearl,
+            Network::PearlTestnet => Network::Pearl,
         }
     }
 
@@ -430,7 +453,7 @@ mod tests {
     #[test]
     fn test_all_networks() {
         // Verify ALL contains all networks
-        assert_eq!(Network::ALL.len(), 22);
+        assert_eq!(Network::ALL.len(), 24);
 
         // Verify no duplicates
         for (i, network1) in Network::ALL.iter().enumerate() {

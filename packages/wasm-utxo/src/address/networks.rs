@@ -10,8 +10,8 @@ use super::{
     BITCOIN_CASH_TESTNET_CASHADDR, BITCOIN_GOLD, BITCOIN_GOLD_BECH32, BITCOIN_GOLD_TESTNET,
     BITCOIN_GOLD_TESTNET_BECH32, BITCOIN_SV, BITCOIN_SV_TESTNET, DASH, DASH_TEST, DOGECOIN,
     DOGECOIN_TEST, ECASH, ECASH_CASHADDR, ECASH_TEST, ECASH_TEST_CASHADDR, LITECOIN,
-    LITECOIN_BECH32, LITECOIN_TEST, LITECOIN_TEST_BECH32, REGTEST, REGTEST_BECH32, TESTNET,
-    TESTNET_BECH32, ZCASH, ZCASH_TEST,
+    LITECOIN_BECH32, LITECOIN_TEST, LITECOIN_TEST_BECH32, PEARL_BECH32, PEARL_TEST_BECH32, REGTEST,
+    REGTEST_BECH32, TESTNET, TESTNET_BECH32, ZCASH, ZCASH_TEST,
 };
 use crate::bitcoin::Script;
 use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
@@ -46,6 +46,9 @@ fn get_decode_codecs(network: Network) -> Vec<&'static dyn AddressCodec> {
         Network::LitecoinTestnet => vec![&LITECOIN_TEST, &LITECOIN_TEST_BECH32],
         Network::Zcash => vec![&ZCASH],
         Network::ZcashTestnet => vec![&ZCASH_TEST],
+        // Pearl is Taproot-only; bech32m addresses only, no legacy codecs.
+        Network::Pearl => vec![&PEARL_BECH32],
+        Network::PearlTestnet => vec![&PEARL_TEST_BECH32],
     }
 }
 
@@ -76,6 +79,7 @@ impl AddressFormat {
 }
 
 pub struct OutputScriptSupport {
+    pub legacy: bool,
     pub segwit: bool,
     pub taproot: bool,
     pub p2mr: bool,
@@ -83,7 +87,11 @@ pub struct OutputScriptSupport {
 
 impl OutputScriptSupport {
     pub(crate) fn assert_legacy(&self) -> Result<()> {
-        // all coins support legacy scripts
+        if !self.legacy {
+            return Err(AddressError::UnsupportedScriptType(
+                "Network does not support legacy scripts".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -117,7 +125,7 @@ impl OutputScriptSupport {
     pub fn assert_support(&self, script: &Script) -> Result<()> {
         match script.witness_version() {
             None => {
-                // all coins support legacy scripts
+                self.assert_legacy()?;
             }
             Some(WitnessVersion::V0) => {
                 self.assert_segwit()?;
@@ -140,7 +148,7 @@ impl OutputScriptSupport {
     /// Check if the network supports a given fixed-script wallet script type
     pub fn supports_script_type(&self, script_type: OutputScriptType) -> bool {
         match script_type {
-            OutputScriptType::P2sh => true, // all networks support legacy scripts
+            OutputScriptType::P2sh => self.legacy,
             OutputScriptType::P2shP2wsh | OutputScriptType::P2wsh => self.segwit,
             OutputScriptType::P2trLegacy | OutputScriptType::P2trMusig2 => self.taproot,
             OutputScriptType::P2mr => self.p2mr,
@@ -184,7 +192,14 @@ impl Network {
         // Litecoin: has apparent taproot support, but we have not enabled it in this library yet.
         // - https://github.com/litecoin-project/litecoin/blob/v0.21.4/src/chainparams.cpp#L89-L92
         // - https://github.com/litecoin-project/litecoin/blob/v0.21.4/src/script/interpreter.h#L129-L131
-        let taproot = segwit && matches!(self.mainnet(), Network::Bitcoin);
+        //
+        // Pearl: Taproot-only btcd fork (no segwit v0 on-chain).
+        // - https://github.com/pearl-research-labs/pearl/blob/v1.1.6/node/chaincfg/params.go
+        let taproot = matches!(self.mainnet(), Network::Bitcoin | Network::Pearl);
+
+        // Legacy (P2PKH/P2SH) support:
+        // Pearl is taproot-only; no legacy script types exist on-chain.
+        let legacy = !matches!(self.mainnet(), Network::Pearl);
 
         // P2MR (BIP-360) support:
         // Enabled on all Bitcoin networks (mainnet + testnets) for address encoding.
@@ -192,6 +207,7 @@ impl Network {
         let p2mr = matches!(self.mainnet(), Network::Bitcoin);
 
         OutputScriptSupport {
+            legacy,
             segwit,
             taproot,
             p2mr,
@@ -295,6 +311,9 @@ fn get_encode_codec(
         }
         Network::Zcash => Ok(&ZCASH),
         Network::ZcashTestnet => Ok(&ZCASH_TEST),
+        // Pearl is Taproot-only; assert_support() already rejects non-P2TR scripts above.
+        Network::Pearl => Ok(&PEARL_BECH32),
+        Network::PearlTestnet => Ok(&PEARL_TEST_BECH32),
     }
 }
 
@@ -302,7 +321,11 @@ fn get_encode_codec(
 /// Tries multiple address formats for the given network (Base58, Bech32, CashAddr, etc.)
 pub fn to_output_script_with_network(address: &str, network: Network) -> Result<ScriptBuf> {
     let codecs = get_decode_codecs(network);
-    to_output_script_try_codecs(address, &codecs)
+    let script = to_output_script_try_codecs(address, &codecs)?;
+    // Validate the decoded script is supported by this network
+    // (e.g. reject v0 witness programs on taproot-only chains like Pearl)
+    network.output_script_support().assert_support(&script)?;
+    Ok(script)
 }
 
 /// Convert an output script to an address string using a Network.
@@ -583,15 +606,31 @@ mod tests {
 
     #[test]
     fn test_output_script_support_assert_legacy() {
-        // Legacy should always succeed regardless of support flags
-        let support_none = OutputScriptSupport {
+        // assert_legacy succeeds when legacy=true
+        let support_legacy = OutputScriptSupport {
+            legacy: true,
             segwit: false,
             taproot: false,
             p2mr: false,
         };
-        assert!(support_none.assert_legacy().is_ok());
+        assert!(support_legacy.assert_legacy().is_ok());
+
+        // assert_legacy fails when legacy=false (e.g. Pearl)
+        let no_legacy = OutputScriptSupport {
+            legacy: false,
+            segwit: false,
+            taproot: true,
+            p2mr: false,
+        };
+        let result = no_legacy.assert_legacy();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not support legacy scripts"));
 
         let support_all = OutputScriptSupport {
+            legacy: true,
             segwit: true,
             taproot: true,
             p2mr: false,
@@ -603,6 +642,7 @@ mod tests {
     fn test_output_script_support_assert_segwit() {
         // Should succeed when segwit is supported
         let support_segwit = OutputScriptSupport {
+            legacy: true,
             segwit: true,
             taproot: false,
             p2mr: false,
@@ -611,6 +651,7 @@ mod tests {
 
         // Should fail when segwit is not supported
         let no_support = OutputScriptSupport {
+            legacy: true,
             segwit: false,
             taproot: false,
             p2mr: false,
@@ -627,6 +668,7 @@ mod tests {
     fn test_output_script_support_assert_taproot() {
         // Should succeed when taproot is supported
         let support_taproot = OutputScriptSupport {
+            legacy: true,
             segwit: true,
             taproot: true,
             p2mr: false,
@@ -635,6 +677,7 @@ mod tests {
 
         // Should fail when taproot is not supported
         let no_support = OutputScriptSupport {
+            legacy: true,
             segwit: true,
             taproot: false,
             p2mr: false,
@@ -656,6 +699,7 @@ mod tests {
 
         // Legacy scripts should work even without segwit/taproot support
         let no_support = OutputScriptSupport {
+            legacy: true,
             segwit: false,
             taproot: false,
             p2mr: false,
@@ -678,6 +722,7 @@ mod tests {
 
         // Should succeed with segwit support
         let support_segwit = OutputScriptSupport {
+            legacy: true,
             segwit: true,
             taproot: false,
             p2mr: false,
@@ -686,6 +731,7 @@ mod tests {
 
         // Should fail without segwit support
         let no_support = OutputScriptSupport {
+            legacy: true,
             segwit: false,
             taproot: false,
             p2mr: false,
@@ -725,6 +771,7 @@ mod tests {
 
         // Should succeed with taproot support
         let support_taproot = OutputScriptSupport {
+            legacy: true,
             segwit: true,
             taproot: true,
             p2mr: false,
@@ -733,6 +780,7 @@ mod tests {
 
         // Should fail without taproot support (but with segwit)
         let no_taproot = OutputScriptSupport {
+            legacy: true,
             segwit: true,
             taproot: false,
             p2mr: false,
@@ -746,6 +794,7 @@ mod tests {
 
         // Should also fail without segwit or taproot
         let no_support = OutputScriptSupport {
+            legacy: true,
             segwit: false,
             taproot: false,
             p2mr: false,
@@ -821,5 +870,117 @@ mod tests {
         if let Err(e) = result {
             assert!(e.to_string().contains("Network does not support taproot"));
         }
+    }
+
+    #[test]
+    fn test_pearl_script_type_support() {
+        use crate::fixed_script_wallet::wallet_scripts::OutputScriptType::*;
+
+        for network in [Network::Pearl, Network::PearlTestnet] {
+            let support = network.output_script_support();
+            assert!(!support.legacy, "{network:?}: legacy should be false");
+            assert!(!support.segwit, "{network:?}: segwit should be false");
+            assert!(support.taproot, "{network:?}: taproot should be true");
+            assert!(!support.p2mr, "{network:?}: p2mr should be false");
+
+            assert!(!support.supports_script_type(P2sh));
+            assert!(!support.supports_script_type(P2shP2wsh));
+            assert!(!support.supports_script_type(P2wsh));
+            assert!(support.supports_script_type(P2trLegacy));
+            assert!(support.supports_script_type(P2trMusig2));
+            assert!(!support.supports_script_type(P2mr));
+        }
+    }
+
+    #[test]
+    fn test_pearl_address_encoding() {
+        use crate::address::bech32;
+        use crate::bitcoin::secp256k1::{Secp256k1, XOnlyPublicKey};
+
+        let secp = Secp256k1::verification_only();
+        let xonly_pk = XOnlyPublicKey::from_slice(
+            &hex::decode("cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115")
+                .unwrap(),
+        )
+        .unwrap();
+        let p2tr = ScriptBuf::new_p2tr(&secp, xonly_pk, None);
+
+        // P2TR encodes to production HRPs prl1p… / tprl1p…
+        let mainnet_addr = from_output_script_with_network(&p2tr, Network::Pearl).unwrap();
+        assert!(
+            mainnet_addr.starts_with("prl1p"),
+            "Expected prl1p… got {mainnet_addr}"
+        );
+        let testnet_addr = from_output_script_with_network(&p2tr, Network::PearlTestnet).unwrap();
+        assert!(
+            testnet_addr.starts_with("tprl1p"),
+            "Expected tprl1p… got {testnet_addr}"
+        );
+
+        // Round-trip: address → script
+        let decoded = to_output_script_with_network(&mainnet_addr, Network::Pearl).unwrap();
+        assert_eq!(decoded, p2tr);
+        let decoded_test =
+            to_output_script_with_network(&testnet_addr, Network::PearlTestnet).unwrap();
+        assert_eq!(decoded_test, p2tr);
+
+        // P2WPKH (v0) → "does not support segwit"
+        let wpkh_hash = crate::bitcoin::WPubkeyHash::from_byte_array(
+            hex::decode("751e76e8199196d454941c45d1b3a323f1433bd6")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        let p2wpkh = ScriptBuf::new_p2wpkh(&wpkh_hash);
+        let err = from_output_script_with_network(&p2wpkh, Network::Pearl).unwrap_err();
+        assert!(err.to_string().contains("does not support segwit"), "{err}");
+
+        // P2PKH (legacy) → "does not support legacy scripts"
+        let pkh = PubkeyHash::from_byte_array(
+            hex::decode("62e907b15cbf27d5425399ebf6f0fb50ebb88f18")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        let p2pkh = ScriptBuf::new_p2pkh(&pkh);
+        let err = from_output_script_with_network(&p2pkh, Network::Pearl).unwrap_err();
+        assert!(
+            err.to_string().contains("does not support legacy scripts"),
+            "{err}"
+        );
+
+        // P2SH (legacy) → "does not support legacy scripts"
+        let sh = crate::bitcoin::ScriptHash::from_byte_array(
+            hex::decode("89abcdef89abcdef89abcdef89abcdef89abcdef")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        let p2sh = ScriptBuf::new_p2sh(&sh);
+        let err = from_output_script_with_network(&p2sh, Network::Pearl).unwrap_err();
+        assert!(
+            err.to_string().contains("does not support legacy scripts"),
+            "{err}"
+        );
+
+        // prl1q… (v0 address) → rejected on decode ("does not support segwit")
+        // The bech32 codec can decode any witness version, but post-decode validation rejects v0.
+        let wsh_hash = crate::bitcoin::WScriptHash::from_byte_array(
+            hex::decode("751e76e8199196d454941c45d1b3a323f1433bd6751e76e8199196d454941c45")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        let p2wsh = ScriptBuf::new_p2wsh(&wsh_hash);
+        // Properly encode a v0 witness program with the prl HRP.
+        // Simple string substitution (bc1q → prl1q) would corrupt the bech32 checksum
+        // because the HRP is part of it, causing a decode error before support is checked.
+        let (v0_ver, v0_prog) = bech32::extract_witness_program(&p2wsh).unwrap();
+        let valid_prl_v0 = bech32::encode_witness_with_custom_hrp(v0_prog, v0_ver, "prl").unwrap();
+        let err = to_output_script_with_network(&valid_prl_v0, Network::Pearl).unwrap_err();
+        assert!(
+            err.to_string().contains("does not support segwit"),
+            "Expected segwit rejection for v0 Pearl address, got: {err}"
+        );
     }
 }

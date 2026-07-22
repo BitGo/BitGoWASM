@@ -110,6 +110,8 @@ describe("BitGoPsbt.fromNetworkFormat", function () {
   describe("half-signed input", function () {
     for (const coinName of coinNames.filter(isSupportedCoin)) {
       it(`${coinName}: user signature preserved`, function () {
+        // fromNetworkFormat only supports P2MS (p2sh/p2shP2wsh/p2wsh); skip taproot-only coins
+        if (!p2msScriptTypes.some((t) => supportsScriptType(coinName, t))) this.skip();
         const rootWalletKeys = getDefaultWalletKeys();
         const { txBytes, unspents } = createSignedP2msPsbt(coinName, 1);
         const reconstructed = fromNetworkFormat(txBytes, coinName, rootWalletKeys, unspents);
@@ -122,6 +124,8 @@ describe("BitGoPsbt.fromNetworkFormat", function () {
   describe("full-signed input", function () {
     for (const coinName of coinNames.filter(isSupportedCoin)) {
       it(`${coinName}: both user and bitgo signatures preserved`, function () {
+        // fromNetworkFormat only supports P2MS (p2sh/p2shP2wsh/p2wsh); skip taproot-only coins
+        if (!p2msScriptTypes.some((t) => supportsScriptType(coinName, t))) this.skip();
         const rootWalletKeys = getDefaultWalletKeys();
         const { txBytes, unspents } = createSignedP2msPsbt(coinName, 2);
         const reconstructed = fromNetworkFormat(txBytes, coinName, rootWalletKeys, unspents);

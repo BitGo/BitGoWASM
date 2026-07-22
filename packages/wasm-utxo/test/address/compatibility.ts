@@ -65,8 +65,10 @@ const segwitGroups: CoinName[][] = [
 
 const taprootGroups: CoinName[][] = [
   ["btc"],
+  ["pearl"],
   ["tbtc", "tbtc4", "tbtcbgsig", "tbtcsig"],
   ["tbtcreg"],
+  ["tpearl"],
 ];
 
 describe("address compatibility", function () {

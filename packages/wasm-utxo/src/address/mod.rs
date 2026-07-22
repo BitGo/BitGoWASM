@@ -175,6 +175,16 @@ pub const DASH_TEST: Base58CheckCodec = Base58CheckCodec::new(0x8c, 0x13);
 pub const ZCASH: Base58CheckCodec = Base58CheckCodec::new(0x1cb8, 0x1cbd);
 pub const ZCASH_TEST: Base58CheckCodec = Base58CheckCodec::new(0x1d25, 0x1cba);
 
+// Pearl — Bech32m ONLY (no P2PKH/P2SH exist on this chain, Taproot-only)
+// HRPs from: https://github.com/pearl-research-labs/pearl/blob/v1.1.6/node/chaincfg/params.go
+// Verified on live regtest node (pearld 1.0.2, coins-sandbox PR #898).
+// Bech32Codec handles v0 (bech32) and v1+ (bech32m / BIP-350) automatically.
+pub const PEARL_BECH32: Bech32Codec = Bech32Codec::new("prl");
+pub const PEARL_TEST_BECH32: Bech32Codec = Bech32Codec::new("tprl");
+// Regtest HRP used only in test fixtures; not needed in production code.
+#[cfg(test)]
+pub const PEARL_REGTEST_BECH32: Bech32Codec = Bech32Codec::new("rprl");
+
 /// Convert output script to address string (convenience wrapper)
 pub fn from_output_script(script: &Script, codec: &dyn AddressCodec) -> Result<String> {
     codec.encode(script)
@@ -487,6 +497,8 @@ mod tests {
             "litecoinTest.json" => vec![&LITECOIN_TEST, &LITECOIN_TEST_BECH32],
             "zcash.json" => vec![&ZCASH],
             "zcashTest.json" => vec![&ZCASH_TEST],
+            // Pearl uses regtest HRP "rprl" in fixtures (captured from live regtest node)
+            "pearl.json" => vec![&PEARL_REGTEST_BECH32 as &dyn AddressCodec],
             _ => panic!("Unknown fixture file: {}", filename),
         }
     }
