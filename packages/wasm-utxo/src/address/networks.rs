@@ -301,7 +301,8 @@ fn get_encode_codec(
         }
         Network::Zcash => Ok(&ZCASH),
         Network::ZcashTestnet => Ok(&ZCASH_TEST),
-        // Pearl is Taproot-only; assert_support() already rejects non-P2TR scripts above.
+        // Pearl is Taproot-only: assert_support() above rejects segwit v0 and P2MR;
+        // legacy scripts are rejected by the bech32 codec (it only encodes witness programs).
         Network::Pearl => Ok(&PEARL_BECH32),
         Network::PearlTestnet => Ok(&PEARL_TEST_BECH32),
     }
@@ -830,5 +831,74 @@ mod tests {
         if let Err(e) = result {
             assert!(e.to_string().contains("Network does not support taproot"));
         }
+    }
+
+    #[test]
+    fn test_pearl_taproot_only() {
+        // Pearl is a Taproot-only btcd fork: consensus accepts only witness v1 (Taproot),
+        // v2 (P2MR) and OP_RETURN. Legacy (P2PKH/P2SH) and segwit v0 (P2WPKH/P2WSH) are
+        // non-standard and rejected on-chain.
+        // See https://github.com/pearl-research-labs/pearl/blob/v1.1.6/node/txscript/standard.go
+        use crate::bitcoin::secp256k1::{Secp256k1, XOnlyPublicKey};
+
+        // Support flags: taproot yes, segwit v0 no, p2mr no (not yet wired in this library).
+        for network in [Network::Pearl, Network::PearlTestnet] {
+            let support = network.output_script_support();
+            assert!(support.taproot, "{:?} should support taproot", network);
+            assert!(!support.segwit, "{:?} must not support segwit v0", network);
+            assert!(!support.p2mr, "{:?} p2mr not wired yet", network);
+        }
+
+        let secp = Secp256k1::verification_only();
+        let xonly_pk = XOnlyPublicKey::from_slice(
+            &hex::decode("cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115")
+                .unwrap(),
+        )
+        .unwrap();
+        let p2tr_script = ScriptBuf::new_p2tr(&secp, xonly_pk, None);
+
+        // P2TR encodes with the production HRPs and round-trips back to the same script.
+        let addr = from_output_script_with_network(&p2tr_script, Network::Pearl).unwrap();
+        assert!(addr.starts_with("prl1p"), "unexpected Pearl address: {}", addr);
+        assert_eq!(
+            to_output_script_with_network(&addr, Network::Pearl).unwrap(),
+            p2tr_script
+        );
+
+        let addr_test = from_output_script_with_network(&p2tr_script, Network::PearlTestnet).unwrap();
+        assert!(
+            addr_test.starts_with("tprl1p"),
+            "unexpected Pearl testnet address: {}",
+            addr_test
+        );
+        assert_eq!(
+            to_output_script_with_network(&addr_test, Network::PearlTestnet).unwrap(),
+            p2tr_script
+        );
+
+        // Segwit v0 (P2WPKH) is rejected — Pearl has no v0 outputs on-chain.
+        let wpkh = crate::bitcoin::WPubkeyHash::from_byte_array(
+            hex::decode("751e76e8199196d454941c45d1b3a323f1433bd6")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        let p2wpkh_script = ScriptBuf::new_p2wpkh(&wpkh);
+        let err = from_output_script_with_network(&p2wpkh_script, Network::Pearl).unwrap_err();
+        assert!(
+            err.to_string().contains("does not support segwit"),
+            "expected segwit rejection, got: {}",
+            err
+        );
+
+        // Legacy P2PKH is rejected as well.
+        let pubkey_hash = PubkeyHash::from_byte_array(
+            hex::decode("62e907b15cbf27d5425399ebf6f0fb50ebb88f18")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        let p2pkh_script = ScriptBuf::new_p2pkh(&pubkey_hash);
+        assert!(from_output_script_with_network(&p2pkh_script, Network::Pearl).is_err());
     }
 }
