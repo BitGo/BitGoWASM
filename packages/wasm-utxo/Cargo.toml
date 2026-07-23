@@ -30,6 +30,9 @@ js-sys = "0.3"
 strum = { version = "0.27", features = ["derive"] }
 miniscript = { git = "https://github.com/BitGo/rust-miniscript", tag = "miniscript-13.0.0-bitgo.5" }
 bech32 = "0.11"
+# BLAKE2b with personalization for Zcash ZIP-243/ZIP-244/ZIP-316 hashing.
+# Already present transitively via the miniscript fork; pinned here as a direct dependency.
+blake2 = "0.10"
 musig2 = { version = "0.3.1", default-features = false, features = ["k256"] }
 getrandom = { version = "0.2", features = ["js"] }
 pastey = "0.1"
