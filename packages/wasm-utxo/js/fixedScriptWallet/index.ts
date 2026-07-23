@@ -46,6 +46,9 @@ export {
   type CreateEmptyZcashOptions,
 } from "./ZcashBitGoPsbt.js";
 
+// Zcash ZIP-316 Unified Address
+export { ZcashUnifiedAddress } from "./ZcashUnifiedAddress.js";
+
 import type { ScriptType } from "./scriptType.js";
 
 /**

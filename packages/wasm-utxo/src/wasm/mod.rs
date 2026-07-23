@@ -20,6 +20,7 @@ mod try_from_js_value;
 mod try_into_js_value;
 mod utxolib_compat;
 mod wallet_keys;
+mod zcash;
 
 pub use address::AddressNamespace;
 pub use bip32::WasmBIP32;
