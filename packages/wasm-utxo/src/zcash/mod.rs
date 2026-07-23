@@ -12,6 +12,7 @@
 pub mod blake2b;
 pub mod transaction;
 pub mod unified_address;
+pub mod v6;
 
 /// Zcash network upgrade identifiers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

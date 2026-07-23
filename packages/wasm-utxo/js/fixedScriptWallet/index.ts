@@ -49,6 +49,9 @@ export {
 // Zcash ZIP-316 Unified Address
 export { ZcashUnifiedAddress } from "./ZcashUnifiedAddress.js";
 
+// Zcash v6 (Ironwood / NU6.3) transaction
+export { ZcashV6Transaction } from "./ZcashV6Transaction.js";
+
 import type { ScriptType } from "./scriptType.js";
 
 /**

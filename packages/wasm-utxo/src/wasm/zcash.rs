@@ -90,3 +90,93 @@ impl ZcashUnifiedAddress {
         Ok(self.inner.contains(candidate)?)
     }
 }
+
+/// A parsed Zcash v6 (Ironwood / NU6.3) transaction — for inspection and txid.
+///
+/// This wraps the raw v6 wire codec. The transaction id is exposed as an instance
+/// method [`ZcashV6Transaction::get_id`] (canonical display-order hex), matching the
+/// `getId()` convention used by the other transaction/PSBT wrappers, so callers never
+/// pass raw bytes to a txid function or juggle internal vs display byte order.
+#[wasm_bindgen]
+pub struct ZcashV6Transaction {
+    inner: crate::zcash::v6::ZcashV6Transaction,
+}
+
+#[wasm_bindgen]
+impl ZcashV6Transaction {
+    /// Decode a v6 transaction from raw wire bytes. Throws if the bytes are not a
+    /// valid v6 (Ironwood) transaction.
+    #[wasm_bindgen(js_name = fromBytes)]
+    pub fn from_bytes(bytes: &[u8]) -> Result<ZcashV6Transaction, WasmUtxoError> {
+        Ok(ZcashV6Transaction {
+            inner: crate::zcash::v6::ZcashV6Transaction::from_bytes(bytes)?,
+        })
+    }
+
+    /// Serialize back to raw v6 wire bytes.
+    #[wasm_bindgen(js_name = toBytes)]
+    pub fn to_bytes(&self) -> Result<Vec<u8>, WasmUtxoError> {
+        Ok(self.inner.to_bytes()?)
+    }
+
+    /// The canonical (display-order) ZIP-244 txid as a lowercase hex string.
+    ///
+    /// `Txid`'s `Display` emits display-order (byte-reversed) hex, matching how a
+    /// transaction id is printed everywhere else in the codebase.
+    #[wasm_bindgen(js_name = getId)]
+    pub fn get_id(&self) -> String {
+        use miniscript::bitcoin::hashes::Hash;
+        miniscript::bitcoin::Txid::from_byte_array(self.inner.txid()).to_string()
+    }
+
+    /// The ZIP-244 txid in internal (non-reversed) byte order.
+    #[wasm_bindgen(js_name = txidBytes)]
+    pub fn txid_bytes(&self) -> Vec<u8> {
+        self.inner.txid().to_vec()
+    }
+
+    /// Consensus branch id carried in the v6 header.
+    #[wasm_bindgen(getter, js_name = consensusBranchId)]
+    pub fn consensus_branch_id(&self) -> u32 {
+        self.inner.consensus_branch_id
+    }
+
+    /// Expiry height.
+    #[wasm_bindgen(getter, js_name = expiryHeight)]
+    pub fn expiry_height(&self) -> u32 {
+        self.inner.expiry_height
+    }
+
+    /// Number of Ironwood actions (0 when the Ironwood slot is empty).
+    #[wasm_bindgen(getter, js_name = ironwoodActionCount)]
+    pub fn ironwood_action_count(&self) -> usize {
+        self.inner
+            .ironwood_bundle
+            .as_ref()
+            .map_or(0, |b| b.actions.len())
+    }
+
+    /// Net value crossing the Ironwood pool boundary (0 when there is no bundle).
+    #[wasm_bindgen(getter, js_name = ironwoodValueBalance)]
+    pub fn ironwood_value_balance(&self) -> i64 {
+        self.inner
+            .ironwood_bundle
+            .as_ref()
+            .map_or(0, |b| b.value_balance)
+    }
+
+    /// The Ironwood bundle flag byte, or `undefined` when there is no bundle.
+    #[wasm_bindgen(getter, js_name = ironwoodFlags)]
+    pub fn ironwood_flags(&self) -> Option<u8> {
+        self.inner.ironwood_bundle.as_ref().map(|b| b.flags)
+    }
+
+    /// The Ironwood note-commitment tree anchor (32 bytes), or `undefined`.
+    #[wasm_bindgen(getter, js_name = ironwoodAnchor)]
+    pub fn ironwood_anchor(&self) -> Option<Vec<u8>> {
+        self.inner
+            .ironwood_bundle
+            .as_ref()
+            .map(|b| b.anchor.to_vec())
+    }
+}
