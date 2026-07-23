@@ -23,6 +23,7 @@ macro_rules! impl_wasm_error_code {
 pub enum WasmUtxoError {
     StringError(String),
     Parse(ParseTransactionError),
+    UnifiedAddress(crate::zcash::unified_address::UnifiedAddressError),
 }
 
 impl std::error::Error for WasmUtxoError {}
@@ -32,6 +33,7 @@ impl fmt::Display for WasmUtxoError {
         match self {
             WasmUtxoError::StringError(s) => write!(f, "{}", s),
             WasmUtxoError::Parse(e) => write!(f, "{}", e),
+            WasmUtxoError::UnifiedAddress(e) => write!(f, "{}", e),
         }
     }
 }
@@ -41,6 +43,7 @@ impl WasmErrorCode for WasmUtxoError {
         match self {
             WasmUtxoError::StringError(_) => "WasmUtxoError.StringError".to_string(),
             WasmUtxoError::Parse(e) => e.code(),
+            WasmUtxoError::UnifiedAddress(e) => e.code(),
         }
     }
 }
@@ -78,6 +81,12 @@ impl From<crate::address::AddressError> for WasmUtxoError {
 impl From<ParseTransactionError> for WasmUtxoError {
     fn from(err: ParseTransactionError) -> Self {
         WasmUtxoError::Parse(err)
+    }
+}
+
+impl From<crate::zcash::unified_address::UnifiedAddressError> for WasmUtxoError {
+    fn from(err: crate::zcash::unified_address::UnifiedAddressError) -> Self {
+        WasmUtxoError::UnifiedAddress(err)
     }
 }
 

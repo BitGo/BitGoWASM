@@ -1,0 +1,16 @@
+{
+  "_note": "ZIP-316 unified-address test vectors. zip316Mainnet is from the official zcash-test-vectors (unified_address.py). testnetWallet is derived from wallet-data/testnet-wallet-full.json in the Ironwood reference sandbox.",
+  "zip316Mainnet": {
+    "network": "zec",
+    "unified": "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666kgwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw6uh7hyvzjse8ksx",
+    "orchardReceiverHex": "cecbe5e689a453a3fe10ccf7617e6c1fb382819d7fc9200a1f42092ac84a30378f8c1fb90dff71a6d5042d",
+    "transparentPubkeyHashHex": "cad268758c5e71493066446b98e71df9d1d6a5ca"
+  },
+  "testnetWallet": {
+    "network": "tzec",
+    "unified": "utest1w5m0qcnp8egl8qa296n70n8nvj0tqnzk90p7f48v7mjhhdrdqs8vgqydslg5plmzefawefnpmgmlm6hcy38m972erwxs04s02cq2prhguz8kqly75m6zjy56m08d5jnycgtpqtjeprte576gkmrxyszepgx76yzuwhh7m4lfz9jaq7unjk0x5ant46juxz73hsc6q4v3dqtzww00vps",
+    "transparentAddress": "tmM4DvLVJKXZt5ydn1tqYTHvahpKSwgjuRk",
+    "ironwoodReceiverHex": "d632c28aa0831d671be17709a42c9627e2eb687a1b2a55768ea470c9bae7499cd0bd3d0eb0484e307236b5",
+    "transparentPubkeyHashHex": "7c6b843a25873c036aff575516e3802bcc47f634"
+  }
+}

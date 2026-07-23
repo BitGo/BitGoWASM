@@ -2001,22 +2001,5 @@ impl BitGoPsbt {
 
 impl_wasm_psbt_ops!(BitGoPsbt, psbt);
 
-/// Return the Zcash consensus branch ID active at `height` on `network`.
-///
-/// `network`: "zcash" / "zec" for mainnet, "zcashTest" / "tzec" for testnet.
-/// Returns `None` if `height` is before Overwinter activation.
-/// Throws if `network` is not a recognised Zcash network name.
-#[wasm_bindgen]
-pub fn zcash_branch_id_for_height(network: &str, height: u32) -> Result<Option<u32>, JsValue> {
-    let is_mainnet = match network {
-        "zcash" | "zec" => true,
-        "zcashTest" | "tzec" => false,
-        _ => {
-            return Err(JsValue::from_str(&format!(
-            "unknown Zcash network {:?}: expected \"zcash\", \"zec\", \"zcashTest\", or \"tzec\"",
-            network
-        )))
-        }
-    };
-    Ok(crate::zcash::branch_id_for_height(height, is_mainnet))
-}
+// Zcash-scoped bindings (`zcash_branch_id_for_height`, `ZcashUnifiedAddress`, …)
+// live in `crate::wasm::zcash`.
