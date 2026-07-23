@@ -24,6 +24,7 @@ pub enum WasmUtxoError {
     StringError(String),
     Parse(ParseTransactionError),
     UnifiedAddress(crate::zcash::unified_address::UnifiedAddressError),
+    ZcashV6(crate::zcash::v6::ZcashV6Error),
 }
 
 impl std::error::Error for WasmUtxoError {}
@@ -34,6 +35,7 @@ impl fmt::Display for WasmUtxoError {
             WasmUtxoError::StringError(s) => write!(f, "{}", s),
             WasmUtxoError::Parse(e) => write!(f, "{}", e),
             WasmUtxoError::UnifiedAddress(e) => write!(f, "{}", e),
+            WasmUtxoError::ZcashV6(e) => write!(f, "{}", e),
         }
     }
 }
@@ -44,6 +46,7 @@ impl WasmErrorCode for WasmUtxoError {
             WasmUtxoError::StringError(_) => "WasmUtxoError.StringError".to_string(),
             WasmUtxoError::Parse(e) => e.code(),
             WasmUtxoError::UnifiedAddress(e) => e.code(),
+            WasmUtxoError::ZcashV6(e) => e.code(),
         }
     }
 }
@@ -87,6 +90,12 @@ impl From<ParseTransactionError> for WasmUtxoError {
 impl From<crate::zcash::unified_address::UnifiedAddressError> for WasmUtxoError {
     fn from(err: crate::zcash::unified_address::UnifiedAddressError) -> Self {
         WasmUtxoError::UnifiedAddress(err)
+    }
+}
+
+impl From<crate::zcash::v6::ZcashV6Error> for WasmUtxoError {
+    fn from(err: crate::zcash::v6::ZcashV6Error) -> Self {
+        WasmUtxoError::ZcashV6(err)
     }
 }
 
