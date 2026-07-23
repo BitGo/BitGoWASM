@@ -3164,6 +3164,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bech32",
+ "blake2",
  "crossbeam-epoch",
  "getrandom 0.2.16",
  "hex",
