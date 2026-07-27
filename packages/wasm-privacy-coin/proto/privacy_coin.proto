@@ -9,6 +9,7 @@ option java_multiple_files = true;
 message FromFrontierRequest {
   bytes frontier      = 1;  // raw CommitmentTree v0 bytes
   uint32 block_height = 2;
+  optional uint32 max_checkpoints = 3;  // shardtree checkpoint capacity; absent = default (100)
 }
 
 message AppendCommitmentsRequest {

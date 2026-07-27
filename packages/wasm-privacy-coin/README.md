@@ -130,7 +130,9 @@ memory and reads a `Response` proto from the `LAST_RESULT` buffer.
 
 **Persistence.** `save()` / `fromState()` use serde JSON internally (the
 `PersistedShardTreeState` format). This is the on-disk/DB format, not the Java↔WASM
-wire format. The Java layer sees it as opaque `TreeState` bytes.
+wire format. The Java layer sees it as opaque `TreeState` bytes. `PersistedShardTreeState`
+carries `max_checkpoints`, so a restored tree keeps its original checkpoint retention
+capacity across `save()`/`fromState()` round-trips.
 
 **One instance = one tree.** Each `ShieldedMerkleTree` owns a dedicated Chicory
 `Instance` with its own WASM linear memory. Two instances never share state.
@@ -150,10 +152,11 @@ Implements `AutoCloseable`. Always use in try-with-resources.
 
 #### Factory methods
 
-| Method                                                   | Description                                                                    |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `static fromFrontier(byte[] frontier, long blockHeight)` | Initialize from a CommitmentTree v0 frontier (raw bytes from `z_gettreestate`) |
-| `static fromState(TreeState state)`                      | Restore from a `TreeState` previously returned by `save()`                     |
+| Method                                                                           | Description                                                                                                                            |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `static fromFrontier(byte[] frontier, long blockHeight)`                         | Initialize from a CommitmentTree v0 frontier (raw bytes from `z_gettreestate`); convenience overload, `maxCheckpoints` defaults to 100 |
+| `static fromFrontier(byte[] frontier, long blockHeight, Integer maxCheckpoints)` | Initialize from a frontier with a custom checkpoint retention capacity; `null` = default (100)                                         |
+| `static fromState(TreeState state)`                                              | Restore from a `TreeState` previously returned by `save()`                                                                             |
 
 #### Instance methods
 
@@ -216,11 +219,11 @@ TreeState restored = TreeState.of(blob); // load from DB
 
 Immutable snapshot returned by `getInfo()`.
 
-| Field             | Type   | Description                                                              |
-| ----------------- | ------ | ------------------------------------------------------------------------ |
-| `tipHeight`       | `Long` | Most recently checkpointed block height; `null` if no block appended yet |
-| `leafCount`       | `long` | Total Orchard commitments appended across all blocks                     |
-| `checkpointCount` | `int`  | Number of checkpoints currently retained (max 100)                       |
+| Field             | Type   | Description                                                                        |
+| ----------------- | ------ | ---------------------------------------------------------------------------------- |
+| `tipHeight`       | `Long` | Most recently checkpointed block height; `null` if no block appended yet           |
+| `leafCount`       | `long` | Total Orchard commitments appended across all blocks                               |
+| `checkpointCount` | `int`  | Number of checkpoints currently retained, capped by `maxCheckpoints` (default 100) |
 
 ---
 
@@ -255,12 +258,21 @@ try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromFrontier(frontier, blockHe
 }
 ```
 
+To use a non-default checkpoint retention capacity (e.g. a shallower reorg-depth
+tolerance), pass an explicit `maxCheckpoints`:
+
+```java
+try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromFrontier(frontier, blockHeight, 20)) {
+    // tree retains at most 20 checkpoints before pruning the oldest
+}
+```
+
 ### 2. Initialize from an empty state
 
 ```java
 TreeState emptyState = new TreeState(
     "{\"shards\":[],\"cap\":{\"type\":\"Nil\"},\"checkpoints\":[],"
-    + "\"tip_height\":null,\"leaf_count\":0}");
+    + "\"tip_height\":null,\"leaf_count\":0,\"max_checkpoints\":100}");
 
 try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(emptyState)) {
     tree.ping();
@@ -330,7 +342,7 @@ The wire format between Java and Rust is declared in `proto/privacy_coin.proto`.
 
 | Message                    | Export                   | Fields                                                                                 |
 | -------------------------- | ------------------------ | -------------------------------------------------------------------------------------- |
-| `FromFrontierRequest`      | `from_frontier`          | `frontier: bytes`, `block_height: uint32`                                              |
+| `FromFrontierRequest`      | `from_frontier`          | `frontier: bytes`, `block_height: uint32`, `max_checkpoints: optional uint32`          |
 | `AppendCommitmentsRequest` | `append_commitments`     | `block_height: uint32`, `commitments: repeated bytes`, `expected_root: optional bytes` |
 | `TruncateRequest`          | `truncate_to_checkpoint` | `block_height: uint32`                                                                 |
 

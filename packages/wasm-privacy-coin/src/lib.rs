@@ -122,7 +122,11 @@ pub unsafe extern "C" fn from_frontier(ptr: *const u8, len: u32) -> i32 {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
     match FromFrontierRequest::decode(bytes) {
         Err(e) => write_error("DECODE_ERROR", &e.to_string()),
-        Ok(req) => match zcash::tree::OwnedTree::from_frontier(&req.frontier, req.block_height) {
+        Ok(req) => match zcash::tree::OwnedTree::from_frontier(
+            &req.frontier,
+            req.block_height,
+            req.max_checkpoints.map(|v| v as usize),
+        ) {
             Ok(tree) => {
                 TREE.with(|t| *t.borrow_mut() = Some(tree));
                 write_ok();
