@@ -265,6 +265,22 @@ impl ZcashBitGoPsbt {
         network: crate::Network,
         require_branch_id: bool,
     ) -> Result<Self, super::DeserializeError> {
+        // A v6 (Ironwood) PSBT is a plain PSBT carrying the transparent skeleton, so it parses
+        // directly; the presence of the ZecV6Params proprietary key distinguishes it from the v4
+        // path (whose embedded overwintered tx a plain PSBT decoder cannot parse). Both share the
+        // `psbt\xff` magic, so a failed parse here is not conclusive — fall through to the v4 path
+        // and let it report the real error.
+        //
+        // Delegate to `deserialize_v6` rather than constructing the struct inline: it validates the
+        // declared version group id, the consensus branch id and the PCZT. Trusting them would let a
+        // PSBT that carries ZecV6Params but a non-Ironwood version group id through with
+        // `is_ironwood_v6() == false`, which then routes `serialize()` back down the v4 path.
+        if let Ok(psbt) = Psbt::deserialize(bytes) {
+            if super::propkv::get_zec_v6_params(&psbt).is_some() {
+                return Self::deserialize_v6(bytes, network);
+            }
+        }
+
         let mut r = bytes;
 
         // Read magic bytes
@@ -432,6 +448,12 @@ impl ZcashBitGoPsbt {
 
     /// Serialize the Zcash PSBT back to bytes, including Zcash-specific fields
     pub fn serialize(&self) -> Result<Vec<u8>, super::DeserializeError> {
+        // A v6 (Ironwood) PSBT keeps its transparent skeleton in the PSBT's own tx and its shielded
+        // state in the proprietary map, so it serializes as a plain PSBT.
+        if self.is_ironwood_v6() {
+            return Ok(self.serialize_v6());
+        }
+
         // First serialize as standard Bitcoin PSBT
         let bitcoin_psbt_bytes = self.psbt.serialize();
 
@@ -668,11 +690,11 @@ impl ZcashBitGoPsbt {
     /// overwrite of the first note (whose value the transparent side would still be funding).
     pub fn add_ironwood_output<R: rand::RngCore + rand::CryptoRng>(
         &mut self,
-        recipient: &[u8; crate::zcash::ironwood_build::ORCHARD_ADDRESS_SIZE],
+        recipient: &crate::zcash::ironwood_build::OrchardAddressBytes,
         amount: u64,
-        ovk: Option<[u8; 32]>,
-        anchor: &[u8; 32],
-        memo: &[u8; 512],
+        ovk: Option<crate::zcash::ironwood_build::OvkBytes>,
+        anchor: &crate::zcash::ironwood_build::AnchorBytes,
+        memo: &crate::zcash::ironwood_build::MemoBytes,
         rng: R,
     ) -> Result<(), String> {
         if super::propkv::get_ironwood_pczt(&self.psbt).is_some() {
@@ -943,6 +965,17 @@ impl ZcashBitGoPsbt {
 
         let tx = self.to_v6_transaction(transparent, Some(full_bundle))?;
         crate::zcash::v6::encode_v6_transaction(&tx).map_err(|e| e.to_string())
+    }
+
+    /// Mark this v6 PSBT as extracted by dropping its PCZT, making [`Self::combine_ironwood_proof`]
+    /// terminal for callers that cannot consume the PSBT by value (the wasm bindings, which must
+    /// clone). Any later Ironwood operation then fails with "no Ironwood PCZT stored in PSBT"
+    /// instead of silently re-running against already-extracted state — and because the PCZT is
+    /// gone from the bytes too, that holds across a `serialize`/`deserialize` round-trip.
+    ///
+    /// Returns whether a PCZT was present.
+    pub fn mark_ironwood_extracted(&mut self) -> bool {
+        super::propkv::take_ironwood_pczt(&mut self.psbt)
     }
 
     /// Serialize a v6 PSBT to bytes: a plain PSBT carrying the transparent skeleton in
@@ -1341,6 +1374,39 @@ mod ironwood_v6_tests {
         assert!(err.contains("already present"), "unexpected error: {err}");
     }
 
+    /// `mark_ironwood_extracted` makes extraction terminal for callers that must clone rather than
+    /// consume the PSBT (the wasm bindings): the PCZT is gone, so every later Ironwood operation
+    /// fails loudly instead of silently re-running against already-extracted state — and because the
+    /// PCZT is absent from the serialized bytes too, a round-trip cannot launder it back.
+    #[test]
+    fn mark_ironwood_extracted_is_terminal() {
+        let mut z = build_shield_psbt("v6_extracted");
+        assert!(z.v6_txid().is_ok(), "usable before extraction");
+
+        assert!(z.mark_ironwood_extracted(), "a PCZT was present");
+        assert!(!z.mark_ironwood_extracted(), "second call is a no-op");
+
+        // Every operation that reads the shielded state now fails. (`combine_ironwood_proof` is not
+        // listed because its transparent-signature check fires first on this unsigned PSBT; it reads
+        // the PCZT via the same `ironwood_pczt()` accessor as these.)
+        for err in [
+            z.v6_txid().unwrap_err(),
+            z.v6_transparent_sighash(0).unwrap_err(),
+            z.ironwood_action_data().unwrap_err(),
+        ] {
+            assert!(err.contains("no Ironwood PCZT"), "unexpected error: {err}");
+        }
+
+        // The serialized bytes no longer carry a PCZT, and `deserialize` rejects that outright.
+        let err = ZcashBitGoPsbt::deserialize(&z.serialize().unwrap(), Network::ZcashTestnet)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("missing its Ironwood PCZT"),
+            "unexpected error: {err}"
+        );
+    }
+
     /// A signature from a key outside the input's redeem script is rejected at ingest, rather than
     /// being silently dropped at finalization.
     #[test]
@@ -1448,11 +1514,14 @@ mod ironwood_v6_tests {
 
     /// The v4 code paths refuse a v6 PSBT instead of emitting a v4-shaped transaction (which would
     /// be unbroadcastable) or a ZIP-243 signature (which could never verify).
+    ///
+    /// `serialize()` is deliberately excluded: it is v6-aware (routes to `serialize_v6()` when
+    /// `is_ironwood_v6()`), so a v6 PSBT round-trips through the standard `serialize`/`fromBytes`
+    /// path without the v4 tx-replacement dance — see `serialize()`'s doc comment.
     #[test]
     fn v4_paths_reject_a_v6_psbt() {
         let z = build_shield_psbt("v6_v4_guard");
         for err in [
-            z.serialize().unwrap_err().to_string(),
             z.extract_unsigned_zcash_transaction()
                 .unwrap_err()
                 .to_string(),
@@ -1464,6 +1533,11 @@ mod ironwood_v6_tests {
                 "unexpected error: {err}"
             );
         }
+
+        // `serialize()` succeeds for v6 (v6-aware) and round-trips via `deserialize()`.
+        let bytes = z.serialize().unwrap();
+        let round = ZcashBitGoPsbt::deserialize(&bytes, Network::ZcashTestnet).unwrap();
+        assert!(round.is_ironwood_v6());
 
         // The generic sign path refuses too, so no ZIP-243 signature can reach `partial_sigs`.
         let mut generic = BitGoPsbt::Zcash(z, Network::ZcashTestnet);
@@ -1480,6 +1554,33 @@ mod ironwood_v6_tests {
         );
     }
 
+    /// `combine_inputs` refuses a v6 PSBT outright.
+    ///
+    /// It parses the incoming bytes with `deserialize_stripped`, whose whole purpose is to accept an
+    /// HSM response that has dropped everything but the signatures. v6 bytes short-circuit to
+    /// `deserialize_v6`, which requires the branch id and the PCZT, so a stripped v6 response would
+    /// otherwise fail with "missing its Ironwood PCZT" — an error describing a corrupt PSBT rather
+    /// than an unsupported code path.
+    #[test]
+    fn combine_inputs_rejects_a_v6_psbt() {
+        let z = build_shield_psbt("v6_combine_inputs");
+        // A stripped response: the same PSBT with the shielded state removed, as an HSM would return.
+        let mut stripped = z.clone();
+        stripped.mark_ironwood_extracted();
+        let stripped_bytes = stripped.serialize_v6();
+
+        let mut generic = BitGoPsbt::Zcash(z, Network::ZcashTestnet);
+        let err = generic.combine_inputs(&stripped_bytes).unwrap_err();
+        assert!(
+            err.contains("not supported for v6 (Ironwood)"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("add_v6_transparent_signature"),
+            "the error names the supported path: {err}"
+        );
+    }
+
     /// `deserialize_v6` validates the version group id rather than trusting it — an unchecked value
     /// would leave `is_ironwood_v6()` false and route `serialize` back down the v4 path.
     #[test]
@@ -1491,6 +1592,27 @@ mod ironwood_v6_tests {
             0,
         );
         let err = ZcashBitGoPsbt::deserialize_v6(&z.serialize_v6(), Network::ZcashTestnet)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("expected the Ironwood id"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The *general* `deserialize` entry point routes v6-shaped bytes through `deserialize_v6`, so
+    /// it inherits that validation. Without the delegation a PSBT carrying ZecV6Params but a
+    /// non-Ironwood version group id would deserialize with `is_ironwood_v6() == false` and then
+    /// serialize back down the v4 path.
+    #[test]
+    fn deserialize_rejects_a_v6_psbt_with_a_non_ironwood_version_group_id() {
+        let mut z = build_shield_psbt("v6_bad_vgid_general");
+        crate::fixed_script_wallet::bitgo_psbt::propkv::set_zec_v6_params(
+            &mut z.psbt,
+            ZCASH_SAPLING_VERSION_GROUP_ID,
+            0,
+        );
+        let err = ZcashBitGoPsbt::deserialize(&z.serialize_v6(), Network::ZcashTestnet)
             .unwrap_err()
             .to_string();
         assert!(

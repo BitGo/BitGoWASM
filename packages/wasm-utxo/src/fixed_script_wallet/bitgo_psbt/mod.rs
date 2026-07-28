@@ -497,6 +497,33 @@ impl BitGoPsbt {
         ))
     }
 
+    /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT with an explicit consensus branch id.
+    /// Delegates to [`ZcashBitGoPsbt::new_v6`].
+    ///
+    /// The version group id is fixed by the v6 format, but the consensus branch id is not — it
+    /// tracks the active network upgrade, so it stays a caller-supplied parameter here just as it is
+    /// for v4 in [`Self::new_zcash`]. Prefer [`Self::new_zcash_v6_at_height`], which derives it and
+    /// checks the height is at/after NU6.3 activation; this is the escape hatch for callers that
+    /// already know the branch id (regtest, a future upgrade, replaying a known-good value).
+    pub fn new_zcash_v6(
+        network: Network,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        consensus_branch_id: u32,
+        lock_time: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Self {
+        BitGoPsbt::Zcash(
+            ZcashBitGoPsbt::new_v6(
+                network,
+                wallet_keys,
+                consensus_branch_id,
+                lock_time,
+                expiry_height,
+            ),
+            network,
+        )
+    }
+
     /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT with the consensus branch id resolved
     /// from block height. Delegates to [`ZcashBitGoPsbt::new_v6_at_height`].
     ///
@@ -1374,8 +1401,20 @@ impl BitGoPsbt {
     /// For all other coins the bitcoin PSBT deserializer is used.
     ///
     /// Copies per input: partial_sigs, tap_key_sig, tap_script_sigs, proprietary.
+    ///
+    /// Not supported for Zcash v6 (Ironwood) PSBTs: `deserialize_stripped` exists to accept an HSM
+    /// response that has dropped everything but the signatures, but v6 bytes route to
+    /// `deserialize_v6`, which requires the consensus branch id and the PCZT — so a stripped v6
+    /// response would fail with a "missing its Ironwood PCZT" error describing a corrupt PSBT
+    /// rather than an unsupported path. v6 ingests signatures via
+    /// [`ZcashBitGoPsbt::add_v6_transparent_signature`] instead.
     pub fn combine_inputs(&mut self, other_bytes: &[u8]) -> Result<(), String> {
         let raw: Psbt = match self {
+            BitGoPsbt::Zcash(z, _) if z.is_ironwood_v6() => {
+                return Err("combine_inputs is not supported for v6 (Ironwood) PSBTs; \
+                     use add_v6_transparent_signature to ingest transparent signatures"
+                    .to_string());
+            }
             BitGoPsbt::Zcash(_, network) => {
                 ZcashBitGoPsbt::deserialize_stripped(other_bytes, *network)
                     .map(|z| z.psbt)

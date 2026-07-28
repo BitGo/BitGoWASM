@@ -44,7 +44,16 @@ export {
   ZcashBitGoPsbt,
   type ZcashNetworkName,
   type CreateEmptyZcashOptions,
+  IRONWOOD_VERSION_GROUP_ID,
 } from "./ZcashBitGoPsbt.js";
+
+// Zcash v6 (Ironwood / NU6.3) shielding PSBT
+export {
+  ZcashIronwoodBitGoPsbt,
+  zip302NoMemo,
+  type CreateEmptyIronwoodOptions,
+  type CreateEmptyIronwoodWithConsensusBranchIdOptions,
+} from "./ZcashIronwoodBitGoPsbt.js";
 
 // Zcash ZIP-316 Unified Address
 export { ZcashUnifiedAddress } from "./ZcashUnifiedAddress.js";
