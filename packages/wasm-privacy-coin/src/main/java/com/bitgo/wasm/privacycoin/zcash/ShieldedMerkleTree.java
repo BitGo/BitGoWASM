@@ -59,16 +59,36 @@ public final class ShieldedMerkleTree implements AutoCloseable {
    * @throws WasmException if the frontier is invalid
    */
   public static ShieldedMerkleTree fromFrontier(byte[] frontier, long blockHeight) {
+    return fromFrontier(frontier, blockHeight, null);
+  }
+
+  /**
+   * Initializes a new tree from a CommitmentTree v0 frontier
+   * (the {@code orchardTree} value from {@code z_gettreestate}), with a custom
+   * checkpoint retention capacity.
+   *
+   * @param frontier        raw CommitmentTree v0 bytes
+   * @param blockHeight     block height at which the frontier was captured (u32 range)
+   * @param maxCheckpoints  number of checkpoints to retain before pruning the oldest;
+   *                        {@code null} to use the default (100)
+   * @return initialized tree instance
+   * @throws WasmException if the frontier is invalid
+   */
+  public static ShieldedMerkleTree fromFrontier(byte[] frontier, long blockHeight, Integer maxCheckpoints) {
     Objects.requireNonNull(frontier, "frontier must not be null");
     requireU32(blockHeight, "blockHeight");
+    if (maxCheckpoints != null) {
+      requireU32(maxCheckpoints, "maxCheckpoints");
+    }
     return create(bridge -> {
-      byte[] reqBytes = FromFrontierRequest.newBuilder()
+      FromFrontierRequest.Builder builder = FromFrontierRequest.newBuilder()
           .setFrontier(ByteString.copyFrom(frontier))
           // safe: requireU32 guarantees blockHeight is in [0, 0xFFFF_FFFF]
-          .setBlockHeight((int) blockHeight)
-          .build()
-          .toByteArray();
-      unwrapVoid(bridge.call("from_frontier", reqBytes));
+          .setBlockHeight((int) blockHeight);
+      if (maxCheckpoints != null) {
+        builder.setMaxCheckpoints(maxCheckpoints);
+      }
+      unwrapVoid(bridge.call("from_frontier", builder.build().toByteArray()));
     });
   }
 

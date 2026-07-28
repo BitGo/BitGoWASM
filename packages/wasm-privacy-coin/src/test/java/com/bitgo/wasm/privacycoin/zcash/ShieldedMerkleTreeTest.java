@@ -24,7 +24,7 @@ class ShieldedMerkleTreeTest {
    */
   private static final TreeState EMPTY_STATE = new TreeState(
       "{\"shards\":[],\"cap\":{\"type\":\"Nil\"},\"checkpoints\":[],"
-      + "\"tip_height\":null,\"leaf_count\":0}");
+      + "\"tip_height\":null,\"leaf_count\":0,\"max_checkpoints\":100}");
 
   /**
    * CommitmentTree v0 frontier encoding for a single-leaf tree.
@@ -99,6 +99,45 @@ class ShieldedMerkleTreeTest {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromFrontier(FRONTIER, 1_000_000L)) {
       MerkleTreeInfo info = tree.getInfo();
       assertEquals(1, info.checkpointCount);
+    }
+  }
+
+  @Test
+  void fromFrontier_withMaxCheckpoints_capsCheckpointRetention() {
+    try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromFrontier(FRONTIER, 1L, 2)) {
+      tree.appendCommitments(2L, Collections.emptyList(), List.of(), null);
+      tree.appendCommitments(3L, Collections.emptyList(), List.of(), null);
+      tree.appendCommitments(4L, Collections.emptyList(), List.of(), null);
+
+      MerkleTreeInfo info = tree.getInfo();
+      assertEquals(2, info.checkpointCount);
+
+      WasmException ex = assertThrows(WasmException.class, () -> tree.truncateToCheckpoint(1L));
+      assertEquals("CHECKPOINT_NOT_FOUND", ex.getErrorCode());
+    }
+  }
+
+  @Test
+  void fromFrontier_negativeMaxCheckpoints_throwsIllegalArgumentException() {
+    assertThrows(IllegalArgumentException.class, () ->
+        ShieldedMerkleTree.fromFrontier(FRONTIER, 1L, -1));
+  }
+
+  @Test
+  void saveAndLoad_preservesMaxCheckpoints() {
+    TreeState savedState;
+    try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromFrontier(FRONTIER, 1L, 2)) {
+      tree.appendCommitments(2L, Collections.emptyList(), List.of(), null);
+      tree.appendCommitments(3L, Collections.emptyList(), List.of(), null);
+      savedState = tree.save();
+    }
+    try (ShieldedMerkleTree restored = ShieldedMerkleTree.fromState(savedState)) {
+      restored.appendCommitments(4L, Collections.emptyList(), List.of(), null);
+      MerkleTreeInfo info = restored.getInfo();
+      assertEquals(2, info.checkpointCount);
+
+      WasmException ex = assertThrows(WasmException.class, () -> restored.truncateToCheckpoint(1L));
+      assertEquals("CHECKPOINT_NOT_FOUND", ex.getErrorCode());
     }
   }
 

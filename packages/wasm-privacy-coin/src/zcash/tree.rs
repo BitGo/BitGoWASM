@@ -62,6 +62,7 @@ pub struct PersistedShardTreeState {
     pub checkpoints: Vec<SerializedCheckpoint>,
     pub tip_height: Option<u32>,
     pub leaf_count: u64,
+    pub max_checkpoints: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +122,7 @@ pub fn extract_state(
     tree: &ShieldedShardTree,
     tip_height: Option<u32>,
     leaf_count: u64,
+    max_checkpoints: usize,
 ) -> Result<PersistedShardTreeState, String> {
     let store = tree.store();
 
@@ -175,6 +177,7 @@ pub fn extract_state(
         checkpoints,
         tip_height,
         leaf_count,
+        max_checkpoints,
     })
 }
 
@@ -212,7 +215,7 @@ pub fn restore_state(state: &PersistedShardTreeState) -> Result<ShieldedShardTre
             .map_err(|e| format!("add_checkpoint error: {:?}", e))?;
     }
 
-    Ok(ShardTree::new(store, MAX_CHECKPOINTS))
+    Ok(ShardTree::new(store, state.max_checkpoints))
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +324,7 @@ pub struct OwnedTree {
     tree: ShieldedShardTree,
     tip_height: Option<u32>,
     leaf_count: u64,
+    max_checkpoints: usize,
 }
 
 impl OwnedTree {
@@ -334,11 +338,17 @@ impl OwnedTree {
             tree,
             tip_height: persisted.tip_height,
             leaf_count: persisted.leaf_count,
+            max_checkpoints: persisted.max_checkpoints,
         })
     }
 
     /// Initialize from a CommitmentTree v0 frontier (raw bytes, not hex-encoded).
-    pub fn from_frontier(frontier: &[u8], block_height: u32) -> Result<Self, String> {
+    pub fn from_frontier(
+        frontier: &[u8],
+        block_height: u32,
+        max_checkpoints: Option<usize>,
+    ) -> Result<Self, String> {
+        let max_checkpoints = max_checkpoints.unwrap_or(MAX_CHECKPOINTS);
         use incrementalmerkletree::frontier::NonEmptyFrontier;
 
         let mut offset = 0;
@@ -395,7 +405,7 @@ impl OwnedTree {
 
         let leaf_count = u64::from(nef.position()) + 1;
 
-        let mut tree = ShardTree::new(MemoryShardStore::empty(), MAX_CHECKPOINTS);
+        let mut tree = ShardTree::new(MemoryShardStore::empty(), max_checkpoints);
         tree.insert_frontier_nodes(
             nef,
             Retention::Checkpoint {
@@ -409,12 +419,18 @@ impl OwnedTree {
             tree,
             tip_height: Some(block_height),
             leaf_count,
+            max_checkpoints,
         })
     }
 
     /// Serialize the tree state to bytes (UTF-8 JSON of `PersistedShardTreeState`).
     pub fn save(&self) -> Result<Vec<u8>, String> {
-        let state = extract_state(&self.tree, self.tip_height, self.leaf_count)?;
+        let state = extract_state(
+            &self.tree,
+            self.tip_height,
+            self.leaf_count,
+            self.max_checkpoints,
+        )?;
         serde_json::to_vec(&state).map_err(|e| format!("JSON serialize error: {}", e))
     }
 
@@ -540,7 +556,7 @@ mod tests {
     const F_CHECKPOINT_MARKED: u8 = 3;
 
     fn empty_tree() -> OwnedTree {
-        let json = r#"{"shards":[],"cap":{"type":"Nil"},"checkpoints":[],"tip_height":null,"leaf_count":0}"#;
+        let json = r#"{"shards":[],"cap":{"type":"Nil"},"checkpoints":[],"tip_height":null,"leaf_count":0,"max_checkpoints":100}"#;
         OwnedTree::from_state(json.as_bytes()).expect("empty state")
     }
 
@@ -582,7 +598,13 @@ mod tests {
             None,
         )
         .unwrap();
-        let state = extract_state(&tree.tree, tree.tip_height, tree.leaf_count).unwrap();
+        let state = extract_state(
+            &tree.tree,
+            tree.tip_height,
+            tree.leaf_count,
+            tree.max_checkpoints,
+        )
+        .unwrap();
 
         assert_eq!(
             find_f_in_state(&state, cmx1_hex),
@@ -603,7 +625,13 @@ mod tests {
         let mut tree = empty_tree();
         tree.append_commitments(1, vec![cmx(1)], vec![false], None)
             .unwrap();
-        let state = extract_state(&tree.tree, tree.tip_height, tree.leaf_count).unwrap();
+        let state = extract_state(
+            &tree.tree,
+            tree.tip_height,
+            tree.leaf_count,
+            tree.max_checkpoints,
+        )
+        .unwrap();
 
         assert_eq!(
             find_f_in_state(&state, cmx_hex),
@@ -618,5 +646,54 @@ mod tests {
         let result =
             tree.append_commitments(1, vec![cmx(1), cmx(2)], vec![true, false, true], None);
         assert!(result.is_err());
+    }
+
+    // -------------------------------------------------------------------------
+    // max_checkpoints
+    // -------------------------------------------------------------------------
+
+    fn frontier_bytes() -> Vec<u8> {
+        hex::decode("0101000000000000000000000000000000000000000000000000000000000000000000")
+            .unwrap()
+    }
+
+    #[test]
+    fn from_frontier_defaults_max_checkpoints_when_not_specified() {
+        let tree = OwnedTree::from_frontier(&frontier_bytes(), 1, None).unwrap();
+        assert_eq!(tree.max_checkpoints, MAX_CHECKPOINTS);
+    }
+
+    #[test]
+    fn from_frontier_uses_custom_max_checkpoints_when_specified() {
+        let tree = OwnedTree::from_frontier(&frontier_bytes(), 1, Some(5)).unwrap();
+        assert_eq!(tree.max_checkpoints, 5);
+    }
+
+    #[test]
+    fn max_checkpoints_enforced_evicts_oldest_checkpoint() {
+        let mut tree = OwnedTree::from_frontier(&frontier_bytes(), 1, Some(2)).unwrap();
+        tree.append_commitments(2, vec![], vec![], None).unwrap();
+        tree.append_commitments(3, vec![], vec![], None).unwrap();
+        tree.append_commitments(4, vec![], vec![], None).unwrap();
+
+        let (_, _, checkpoint_count) = tree.get_info().unwrap();
+        assert_eq!(
+            checkpoint_count, 2,
+            "checkpoint_count should be capped at 2"
+        );
+
+        let result = tree.truncate_to_checkpoint(1);
+        assert!(
+            result.is_err(),
+            "oldest checkpoint should have been evicted"
+        );
+    }
+
+    #[test]
+    fn save_round_trip_preserves_max_checkpoints() {
+        let tree = OwnedTree::from_frontier(&frontier_bytes(), 1, Some(7)).unwrap();
+        let bytes = tree.save().unwrap();
+        let restored = OwnedTree::from_state(&bytes).unwrap();
+        assert_eq!(restored.max_checkpoints, 7);
     }
 }
