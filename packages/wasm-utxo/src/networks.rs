@@ -60,6 +60,7 @@ pub enum Network {
     // No legacy outputs (no P2PKH/P2SH/P2WPKH/P2WSH). Bech32m only.
     Pearl,
     PearlTestnet,
+    PearlRegtest,
 }
 
 impl Network {
@@ -89,6 +90,7 @@ impl Network {
         Network::ZcashTestnet,
         Network::Pearl,
         Network::PearlTestnet,
+        Network::PearlRegtest,
     ];
 
     /// Returns the canonical string name of this network
@@ -118,6 +120,7 @@ impl Network {
             Network::ZcashTestnet => "ZcashTestnet",
             Network::Pearl => "Pearl",
             Network::PearlTestnet => "PearlTestnet",
+            Network::PearlRegtest => "PearlRegtest",
         }
     }
 
@@ -156,6 +159,7 @@ impl Network {
 
             "Pearl" => Some(Network::Pearl),
             "PearlTestnet" => Some(Network::PearlTestnet),
+            "PearlRegtest" => Some(Network::PearlRegtest),
 
             _ => None,
         }
@@ -188,6 +192,10 @@ impl Network {
             "litecoinTest" => Some(Network::LitecoinTestnet),
             "zcash" => Some(Network::Zcash),
             "zcashTest" => Some(Network::ZcashTestnet),
+            // Pearl is not yet in @bitgo/utxo-lib; names reserved for future wiring.
+            "pearl" => Some(Network::Pearl),
+            "pearlTest" => Some(Network::PearlTestnet),
+            "pearlRegtest" => Some(Network::PearlRegtest),
             _ => None,
         }
     }
@@ -219,6 +227,7 @@ impl Network {
             // Pearl is not yet in @bitgo/utxo-lib; names reserved for future wiring.
             Network::Pearl => "pearl",
             Network::PearlTestnet => "pearlTest",
+            Network::PearlRegtest => "pearlRegtest",
         }
     }
 
@@ -249,6 +258,7 @@ impl Network {
             "tzec" => Some(Network::ZcashTestnet),
             "pearl" => Some(Network::Pearl),
             "tpearl" => Some(Network::PearlTestnet),
+            "tpearlreg" => Some(Network::PearlRegtest),
             _ => None,
         }
     }
@@ -280,6 +290,7 @@ impl Network {
             Network::ZcashTestnet => "tzec",
             Network::Pearl => "pearl",
             Network::PearlTestnet => "tpearl",
+            Network::PearlRegtest => "tpearlreg",
         }
     }
 
@@ -317,7 +328,7 @@ impl Network {
             Network::ZcashTestnet => Network::Zcash,
 
             Network::Pearl => Network::Pearl,
-            Network::PearlTestnet => Network::Pearl,
+            Network::PearlTestnet | Network::PearlRegtest => Network::Pearl,
         }
     }
 
@@ -453,7 +464,7 @@ mod tests {
     #[test]
     fn test_all_networks() {
         // Verify ALL contains all networks
-        assert_eq!(Network::ALL.len(), 24);
+        assert_eq!(Network::ALL.len(), 25);
 
         // Verify no duplicates
         for (i, network1) in Network::ALL.iter().enumerate() {

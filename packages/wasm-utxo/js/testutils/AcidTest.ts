@@ -249,9 +249,15 @@ export class AcidTest {
   }
 
   /**
-   * Create the actual PSBT with all inputs and outputs
+   * Create the actual PSBT with all inputs and outputs.
+   *
+   * @param options.outpoints - Optional real outpoints (txid/vout/prevTx) to replace
+   *   the synthetic `txid=0…0` placeholders. Used by integrationLocalRpc against a
+   *   live regtest node; length must match `inputs`.
    */
-  createPsbt(): BitGoPsbt {
+  createPsbt(options?: {
+    outpoints?: Array<{ txid: string; vout: number; prevTx?: Uint8Array }>;
+  }): BitGoPsbt {
     // Use ZcashBitGoPsbt for Zcash networks
     const isZcash = this.coin === "zec" || this.coin === "tzec";
     const psbt = isZcash
@@ -281,10 +287,21 @@ export class AcidTest {
       return tx.toBytes();
     };
 
-    // Add inputs with deterministic outpoints
+    if (options?.outpoints && options.outpoints.length !== this.inputs.length) {
+      throw new Error(
+        `outpoints length ${options.outpoints.length} !== inputs length ${this.inputs.length}`,
+      );
+    }
+
+    // Add inputs with deterministic outpoints (or real outpoints when provided)
     this.inputs.forEach((input, index) => {
       const walletKeys = input.walletKeys ?? this.rootWalletKeys;
-      const outpoint = { txid: "0".repeat(64), vout: index, value: input.value };
+      const real = options?.outpoints?.[index];
+      const outpoint = {
+        txid: real?.txid ?? "0".repeat(64),
+        vout: real?.vout ?? index,
+        value: input.value,
+      };
 
       // scriptId variant: caller provides explicit chain + index
       if (input.scriptId) {
@@ -295,7 +312,10 @@ export class AcidTest {
           this.coin,
         );
         psbt.addWalletInput(
-          { ...outpoint, prevTx: buildPrevTx(index, script, input.value) },
+          {
+            ...outpoint,
+            prevTx: real?.prevTx ?? buildPrevTx(index, script, input.value),
+          },
           walletKeys,
           { scriptId: input.scriptId, signPath: { signer: "user", cosigner: "bitgo" } },
         );
@@ -308,7 +328,10 @@ export class AcidTest {
         const ecpair = ECPair.fromPublicKey(this.getReplayProtectionKey().publicKey);
         const script = p2shP2pkOutputScript(ecpair.publicKey);
         psbt.addReplayProtectionInput(
-          { ...outpoint, prevTx: buildPrevTx(index, script, input.value) },
+          {
+            ...outpoint,
+            prevTx: real?.prevTx ?? buildPrevTx(index, script, input.value),
+          },
           ecpair,
         );
         return;
@@ -325,7 +348,10 @@ export class AcidTest {
       const script = outputScript(walletKeys, scriptId.chain, scriptId.index, this.coin);
 
       psbt.addWalletInput(
-        { ...outpoint, prevTx: buildPrevTx(index, script, input.value) },
+        {
+          ...outpoint,
+          prevTx: real?.prevTx ?? buildPrevTx(index, script, input.value),
+        },
         walletKeys,
         { scriptId, signPath },
       );

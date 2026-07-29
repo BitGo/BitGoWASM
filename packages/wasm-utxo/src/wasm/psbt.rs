@@ -1209,7 +1209,7 @@ mod tests {
     #[test]
     fn test_all_networks_macro_is_complete() {
         const _: () = assert!(
-            Network::ALL.len() == 24,
+            Network::ALL.len() == 25,
             "test_all_networks! macro is out of sync with Network::ALL"
         );
     }

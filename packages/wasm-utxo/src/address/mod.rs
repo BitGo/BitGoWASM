@@ -181,8 +181,7 @@ pub const ZCASH_TEST: Base58CheckCodec = Base58CheckCodec::new(0x1d25, 0x1cba);
 // Bech32Codec handles v0 (bech32) and v1+ (bech32m / BIP-350) automatically.
 pub const PEARL_BECH32: Bech32Codec = Bech32Codec::new("prl");
 pub const PEARL_TEST_BECH32: Bech32Codec = Bech32Codec::new("tprl");
-// Regtest HRP used only in test fixtures; not needed in production code.
-#[cfg(test)]
+/// Regtest HRP (`rprl`) — used by pearld `--regtest` and CoinName `tpearlreg`.
 pub const PEARL_REGTEST_BECH32: Bech32Codec = Bech32Codec::new("rprl");
 
 /// Convert output script to address string (convenience wrapper)

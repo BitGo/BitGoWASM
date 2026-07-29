@@ -62,6 +62,8 @@
   "scripts": {
     "test": "npm run test:mocha && npm run test:wasm-pack && npm run test:imports",
     "test:mocha": "mocha --recursive 'test/**/*.ts'",
+    "test:integrationLocalRpc": "mocha --config .mocharc.integrationLocalRpc.json --recursive 'test/integrationLocalRpc/**/*.test.ts'",
+    "test:integrationLocalRpc:generate": "tsx --experimental-wasm-modules test/integrationLocalRpc/generate/main.ts",
     "test:benchmark": "mocha test/benchmark/signing.ts --timeout 600000",
     "test:wasm-pack": "npm run test:wasm-pack-node && npm run test:wasm-pack-chrome",
     "test:wasm-pack-node": "./scripts/wasm-pack-test.sh --node",

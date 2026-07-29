@@ -1,5 +1,5 @@
 {
   "extensions": ["ts", "tsx", "js", "jsx"],
-  "ignore": ["test/benchmark/**"],
+  "ignore": ["test/benchmark/**", "test/integrationLocalRpc/**"],
   "node-option": ["import=tsx/esm", "experimental-wasm-modules"]
 }

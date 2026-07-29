@@ -32,6 +32,7 @@ macro_rules! test_all_networks {
         #[case::zcash_testnet($crate::Network::ZcashTestnet)]
         #[case::pearl($crate::Network::Pearl)]
         #[case::pearl_testnet($crate::Network::PearlTestnet)]
+        #[case::pearl_regtest($crate::Network::PearlRegtest)]
         fn $test_name(#[case] $network: $crate::Network) $body
     };
 }
