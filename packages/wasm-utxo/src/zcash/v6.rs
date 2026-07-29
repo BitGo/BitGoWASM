@@ -124,8 +124,19 @@ pub const ZTXID_OUTPUTS_PERSONAL: &[u8; 16] = b"ZTxIdOutputsHash";
 /// ZIP-244 personalization for the sapling digest.
 pub const ZTXID_SAPLING_PERSONAL: &[u8; 16] = b"ZTxIdSaplingHash";
 /// ZIP-244 outer txid personalization prefix; the 4-byte consensus branch id
-/// (little-endian) is appended to form the full 16-byte personalization.
+/// (little-endian) is appended to form the full 16-byte personalization. Shared by the
+/// txid digest and the signature (SIGHASH) digest.
 pub const ZCASH_TXID_PERSONAL_PREFIX: &[u8; 12] = b"ZcashTxHash_";
+/// ZIP-244 §S.2b personalization for the transparent input-amounts sig sub-digest.
+pub const ZTXID_AMOUNTS_SIG_PERSONAL: &[u8; 16] = b"ZTxTrAmountsHash";
+/// ZIP-244 §S.2c personalization for the transparent scriptPubKeys sig sub-digest.
+pub const ZTXID_SCRIPTS_SIG_PERSONAL: &[u8; 16] = b"ZTxTrScriptsHash";
+/// ZIP-244 §S.2g personalization for the per-input (txin) sig sub-digest. Hashed over the
+/// empty string for a shielded signature; over the signed input's fields for a transparent one.
+pub const ZTXID_TXIN_SIG_PERSONAL: &[u8; 16] = b"Zcash___TxInHash";
+/// The `SIGHASH_ALL` hash type byte. Shielded signatures always use `SIGHASH_ALL`, and the
+/// BitGo transparent flows sign with `SIGHASH_ALL` as well.
+const SIGHASH_ALL: u8 = 0x01;
 
 /// Boundary between the compact note plaintext and the memo inside `encCiphertext`.
 const ENC_COMPACT_END: usize = 52;
@@ -386,6 +397,169 @@ pub fn compute_v6_txid(tx: &ZcashV6Transaction) -> [u8; 32] {
 pub fn compute_v6_txid_from_bytes(bytes: &[u8]) -> Result<[u8; 32], ZcashV6Error> {
     let tx = decode_v6_transaction(bytes)?;
     Ok(compute_v6_txid(&tx))
+}
+
+/// ZIP-244 §S.2 `transparent_sig_digest`, parameterized by the per-input (`txin`) sub-digest.
+///
+/// The shielded and per-input transparent signature digests differ *only* in the `txin`
+/// component: empty for a shielded signature, populated for the transparent input being signed.
+/// Every other sub-digest (prevouts / amounts / scriptPubKeys / sequences / outputs) is identical
+/// under `SIGHASH_ALL`, so both callers share this builder. `input_amounts` and
+/// `input_script_pubkeys` are the spent outputs' values and scriptPubKeys, one per transparent
+/// input in input order.
+fn transparent_sig_digest_with_txin(
+    tx: &ZcashV6Transaction,
+    input_amounts: &[i64],
+    input_script_pubkeys: &[miniscript::bitcoin::ScriptBuf],
+    txin_sig_hash: [u8; 32],
+) -> [u8; 32] {
+    let inputs = &tx.transparent.input;
+    // Per ZIP-244, the sig transparent digest collapses to the txid one only when there are
+    // neither transparent inputs nor outputs (e.g. a fully-shielded tx). With outputs but no
+    // inputs (unshield: shielded spend -> transparent output), the full S.2 structure still
+    // applies, since hash_type/amounts/scripts/txin differ from the txid digest whenever
+    // outputs is non-empty.
+    if inputs.is_empty() && tx.transparent.output.is_empty() {
+        return transparent_txid_digest(tx);
+    }
+
+    debug_assert_eq!(
+        input_amounts.len(),
+        inputs.len(),
+        "input_amounts must have one entry per transparent input"
+    );
+    debug_assert_eq!(
+        input_script_pubkeys.len(),
+        inputs.len(),
+        "input_script_pubkeys must have one entry per transparent input"
+    );
+
+    // S.2a prevouts / S.2d sequences / S.2e outputs: identical to the txid sub-digests under
+    // SIGHASH_ALL (plain concatenation, no CompactSize count).
+    let mut prevouts = Vec::new();
+    let mut sequences = Vec::new();
+    for txin in inputs {
+        txin.previous_output
+            .consensus_encode(&mut prevouts)
+            .expect("vec write is infallible");
+        txin.sequence
+            .consensus_encode(&mut sequences)
+            .expect("vec write is infallible");
+    }
+    let mut outputs_data = Vec::new();
+    for txout in &tx.transparent.output {
+        txout
+            .consensus_encode(&mut outputs_data)
+            .expect("vec write is infallible");
+    }
+    let prevouts_hash = blake2b_256_personal(&prevouts, ZTXID_PREVOUTS_PERSONAL);
+    let sequence_hash = blake2b_256_personal(&sequences, ZTXID_SEQUENCE_PERSONAL);
+    let outputs_hash = blake2b_256_personal(&outputs_data, ZTXID_OUTPUTS_PERSONAL);
+
+    // S.2b amounts / S.2c scriptPubKeys: `zcash_encoding::Array` encoding — each element written
+    // back-to-back with NO outer count. Amounts are 8-byte signed LE; scriptPubKeys use their
+    // standard (individually length-prefixed) consensus encoding.
+    let mut amounts_data = Vec::with_capacity(input_amounts.len() * 8);
+    for amount in input_amounts {
+        amounts_data.extend_from_slice(&amount.to_le_bytes());
+    }
+    let mut scripts_data = Vec::new();
+    for script in input_script_pubkeys {
+        script
+            .consensus_encode(&mut scripts_data)
+            .expect("vec write is infallible");
+    }
+    let amounts_hash = blake2b_256_personal(&amounts_data, ZTXID_AMOUNTS_SIG_PERSONAL);
+    let scripts_hash = blake2b_256_personal(&scripts_data, ZTXID_SCRIPTS_SIG_PERSONAL);
+
+    let mut data = Vec::with_capacity(1 + 32 * 6);
+    data.push(SIGHASH_ALL);
+    data.extend_from_slice(&prevouts_hash);
+    data.extend_from_slice(&amounts_hash);
+    data.extend_from_slice(&scripts_hash);
+    data.extend_from_slice(&sequence_hash);
+    data.extend_from_slice(&outputs_hash);
+    data.extend_from_slice(&txin_sig_hash);
+    blake2b_256_personal(&data, ZTXID_TRANSPARENT_PERSONAL)
+}
+
+/// Combine the five ZIP-244 component digests into the outer signature (SIGHASH) digest, using
+/// the same `ZcashTxHash_`+branch-id personalization as the txid.
+fn v6_sig_digest_from_transparent(tx: &ZcashV6Transaction, transparent: [u8; 32]) -> [u8; 32] {
+    let header = header_digest(tx);
+    let sapling = blake2b_256_personal(&[], ZTXID_SAPLING_PERSONAL);
+    let orchard = orchard_v6_empty_digest();
+    let ironwood = ironwood_digest(tx.ironwood_bundle.as_ref());
+
+    let mut data = Vec::with_capacity(32 * 5);
+    data.extend_from_slice(&header);
+    data.extend_from_slice(&transparent);
+    data.extend_from_slice(&sapling);
+    data.extend_from_slice(&orchard);
+    data.extend_from_slice(&ironwood);
+
+    let mut personal = [0u8; 16];
+    personal[..12].copy_from_slice(ZCASH_TXID_PERSONAL_PREFIX);
+    personal[12..].copy_from_slice(&tx.consensus_branch_id.to_le_bytes());
+    blake2b_256_personal(&data, &personal)
+}
+
+/// ZIP-244 v6 **shielded** signature hash (SIGHASH_ALL) — the message the Ironwood binding
+/// signature (and any shielded spend-auth signature) signs.
+///
+/// `input_amounts` / `input_script_pubkeys` describe the spent outputs, one per transparent input
+/// in input order. Result is a 32-byte digest in internal order (not a txid; not reversed).
+pub fn compute_v6_sig_digest(
+    tx: &ZcashV6Transaction,
+    input_amounts: &[i64],
+    input_script_pubkeys: &[miniscript::bitcoin::ScriptBuf],
+) -> [u8; 32] {
+    // Shielded signature: the per-input (txin) sub-digest is the empty personalized hash.
+    let txin_sig_hash = blake2b_256_personal(&[], ZTXID_TXIN_SIG_PERSONAL);
+    let transparent =
+        transparent_sig_digest_with_txin(tx, input_amounts, input_script_pubkeys, txin_sig_hash);
+    v6_sig_digest_from_transparent(tx, transparent)
+}
+
+/// ZIP-244 v6 **transparent** per-input signature hash (SIGHASH_ALL) — the message the key
+/// controlling transparent input `input_index` signs.
+///
+/// `script_code` is the script being signed for that input (its prevout scriptPubKey for P2PKH,
+/// or the redeem/witness script for P2SH/P2WSH). `input_amounts` / `input_script_pubkeys` are the
+/// spent outputs' values and scriptPubKeys for every input, in input order.
+pub fn compute_v6_transparent_sighash(
+    tx: &ZcashV6Transaction,
+    input_index: usize,
+    script_code: &miniscript::bitcoin::Script,
+    input_amounts: &[i64],
+    input_script_pubkeys: &[miniscript::bitcoin::ScriptBuf],
+) -> Result<[u8; 32], ZcashV6Error> {
+    let txin = tx
+        .transparent
+        .input
+        .get(input_index)
+        .ok_or(ZcashV6Error::UnexpectedEof)?;
+    let amount = *input_amounts
+        .get(input_index)
+        .ok_or(ZcashV6Error::UnexpectedEof)?;
+
+    // S.2g: prevout ‖ value(8, signed LE) ‖ scriptCode(length-prefixed) ‖ nSequence(4, LE).
+    let mut txin_data = Vec::new();
+    txin.previous_output
+        .consensus_encode(&mut txin_data)
+        .expect("vec write is infallible");
+    txin_data.extend_from_slice(&amount.to_le_bytes());
+    script_code
+        .consensus_encode(&mut txin_data)
+        .expect("vec write is infallible");
+    txin.sequence
+        .consensus_encode(&mut txin_data)
+        .expect("vec write is infallible");
+    let txin_sig_hash = blake2b_256_personal(&txin_data, ZTXID_TXIN_SIG_PERSONAL);
+
+    let transparent =
+        transparent_sig_digest_with_txin(tx, input_amounts, input_script_pubkeys, txin_sig_hash);
+    Ok(v6_sig_digest_from_transparent(tx, transparent))
 }
 
 /// A fully parsed Zcash v6 (Ironwood) transaction.
@@ -807,6 +981,190 @@ mod tests {
             spend_auth_sigs: vec![[1u8; 64], [2u8; 64]],
             binding_sig: [7u8; 64],
         }
+    }
+
+    fn sample_tx_with_inputs() -> ZcashV6Transaction {
+        ZcashV6Transaction {
+            version_group_id: ZCASH_IRONWOOD_VERSION_GROUP_ID,
+            consensus_branch_id: 0x37a5165b,
+            transparent: sample_transparent(true),
+            expiry_height: 0,
+            sapling_value_balance: 0,
+            ironwood_bundle: Some(sample_bundle()),
+        }
+    }
+
+    // ---- v6 signature-digest regression tests ----
+    // (The full independent oracle — zebra recomputing these digests and verifying the binding
+    // signature over them — runs in the ironwood_build build→prove→combine test, where a real
+    // bundle with known input amounts/scripts exists.)
+
+    #[test]
+    fn sig_digest_is_deterministic() {
+        let tx = sample_tx_with_inputs();
+        let amounts = [12_345i64];
+        let scripts = [ScriptBuf::from(vec![0x76u8, 0xa9, 0x14])];
+        assert_eq!(
+            compute_v6_sig_digest(&tx, &amounts, &scripts),
+            compute_v6_sig_digest(&tx, &amounts, &scripts)
+        );
+    }
+
+    #[test]
+    fn shielded_sig_digest_commits_to_amounts_and_scripts() {
+        let tx = sample_tx_with_inputs();
+        let base = compute_v6_sig_digest(&tx, &[12_345], &[ScriptBuf::from(vec![0x76u8, 0xa9])]);
+        // Differs from the txid (which does not commit to input amounts/scripts).
+        assert_ne!(base, compute_v6_txid(&tx));
+        assert_ne!(
+            base,
+            compute_v6_sig_digest(&tx, &[99_999], &[ScriptBuf::from(vec![0x76u8, 0xa9])])
+        );
+        assert_ne!(
+            base,
+            compute_v6_sig_digest(&tx, &[12_345], &[ScriptBuf::from(vec![0x51u8])])
+        );
+    }
+
+    #[test]
+    fn shielded_sig_digest_without_inputs_equals_txid() {
+        let tx = ZcashV6Transaction {
+            version_group_id: ZCASH_IRONWOOD_VERSION_GROUP_ID,
+            consensus_branch_id: 0x37a5165b,
+            transparent: sample_transparent(false),
+            expiry_height: 0,
+            sapling_value_balance: 0,
+            ironwood_bundle: Some(sample_bundle()),
+        };
+        assert_eq!(compute_v6_sig_digest(&tx, &[], &[]), compute_v6_txid(&tx));
+    }
+
+    #[test]
+    fn shielded_sig_digest_unshield_case_differs_from_txid() {
+        // Unshield: transparent output present, no transparent inputs. The sig transparent
+        // digest must NOT collapse to the txid digest here, since the txid digest omits
+        // hash_type/amounts/scripts/txin while the sig digest includes them.
+        let (_, output) = {
+            let sample = sample_transparent(true);
+            (sample.input, sample.output)
+        };
+        let transparent = Transaction {
+            version: miniscript::bitcoin::transaction::Version::non_standard(6),
+            input: vec![],
+            output,
+            lock_time: miniscript::bitcoin::locktime::absolute::LockTime::from_consensus(0),
+        };
+        let tx = ZcashV6Transaction {
+            version_group_id: ZCASH_IRONWOOD_VERSION_GROUP_ID,
+            consensus_branch_id: 0x37a5165b,
+            transparent,
+            expiry_height: 0,
+            sapling_value_balance: 0,
+            ironwood_bundle: Some(sample_bundle()),
+        };
+        assert_ne!(compute_v6_sig_digest(&tx, &[], &[]), compute_v6_txid(&tx));
+    }
+
+    #[test]
+    fn transparent_sighash_differs_from_shielded_and_varies_by_input() {
+        let tx = sample_tx_with_inputs();
+        let amounts = [12_345i64];
+        let scripts = [ScriptBuf::from(vec![0x76u8, 0xa9, 0x14])];
+        let script_code = ScriptBuf::from(vec![0x76u8, 0xa9, 0x14, 0x88, 0xac]);
+
+        let shielded = compute_v6_sig_digest(&tx, &amounts, &scripts);
+        let transparent =
+            compute_v6_transparent_sighash(&tx, 0, script_code.as_script(), &amounts, &scripts)
+                .unwrap();
+        // The per-input transparent sighash populates the txin component, so it must differ from
+        // the shielded (empty-txin) digest over the same tx.
+        assert_ne!(shielded, transparent);
+        // Deterministic.
+        assert_eq!(
+            transparent,
+            compute_v6_transparent_sighash(&tx, 0, script_code.as_script(), &amounts, &scripts)
+                .unwrap()
+        );
+        // A different script_code changes the digest.
+        let other_code = ScriptBuf::from(vec![0x51u8]);
+        assert_ne!(
+            transparent,
+            compute_v6_transparent_sighash(&tx, 0, other_code.as_script(), &amounts, &scripts)
+                .unwrap()
+        );
+        // Out-of-range input index is an error, not a panic.
+        assert!(compute_v6_transparent_sighash(
+            &tx,
+            9,
+            script_code.as_script(),
+            &amounts,
+            &scripts
+        )
+        .is_err());
+    }
+
+    /// Golden oracle for [`compute_v6_transparent_sighash`]: verify the **real** ECDSA signature
+    /// carried in a signed transparent→Ironwood testnet tx against the sighash we compute.
+    ///
+    /// The tx is the `v6_shield1zec` fixture (one P2PKH transparent input → 1 ZEC Ironwood note).
+    /// The spent output's value and scriptPubKey are not on the wire but are committed by ZIP-244;
+    /// they come from the sandbox reference that produced this tx (prevout
+    /// `058886a9…:0`, 313_990_000 zat, standard P2PKH). If the transaction's own signature verifies
+    /// against our digest, the digest is byte-correct — an independent check, since the signature
+    /// was produced by an external signer, not by this code.
+    #[test]
+    fn golden_transparent_sighash_verifies_real_signature() {
+        use miniscript::bitcoin::script::Instruction;
+        use miniscript::bitcoin::secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1};
+
+        let raw = hex::decode(load_zcash_fixture("v6_shield1zec_rawtx.hex").trim()).unwrap();
+        let tx = decode_v6_transaction(&raw).unwrap();
+        assert_eq!(tx.transparent.input.len(), 1);
+        assert_eq!(tx.transparent.output.len(), 1);
+
+        // Spent output (from the reference that built this tx); ZIP-244 commits to both.
+        let prevout_value: i64 = 313_990_000;
+        let prevout_script = ScriptBuf::from(
+            hex::decode("76a9147c6b843a25873c036aff575516e3802bcc47f63488ac").unwrap(),
+        );
+
+        // P2PKH scriptSig = <DER sig ‖ SIGHASH_ALL> <pubkey>. The scriptCode signed for a P2PKH
+        // input is its scriptPubKey.
+        let pushes: Vec<Vec<u8>> = tx.transparent.input[0]
+            .script_sig
+            .instructions()
+            .map(|i| i.expect("valid scriptSig"))
+            .filter_map(|i| match i {
+                Instruction::PushBytes(pb) => Some(pb.as_bytes().to_vec()),
+                Instruction::Op(_) => None,
+            })
+            .collect();
+        assert_eq!(pushes.len(), 2, "P2PKH scriptSig has sig + pubkey");
+        let sig_bytes = &pushes[0];
+        let pubkey_bytes = &pushes[1];
+        assert_eq!(
+            *sig_bytes.last().unwrap(),
+            SIGHASH_ALL,
+            "signature uses SIGHASH_ALL"
+        );
+        let der = &sig_bytes[..sig_bytes.len() - 1];
+
+        let sighash = compute_v6_transparent_sighash(
+            &tx,
+            0,
+            prevout_script.as_script(),
+            &[prevout_value],
+            std::slice::from_ref(&prevout_script),
+        )
+        .unwrap();
+
+        let secp = Secp256k1::verification_only();
+        let msg = Message::from_digest(sighash);
+        let mut sig = Signature::from_der(der).expect("DER signature");
+        sig.normalize_s();
+        let pk = PublicKey::from_slice(pubkey_bytes).expect("valid pubkey");
+        secp.verify_ecdsa(&msg, &sig, &pk)
+            .expect("the tx's real signature verifies against compute_v6_transparent_sighash");
     }
 
     #[test]
