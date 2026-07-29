@@ -10,6 +10,8 @@
 //! Tests verify parity with `zebra-chain` crate.
 
 pub mod blake2b;
+/// Serialization of the orchard PCZT Ironwood bundle (proof-service payload / PSBT carry).
+pub mod ironwood_pczt;
 pub mod transaction;
 pub mod unified_address;
 pub mod v6;
