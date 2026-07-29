@@ -38,6 +38,7 @@ const ALL_COINS: CoinName[] = [
   "tzec",
   "pearl",
   "tpearl",
+  "tpearlreg",
 ];
 
 // Coins that support cashaddr format
@@ -69,6 +70,7 @@ const COIN_NAMES: Record<CoinName, string> = {
   tzec: "Zcash Testnet",
   pearl: "Pearl",
   tpearl: "Pearl Testnet",
+  tpearlreg: "Pearl Regtest",
 };
 
 interface ConversionResult {
