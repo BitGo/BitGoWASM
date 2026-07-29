@@ -55,6 +55,7 @@ const networkLabels: Record<CoinName, string> = {
   tzec: "Zcash Testnet",
   pearl: "Pearl",
   tpearl: "Pearl Testnet",
+  tpearlreg: "Pearl Regtest",
 };
 
 /**
