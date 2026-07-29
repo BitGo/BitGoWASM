@@ -1,0 +1,5 @@
+{
+  "extensions": ["ts", "tsx", "js", "jsx"],
+  "node-option": ["import=tsx/esm", "experimental-wasm-modules"],
+  "timeout": 120000
+}

@@ -27,6 +27,7 @@ pub enum NetworkArg {
     Tzec,
     Pearl,
     Tpearl,
+    Tpearlreg,
 }
 
 impl From<NetworkArg> for Network {
@@ -53,6 +54,7 @@ impl From<NetworkArg> for Network {
             NetworkArg::Tzec => Network::ZcashTestnet,
             NetworkArg::Pearl => Network::Pearl,
             NetworkArg::Tpearl => Network::PearlTestnet,
+            NetworkArg::Tpearlreg => Network::PearlRegtest,
         }
     }
 }

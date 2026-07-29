@@ -69,6 +69,7 @@ const taprootGroups: CoinName[][] = [
   ["tbtc", "tbtc4", "tbtcbgsig", "tbtcsig"],
   ["tbtcreg"],
   ["tpearl"],
+  ["tpearlreg"],
 ];
 
 describe("address compatibility", function () {

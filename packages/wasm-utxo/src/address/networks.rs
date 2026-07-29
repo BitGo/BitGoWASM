@@ -10,8 +10,8 @@ use super::{
     BITCOIN_CASH_TESTNET_CASHADDR, BITCOIN_GOLD, BITCOIN_GOLD_BECH32, BITCOIN_GOLD_TESTNET,
     BITCOIN_GOLD_TESTNET_BECH32, BITCOIN_SV, BITCOIN_SV_TESTNET, DASH, DASH_TEST, DOGECOIN,
     DOGECOIN_TEST, ECASH, ECASH_CASHADDR, ECASH_TEST, ECASH_TEST_CASHADDR, LITECOIN,
-    LITECOIN_BECH32, LITECOIN_TEST, LITECOIN_TEST_BECH32, PEARL_BECH32, PEARL_TEST_BECH32, REGTEST,
-    REGTEST_BECH32, TESTNET, TESTNET_BECH32, ZCASH, ZCASH_TEST,
+    LITECOIN_BECH32, LITECOIN_TEST, LITECOIN_TEST_BECH32, PEARL_BECH32, PEARL_REGTEST_BECH32,
+    PEARL_TEST_BECH32, REGTEST, REGTEST_BECH32, TESTNET, TESTNET_BECH32, ZCASH, ZCASH_TEST,
 };
 use crate::bitcoin::Script;
 use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
@@ -49,6 +49,7 @@ fn get_decode_codecs(network: Network) -> Vec<&'static dyn AddressCodec> {
         // Pearl is Taproot-only; bech32m addresses only, no legacy codecs.
         Network::Pearl => vec![&PEARL_BECH32],
         Network::PearlTestnet => vec![&PEARL_TEST_BECH32],
+        Network::PearlRegtest => vec![&PEARL_REGTEST_BECH32],
     }
 }
 
@@ -314,6 +315,7 @@ fn get_encode_codec(
         // Pearl is Taproot-only; assert_support() already rejects non-P2TR scripts above.
         Network::Pearl => Ok(&PEARL_BECH32),
         Network::PearlTestnet => Ok(&PEARL_TEST_BECH32),
+        Network::PearlRegtest => Ok(&PEARL_REGTEST_BECH32),
     }
 }
 
@@ -876,7 +878,7 @@ mod tests {
     fn test_pearl_script_type_support() {
         use crate::fixed_script_wallet::wallet_scripts::OutputScriptType::*;
 
-        for network in [Network::Pearl, Network::PearlTestnet] {
+        for network in [Network::Pearl, Network::PearlTestnet, Network::PearlRegtest] {
             let support = network.output_script_support();
             assert!(!support.legacy, "{network:?}: legacy should be false");
             assert!(!support.segwit, "{network:?}: segwit should be false");
@@ -916,6 +918,11 @@ mod tests {
             testnet_addr.starts_with("tprl1p"),
             "Expected tprl1p… got {testnet_addr}"
         );
+        let regtest_addr = from_output_script_with_network(&p2tr, Network::PearlRegtest).unwrap();
+        assert!(
+            regtest_addr.starts_with("rprl1p"),
+            "Expected rprl1p… got {regtest_addr}"
+        );
 
         // Round-trip: address → script
         let decoded = to_output_script_with_network(&mainnet_addr, Network::Pearl).unwrap();
@@ -923,6 +930,9 @@ mod tests {
         let decoded_test =
             to_output_script_with_network(&testnet_addr, Network::PearlTestnet).unwrap();
         assert_eq!(decoded_test, p2tr);
+        let decoded_reg =
+            to_output_script_with_network(&regtest_addr, Network::PearlRegtest).unwrap();
+        assert_eq!(decoded_reg, p2tr);
 
         // P2WPKH (v0) → "does not support segwit"
         let wpkh_hash = crate::bitcoin::WPubkeyHash::from_byte_array(

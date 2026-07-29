@@ -414,7 +414,8 @@ impl BitGoPsbt {
             | Network::Litecoin
             | Network::LitecoinTestnet
             | Network::Pearl
-            | Network::PearlTestnet => Ok(BitGoPsbt::BitcoinLike(
+            | Network::PearlTestnet
+            | Network::PearlRegtest => Ok(BitGoPsbt::BitcoinLike(
                 Psbt::deserialize(psbt_bytes)?,
                 network,
             )),

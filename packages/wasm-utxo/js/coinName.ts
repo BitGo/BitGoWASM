@@ -24,6 +24,7 @@ export const coinNames = [
   "tzec",
   "pearl",
   "tpearl",
+  "tpearlreg",
 ] as const;
 
 export type CoinName = (typeof coinNames)[number];
@@ -53,6 +54,7 @@ export function getMainnet(name: CoinName): CoinName {
     case "tzec":
       return "zec";
     case "tpearl":
+    case "tpearlreg":
       return "pearl";
     default:
       return name;
