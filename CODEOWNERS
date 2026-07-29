@@ -5,3 +5,11 @@
 # These owners and first officers will be the default owners for everything in the repo.
 *   @BitGo/btc-team
 packages/wasm-mps @BitGo/hsm
+packages/wasm-privacy-coin @BitGo/coinsshield
+
+# Zcash-specific paths in wasm-utxo
+packages/wasm-utxo/src/zcash/ @BitGo/coinsshield
+packages/wasm-utxo/src/wasm/zcash.rs @BitGo/coinsshield
+packages/wasm-utxo/src/fixed_script_wallet/bitgo_psbt/zcash_psbt.rs @BitGo/coinsshield
+packages/wasm-utxo/js/fixedScriptWallet/Zcash*.ts @BitGo/coinsshield
+packages/wasm-utxo/test/fixedScript/zcash*.ts @BitGo/coinsshield
