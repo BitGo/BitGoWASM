@@ -149,6 +149,29 @@ pub fn serialize_pczt(bundle: &PcztBundle) -> Result<Vec<u8>, IronwoodPcztError>
     Ok(out)
 }
 
+/// Splice the prover's `zkproof` bytes into an already-serialized PCZT.
+///
+/// This is the proof-service response path: `wasm-utxo` sends the signed PCZT (no proof), the
+/// service returns the opaque halo2 proof bytes, and this re-emits the wire form with `zkproof`
+/// set — without needing to reconstruct the orchard bundle (whose `zkproof` field is not otherwise
+/// publicly settable). The proof length is NOT validated here; the Transaction Extractor
+/// ([`orchard::pczt::Bundle::extract`]) rejects non-canonical proof sizes when combining.
+pub fn with_zkproof(bytes: &[u8], proof: Vec<u8>) -> Result<Vec<u8>, IronwoodPcztError> {
+    let (&version, body) = bytes.split_first().ok_or(IronwoodPcztError::Empty)?;
+    if version != FORMAT_VERSION {
+        return Err(IronwoodPcztError::UnsupportedVersion(version));
+    }
+    let mut wire: BundleWire =
+        postcard::from_bytes(body).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
+    wire.zkproof = Some(proof);
+    let mut out = Vec::with_capacity(1 + body.len());
+    out.push(FORMAT_VERSION);
+    let reencoded =
+        postcard::to_stdvec(&wire).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
+    out.extend_from_slice(&reencoded);
+    Ok(out)
+}
+
 /// Reconstruct an `orchard` PCZT Ironwood bundle from its wire form.
 pub fn deserialize_pczt(bytes: &[u8]) -> Result<PcztBundle, IronwoodPcztError> {
     let (&version, body) = bytes.split_first().ok_or(IronwoodPcztError::Empty)?;
@@ -437,6 +460,42 @@ mod tests {
         assert!(matches!(
             deserialize_pczt(&bytes),
             Err(IronwoodPcztError::UnsupportedVersion(0xff))
+        ));
+    }
+
+    #[test]
+    fn with_zkproof_sets_the_proof() {
+        // A freshly constructed PCZT has no proof.
+        let bundle = sample_pczt();
+        assert!(bundle.zkproof().is_none());
+
+        let bytes = serialize_pczt(&bundle).unwrap();
+        let proof = vec![0xabu8; 4992];
+        let proven = deserialize_pczt(&with_zkproof(&bytes, proof.clone()).unwrap()).unwrap();
+        assert_eq!(
+            proven.zkproof().as_ref().map(|p| p.as_ref().to_vec()),
+            Some(proof)
+        );
+
+        // Injection is idempotent under re-serialization for the rest of the bundle: only zkproof
+        // changed, everything else round-trips byte-stable.
+        assert_eq!(
+            with_zkproof(&serialize_pczt(&proven).unwrap(), vec![0xabu8; 4992]).unwrap(),
+            with_zkproof(&bytes, vec![0xabu8; 4992]).unwrap()
+        );
+    }
+
+    #[test]
+    fn with_zkproof_rejects_unknown_version() {
+        let mut bytes = serialize_pczt(&sample_pczt()).unwrap();
+        bytes[0] = 0xff;
+        assert!(matches!(
+            with_zkproof(&bytes, vec![0u8; 4992]),
+            Err(IronwoodPcztError::UnsupportedVersion(0xff))
+        ));
+        assert!(matches!(
+            with_zkproof(&[], vec![0u8; 4992]),
+            Err(IronwoodPcztError::Empty)
         ));
     }
 

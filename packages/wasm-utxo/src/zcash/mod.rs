@@ -10,6 +10,8 @@
 //! Tests verify parity with `zebra-chain` crate.
 
 pub mod blake2b;
+/// orchard PCZT ↔ v6 IronwoodBundle bridge (Constructor / Signer / Extractor roles).
+pub mod ironwood_build;
 /// Serialization of the orchard PCZT Ironwood bundle (proof-service payload / PSBT carry).
 pub mod ironwood_pczt;
 pub mod transaction;
