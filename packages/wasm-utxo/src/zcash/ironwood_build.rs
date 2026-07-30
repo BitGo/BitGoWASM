@@ -15,8 +15,7 @@
 //!   ready for [`encode_v6_transaction`](super::v6::encode_v6_transaction).
 //!
 //! The **Prover** role (halo2) is intentionally absent — proving is delegated to an external
-//! service so the shipped WASM never links the circuit. See
-//! `docs/ironwood-proof-service-contract.md`.
+//! service so the shipped WASM never links the circuit.
 //!
 //! ## Why the proof can be filled in after signing
 //!
