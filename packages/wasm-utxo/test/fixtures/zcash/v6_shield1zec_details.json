@@ -1,0 +1,26 @@
+{
+  "description": "Transparent -> Ironwood shielding transaction (v6, ironwood_v3, PostNu6_3 circuit)",
+  "network": "test",
+  "txid": "667e8ed32b6066f90304cb67e0833f4c1c429817ebe699f648f4237319d6a701",
+  "consensus_branch_id": "0x37a5165b",
+  "version_group_id": "0xd884b698",
+  "expiry_height": 0,
+  "lock_time": 0,
+  "transparent_utxos_spent": [
+    {
+      "txid": "058886a928ab51e1e4ded8174717cb5b386644463601afe44f7ea8e302150dfa",
+      "index": 0,
+      "value_zat": 313990000,
+      "script_pubkey": "76a9147c6b843a25873c036aff575516e3802bcc47f63488ac"
+    }
+  ],
+  "shield_amount_zat": 100000000,
+  "fee_zat": 20000,
+  "change_zat": 213970000,
+  "value_balance_zat": -100000000,
+  "ironwood_anchor": "56165f00523efc8379b8495dd92029cee3fcf32547135cd2653e4fd1abfbe415",
+  "flags_byte": 7,
+  "num_actions": 1,
+  "proof_size_bytes": 4992,
+  "transparent_public_key_sec1": "0349f86487c6bfe475672cae5bf468ab6985de32b1b2aa8729aa7758bf57c6f747"
+}

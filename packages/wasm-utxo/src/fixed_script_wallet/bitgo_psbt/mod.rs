@@ -497,6 +497,31 @@ impl BitGoPsbt {
         ))
     }
 
+    /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT with the consensus branch id resolved
+    /// from block height. Delegates to [`ZcashBitGoPsbt::new_v6_at_height`].
+    ///
+    /// The transparent inputs/outputs are added with the usual [`Self::add_wallet_input`] /
+    /// [`Self::add_wallet_output`] machinery; the shielded output and the v6 sign/combine steps use
+    /// the dedicated methods on [`ZcashBitGoPsbt`].
+    pub fn new_zcash_v6_at_height(
+        network: Network,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        block_height: u32,
+        lock_time: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<Self, String> {
+        Ok(BitGoPsbt::Zcash(
+            ZcashBitGoPsbt::new_v6_at_height(
+                network,
+                wallet_keys,
+                block_height,
+                lock_time,
+                expiry_height,
+            )?,
+            network,
+        ))
+    }
+
     /// Create a new empty PSBT with the same network parameters as an existing PSBT
     ///
     /// This is useful for reconstructing PSBTs - it copies:
@@ -1966,6 +1991,7 @@ impl BitGoPsbt {
         input_index: usize,
         privkey: &secp256k1::SecretKey,
     ) -> Result<(), String> {
+        self.ensure_not_ironwood_v6()?;
         use miniscript::bitcoin::PublicKey;
 
         // Get network before mutable borrow
@@ -2291,6 +2317,7 @@ impl BitGoPsbt {
         input_index: usize,
         privkey: &secp256k1::SecretKey,
     ) -> Result<(), String> {
+        self.ensure_not_ironwood_v6()?;
         let psbt = self.psbt();
         if input_index >= psbt.inputs.len() {
             return Err(format!(
@@ -2394,6 +2421,21 @@ impl BitGoPsbt {
                 }
             }
             BitGoPsbt::Zcash(ref mut zcash_psbt, _network) => {
+                // v6 (Ironwood) inputs are signed over the ZIP-244 digest, not ZIP-243. Signing
+                // here would put a signature into `partial_sigs` that no verifier can satisfy, and
+                // nothing downstream re-checks it — so refuse. `SignError` carries no message, so
+                // callers going through the `String`-returning wrappers get the detail from
+                // `ensure_not_ironwood_v6`. Use `add_v6_transparent_signature` instead.
+                if zcash_psbt.is_ironwood_v6() {
+                    return Err((
+                        Default::default(),
+                        std::collections::BTreeMap::from_iter([(
+                            0,
+                            miniscript::bitcoin::psbt::SignError::UnknownOutputType,
+                        )]),
+                    ));
+                }
+
                 // Extract consensus branch ID from PSBT proprietary map
                 let branch_id =
                     propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt).ok_or_else(|| {
@@ -2420,6 +2462,18 @@ impl BitGoPsbt {
         }
     }
 
+    /// Reject v6 (Ironwood) PSBTs on the v4/Sapling-shaped paths, with a message explaining which
+    /// dedicated method to use instead. [`Self::sign`] applies the same rule, but its `SignError`
+    /// return type carries no message, so the `String`-returning wrappers check here as well.
+    pub(crate) fn ensure_not_ironwood_v6(&self) -> Result<(), String> {
+        match self {
+            BitGoPsbt::Zcash(z, _) if z.is_ironwood_v6() => {
+                Err(zcash_psbt::V6_NOT_SUPPORTED_BY_V4_PATH.to_string())
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Sign all non-MuSig2 inputs with the provided xpriv in a single pass.
     ///
     /// This is more efficient than calling `sign_with_privkey` for each input individually
@@ -2438,6 +2492,7 @@ impl BitGoPsbt {
         &mut self,
         xpriv: &miniscript::bitcoin::bip32::Xpriv,
     ) -> Result<miniscript::bitcoin::psbt::SigningKeysMap, String> {
+        self.ensure_not_ironwood_v6()?;
         let secp = secp256k1::Secp256k1::new();
 
         // Sign all inputs - miniscript handles this efficiently
@@ -2503,6 +2558,7 @@ impl BitGoPsbt {
         input_index: usize,
         xpriv: &miniscript::bitcoin::bip32::Xpriv,
     ) -> Result<(), String> {
+        self.ensure_not_ironwood_v6()?;
         let psbt = self.psbt();
         if input_index >= psbt.inputs.len() {
             return Err(format!(
@@ -2839,6 +2895,13 @@ impl BitGoPsbt {
             ecdsa::Signature as EcdsaSignature, sighash::SighashCache,
             sighash::SighashCacheZcashExt,
         };
+
+        // v6 (Ironwood) inputs are signed over the ZIP-244 digest, not ZIP-243. Signing here would
+        // insert a signature into `partial_sigs` that no verifier can ever satisfy, and nothing
+        // downstream re-checks it — so refuse instead.
+        if version_group_id == crate::zcash::transaction::ZCASH_IRONWOOD_VERSION_GROUP_ID {
+            return Err(zcash_psbt::V6_NOT_SUPPORTED_BY_V4_PATH.to_string());
+        }
 
         // Get input value for sighash computation
         let input = &psbt.inputs[input_index];

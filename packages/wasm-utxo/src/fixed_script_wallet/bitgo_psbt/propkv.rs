@@ -246,6 +246,101 @@ pub fn set_zec_consensus_branch_id(psbt: &mut miniscript::bitcoin::psbt::Psbt, b
     psbt.proprietary.insert(key, value);
 }
 
+/// Zcash v6 (Ironwood) proprietary namespace — its own private subtype space, so v6 keys don't
+/// consume slots in the shared `BITGO` space (which is a hard-limited single byte shared by every
+/// other BitGo proprietary key: MuSig2, PayGo, BIP322, WasmUtxo, etc).
+pub const BITGO_ZEC_V6: &[u8] = b"BITGO/ZEC/V6";
+
+/// Subtypes within the [`BITGO_ZEC_V6`] namespace.
+///
+/// This mirrors the v4 `ZecConsensusBranchId` (0x00 under the legacy `BITGO` prefix), but v4 is
+/// untouched: the two 0x00 branch-id keys are unambiguous because their prefixes differ.
+///
+/// Note that a v6 PSBT still carries the legacy `BITGO`/`ZecConsensusBranchId` key as well, because
+/// [`ZcashBitGoPsbt::new`] writes it for every Zcash PSBT. The v6 code paths read only the key in
+/// this namespace; the legacy one is redundant but harmless, and keeping it means the shared
+/// `new` constructor needs no v6 special case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ZecV6KeySubtype {
+    ConsensusBranchId = 0x00,
+    IronwoodPczt = 0x01,
+    VersionGroupId = 0x02,
+    ExpiryHeight = 0x03,
+}
+
+fn set_zec_v6(
+    psbt: &mut miniscript::bitcoin::psbt::Psbt,
+    subtype: ZecV6KeySubtype,
+    value: Vec<u8>,
+) {
+    let key = ProprietaryKey {
+        prefix: BITGO_ZEC_V6.to_vec(),
+        subtype: subtype as u8,
+        key: vec![],
+    };
+    psbt.proprietary.insert(key, value);
+}
+
+fn get_zec_v6(psbt: &miniscript::bitcoin::psbt::Psbt, subtype: ZecV6KeySubtype) -> Option<Vec<u8>> {
+    find_kv_iter(&psbt.proprietary, BITGO_ZEC_V6, Some(subtype as u8))
+        .next()
+        .map(|(_, v)| v.clone())
+}
+
+fn set_zec_v6_u32(
+    psbt: &mut miniscript::bitcoin::psbt::Psbt,
+    subtype: ZecV6KeySubtype,
+    value: u32,
+) {
+    set_zec_v6(psbt, subtype, value.to_le_bytes().to_vec());
+}
+
+fn get_zec_v6_u32(psbt: &miniscript::bitcoin::psbt::Psbt, subtype: ZecV6KeySubtype) -> Option<u32> {
+    let bytes = get_zec_v6(psbt, subtype)?;
+    Some(u32::from_le_bytes(bytes.as_slice().try_into().ok()?))
+}
+
+/// Store the Zcash v6 (Ironwood) consensus branch ID under the `BITGO_ZEC_V6` namespace.
+pub fn set_zec_v6_consensus_branch_id(psbt: &mut miniscript::bitcoin::psbt::Psbt, branch_id: u32) {
+    set_zec_v6_u32(psbt, ZecV6KeySubtype::ConsensusBranchId, branch_id);
+}
+
+/// Fetch the Zcash v6 (Ironwood) consensus branch ID from the `BITGO_ZEC_V6` namespace, if present.
+pub fn get_zec_v6_consensus_branch_id(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<u32> {
+    get_zec_v6_u32(psbt, ZecV6KeySubtype::ConsensusBranchId)
+}
+
+/// Store a serialized Ironwood (v6) PCZT bundle in the PSBT global proprietary map, under the
+/// `BITGO_ZEC_V6` namespace's `IronwoodPczt` subtype. Overwrites any existing value.
+pub fn set_ironwood_pczt(psbt: &mut miniscript::bitcoin::psbt::Psbt, bytes: Vec<u8>) {
+    set_zec_v6(psbt, ZecV6KeySubtype::IronwoodPczt, bytes);
+}
+
+/// Fetch the serialized Ironwood (v6) PCZT bundle from the PSBT global proprietary map, if present.
+pub fn get_ironwood_pczt(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<Vec<u8>> {
+    get_zec_v6(psbt, ZecV6KeySubtype::IronwoodPczt)
+}
+
+/// Store the Zcash v6 (Ironwood) header params — `version_group_id` and `expiry_height` — under the
+/// `BITGO_ZEC_V6` namespace. `version_group_id`'s presence marks the PSBT as v6; `expiry_height` is
+/// always written too (even when 0, a valid "no expiry" value, so it can be told apart from absent).
+pub fn set_zec_v6_params(
+    psbt: &mut miniscript::bitcoin::psbt::Psbt,
+    version_group_id: u32,
+    expiry_height: u32,
+) {
+    set_zec_v6_u32(psbt, ZecV6KeySubtype::VersionGroupId, version_group_id);
+    set_zec_v6_u32(psbt, ZecV6KeySubtype::ExpiryHeight, expiry_height);
+}
+
+/// Fetch the Zcash v6 (Ironwood) header params `(version_group_id, expiry_height)`, if present.
+pub fn get_zec_v6_params(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<(u32, u32)> {
+    let vgid = get_zec_v6_u32(psbt, ZecV6KeySubtype::VersionGroupId)?;
+    let expiry = get_zec_v6_u32(psbt, ZecV6KeySubtype::ExpiryHeight)?;
+    Some((vgid, expiry))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +403,65 @@ mod tests {
         assert_eq!(NetworkUpgrade::Canopy.branch_id(), 0xe9ff75a6);
         assert_eq!(NetworkUpgrade::Nu5.branch_id(), 0xc2d6d0b4);
         assert_eq!(NetworkUpgrade::Nu6.branch_id(), 0xc8e71055);
+    }
+
+    #[test]
+    fn test_ironwood_pczt_and_v6_params_roundtrip() {
+        use miniscript::bitcoin::psbt::Psbt;
+        use miniscript::bitcoin::Transaction;
+
+        let tx = Transaction {
+            version: miniscript::bitcoin::transaction::Version::non_standard(6),
+            lock_time: miniscript::bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
+
+        assert_eq!(get_ironwood_pczt(&psbt), None);
+        assert_eq!(get_zec_v6_params(&psbt), None);
+
+        set_ironwood_pczt(&mut psbt, vec![1, 2, 3, 4]);
+        set_zec_v6_params(&mut psbt, 0xD884B698, 42);
+
+        assert_eq!(get_ironwood_pczt(&psbt), Some(vec![1, 2, 3, 4]));
+        assert_eq!(get_zec_v6_params(&psbt), Some((0xD884B698, 42)));
+
+        // Overwrite semantics.
+        set_ironwood_pczt(&mut psbt, vec![9]);
+        set_zec_v6_params(&mut psbt, 0xD884B698, 0);
+        assert_eq!(get_ironwood_pczt(&psbt), Some(vec![9]));
+        // expiry_height == 0 is a valid value, distinct from "absent".
+        assert_eq!(get_zec_v6_params(&psbt), Some((0xD884B698, 0)));
+
+        // These keys live under the private BITGO_ZEC_V6 namespace, not the shared BITGO space.
+        for key in psbt.proprietary.keys() {
+            assert_eq!(key.prefix, BITGO_ZEC_V6);
+        }
+    }
+
+    #[test]
+    fn test_zec_v6_consensus_branch_id_roundtrip() {
+        use miniscript::bitcoin::psbt::Psbt;
+        use miniscript::bitcoin::Transaction;
+
+        let tx = Transaction {
+            version: miniscript::bitcoin::transaction::Version::non_standard(6),
+            lock_time: miniscript::bitcoin::locktime::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
+
+        assert_eq!(get_zec_v6_consensus_branch_id(&psbt), None);
+
+        set_zec_v6_consensus_branch_id(&mut psbt, 0x736b_bdac);
+        assert_eq!(get_zec_v6_consensus_branch_id(&psbt), Some(0x736b_bdac));
+
+        // Coexists with the legacy (v4) key at the same subtype 0x00, disambiguated by prefix.
+        set_zec_consensus_branch_id(&mut psbt, 0xc2d6_d0b4);
+        assert_eq!(get_zec_consensus_branch_id(&psbt), Some(0xc2d6_d0b4));
+        assert_eq!(get_zec_v6_consensus_branch_id(&psbt), Some(0x736b_bdac));
     }
 
     #[test]
