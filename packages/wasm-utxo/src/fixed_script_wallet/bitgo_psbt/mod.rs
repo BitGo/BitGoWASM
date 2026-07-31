@@ -463,15 +463,18 @@ impl BitGoPsbt {
         expiry_height: Option<u32>,
     ) -> Self {
         BitGoPsbt::Zcash(
-            ZcashBitGoPsbt::new(
-                network,
-                wallet_keys,
-                consensus_branch_id,
-                version,
-                lock_time,
-                version_group_id,
-                expiry_height,
-            ),
+            {
+                let mut z = ZcashBitGoPsbt::new(
+                    network,
+                    wallet_keys,
+                    version,
+                    lock_time,
+                    version_group_id,
+                    expiry_height,
+                );
+                propkv::set_zec_consensus_branch_id(&mut z.psbt, consensus_branch_id);
+                z
+            },
             network,
         )
     }
@@ -581,15 +584,18 @@ impl BitGoPsbt {
                 let branch_id = propkv::get_zec_consensus_branch_id(&z.psbt)
                     .ok_or("Template PSBT missing ZecConsensusBranchId")?;
                 Ok(BitGoPsbt::Zcash(
-                    ZcashBitGoPsbt::new(
-                        network,
-                        wallet_keys,
-                        branch_id,
-                        Some(version),
-                        Some(lock_time),
-                        z.version_group_id,
-                        z.expiry_height,
-                    ),
+                    {
+                        let mut built = ZcashBitGoPsbt::new(
+                            network,
+                            wallet_keys,
+                            Some(version),
+                            Some(lock_time),
+                            z.version_group_id,
+                            z.expiry_height,
+                        );
+                        propkv::set_zec_consensus_branch_id(&mut built.psbt, branch_id);
+                        built
+                    },
                     network,
                 ))
             }

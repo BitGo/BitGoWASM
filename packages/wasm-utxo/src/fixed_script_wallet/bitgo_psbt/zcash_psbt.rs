@@ -42,18 +42,21 @@ pub(crate) const V6_NOT_SUPPORTED_BY_V4_PATH: &str =
 
 impl ZcashBitGoPsbt {
     /// Create an empty Zcash PSBT directly without going through `BitGoPsbt`.
+    ///
+    /// Does not stamp a consensus-branch-id key — the caller writes it into the right proprietary
+    /// namespace (legacy `BITGO` for v4/Sapling, `BITGO/ZEC/V6` for v6) so that the branch id lives
+    /// under exactly one key and never pollutes the shared single-byte `BITGO` subtype space with a
+    /// redundant copy.
     pub(crate) fn new(
         network: crate::Network,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
-        consensus_branch_id: u32,
         version: Option<i32>,
         lock_time: Option<u32>,
         version_group_id: Option<u32>,
         expiry_height: Option<u32>,
     ) -> Self {
-        let mut psbt =
+        let psbt =
             super::make_psbt_with_xpubs(version.unwrap_or(4), lock_time.unwrap_or(0), wallet_keys);
-        super::propkv::set_zec_consensus_branch_id(&mut psbt, consensus_branch_id);
         Self {
             psbt,
             network,
@@ -82,15 +85,16 @@ impl ZcashBitGoPsbt {
                     if is_mainnet { "mainnet" } else { "testnet" }
                 )
             })?;
-        Ok(Self::new(
+        let mut z = Self::new(
             network,
             wallet_keys,
-            consensus_branch_id,
             version,
             lock_time,
             version_group_id,
             expiry_height,
-        ))
+        );
+        super::propkv::set_zec_consensus_branch_id(&mut z.psbt, consensus_branch_id);
+        Ok(z)
     }
 
     /// Get the network this PSBT is for
@@ -111,12 +115,12 @@ impl ZcashBitGoPsbt {
         let mut z = Self::new(
             network,
             wallet_keys,
-            consensus_branch_id,
             Some(tx.version.0),
             Some(tx.lock_time.to_consensus_u32()),
             version_group_id,
             expiry_height,
         );
+        super::propkv::set_zec_consensus_branch_id(&mut z.psbt, consensus_branch_id);
         super::BitGoPsbt::hydrate_psbt(&mut z.psbt, network, wallet_keys, tx, unspents)?;
         Ok(z)
     }
@@ -659,7 +663,6 @@ impl ZcashBitGoPsbt {
         let mut z = Self::new(
             network,
             wallet_keys,
-            consensus_branch_id,
             Some(6),
             lock_time,
             Some(version_group_id),
@@ -2325,6 +2328,37 @@ mod ironwood_v6_tests {
             .unwrap_err();
         assert!(err.contains("v6 (Ironwood)"), "unexpected error: {err}");
     }
+
+    /// A v6 PSBT keeps its consensus branch id under the `BITGO/ZEC/V6` namespace only: `new_v6`
+    /// writes it there and never writes the legacy `BITGO`/`ZecConsensusBranchId` key, so v6 does
+    /// not consume a slot in the shared single-byte `BITGO` subtype space. Guards the coupling with
+    /// the wasm `consensus_branch_id()` getter, which reads the v6 key for v6 PSBTs.
+    #[test]
+    fn v6_carries_branch_id_only_under_the_v6_namespace() {
+        use crate::fixed_script_wallet::bitgo_psbt::propkv::{
+            get_zec_consensus_branch_id, get_zec_v6_consensus_branch_id,
+        };
+
+        let z = build_shield_psbt("v6_branch_id_namespace");
+        // The same branch id `new_v6_at_height` derives for the testnet NU6.3 activation height.
+        let expected = crate::zcash::branch_id_for_height(
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            false,
+        )
+        .unwrap();
+
+        // Present under the v6 namespace...
+        assert_eq!(get_zec_v6_consensus_branch_id(&z.psbt), Some(expected));
+        // ...and the legacy shared-namespace key is absent (v6 never writes it).
+        assert_eq!(get_zec_consensus_branch_id(&z.psbt), None);
+
+        // Survives a v6 serialize/deserialize round-trip: the legacy key does not reappear, and the
+        // v6 branch id is still readable.
+        let round =
+            ZcashBitGoPsbt::deserialize_v6(&z.serialize_v6(), Network::ZcashTestnet).unwrap();
+        assert_eq!(get_zec_v6_consensus_branch_id(&round.psbt), Some(expected));
+        assert_eq!(get_zec_consensus_branch_id(&round.psbt), None);
+    }    }
 
     /// `new_v6_at_height` rejects a height before NU6.3 rather than stamping the transaction with a
     /// branch id that only fails at broadcast.
