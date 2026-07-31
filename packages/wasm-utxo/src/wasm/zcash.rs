@@ -32,6 +32,16 @@ pub fn zcash_branch_id_for_height(
     Ok(crate::zcash::branch_id_for_height(height, is_mainnet))
 }
 
+/// The Zcash v6 (Ironwood / NU6.3) version group id.
+///
+/// Exported so the TypeScript layer can derive its `IRONWOOD_VERSION_GROUP_ID` from the Rust
+/// constant instead of hard-coding a second copy: the two are used together to tell v6 PSBTs from
+/// v4/Sapling ones, and a silent divergence would route v6 bytes down the v4 path.
+#[wasm_bindgen]
+pub fn zcash_ironwood_version_group_id() -> u32 {
+    crate::zcash::transaction::ZCASH_IRONWOOD_VERSION_GROUP_ID
+}
+
 /// A parsed ZIP-316 Unified Address.
 ///
 /// Decode once with [`ZcashUnifiedAddress::parse`], then read each component through

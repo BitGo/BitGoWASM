@@ -307,6 +307,30 @@ pub struct BitGoPsbt {
     pub(crate) first_rounds: HashMap<(usize, String), musig2::FirstRound>,
 }
 
+impl BitGoPsbt {
+    /// Borrow the inner `ZcashBitGoPsbt`, erroring if this is not a Zcash PSBT.
+    fn zcash(
+        &self,
+    ) -> Result<&crate::fixed_script_wallet::bitgo_psbt::ZcashBitGoPsbt, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt as InnerBitGoPsbt;
+        match &self.psbt {
+            InnerBitGoPsbt::Zcash(z, _) => Ok(z),
+            _ => Err(WasmUtxoError::new("not a Zcash PSBT")),
+        }
+    }
+
+    /// Mutably borrow the inner `ZcashBitGoPsbt`, erroring if this is not a Zcash PSBT.
+    fn zcash_mut(
+        &mut self,
+    ) -> Result<&mut crate::fixed_script_wallet::bitgo_psbt::ZcashBitGoPsbt, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt as InnerBitGoPsbt;
+        match &mut self.psbt {
+            InnerBitGoPsbt::Zcash(z, _) => Ok(z),
+            _ => Err(WasmUtxoError::new("not a Zcash PSBT")),
+        }
+    }
+}
+
 #[wasm_bindgen]
 impl BitGoPsbt {
     /// Deserialize a PSBT from bytes with network-specific logic
@@ -437,6 +461,161 @@ impl BitGoPsbt {
             psbt,
             first_rounds: HashMap::new(),
         })
+    }
+
+    // ---- Zcash v6 (Ironwood / NU6.3) shielding ----
+
+    /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT with an explicit consensus branch id.
+    ///
+    /// The version group id is fixed by the v6 format, but the consensus branch id tracks the active
+    /// network upgrade and stays caller-supplied — the v6 analogue of `create_empty_zcash`. Prefer
+    /// `create_empty_zcash_v6_at_height`, which derives it from a block height and rejects heights
+    /// before NU6.3 activation; this is the escape hatch for callers that already know the value.
+    pub fn create_empty_zcash_v6(
+        network: &str,
+        wallet_keys: &WasmRootWalletKeys,
+        consensus_branch_id: u32,
+        lock_time: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        let network = parse_network(network)?;
+        let wallet_keys = wallet_keys.inner();
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::new_zcash_v6(
+            network,
+            wallet_keys,
+            consensus_branch_id,
+            lock_time,
+            expiry_height,
+        );
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
+    /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT, with the consensus branch id
+    /// resolved from `block_height`. Transparent inputs/outputs are added with the usual
+    /// `add_wallet_input` / `add_wallet_output`; the shielded output and the v6 sign/combine
+    /// steps use the dedicated `add_ironwood_output` / `ironwood_v6_*` / `combine_ironwood_proof`
+    /// methods.
+    pub fn create_empty_zcash_v6_at_height(
+        network: &str,
+        wallet_keys: &WasmRootWalletKeys,
+        block_height: u32,
+        lock_time: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        let network = parse_network(network)?;
+        let wallet_keys = wallet_keys.inner();
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::new_zcash_v6_at_height(
+            network,
+            wallet_keys,
+            block_height,
+            lock_time,
+            expiry_height,
+        )
+        .map_err(|e| WasmUtxoError::new(&e))?;
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
+    /// Constructor: add the shielded Ironwood output as an orchard PCZT stored in the PSBT.
+    ///
+    /// * `recipient` - raw Orchard/Ironwood address ([`ORCHARD_ADDRESS_SIZE`] bytes)
+    /// * `amount` - note value in zatoshi
+    /// * `ovk` - optional outgoing viewing key ([`OVK_SIZE`] bytes; `None` for a keyless build)
+    /// * `anchor` - Ironwood note-commitment-tree root ([`ANCHOR_SIZE`] bytes)
+    /// * `memo` - ZIP-302 memo field ([`MEMO_SIZE`] bytes)
+    ///
+    /// [`ORCHARD_ADDRESS_SIZE`]: crate::zcash::ironwood_build::ORCHARD_ADDRESS_SIZE
+    /// [`OVK_SIZE`]: crate::zcash::ironwood_build::OVK_SIZE
+    /// [`ANCHOR_SIZE`]: crate::zcash::ironwood_build::ANCHOR_SIZE
+    /// [`MEMO_SIZE`]: crate::zcash::ironwood_build::MEMO_SIZE
+    pub fn add_ironwood_output(
+        &mut self,
+        recipient: &[u8],
+        amount: u64,
+        ovk: Option<Vec<u8>>,
+        anchor: &[u8],
+        memo: &[u8],
+    ) -> Result<(), WasmUtxoError> {
+        use crate::zcash::ironwood_build::{
+            AnchorBytes, MemoBytes, OrchardAddressBytes, OvkBytes, ANCHOR_SIZE, MEMO_SIZE,
+            ORCHARD_ADDRESS_SIZE, OVK_SIZE,
+        };
+
+        /// Length-check a boundary byte string, naming the field and its expected size in the error.
+        fn fixed<const N: usize>(bytes: &[u8], field: &str) -> Result<[u8; N], WasmUtxoError> {
+            bytes.try_into().map_err(|_| {
+                WasmUtxoError::new(&format!("{field} must be {N} bytes, got {}", bytes.len()))
+            })
+        }
+
+        let recipient: OrchardAddressBytes = fixed::<ORCHARD_ADDRESS_SIZE>(recipient, "recipient")?;
+        let anchor: AnchorBytes = fixed::<ANCHOR_SIZE>(anchor, "anchor")?;
+        let memo: MemoBytes = fixed::<MEMO_SIZE>(memo, "memo")?;
+        let ovk: Option<OvkBytes> = ovk.map(|v| fixed::<OVK_SIZE>(&v, "ovk")).transpose()?;
+        self.zcash_mut()?
+            .add_ironwood_output(&recipient, amount, ovk, &anchor, &memo, rand::rngs::OsRng)
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// The canonical (display-order) ZIP-244 v6 txid as a lowercase hex string, matching the
+    /// `getId()` convention used elsewhere (see [`crate::wasm::zcash::ZcashV6Transaction::get_id`]).
+    pub fn ironwood_v6_txid(&self) -> Result<String, WasmUtxoError> {
+        use miniscript::bitcoin::hashes::Hash;
+        let txid = self
+            .zcash()?
+            .v6_txid()
+            .map_err(|e| WasmUtxoError::new(&e))?;
+        Ok(miniscript::bitcoin::Txid::from_byte_array(txid).to_string())
+    }
+
+    /// The ZIP-244 per-input transparent sighash (32 bytes) that the key controlling transparent
+    /// input `index` must sign.
+    pub fn ironwood_v6_transparent_sighash(&self, index: usize) -> Result<Vec<u8>, WasmUtxoError> {
+        self.zcash()?
+            .v6_transparent_sighash(index)
+            .map(|h| h.to_vec())
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// Ingest a transparent-input signature (`sig`: DER ECDSA with the trailing SIGHASH_ALL byte)
+    /// after verifying it against `ironwood_v6_transparent_sighash(index)`.
+    pub fn add_ironwood_v6_signature(
+        &mut self,
+        index: usize,
+        pubkey: &[u8],
+        sig: &[u8],
+    ) -> Result<(), WasmUtxoError> {
+        let pk = miniscript::bitcoin::PublicKey::from_slice(pubkey)
+            .map_err(|e| WasmUtxoError::new(&format!("invalid pubkey: {e}")))?;
+        self.zcash_mut()?
+            .add_v6_transparent_signature(index, pk, sig)
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// Transaction Extractor: given the external prover's `proof` bytes, finalize the transparent
+    /// inputs, apply the shielded binding signature, and return the broadcast-ready v6 transaction
+    /// bytes. Requires the transparent inputs to be signed (via `add_ironwood_v6_signature`).
+    ///
+    /// Terminal: on success the stored PCZT is dropped, so a second call — or any other Ironwood
+    /// operation, including after a `serialize`/`from_bytes` round-trip — fails rather than silently
+    /// re-running against already-extracted state. Build a fresh PSBT instead. On failure nothing is
+    /// dropped, so a call that errors (bad proof, unsigned input) leaves the PSBT retryable.
+    pub fn combine_ironwood_proof(&mut self, proof: &[u8]) -> Result<Vec<u8>, WasmUtxoError> {
+        // The inner `combine_ironwood_proof` takes `self` by value (it is a consuming Extractor
+        // step), which does not translate across the wasm boundary — so clone, and mark this
+        // instance spent only once the clone has actually produced a transaction.
+        let tx = self
+            .zcash()?
+            .clone()
+            .combine_ironwood_proof(proof.to_vec(), rand::rngs::OsRng)
+            .map_err(|e| WasmUtxoError::new(&e))?;
+        self.zcash_mut()?.mark_ironwood_extracted();
+        Ok(tx)
     }
 
     /// Convert a half-signed legacy transaction to a psbt-lite.

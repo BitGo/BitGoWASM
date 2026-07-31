@@ -1,10 +1,24 @@
-import { BitGoPsbt as WasmBitGoPsbt, zcash_branch_id_for_height } from "../wasm/wasm_utxo.js";
+import {
+  BitGoPsbt as WasmBitGoPsbt,
+  zcash_branch_id_for_height,
+  zcash_ironwood_version_group_id,
+} from "../wasm/wasm_utxo.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
 import { BitGoPsbt, type CreateEmptyOptions, type HydrationUnspent } from "./BitGoPsbt.js";
 import { ZcashTransaction, type ITransaction } from "../transaction.js";
 
 /** Zcash network names */
 export type ZcashNetworkName = "zcash" | "zcashTest" | "zec" | "tzec";
+
+/**
+ * Zcash v6 (Ironwood) version group id (0xd884b698). Its presence marks a PSBT as v6 — see
+ * `ZcashIronwoodBitGoPsbt`.
+ *
+ * Read from the wasm layer rather than hard-coded, so it cannot drift from
+ * `ZCASH_IRONWOOD_VERSION_GROUP_ID` in `src/zcash/transaction.rs`: a divergence would make the
+ * v4/v6 discrimination in {@link ZcashBitGoPsbt.fromBytes} silently classify v6 bytes as v4.
+ */
+export const IRONWOOD_VERSION_GROUP_ID: number = zcash_ironwood_version_group_id();
 
 /** Options for creating an empty Zcash PSBT (preferred method using block height) */
 export type CreateEmptyZcashOptions = CreateEmptyOptions & {
@@ -137,11 +151,17 @@ export class ZcashBitGoPsbt extends BitGoPsbt {
    *
    * @param bytes - The PSBT bytes
    * @param network - Zcash network name ("zcash", "zcashTest", "zec", "tzec")
+   * @throws Error if the deserialized PSBT is a v6 (Ironwood) PSBT — use
+   *   {@link ZcashIronwoodBitGoPsbt.fromBytes} instead
    * @returns A ZcashBitGoPsbt instance
    */
   static override fromBytes(bytes: Uint8Array, network: ZcashNetworkName): ZcashBitGoPsbt {
     const wasm = WasmBitGoPsbt.from_bytes(bytes, network);
-    return new ZcashBitGoPsbt(wasm);
+    const psbt = new ZcashBitGoPsbt(wasm);
+    if (psbt.versionGroupId === IRONWOOD_VERSION_GROUP_ID) {
+      throw new Error("this is a v6 (Ironwood) PSBT: use ZcashIronwoodBitGoPsbt.fromBytes instead");
+    }
+    return psbt;
   }
 
   /**

@@ -40,6 +40,21 @@ use super::v6::{IronwoodAction, IronwoodBundle};
 
 /// Length of a raw Orchard/Ironwood receiver (`Address`) in bytes.
 pub const ORCHARD_ADDRESS_SIZE: usize = 43;
+/// Length of an Ironwood note-commitment-tree root (`Anchor`) in bytes.
+pub const ANCHOR_SIZE: usize = 32;
+/// Length of an outgoing viewing key in bytes.
+pub const OVK_SIZE: usize = 32;
+/// Length of the ZIP-302 memo field in bytes.
+pub const MEMO_SIZE: usize = 512;
+
+/// A raw Orchard/Ironwood receiver.
+pub type OrchardAddressBytes = [u8; ORCHARD_ADDRESS_SIZE];
+/// An Ironwood note-commitment-tree root.
+pub type AnchorBytes = [u8; ANCHOR_SIZE];
+/// A raw outgoing viewing key.
+pub type OvkBytes = [u8; OVK_SIZE];
+/// A ZIP-302 memo field.
+pub type MemoBytes = [u8; MEMO_SIZE];
 
 /// Errors produced while constructing or combining an Ironwood shielded bundle.
 ///
@@ -101,11 +116,11 @@ crate::impl_wasm_error_code!(IronwoodBuildError);
 /// The returned PCZT carries no signatures or proof yet; run [`finalize_shield_io`] once the sighash
 /// is known, then hand it to the prover and [`combine`].
 pub fn construct_shield_pczt<R: RngCore + CryptoRng>(
-    recipient: &[u8; ORCHARD_ADDRESS_SIZE],
+    recipient: &OrchardAddressBytes,
     amount: u64,
-    ovk: Option<[u8; 32]>,
-    anchor: &[u8; 32],
-    memo: &[u8; 512],
+    ovk: Option<OvkBytes>,
+    anchor: &AnchorBytes,
+    memo: &MemoBytes,
     rng: R,
 ) -> Result<PcztBundle, IronwoodBuildError> {
     let recipient = Option::from(Address::from_raw_address_bytes(recipient))

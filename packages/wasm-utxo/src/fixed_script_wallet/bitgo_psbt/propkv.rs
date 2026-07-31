@@ -322,6 +322,21 @@ pub fn get_ironwood_pczt(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<Vec<u
     get_zec_v6(psbt, ZecV6KeySubtype::IronwoodPczt)
 }
 
+/// Remove the serialized Ironwood (v6) PCZT bundle, returning whether one was present.
+///
+/// Used to make extraction terminal: once `combine_ironwood_proof` has produced the broadcast-ready
+/// transaction, dropping the PCZT means any further Ironwood operation on that PSBT — including
+/// after a `serialize`/`deserialize` round-trip — fails loudly instead of silently re-running
+/// against state that has already been spent.
+pub fn take_ironwood_pczt(psbt: &mut miniscript::bitcoin::psbt::Psbt) -> bool {
+    let key = miniscript::bitcoin::psbt::raw::ProprietaryKey {
+        prefix: BITGO_ZEC_V6.to_vec(),
+        subtype: ZecV6KeySubtype::IronwoodPczt as u8,
+        key: vec![],
+    };
+    psbt.proprietary.remove(&key).is_some()
+}
+
 /// Store the Zcash v6 (Ironwood) header params — `version_group_id` and `expiry_height` — under the
 /// `BITGO_ZEC_V6` namespace. `version_group_id`'s presence marks the PSBT as v6; `expiry_height` is
 /// always written too (even when 0, a valid "no expiry" value, so it can be told apart from absent).
