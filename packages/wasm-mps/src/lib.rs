@@ -11,13 +11,15 @@ mod mps {
         },
         curve25519_dalek::EdwardsPoint,
         keygen::{
-            KeygenMsg1, KeygenMsg2, KeygenParty, Keyshare, R0 as DkgR0, R1 as DkgR1, R2 as DkgR2,
+            KeyRefreshData, KeygenMsg1, KeygenMsg2, KeygenParty, Keyshare, R0 as DkgR0,
+            R1 as DkgR1, R2 as DkgR2,
         },
         sign::{
             messages::{SignMsg1, SignMsg2, SignMsg3},
             PartialSign, SignError, SignReady, SignerParty, R0 as DsgR0, R1 as DsgR1, R2 as DsgR2,
         },
     };
+    use rand::Rng;
     use serde::{Deserialize, Serialize};
     use std::{
         io::{Cursor, Read},
@@ -551,6 +553,124 @@ mod mps {
         })
     }
 
+    fn internal_dkg_round0_import<G>(
+        party_id: u8,
+        decryption_key: &[u8; 32],
+        encryption_keys: &[Vec<u8>; 2],
+        s_i_0: G::Scalar,
+        expected_pk: G,
+        chain_code: [u8; 32],
+    ) -> Result<MsgState, MpsError>
+    where
+        G: GroupElem,
+        G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
+    {
+        if party_id >= 3 {
+            return Err(MpsError::InvalidInput);
+        }
+
+        // Parse decryption key
+        let secret_key = crypto_box::SecretKey::from(*decryption_key);
+
+        // Parse all party encryption keys
+        let i0_pk = crypto_box::PublicKey::from(
+            <[u8; 32]>::try_from(encryption_keys[0].clone()).map_err(|_| MpsError::InvalidInput)?,
+        );
+        let i1_pk = crypto_box::PublicKey::from(
+            <[u8; 32]>::try_from(encryption_keys[1].clone()).map_err(|_| MpsError::InvalidInput)?,
+        );
+        let mut public_keys = Vec::new();
+        if party_id == 0 {
+            public_keys.push((1u8, i0_pk));
+            public_keys.push((2u8, i1_pk));
+        } else if party_id == 1 {
+            public_keys.push((0u8, i0_pk));
+            public_keys.push((2u8, i1_pk));
+        } else {
+            public_keys.push((0u8, i0_pk));
+            public_keys.push((1u8, i1_pk));
+        }
+        public_keys.push((party_id, secret_key.public_key()));
+
+        // Build refresh data from the MPCv1 additive scalar and expected public key
+        let refresh_data = KeyRefreshData::make_refresh_data_migrate(
+            party_id,
+            2,
+            3,
+            s_i_0,
+            expected_pk,
+            chain_code,
+        );
+
+        // Create KeygenParty with refresh_data so the protocol re-shares from the existing key
+        let p0 = KeygenParty::<DkgR0, G>::new(
+            2, // threshold
+            3, // total parties
+            party_id,
+            Arc::new(secret_key),
+            public_keys,
+            Some(refresh_data), // refresh_data
+            None,               // key_id
+            rand::thread_rng().gen(),
+            None, // extra_data
+        )
+        .map_err(|_| MpsError::ProtocolError)?;
+
+        // Generate message
+        let (p1, msg1) = p0.process(()).map_err(|_| MpsError::ProtocolError)?;
+
+        // Create the state for storage between rounds
+        let state = DkgStateR1 {
+            party_id,
+            msg: msg1,
+            party: p1,
+        };
+
+        Ok(MsgState {
+            msg: bincode::serde::encode_to_vec(msg1, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+            state: bincode::serde::encode_to_vec(&state, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+        })
+    }
+
+    /// MPCv1 → MPCv2 retrofit: round 0 of DKG import for Ed25519.
+    /// party_id: Party identifier / index.
+    /// decryption_key: Private Curve25519 key.
+    /// encryption_keys: Public Curve25519 keys of other parties.
+    /// s_i_0: 32 bytes LE — additive scalar (pShare.u, clamped).
+    /// expected_pk: 32 bytes — aggregate Ed25519 public key (pShare.y).
+    /// chain_code: 32 bytes — root chain code (pShare.chaincode).
+    pub fn ed25519_dkg_round0_import(
+        party_id: u8,
+        decryption_key: &[u8; 32],
+        encryption_keys: &[Vec<u8>; 2],
+        s_i_0: &[u8; 32],
+        expected_pk: &[u8; 32],
+        chain_code: &[u8; 32],
+    ) -> Result<MsgState, MpsError> {
+        use multi_party_schnorr::curve25519_dalek::{edwards::CompressedEdwardsY, Scalar};
+
+        let scalar = Scalar::from_bytes_mod_order(*s_i_0);
+        let pub_key = CompressedEdwardsY(*expected_pk)
+            .decompress()
+            .ok_or(MpsError::InvalidInput)?;
+
+        let result = internal_dkg_round0_import::<EdwardsPoint>(
+            party_id,
+            decryption_key,
+            encryption_keys,
+            scalar,
+            pub_key,
+            *chain_code,
+        )?;
+
+        Ok(MsgState {
+            msg: add_prefix("mps-ed25519-dkg-round1-message$", &result.msg),
+            state: add_prefix("mps-ed25519-dkg-round1-state$", &result.state),
+        })
+    }
+
     /// Process round 1 of DKG protocol.
     /// round1_messages: Public messages from other parties.
     /// state: Private state result from from round 0.
@@ -1027,6 +1147,92 @@ mod tests {
         );
     }
 
+    /// Test full DKG import protocol (MPCv1 → MPCv2 retrofit).
+    #[test]
+    fn test_ed25519_dkg_import() {
+        use multi_party_schnorr::curve25519_dalek::{
+            constants::ED25519_BASEPOINT_POINT, edwards::CompressedEdwardsY, Scalar,
+        };
+
+        let mut rng = rand::thread_rng();
+
+        // Synthesize 3 additive scalar shares and derive the expected public key.
+        let scalar_bytes: Vec<[u8; 32]> = (0..3).map(|_| rng.gen()).collect();
+        let scalars: Vec<Scalar> = scalar_bytes
+            .iter()
+            .map(|b| Scalar::from_bytes_mod_order(*b))
+            .collect();
+        let sum = scalars[0] + scalars[1] + scalars[2];
+        let expected_pk: [u8; 32] = (ED25519_BASEPOINT_POINT * sum).compress().to_bytes();
+        let chain_code: [u8; 32] = rng.gen();
+
+        let mut prv_keys = Vec::new();
+        let mut pub_keys: Vec<crypto_box::PublicKey> = Vec::new();
+        for _ in 0..3 {
+            let sk = crypto_box::SecretKey::generate(&mut rng);
+            pub_keys.push(sk.public_key());
+            prv_keys.push(sk);
+        }
+
+        let other_indices = [[1usize, 2], [0, 2], [0, 1]];
+
+        let r0: Vec<_> = (0..3)
+            .map(|i| {
+                mps::ed25519_dkg_round0_import(
+                    i as u8,
+                    &prv_keys[i].to_bytes(),
+                    &[
+                        pub_keys[other_indices[i][0]].to_bytes().to_vec(),
+                        pub_keys[other_indices[i][1]].to_bytes().to_vec(),
+                    ],
+                    &scalars[i].to_bytes(),
+                    &expected_pk,
+                    &chain_code,
+                )
+                .unwrap()
+            })
+            .collect();
+
+        let r1: Vec<_> = (0..3)
+            .map(|i| {
+                mps::ed25519_dkg_round1_process(
+                    &[
+                        r0[other_indices[i][0]].msg.clone(),
+                        r0[other_indices[i][1]].msg.clone(),
+                    ],
+                    &r0[i].state,
+                )
+                .unwrap()
+            })
+            .collect();
+
+        let shares: Vec<_> = (0..3)
+            .map(|i| {
+                mps::ed25519_dkg_round2_process(
+                    &[
+                        r1[other_indices[i][0]].msg.clone(),
+                        r1[other_indices[i][1]].msg.clone(),
+                    ],
+                    &r1[i].state,
+                )
+                .unwrap()
+            })
+            .collect();
+
+        // All 3 parties agree on pk and chaincode, both match the inputs.
+        for (i, share) in shares.iter().enumerate() {
+            assert_eq!(share.pk, expected_pk, "party {i} pk mismatch");
+            assert_eq!(share.chaincode, chain_code, "party {i} chaincode mismatch");
+        }
+        assert_eq!(shares[0].pk, shares[1].pk);
+        assert_eq!(shares[0].pk, shares[2].pk);
+
+        // Verify the public key is a valid Ed25519 point and matches expected.
+        let _ = CompressedEdwardsY(shares[0].pk)
+            .decompress()
+            .expect("pk must be a valid Ed25519 point");
+    }
+
     /// Test full DSG protocol.
     #[test]
     fn test_ed25519_dsg() {
@@ -1461,6 +1667,40 @@ pub fn ed25519_dkg_round0_process(
     let result =
         mps::ed25519_dkg_round0_process(party_id, &decryption_key_32, &[ek0, ek1], &seed_32)
             .map_err(|e| e.to_string())?;
+
+    Ok(MsgState {
+        msg: result.msg,
+        state: result.state,
+    })
+}
+
+#[wasm_bindgen]
+pub fn ed25519_dkg_round0_import(
+    party_id: u8,
+    decryption_key: &[u8],
+    encryption_keys: Array,
+    s_i_0: &[u8],
+    expected_pk: &[u8],
+    chain_code: &[u8],
+) -> Result<MsgState, String> {
+    let decryption_key_32: [u8; 32] = decryption_key.try_into().map_err(|_| "Invalid input")?;
+    let s_i_0_32: [u8; 32] = s_i_0.try_into().map_err(|_| "s_i_0 must be 32 bytes")?;
+    let expected_pk_32: [u8; 32] = expected_pk
+        .try_into()
+        .map_err(|_| "expected_pk must be 32 bytes")?;
+    let chain_code_32: [u8; 32] = chain_code
+        .try_into()
+        .map_err(|_| "chain_code must be 32 bytes")?;
+    let [ek0, ek1] = js_array_to_2_bufs(&encryption_keys)?;
+    let result = mps::ed25519_dkg_round0_import(
+        party_id,
+        &decryption_key_32,
+        &[ek0, ek1],
+        &s_i_0_32,
+        &expected_pk_32,
+        &chain_code_32,
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(MsgState {
         msg: result.msg,
