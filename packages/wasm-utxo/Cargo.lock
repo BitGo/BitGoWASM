@@ -3212,12 +3212,15 @@ dependencies = [
  "postcard",
  "rand",
  "rstest",
+ "secp256k1",
  "serde",
  "serde_json",
  "strum",
  "wasm-bindgen",
  "wasm-bindgen-test",
+ "zcash_note_encryption",
  "zebra-chain",
+ "zeroize",
 ]
 
 [[package]]

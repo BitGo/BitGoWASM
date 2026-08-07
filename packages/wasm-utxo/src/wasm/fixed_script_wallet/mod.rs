@@ -562,6 +562,36 @@ impl BitGoPsbt {
             .map_err(|e| WasmUtxoError::new(&e))
     }
 
+    /// Client-managed `ovk`: re-encrypt the Ironwood output's `out_ciphertext` under this wallet's
+    /// `ovk`, derived as the ECDH agreement of `root_wallet_keys.bitgo_key()` and `user_xpriv` — two
+    /// root keys, so the result is transaction-independent and the server can re-derive the identical
+    /// `ovk` from its own privkey plus the user's pubkey in order to validate `out_ciphertext`. The
+    /// server never sees `user_xpriv` or the `ovk` itself.
+    ///
+    /// `user_xpriv` must be the wallet's user root key; any other key is rejected, since an `ovk`
+    /// derived from it is one neither the user nor the server can reproduce.
+    ///
+    /// Must be called before signing: `out_ciphertext` is ZIP-244 sighash-committed, so calling this
+    /// after any transparent signature has been collected for the PSBT is rejected (it would
+    /// silently invalidate that signature).
+    pub fn set_ironwood_out_ciphertext(
+        &mut self,
+        action_index: usize,
+        user_xpriv: &WasmBIP32,
+        root_wallet_keys: &WasmRootWalletKeys,
+    ) -> Result<(), WasmUtxoError> {
+        let user_xpriv = user_xpriv.to_xpriv()?;
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+        self.zcash_mut()?
+            .set_ironwood_out_ciphertext_for_user(
+                action_index,
+                &user_xpriv,
+                root_wallet_keys.inner(),
+                &secp,
+            )
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
     /// The canonical (display-order) ZIP-244 v6 txid as a lowercase hex string, matching the
     /// `getId()` convention used elsewhere (see [`crate::wasm::zcash::ZcashV6Transaction::get_id`]).
     pub fn ironwood_v6_txid(&self) -> Result<String, WasmUtxoError> {
@@ -594,6 +624,31 @@ impl BitGoPsbt {
             .map_err(|e| WasmUtxoError::new(&format!("invalid pubkey: {e}")))?;
         self.zcash_mut()?
             .add_v6_transparent_signature(index, pk, sig)
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// Sign every transparent input `xpriv` resolves a key for, over the ZIP-244 transparent
+    /// sighash — the v6 (Ironwood) counterpart to `sign_all_wallet_inputs`, which rejects v6 PSBTs
+    /// (it only knows the ZIP-243 digest).
+    ///
+    /// If no transparent signature has been collected yet, this is the first signing round and
+    /// `xpriv` must be the wallet's user root key: it is used with `root_wallet_keys.bitgo_key()` to
+    /// derive this wallet's `ovk` and finalize `out_ciphertext` before computing any sighash (it is
+    /// sighash-committed). Any other key signing first is rejected, rather than deriving an `ovk`
+    /// nobody can reproduce. Once a signature exists, the step is skipped and any key may sign — so
+    /// callers pass `root_wallet_keys` unconditionally on every signing round without needing to know
+    /// which key is signing; it is mandatory precisely so the step can never be skipped by omission.
+    ///
+    /// Returns the indices of the transparent inputs that were signed.
+    pub fn sign_ironwood_v6(
+        &mut self,
+        xpriv: &WasmBIP32,
+        root_wallet_keys: &WasmRootWalletKeys,
+    ) -> Result<Vec<usize>, WasmUtxoError> {
+        let xpriv = xpriv.to_xpriv()?;
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+        self.zcash_mut()?
+            .sign_ironwood_v6(&xpriv, root_wallet_keys.inner(), &secp)
             .map_err(|e| WasmUtxoError::new(&e))
     }
 

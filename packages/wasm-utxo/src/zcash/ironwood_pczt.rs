@@ -172,6 +172,66 @@ pub fn with_zkproof(bytes: &[u8], proof: Vec<u8>) -> Result<Vec<u8>, IronwoodPcz
     Ok(out)
 }
 
+/// Splice a client-encrypted `out_ciphertext` into one action's output of an already-serialized
+/// PCZT.
+///
+/// Mirrors [`with_zkproof`]'s "re-emit the wire form with one field replaced" shape: the client
+/// builds `out_ciphertext` under its own `ovk` (never sent to the server), then patches it into the
+/// keyless bundle the server built. `out_ciphertext` is sighash-committed, so this must run before
+/// the ZIP-244 sighash is computed; every other field of the bundle/action is untouched.
+pub fn with_out_ciphertext(
+    bytes: &[u8],
+    action_index: usize,
+    out_ciphertext: super::ironwood_build::OutCiphertextBytes,
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    let (&version, body) = bytes.split_first().ok_or(IronwoodPcztError::Empty)?;
+    if version != FORMAT_VERSION {
+        return Err(IronwoodPcztError::UnsupportedVersion(version));
+    }
+    let mut wire: BundleWire =
+        postcard::from_bytes(body).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
+    let action = wire
+        .actions
+        .get_mut(action_index)
+        .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?;
+    action.output.out_ciphertext = out_ciphertext.to_vec();
+    let reencoded =
+        postcard::to_stdvec(&wire).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
+    let mut out = Vec::with_capacity(1 + reencoded.len());
+    out.push(FORMAT_VERSION);
+    out.extend_from_slice(&reencoded);
+    Ok(out)
+}
+
+/// Test-only: replace one action output's `rseed` in the wire form, producing a PCZT whose output
+/// fields no longer reconstruct the note its `cmx` commits to. Exists to exercise
+/// [`super::ironwood_build::IronwoodBuildError::NoteCommitmentMismatch`], which is otherwise
+/// unreachable through the public API.
+#[cfg(test)]
+pub(crate) fn with_output_rseed_for_test(
+    bytes: &[u8],
+    action_index: usize,
+    rseed: [u8; 32],
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    let (&version, body) = bytes.split_first().ok_or(IronwoodPcztError::Empty)?;
+    if version != FORMAT_VERSION {
+        return Err(IronwoodPcztError::UnsupportedVersion(version));
+    }
+    let mut wire: BundleWire =
+        postcard::from_bytes(body).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
+    wire.actions
+        .get_mut(action_index)
+        .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
+        .output
+        .rseed = Some(rseed);
+    let reencoded =
+        postcard::to_stdvec(&wire).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
+    let mut out = Vec::with_capacity(1 + reencoded.len());
+    out.push(FORMAT_VERSION);
+    out.extend_from_slice(&reencoded);
+    Ok(out)
+}
+
 /// Reconstruct an `orchard` PCZT Ironwood bundle from its wire form.
 pub fn deserialize_pczt(bytes: &[u8]) -> Result<PcztBundle, IronwoodPcztError> {
     let (&version, body) = bytes.split_first().ok_or(IronwoodPcztError::Empty)?;

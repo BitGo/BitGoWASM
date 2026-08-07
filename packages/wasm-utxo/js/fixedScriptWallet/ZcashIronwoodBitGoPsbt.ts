@@ -1,4 +1,6 @@
 import { BitGoPsbt as WasmBitGoPsbt } from "../wasm/wasm_utxo.js";
+import { type BIP32Arg, BIP32, isBIP32Arg } from "../bip32.js";
+import { type ECPairArg } from "../ecpair.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
 import {
   IRONWOOD_VERSION_GROUP_ID,
@@ -207,6 +209,40 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
   }
 
   /**
+   * Client-managed `ovk`: re-encrypt the shielded output's `out_ciphertext` under **this wallet's**
+   * `ovk`, derived as the ECDH agreement of `rootWalletKeys.bitgoKey()` and `userKey`. Both are root
+   * keys, so the `ovk` does not depend on which inputs the transaction spends, and the server can
+   * re-derive the identical value from its own private key plus the user's public key in order to
+   * validate `out_ciphertext` before countersigning. The server never sees `userKey` or the `ovk`.
+   *
+   * `userKey` must be the wallet's user root key — passing the backup or BitGo key throws, since an
+   * `ovk` derived from those is one neither the user nor the server can reproduce, and the resulting
+   * transaction would broadcast fine while leaving the shielded output permanently unrecoverable.
+   *
+   * Normally you do not call this directly: {@link sign} performs it on the first signing round.
+   *
+   * Must be called **before** signing: `out_ciphertext` is committed by the ZIP-244 sighash, so
+   * calling this after any transparent signature has been added (via
+   * {@link addTransparentSignature}) throws rather than silently invalidating that signature.
+   *
+   * @param actionIndex - index of the Ironwood action whose output to re-encrypt (always `0`: only
+   *   one shielded output per transaction is supported, see {@link addShieldedOutput})
+   * @param userKey - the wallet's user root key (an xpriv)
+   * @param rootWalletKeys - the wallet's root keys, supplying the BitGo cosigner pubkey
+   */
+  setShieldedOutCiphertext(
+    actionIndex: number,
+    userKey: BIP32Arg,
+    rootWalletKeys: WalletKeysArg,
+  ): void {
+    this.wasm.set_ironwood_out_ciphertext(
+      actionIndex,
+      BIP32.from(userKey).wasm,
+      RootWalletKeys.from(rootWalletKeys).wasm,
+    );
+  }
+
+  /**
    * The canonical (display-order) ZIP-244 v6 txid as a lowercase hex string, matching
    * `ITransaction.getId()`. Defined once the transparent inputs/outputs and the shielded output are
    * in place; unchanged by signing or proving.
@@ -233,6 +269,73 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
    */
   addTransparentSignature(index: number, pubkey: Uint8Array, sig: Uint8Array): void {
     this.wasm.add_ironwood_v6_signature(index, pubkey, sig);
+  }
+
+  /**
+   * Sign every transparent input `key` resolves a private key for, over the ZIP-244 transparent
+   * sighash. The v6 (Ironwood) counterpart to the inherited `sign(key)` — that base implementation
+   * rejects v6 PSBTs outright, since it only knows the ZIP-243 digest.
+   *
+   * If no transparent signature has been added to this PSBT yet, this is the first signing round and
+   * `key` must be the wallet's user root key: it is used with `rootWalletKeys.bitgoKey()` to derive
+   * this wallet's `ovk` and finalize `out_ciphertext` — the client-managed-`ovk` flow — before any
+   * sighash is computed. Once a signature exists, that step is a no-op, so a caller passes
+   * `rootWalletKeys` on every signing round unconditionally: `psbt.sign(userXpriv, rootWalletKeys)`
+   * and later `psbt.sign(bitgoXpriv, rootWalletKeys)` — only the first call actually uses it.
+   * `rootWalletKeys` is mandatory precisely so that step can never be silently skipped by omission.
+   *
+   * **The user must sign first**, and this is enforced: a first round opened by any other key throws
+   * rather than deriving an `ovk` that neither the user nor the server can reproduce. One consequence
+   * is that a backup-key recovery cannot open the first signing round of a shielding transaction.
+   *
+   * `rootWalletKeys` is typed optional only so this override type-checks against the inherited
+   * `sign(key)` signature — omitting it throws at runtime rather than silently signing without the
+   * `ovk` step.
+   *
+   * @param key - an xpriv (BIP32Arg); raw privkeys (ECPairArg) are not meaningful here, since
+   *   `out_ciphertext` derivation needs the key's `bip32_derivation` path
+   * @param rootWalletKeys - the wallet's root keys (required). Any {@link WalletKeysArg} form, same
+   *   as {@link setShieldedOutCiphertext} and {@link createEmpty} — an xpub triple, a utxo-lib
+   *   `RootWalletKeys`, or this package's own — so it is never sensitive to which copy of the class
+   *   a caller's `RootWalletKeys` came from.
+   * @returns the transparent input indices that were signed
+   */
+  override sign(key: BIP32Arg | ECPairArg, rootWalletKeys?: WalletKeysArg): number[];
+  /**
+   * @deprecated Not supported for v6 (Ironwood): always throws. Inherited only because the base
+   * class's single-input overload must be preserved for the override to type-check; use
+   * {@link sign} (all matching inputs) instead.
+   */
+  override sign(inputIndex: number, key: BIP32Arg | ECPairArg): void;
+  // The second parameter is `WalletKeysArg` in the public (first) overload above — the only form
+  // callers see. It widens here solely to stay assignable to the deprecated `(inputIndex, key)`
+  // overload, whose own second parameter is a key; narrowing it to `WalletKeysArg` is TS2394.
+  override sign(
+    keyOrIndex: BIP32Arg | ECPairArg | number,
+    keyOrRootWalletKeys?: BIP32Arg | ECPairArg | WalletKeysArg,
+  ): number[] | void {
+    if (typeof keyOrIndex === "number") {
+      throw new Error(
+        "not supported for v6 (Ironwood): single-input sign(inputIndex, key) has no ZIP-244 " +
+          "equivalent; use sign(key) to sign all matching inputs",
+      );
+    }
+    if (!isBIP32Arg(keyOrIndex)) {
+      throw new Error(
+        "not supported for v6 (Ironwood): a raw privkey (ECPairArg) has no bip32_derivation path " +
+          "to resolve out_ciphertext's ovk from; pass an xpriv",
+      );
+    }
+    if (keyOrRootWalletKeys === undefined) {
+      throw new Error(
+        "rootWalletKeys is required for v6 (Ironwood) signing: sign(key, rootWalletKeys) — pass it " +
+          "on every signing round, even Bitgo's, so the client-managed-ovk step is never silently " +
+          "skipped",
+      );
+    }
+    const wasmKey = BIP32.from(keyOrIndex).wasm;
+    const keys = RootWalletKeys.from(keyOrRootWalletKeys as WalletKeysArg);
+    return Array.from(this.wasm.sign_ironwood_v6(wasmKey, keys.wasm), Number);
   }
 
   /**
