@@ -267,6 +267,10 @@ pub enum ZecV6KeySubtype {
     IronwoodPczt = 0x01,
     VersionGroupId = 0x02,
     ExpiryHeight = 0x03,
+    /// Marker set once [`take_ironwood_pczt`] has actually dropped a PCZT (i.e. extraction
+    /// happened, not just "no shielded output was ever added"). Persists even though the PCZT
+    /// itself is gone, so a later read can tell the two "no PCZT" states apart.
+    IronwoodExtracted = 0x04,
 }
 
 fn set_zec_v6(
@@ -334,7 +338,24 @@ pub fn take_ironwood_pczt(psbt: &mut miniscript::bitcoin::psbt::Psbt) -> bool {
         subtype: ZecV6KeySubtype::IronwoodPczt as u8,
         key: vec![],
     };
-    psbt.proprietary.remove(&key).is_some()
+    let took = psbt.proprietary.remove(&key).is_some();
+    if took {
+        set_ironwood_extracted(psbt);
+    }
+    took
+}
+
+/// Mark the PSBT as having had its Ironwood PCZT extracted (see [`take_ironwood_pczt`]).
+/// Persists across `serialize`/`deserialize`, unlike the PCZT itself, so a later "was a shielded
+/// output added and then extracted, or never added at all?" check can tell the two apart even
+/// though both look identical from PCZT-presence alone.
+fn set_ironwood_extracted(psbt: &mut miniscript::bitcoin::psbt::Psbt) {
+    set_zec_v6(psbt, ZecV6KeySubtype::IronwoodExtracted, vec![]);
+}
+
+/// Whether the PSBT's Ironwood PCZT has been extracted (dropped by [`take_ironwood_pczt`]).
+pub fn is_ironwood_extracted(psbt: &miniscript::bitcoin::psbt::Psbt) -> bool {
+    get_zec_v6(psbt, ZecV6KeySubtype::IronwoodExtracted).is_some()
 }
 
 /// Store the Zcash v6 (Ironwood) header params — `version_group_id` and `expiry_height` — under the

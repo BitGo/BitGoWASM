@@ -24,7 +24,7 @@ use super::blake2b::blake2b_var_personal;
 use bech32::primitives::decode::CheckedHrpstring;
 use bech32::Bech32m;
 use core::fmt;
-use miniscript::bitcoin::consensus::Decodable;
+use miniscript::bitcoin::consensus::{Decodable, Encodable};
 use miniscript::bitcoin::VarInt;
 
 /// Errors produced while parsing or inspecting a ZIP-316 Unified Address.
@@ -168,6 +168,21 @@ fn f4jumble_inv(msg: &mut [u8]) -> Result<(), UnifiedAddressError> {
     Ok(())
 }
 
+/// Apply F4Jumble in place (the 4-round unkeyed Feistel network forwards) — the exact inverse of
+/// [`f4jumble_inv`]: a Feistel network inverts by running the same per-round updates in reverse
+/// round order, so this applies `g(0), h(0), g(1), h(1)`.
+fn f4jumble(msg: &mut [u8]) -> Result<(), UnifiedAddressError> {
+    if !(F4JUMBLE_MIN_LEN..=F4JUMBLE_MAX_LEN).contains(&msg.len()) {
+        return Err(UnifiedAddressError::InvalidLength);
+    }
+    let left_len = core::cmp::min(OUTBYTES, msg.len() / 2);
+    g_round(msg, left_len, 0);
+    h_round(msg, left_len, 0);
+    g_round(msg, left_len, 1);
+    h_round(msg, left_len, 1);
+    Ok(())
+}
+
 /// The expected Bech32m HRP for a Zcash network.
 ///
 /// Only mainnet (`zec`/`zcash`) and testnet (`tzec`/`zcashTest`) are supported —
@@ -249,6 +264,42 @@ fn decode_receivers(
     Ok(receivers)
 }
 
+/// Encode a single Orchard/Ironwood receiver as a ZIP-316 Unified Address for `network`.
+///
+/// Deliberately narrower than a general UA encoder: BitGo never needs to *build* a UA carrying
+/// more than one receiver (a transparent + Sapling + Orchard combo, say) — only to hand back a
+/// human-readable address for a shielded output whose raw receiver it already has. A single-
+/// receiver UA is a valid ZIP-316 address in its own right (receivers ⩾ 1, and typecode ordering
+/// is trivially satisfied with only one), so this covers that case exactly without the added
+/// receiver-merging logic a general encoder would need.
+pub fn encode_orchard_receiver(
+    receiver: &[u8; SHIELDED_RECEIVER_LEN],
+    network: &str,
+) -> Result<String, UnifiedAddressError> {
+    let expected_hrp = hrp_for_network(network)?;
+
+    // TLV receiver record: CompactSize(typecode) ‖ CompactSize(length) ‖ data.
+    let mut payload = Vec::with_capacity(2 + SHIELDED_RECEIVER_LEN + PADDING_LEN);
+    VarInt(TYPECODE_ORCHARD)
+        .consensus_encode(&mut payload)
+        .expect("Vec<u8> writes are infallible");
+    VarInt(SHIELDED_RECEIVER_LEN as u64)
+        .consensus_encode(&mut payload)
+        .expect("Vec<u8> writes are infallible");
+    payload.extend_from_slice(receiver);
+
+    // Trailing 16-byte padding: the HRP, zero-extended.
+    let mut padding = [0u8; PADDING_LEN];
+    padding[..expected_hrp.len()].copy_from_slice(expected_hrp.as_bytes());
+    payload.extend_from_slice(&padding);
+
+    f4jumble(&mut payload)?;
+
+    let hrp = bech32::Hrp::parse(expected_hrp).expect("hrp_for_network returns a valid HRP");
+    bech32::encode::<Bech32m>(hrp, &payload)
+        .map_err(|e| UnifiedAddressError::BadBech32(e.to_string()))
+}
+
 /// Build a P2PKH scriptPubKey from a 20-byte pubkey hash.
 fn p2pkh_script(hash: &[u8]) -> Vec<u8> {
     // OP_DUP OP_HASH160 <20> {hash} OP_EQUALVERIFY OP_CHECKSIG
@@ -305,6 +356,20 @@ fn looks_like_unified(candidate: &str, expected_hrp: &str) -> bool {
     CheckedHrpstring::new::<Bech32m>(candidate)
         .map(|c| c.hrp().as_str() == expected_hrp)
         .unwrap_or(false)
+}
+
+/// Does `candidate` look like a unified address for `network` (Bech32m with this network's
+/// HRP)? `false` for an unknown network name, same as any other non-match.
+///
+/// For a caller that needs to route between "parse as a unified address" and "parse as a
+/// transparent address" (e.g. [`crate::address::networks::to_output_script_or_shielded_receiver_with_coin`]):
+/// this only sniffs the HRP, so it can't itself distinguish a well-formed UA from a malformed
+/// one — callers that get `true` should still handle [`UnifiedAddress::parse`] failing.
+pub fn looks_like_unified_for_network(candidate: &str, network: &str) -> bool {
+    match hrp_for_network(network) {
+        Ok(expected_hrp) => looks_like_unified(candidate, expected_hrp),
+        Err(_) => false,
+    }
 }
 
 /// A parsed ZIP-316 Unified Address.
@@ -438,8 +503,93 @@ mod tests {
     }
 
     #[test]
+    fn f4jumble_forward_matches_vector() {
+        let mut buf = F4JUMBLE_NORMAL.to_vec();
+        f4jumble(&mut buf).unwrap();
+        assert_eq!(buf, F4JUMBLE_JUMBLED);
+    }
+
+    #[test]
+    fn f4jumble_and_inverse_round_trip() {
+        let mut buf: Vec<u8> = (0..200u16).map(|i| (i % 256) as u8).collect();
+        let original = buf.clone();
+        f4jumble(&mut buf).unwrap();
+        assert_ne!(buf, original, "jumbling actually changes the bytes");
+        f4jumble_inv(&mut buf).unwrap();
+        assert_eq!(buf, original);
+    }
+
+    #[test]
     fn f4jumble_rejects_out_of_range_length() {
         assert!(f4jumble_inv(&mut [0u8; 47]).is_err());
+    }
+
+    mod encode_orchard_receiver_tests {
+        use super::*;
+
+        fn ua_fixtures() -> serde_json::Value {
+            let s = crate::fixed_script_wallet::test_utils::fixtures::load_fixture(
+                "zcash/unified_address.json",
+            )
+            .expect("load unified_address.json");
+            serde_json::from_str(&s).expect("parse unified_address.json")
+        }
+
+        #[test]
+        fn round_trips_through_parse_for_both_networks() {
+            for (group, network) in [("zip316Mainnet", "zec"), ("testnetWallet", "tzec")] {
+                let f = ua_fixtures();
+                let receiver_hex = f[group]["orchardReceiverHex"]
+                    .as_str()
+                    .or_else(|| f[group]["ironwoodReceiverHex"].as_str())
+                    .unwrap_or_else(|| panic!("missing orchard/ironwood receiver for {group}"));
+                let receiver: [u8; SHIELDED_RECEIVER_LEN] =
+                    hex::decode(receiver_hex).unwrap().try_into().unwrap();
+
+                let encoded = encode_orchard_receiver(&receiver, network).unwrap();
+                let parsed = UnifiedAddress::parse(&encoded, network).unwrap();
+                assert_eq!(
+                    parsed.orchard_receiver().unwrap().expect("orchard present"),
+                    receiver.to_vec(),
+                    "{group}: round-tripped receiver must match the original"
+                );
+            }
+        }
+
+        #[test]
+        fn produces_the_correct_hrp_for_each_network() {
+            let receiver = [0u8; SHIELDED_RECEIVER_LEN];
+            assert!(encode_orchard_receiver(&receiver, "zec")
+                .unwrap()
+                .starts_with("u1"));
+            assert!(encode_orchard_receiver(&receiver, "tzec")
+                .unwrap()
+                .starts_with("utest1"));
+            // Both coin-name spellings for a network must produce byte-identical addresses.
+            assert_eq!(
+                encode_orchard_receiver(&receiver, "zcash").unwrap(),
+                encode_orchard_receiver(&receiver, "zec").unwrap(),
+            );
+            assert_eq!(
+                encode_orchard_receiver(&receiver, "zcashTest").unwrap(),
+                encode_orchard_receiver(&receiver, "tzec").unwrap(),
+            );
+        }
+
+        #[test]
+        fn is_deterministic() {
+            let receiver = [0x42u8; SHIELDED_RECEIVER_LEN];
+            assert_eq!(
+                encode_orchard_receiver(&receiver, "zec").unwrap(),
+                encode_orchard_receiver(&receiver, "zec").unwrap(),
+            );
+        }
+
+        #[test]
+        fn rejects_an_unknown_network() {
+            let receiver = [0u8; SHIELDED_RECEIVER_LEN];
+            assert!(encode_orchard_receiver(&receiver, "bitcoin").is_err());
+        }
     }
 
     /// Load the shared unified-address fixture (`test/fixtures/zcash/unified_address.json`).

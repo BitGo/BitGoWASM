@@ -391,7 +391,8 @@ impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedOutput {
             "value" => self.value,
             "scriptId" => self.script_id,
             "paygo" => self.paygo,
-            "derivationPath" => self.derivation_path.clone()
+            "derivationPath" => self.derivation_path.clone(),
+            "isShielded" => self.is_shielded
         )
     }
 }

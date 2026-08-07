@@ -99,6 +99,29 @@ impl ZcashUnifiedAddress {
     pub fn contains(&self, candidate: &str) -> Result<bool, WasmUtxoError> {
         Ok(self.inner.contains(candidate)?)
     }
+
+    /// Encode a raw 43-byte Orchard/Ironwood receiver as a single-receiver Unified Address for
+    /// `network` ("zcash"/"zec" or "zcashTest"/"tzec").
+    ///
+    /// Deliberately narrower than a general UA encoder: this always produces exactly one
+    /// receiver, so it can't reproduce a multi-receiver UA (transparent + Sapling + Orchard) a
+    /// sender might have originally pasted in — only give back *a* valid, usable address for the
+    /// Orchard/Ironwood receiver itself.
+    #[wasm_bindgen(js_name = encodeOrchardReceiver)]
+    pub fn encode_orchard_receiver(
+        receiver: &[u8],
+        network: &str,
+    ) -> Result<String, WasmUtxoError> {
+        let receiver: [u8; 43] = receiver.try_into().map_err(|_| {
+            WasmUtxoError::new(&format!(
+                "orchard receiver must be 43 bytes, got {}",
+                receiver.len()
+            ))
+        })?;
+        Ok(crate::zcash::unified_address::encode_orchard_receiver(
+            &receiver, network,
+        )?)
+    }
 }
 
 /// A parsed Zcash v6 (Ironwood / NU6.3) transaction — for inspection and txid.

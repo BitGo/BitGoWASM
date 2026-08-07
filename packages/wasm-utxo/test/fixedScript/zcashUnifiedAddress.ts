@@ -92,4 +92,37 @@ describe("ZcashUnifiedAddress", function () {
       assert.throws(() => ua.contains("not-an-address"));
     });
   });
+
+  describe("encodeOrchardReceiver", function () {
+    it("round-trips a raw receiver through parse (mainnet)", function () {
+      const receiver = Buffer.from(MAINNET.orchardReceiverHex, "hex");
+      const encoded = ZcashUnifiedAddress.encodeOrchardReceiver(receiver, MAINNET.network);
+      const ua = ZcashUnifiedAddress.parse(encoded, MAINNET.network);
+      assert.strictEqual(hex(ua.orchardReceiver), MAINNET.orchardReceiverHex);
+    });
+
+    it("round-trips a raw receiver through parse (testnet)", function () {
+      const receiver = Buffer.from(WALLET.ironwoodReceiverHex, "hex");
+      const encoded = ZcashUnifiedAddress.encodeOrchardReceiver(receiver, WALLET.network);
+      const ua = ZcashUnifiedAddress.parse(encoded, WALLET.network);
+      assert.strictEqual(hex(ua.orchardReceiver), WALLET.ironwoodReceiverHex);
+    });
+
+    it("is deterministic", function () {
+      const receiver = Buffer.from(MAINNET.orchardReceiverHex, "hex");
+      assert.strictEqual(
+        ZcashUnifiedAddress.encodeOrchardReceiver(receiver, MAINNET.network),
+        ZcashUnifiedAddress.encodeOrchardReceiver(receiver, MAINNET.network),
+      );
+    });
+
+    it("rejects a receiver of the wrong length", function () {
+      assert.throws(() => ZcashUnifiedAddress.encodeOrchardReceiver(new Uint8Array(10), "zec"));
+    });
+
+    it("rejects an unknown network", function () {
+      const receiver = Buffer.from(MAINNET.orchardReceiverHex, "hex");
+      assert.throws(() => ZcashUnifiedAddress.encodeOrchardReceiver(receiver, "bitcoin" as never));
+    });
+  });
 });

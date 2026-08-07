@@ -10,6 +10,7 @@ import {
   ZcashBitGoPsbt,
 } from "../../js/fixedScriptWallet/ZcashBitGoPsbt.js";
 import { getKeyTriple, getWalletKeysForSeed } from "../../js/testutils/index.js";
+import { ZcashUnifiedAddress } from "../../js/fixedScriptWallet/ZcashUnifiedAddress.js";
 
 // NU6.3 (Ironwood) testnet activation height.
 const NU6_3_TESTNET_HEIGHT = 4134000;
@@ -67,6 +68,32 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
     assert.deepStrictEqual(round.transparentSighash(0), sighash);
   });
 
+  it("unsignedTxId (the generic PsbtAccess accessor) agrees with getId() for a v6 PSBT", function () {
+    // Regression test: unsignedTxId used to fall through to the v4/Sapling txid path for every
+    // Zcash PSBT, which builds an invalid transaction for v6 (wrong wire format) and panicked
+    // (wasm `unreachable` trap) instead of returning a usable value.
+    const psbt = buildShieldPsbt();
+    assert.strictEqual(psbt.unsignedTxId(), psbt.getId());
+  });
+
+  it("unsignedTxId works before a shielded output has been added", function () {
+    const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
+      blockHeight: NU6_3_TESTNET_HEIGHT,
+    });
+    psbt.addWalletInput({ txid: "11".repeat(32), vout: 0, value: 200_000_000n }, walletKeys, {
+      scriptId: SCRIPT_ID,
+      signPath: { signer: "user", cosigner: "bitgo" },
+    });
+    psbt.addWalletOutput(walletKeys, { chain: 1, index: 0, value: 199_900_000n });
+    assert.match(psbt.unsignedTxId(), /^[0-9a-f]{64}$/);
+  });
+
+  // The extraction-accounting regression (unsignedTxId/parseTransactionWithWalletKeys must throw,
+  // not silently go transparent-only, once the PCZT has been dropped by combineProof) is covered
+  // at the Rust level — `unsigned_v6_txid_and_shielded_output_info_error_after_extraction` in
+  // zcash_psbt.rs — since reaching a real extracted PSBT from this package's current JS surface
+  // needs a full ECDSA signing flow this test file has no utility for.
+
   it("rejects a well-formed signature that does not verify against the v6 sighash", function () {
     const psbt = buildShieldPsbt();
     // A pubkey the redeem script actually contains, so the failure comes from verification against
@@ -111,6 +138,94 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
   it("rejects an out-of-range transparent input index", function () {
     const psbt = buildShieldPsbt();
     assert.throws(() => psbt.transparentSighash(5), /out of range/);
+  });
+
+  describe("parseTransactionWithWalletKeys", function () {
+    // The shielded output has no `unsigned_tx` entry of its own (it lives in the PSBT's
+    // proprietary-map PCZT), so it is invisible to plain transparent-output parsing unless
+    // surfaced explicitly via `isShielded`.
+    it("surfaces the shielded output as isShielded and folds its value into fee/spend accounting", function () {
+      const psbt = buildShieldPsbt();
+      const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, {
+        replayProtection: { publicKeys: [] },
+      });
+
+      assert.strictEqual(parsed.outputs.length, 2);
+      const shielded = parsed.outputs.filter((o) => o.isShielded);
+      assert.strictEqual(shielded.length, 1);
+      assert.strictEqual(shielded[0].value, 100_000_000n, "the shielded note's value");
+      // `address` is a real, usable single-receiver unified address encoding the raw receiver
+      // (read from the PCZT's plaintext recipient field, not from decrypting anything); `script`
+      // carries the same 43 raw bytes.
+      assert.deepStrictEqual(Buffer.from(shielded[0].script), RECIPIENT);
+      const ua = ZcashUnifiedAddress.parse(shielded[0].address ?? "", "zcashTest");
+      assert.deepStrictEqual(Buffer.from(ua.orchardReceiver ?? []), RECIPIENT);
+      assert.strictEqual(shielded[0].derivationPath, null);
+
+      const change = parsed.outputs.find((o) => !o.isShielded);
+      assert.strictEqual(change?.derivationPath, "0/0/1/0");
+
+      // 200_000_000 in - (99_900_000 transparent change + 100_000_000 shielded) = 100_000 fee.
+      assert.strictEqual(parsed.minerFee, 100_000n);
+      // The shielded note counts as an external spend, same as any other non-wallet output.
+      assert.strictEqual(parsed.spendAmount, 100_000_000n);
+    });
+
+    it("omits the shielded entry for a v6 PSBT with no shielded output yet", function () {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput({ txid: "11".repeat(32), vout: 0, value: 200_000_000n }, walletKeys, {
+        scriptId: SCRIPT_ID,
+        signPath: { signer: "user", cosigner: "bitgo" },
+      });
+      psbt.addWalletOutput(walletKeys, { chain: 1, index: 0, value: 199_900_000n });
+
+      const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, {
+        replayProtection: { publicKeys: [] },
+      });
+      assert.strictEqual(parsed.outputs.length, 1);
+      assert.strictEqual(parsed.outputs[0].isShielded, false);
+      assert.strictEqual(parsed.minerFee, 100_000n);
+      assert.strictEqual(parsed.spendAmount, 0n);
+    });
+  });
+
+  describe("parseOutputsWithWalletKeys", function () {
+    // This method skips input validation but shares the same output-parsing path, so the shielded
+    // output must be surfaced here too — otherwise a caller using it (e.g. to identify outputs
+    // belonging to a different wallet than the inputs) would silently miss the shielded note.
+    it("surfaces the shielded output alongside the transparent change output", function () {
+      const psbt = buildShieldPsbt();
+      const outputs = psbt.parseOutputsWithWalletKeys(walletKeys);
+
+      assert.strictEqual(outputs.length, 2);
+      const shielded = outputs.filter((o) => o.isShielded);
+      assert.strictEqual(shielded.length, 1);
+      assert.strictEqual(shielded[0].value, 100_000_000n);
+      assert.deepStrictEqual(Buffer.from(shielded[0].script), RECIPIENT);
+      const ua = ZcashUnifiedAddress.parse(shielded[0].address ?? "", "zcashTest");
+      assert.deepStrictEqual(Buffer.from(ua.orchardReceiver ?? []), RECIPIENT);
+      assert.strictEqual(shielded[0].derivationPath, null);
+
+      const change = outputs.find((o) => !o.isShielded);
+      assert.strictEqual(change?.derivationPath, "0/0/1/0");
+    });
+
+    it("omits the shielded entry for a v6 PSBT with no shielded output yet", function () {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput({ txid: "11".repeat(32), vout: 0, value: 200_000_000n }, walletKeys, {
+        scriptId: SCRIPT_ID,
+        signPath: { signer: "user", cosigner: "bitgo" },
+      });
+      psbt.addWalletOutput(walletKeys, { chain: 1, index: 0, value: 199_900_000n });
+
+      const outputs = psbt.parseOutputsWithWalletKeys(walletKeys);
+      assert.strictEqual(outputs.length, 1);
+      assert.strictEqual(outputs[0].isShielded, false);
+    });
   });
 
   describe("addShieldedOutput byte-length validation", function () {

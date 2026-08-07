@@ -15,6 +15,10 @@ pub struct ParsedOutput {
     /// Full BIP32 derivation path from the wallet xpub (e.g. `[chain, index]`).
     /// `None` for outputs that do not belong to this wallet.
     pub derivation_path: Option<DerivationPath>,
+    /// Whether this output is a shielded (Orchard/Ironwood) output rather than a transparent one.
+    /// Always `false` for outputs parsed from `tx_output`/`psbt_output` — set by the caller when
+    /// synthesizing a `ParsedOutput` for the shielded side of a v6 (Ironwood) transaction.
+    pub is_shielded: bool,
 }
 
 impl ParsedOutput {
@@ -59,6 +63,7 @@ impl ParsedOutput {
             script_id,
             paygo,
             derivation_path,
+            is_shielded: false,
         })
     }
 

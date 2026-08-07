@@ -354,6 +354,43 @@ pub fn to_output_script_with_coin(address: &str, coin: &str) -> Result<ScriptBuf
     to_output_script_with_network(address, network)
 }
 
+/// Like [`to_output_script_with_coin`], but when `can_be_shielded_output` is set and `address` is
+/// a ZIP-316 unified address for `coin`'s network, returns the UA's raw 43-byte Orchard/Ironwood
+/// receiver instead of a transparent scriptPubKey — there is no scriptPubKey for a shielded
+/// output, so this can't return a `ScriptBuf` uniformly and returns raw bytes instead.
+///
+/// `address` is only even attempted as a UA when `can_be_shielded_output` is set: a transparent
+/// address is never itself a valid UA (a UA HRP can't collide with a transparent address's own
+/// encoding), so this flag exists purely to make "the caller is prepared to receive an Ironwood
+/// receiver instead of a scriptPubKey" explicit rather than inferred from the address string.
+///
+/// If `address` merely *looks* like a UA for this network (right Bech32m HRP) but is malformed,
+/// or is well-formed but has no Orchard/Ironwood receiver (e.g. Sapling-only), this errors rather
+/// than silently falling back to the transparent path — a UA that can't yield the shielded
+/// receiver the caller asked for is a caller bug, not an alternate valid address.
+pub fn to_output_script_or_shielded_receiver_with_coin(
+    address: &str,
+    coin: &str,
+    can_be_shielded_output: bool,
+) -> Result<Vec<u8>> {
+    if can_be_shielded_output
+        && crate::zcash::unified_address::looks_like_unified_for_network(address, coin)
+    {
+        let ua = crate::zcash::unified_address::UnifiedAddress::parse(address, coin)
+            .map_err(|e| AddressError::InvalidAddress(e.to_string()))?;
+        return match ua
+            .orchard_receiver()
+            .map_err(|e| AddressError::InvalidAddress(e.to_string()))?
+        {
+            Some(receiver) => Ok(receiver),
+            None => Err(AddressError::InvalidAddress(format!(
+                "unified address has no Orchard/Ironwood receiver: {address}"
+            ))),
+        };
+    }
+    to_output_script_with_coin(address, coin).map(|script| script.to_bytes().to_vec())
+}
+
 /// Convert an output script to an address string using a BitGo coin name.
 /// The coin name is first converted to a Network using `Network::from_coin_name()`.
 pub fn from_output_script_with_coin(script: &Script, coin: &str) -> Result<String> {
@@ -444,6 +481,81 @@ mod tests {
         let addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
         let result = to_output_script_with_coin(addr, "invalid_coin");
         assert!(result.is_err());
+    }
+
+    mod shielded_output {
+        use super::*;
+
+        fn ua_fixtures() -> serde_json::Value {
+            let s = crate::fixed_script_wallet::test_utils::fixtures::load_fixture(
+                "zcash/unified_address.json",
+            )
+            .expect("load unified_address.json");
+            serde_json::from_str(&s).expect("parse unified_address.json")
+        }
+
+        fn fx(v: &serde_json::Value, group: &str, key: &str) -> String {
+            v[group][key]
+                .as_str()
+                .unwrap_or_else(|| panic!("missing fixture field {}.{}", group, key))
+                .to_string()
+        }
+
+        #[test]
+        fn returns_the_orchard_receiver_for_a_unified_address_when_set() {
+            let f = ua_fixtures();
+            let ua = fx(&f, "zip316Mainnet", "unified");
+            let expected = hex::decode(fx(&f, "zip316Mainnet", "orchardReceiverHex")).unwrap();
+
+            let receiver =
+                to_output_script_or_shielded_receiver_with_coin(&ua, "zec", true).unwrap();
+            assert_eq!(receiver, expected);
+            assert_eq!(receiver.len(), 43);
+        }
+
+        #[test]
+        fn never_even_attempts_ua_parsing_when_unset() {
+            // A unified address is never itself a valid transparent address, so without the flag
+            // this must fail exactly like it did before this feature existed — not succeed by
+            // accidentally matching some transparent codec.
+            let ua = fx(&ua_fixtures(), "zip316Mainnet", "unified");
+            assert!(to_output_script_or_shielded_receiver_with_coin(&ua, "zec", false).is_err());
+        }
+
+        #[test]
+        fn falls_through_to_the_transparent_path_for_an_ordinary_address_even_when_set() {
+            let f = ua_fixtures();
+            let addr = fx(&f, "testnetWallet", "transparentAddress");
+            let expected_hash = hex::decode(fx(&f, "testnetWallet", "transparentPubkeyHashHex"))
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let expected =
+                ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array(expected_hash)).to_bytes();
+
+            let script =
+                to_output_script_or_shielded_receiver_with_coin(&addr, "tzec", true).unwrap();
+            assert_eq!(script, expected);
+        }
+
+        #[test]
+        fn errors_on_a_wrong_network_unified_address_rather_than_succeeding() {
+            // The mainnet UA's HRP ("u") doesn't match testnet's ("utest"), so
+            // `looks_like_unified_for_network` itself returns false — this never reaches
+            // `UnifiedAddress::parse`'s own (separately tested, in unified_address.rs)
+            // `WrongHrp` check; it falls through to the transparent path instead, which fails for
+            // an unrelated reason (a UA string never decodes as a transparent address). Assert on
+            // that specific failure rather than a bare `is_err()`, so this pins down which path
+            // actually rejected it — a bare `is_err()` would still pass even if the network check
+            // were silently removed entirely.
+            let ua = fx(&ua_fixtures(), "zip316Mainnet", "unified");
+            let err =
+                to_output_script_or_shielded_receiver_with_coin(&ua, "tzec", true).unwrap_err();
+            assert!(
+                err.to_string().contains("Could not decode address"),
+                "expected the transparent-decode fallback to fail; got: {err}"
+            );
+        }
     }
 
     #[test]

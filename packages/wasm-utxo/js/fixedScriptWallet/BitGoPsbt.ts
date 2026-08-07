@@ -53,6 +53,16 @@ export type ParsedOutput = {
   paygo: boolean;
   /** Full BIP32 derivation path from the wallet xpub (e.g. "0/1"). Null for external outputs. */
   derivationPath: string | null;
+  /**
+   * True for a shielded (Orchard/Ironwood) output. Such an output has no `unsigned_tx` entry of
+   * its own — it lives in the PSBT's proprietary-map PCZT, read from its plaintext (not
+   * encrypted/decrypted) recipient field. `address` is a single-receiver ZIP-316 unified address
+   * (`u1...`/`utest1...`) encoding that receiver — a real, usable Zcash address, though not
+   * necessarily byte-identical to whatever multi-receiver UA the sender originally pasted in (a
+   * UA with a transparent/Sapling receiver too would round-trip to a different string carrying
+   * only the Orchard one). `script` holds the same receiver as raw 43 bytes.
+   */
+  isShielded: boolean;
 };
 
 export type ParsedTransaction = {
