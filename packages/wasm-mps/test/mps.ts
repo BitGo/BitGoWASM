@@ -2,6 +2,7 @@ import assert from "assert";
 import crypto from "crypto";
 import * as mps from "../js";
 import sodium from "libsodium-wrappers-sumo";
+import { makeImportShares, runDsg, runImportDkg } from "./utils.js";
 
 await sodium.ready;
 
@@ -314,6 +315,170 @@ describe("mps", function () {
             );
           });
         });
+      });
+    });
+
+    describe("dkg_import", function () {
+      let importScalars: Buffer[];
+      let importExpectedPk: Buffer;
+      let importChainCode: Buffer;
+
+      before("generates synthetic MPCv1 shares", function () {
+        ({
+          scalars: importScalars,
+          expectedPk: importExpectedPk,
+          chainCode: importChainCode,
+        } = makeImportShares());
+      });
+
+      it("performs round 0 import", function () {
+        const messagePrefix = Buffer.from("mps-ed25519-dkg-round1-message$");
+        const statePrefix = Buffer.from("mps-ed25519-dkg-round1-state$");
+        for (let i = 0; i < keypairs.length; i++) {
+          const result = mps.ed25519_dkg_round0_import(
+            i,
+            keypairs[i].privateKey,
+            otherIndices[i].map((j) => keypairs[j].publicKey),
+            importScalars[i],
+            importExpectedPk,
+            importChainCode,
+          );
+          assert(Buffer.from(result.msg).slice(0, messagePrefix.length).equals(messagePrefix));
+          assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
+        }
+      });
+
+      let r0Results: Array<mps.MsgState>;
+
+      before("performs round 0 import", function () {
+        r0Results = [0, 1, 2].map((i) =>
+          mps.ed25519_dkg_round0_import(
+            i,
+            keypairs[i].privateKey,
+            otherIndices[i].map((j) => keypairs[j].publicKey),
+            importScalars[i],
+            importExpectedPk,
+            importChainCode,
+          ),
+        );
+      });
+
+      it("performs round 1", function () {
+        const messagePrefix = Buffer.from("mps-ed25519-dkg-round2-message$");
+        const statePrefix = Buffer.from("mps-ed25519-dkg-round2-state$");
+        for (let i = 0; i < r0Results.length; i++) {
+          const result = mps.ed25519_dkg_round1_process(
+            otherIndices[i].map((j) => r0Results[j].msg),
+            r0Results[i].state,
+          );
+          assert(Buffer.from(result.msg).slice(0, messagePrefix.length).equals(messagePrefix));
+          assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
+        }
+      });
+
+      let r1Results: Array<mps.MsgState>;
+
+      before("performs round 1", function () {
+        r1Results = [0, 1, 2].map((i) =>
+          mps.ed25519_dkg_round1_process(
+            otherIndices[i].map((j) => r0Results[j].msg),
+            r0Results[i].state,
+          ),
+        );
+      });
+
+      it("performs round 2", function () {
+        const shares = [0, 1, 2].map((i) =>
+          mps.ed25519_dkg_round2_process(
+            otherIndices[i].map((j) => r1Results[j].msg),
+            r1Results[i].state,
+          ),
+        );
+        for (let i = 0; i < 2; i++) {
+          assert.ok(shares[i].pk.every((value, index) => value === shares[2].pk[index]));
+          assert.ok(
+            shares[i].chaincode.every((value, index) => value === shares[2].chaincode[index]),
+          );
+        }
+        for (const [i, s] of shares.entries()) {
+          assert.ok(
+            Buffer.from(s.pk).equals(importExpectedPk),
+            `party ${i}: Share.pk !== expected_pk`,
+          );
+          assert.ok(
+            Buffer.from(s.chaincode).equals(importChainCode),
+            `party ${i}: Share.chaincode !== chain_code`,
+          );
+        }
+      });
+
+      let importShares: mps.Share[];
+
+      before("performs round 2", function () {
+        importShares = [0, 1, 2].map((i) =>
+          mps.ed25519_dkg_round2_process(
+            otherIndices[i].map((j) => r1Results[j].msg),
+            r1Results[i].state,
+          ),
+        );
+      });
+
+      it("signing round-trip at root path verifies against expected_pk", function () {
+        const message = Buffer.from("test message for import DKG signing");
+        const [sig0, sig2] = runDsg(importShares, "m", message);
+        assert.ok(
+          sodium.crypto_sign_verify_detached(sig0, message, importExpectedPk),
+          "sig0 failed to verify",
+        );
+        assert.ok(
+          sodium.crypto_sign_verify_detached(sig2, message, importExpectedPk),
+          "sig2 failed to verify",
+        );
+        assert.deepStrictEqual(sig0, sig2, "both parties must produce identical signatures");
+      });
+
+      // Full derived pubkey verification requires BitGoJS Eddsa.deriveUnhardened, covered separately.
+      it("signing round-trip at derived path m/0 produces a valid signature", function () {
+        const message = Buffer.from("test message for derived path signing");
+        const [sig0, sig2] = runDsg(importShares, "m/0", message);
+        assert.strictEqual(sig0.length, 64, "signature must be 64 bytes");
+        assert.deepStrictEqual(sig0, sig2, "both parties must produce identical signatures");
+      });
+
+      // The wrong pk is a valid Ed25519 point but does not equal G × Σs_i_0, so the
+      // mismatch surfaces during the protocol (at round2_process per the MPS library).
+      it("rejects mismatched expected_pk — error surfaces during the protocol", function () {
+        const wrongPk = Buffer.from(
+          sodium.crypto_scalarmult_ed25519_base_noclamp(crypto.randomBytes(32)),
+        );
+        let threw = false;
+        try {
+          const r0 = [0, 1, 2].map((i) =>
+            mps.ed25519_dkg_round0_import(
+              i,
+              keypairs[i].privateKey,
+              otherIndices[i].map((j) => keypairs[j].publicKey),
+              importScalars[i],
+              wrongPk,
+              importChainCode,
+            ),
+          );
+          const r1 = [0, 1, 2].map((i) =>
+            mps.ed25519_dkg_round1_process(
+              otherIndices[i].map((j) => r0[j].msg),
+              r0[i].state,
+            ),
+          );
+          [0, 1, 2].map((i) =>
+            mps.ed25519_dkg_round2_process(
+              otherIndices[i].map((j) => r1[j].msg),
+              r1[i].state,
+            ),
+          );
+        } catch {
+          threw = true;
+        }
+        assert.ok(threw, "expected protocol to fail when expected_pk does not match Σs_i_0");
       });
     });
 
