@@ -71,6 +71,26 @@ export class ZcashV6Transaction {
     return this._wasm.ironwoodAnchor;
   }
 
+  /**
+   * The ZIP-244 per-input transparent sighash (32 bytes) for transparent input `index` —
+   * for a transaction inspected directly from its raw bytes rather than one built via a
+   * PSBT (e.g. independently verifying an already-broadcast transaction's signatures).
+   *
+   * `inputAmounts`/`inputScriptPubkeys` are the spent outputs' values (zatoshi) and
+   * scriptPubKeys for *every* transparent input of this transaction, in input order.
+   */
+  transparentSighash(
+    index: number,
+    inputAmounts: bigint[],
+    inputScriptPubkeys: Uint8Array[],
+  ): Uint8Array {
+    return this._wasm.transparentSighash(
+      index,
+      BigInt64Array.from(inputAmounts),
+      inputScriptPubkeys,
+    );
+  }
+
   /** @internal */
   get wasm(): WasmZcashV6Transaction {
     return this._wasm;

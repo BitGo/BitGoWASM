@@ -189,4 +189,34 @@ impl ZcashV6Transaction {
             .as_ref()
             .map(|b| b.anchor.to_vec())
     }
+
+    /// The ZIP-244 per-input transparent sighash (32 bytes) for transparent input `index` of
+    /// this transaction — the free-standing counterpart to
+    /// `ZcashIronwoodBitGoPsbt.transparentSighash`, for a transaction inspected directly from
+    /// its raw bytes rather than one built via this codebase's PSBT flow (e.g. independently
+    /// verifying an already-broadcast transaction's signatures).
+    ///
+    /// `input_amounts`/`input_script_pubkeys` are the spent outputs' values (zatoshi) and
+    /// scriptPubKeys for *every* transparent input of this transaction, in input order — the
+    /// same data `add-input`/`addWalletInput` would have carried in a PSBT's `witness_utxo`.
+    #[wasm_bindgen(js_name = transparentSighash)]
+    pub fn transparent_sighash(
+        &self,
+        index: usize,
+        input_amounts: Vec<i64>,
+        input_script_pubkeys: Vec<js_sys::Uint8Array>,
+    ) -> Result<Vec<u8>, WasmUtxoError> {
+        let scripts: Vec<miniscript::bitcoin::ScriptBuf> = input_script_pubkeys
+            .iter()
+            .map(|u| miniscript::bitcoin::ScriptBuf::from(u.to_vec()))
+            .collect();
+        crate::zcash::v6::compute_v6_transparent_sighash(
+            &self.inner,
+            index,
+            &input_amounts,
+            &scripts,
+        )
+        .map(|h| h.to_vec())
+        .map_err(|e| WasmUtxoError::new(&e.to_string()))
+    }
 }
