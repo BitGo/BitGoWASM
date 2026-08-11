@@ -48,6 +48,19 @@ hex = { version = "0.4", optional = true }
 # (the heavy prover) are NOT pulled in — only Sinsemilla/pasta/note-encryption. Proving is
 # delegated to an external service.
 orchard = { version = "0.15", default-features = false, features = ["std"] }
+# Client-side re-encryption of an Ironwood output's `out_ciphertext` under a client-managed `ovk`,
+# via the public `NoteEncryption::encrypt_outgoing_plaintext` API, parameterized by orchard's own
+# `IronwoodDomain`. Version pinned to match orchard 0.15's own dependency so the `Domain` impl and
+# this crate's `NoteEncryption<D>` agree on wire types.
+zcash_note_encryption = "0.4"
+# Scrub the copies of the user's secret key made while deriving the client-managed `ovk`, so the
+# "the ovk never leaves this call" guarantee also covers what is left behind in freed memory.
+zeroize = "1.8"
+# Direct dependency (already present transitively via `miniscript`/`bitcoin`, at the same resolved
+# version) so we can enable the `ecdh` module (gated on the `hashes` feature): this derives the
+# client's `ovk` as the ECDH shared secret between the BitGo cosigner pubkey and the user's private
+# key.
+secp256k1 = { version = "0.29", features = ["hashes"] }
 rand = "0.8"
 # Compact deterministic encoding of the Ironwood PCZT witness (proof-service payload / PSBT carry).
 postcard = { version = "1.0", default-features = false, features = ["use-std"] }

@@ -9,7 +9,7 @@ import {
   IRONWOOD_VERSION_GROUP_ID,
   ZcashBitGoPsbt,
 } from "../../js/fixedScriptWallet/ZcashBitGoPsbt.js";
-import { getWalletKeysForSeed } from "../../js/testutils/index.js";
+import { getKeyTriple, getWalletKeysForSeed } from "../../js/testutils/index.js";
 
 // NU6.3 (Ironwood) testnet activation height.
 const NU6_3_TESTNET_HEIGHT = 4134000;
@@ -287,5 +287,229 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
     v4Psbt.addWalletOutput(walletKeys, { chain: 1, index: 0, value: 199_900_000n });
     const bytes = v4Psbt.serialize();
     assert.throws(() => ZcashIronwoodBitGoPsbt.fromBytes(bytes, "zcashTest"), /not a v6/);
+  });
+
+  describe("setShieldedOutCiphertext (client-managed ovk)", function () {
+    // The ovk is the ECDH agreement of the two *root* wallet keys — bitgoKey()'s pubkey and the user
+    // xpriv — so the server, holding the other side of that pair, can re-derive it to validate
+    // out_ciphertext without ever seeing the user key or the ovk itself.
+    const [USER_KEY] = getKeyTriple("ironwood-ts");
+
+    it("re-encrypts out_ciphertext, changing the sighash and txid, without touching anything else", function () {
+      // Server: build the keyless PSBT (`addShieldedOutput` with no `ovk`) and hand off the bytes,
+      // matching the microservice build/serve flow — round-tripping through bytes rather than
+      // reusing the in-memory object, so this exercises exactly what a real client receives.
+      const server = buildShieldPsbt();
+      const txidBefore = server.getId();
+      const sighashBefore = server.transparentSighash(0);
+      const serverBytes = server.serialize();
+
+      // Client: deserialize, then re-encrypt out_ciphertext under its ECDH-derived ovk.
+      const client = ZcashIronwoodBitGoPsbt.fromBytes(serverBytes, "zcashTest");
+      client.setShieldedOutCiphertext(0, USER_KEY, walletKeys);
+
+      // out_ciphertext is committed by the ZIP-244 sighash (and hence the txid), so both change.
+      assert.notStrictEqual(client.getId(), txidBefore);
+      assert.notDeepStrictEqual(client.transparentSighash(0), sighashBefore);
+
+      // The patch survives a further serialize round-trip.
+      const round = ZcashIronwoodBitGoPsbt.fromBytes(client.serialize(), "zcashTest");
+      assert.strictEqual(round.getId(), client.getId());
+      assert.deepStrictEqual(round.transparentSighash(0), client.transparentSighash(0));
+    });
+
+    it("is deterministic in its two key inputs (same keys -> same sighash)", function () {
+      const bytes = buildShieldPsbt().serialize();
+
+      const a = ZcashIronwoodBitGoPsbt.fromBytes(bytes, "zcashTest");
+      a.setShieldedOutCiphertext(0, USER_KEY, walletKeys);
+
+      const b = ZcashIronwoodBitGoPsbt.fromBytes(bytes, "zcashTest");
+      b.setShieldedOutCiphertext(0, USER_KEY, walletKeys);
+
+      assert.deepStrictEqual(a.transparentSighash(0), b.transparentSighash(0));
+    });
+
+    it("a different wallet's keys derive a different ovk, producing a different sighash", function () {
+      const bytes = buildShieldPsbt().serialize();
+
+      const a = ZcashIronwoodBitGoPsbt.fromBytes(bytes, "zcashTest");
+      a.setShieldedOutCiphertext(0, USER_KEY, walletKeys);
+
+      // Same PSBT, but the ovk pair comes from a different wallet's user/bitgo keys.
+      const otherWalletKeys = getWalletKeysForSeed("ironwood-ts-other");
+      const [otherUserKey] = getKeyTriple("ironwood-ts-other");
+      const b = ZcashIronwoodBitGoPsbt.fromBytes(bytes, "zcashTest");
+      b.setShieldedOutCiphertext(0, otherUserKey, otherWalletKeys);
+
+      assert.notDeepStrictEqual(a.transparentSighash(0), b.transparentSighash(0));
+    });
+
+    it("rejects an out-of-range action index", function () {
+      const psbt = buildShieldPsbt();
+      assert.throws(
+        () => psbt.setShieldedOutCiphertext(1, USER_KEY, walletKeys),
+        /out of range|ActionIndexOutOfRange/i,
+      );
+    });
+
+    it("rejects a key that is not the wallet's user root key", function () {
+      // The backup and bitgo keys would each derive an ovk neither the user nor the server can
+      // reproduce, leaving the shielded output permanently unrecoverable — so they are rejected
+      // rather than silently accepted.
+      const [, backupKey, bitgoKey] = getKeyTriple("ironwood-ts");
+      for (const key of [backupKey, bitgoKey, getKeyTriple("some-other-wallet")[0]]) {
+        assert.throws(
+          () => buildShieldPsbt().setShieldedOutCiphertext(0, key, walletKeys),
+          /user root key/i,
+        );
+      }
+    });
+
+    it("rejects a public-only key, which cannot complete the ECDH", function () {
+      assert.throws(
+        () => buildShieldPsbt().setShieldedOutCiphertext(0, USER_KEY.neutered(), walletKeys),
+        /xpriv from public key/i,
+      );
+    });
+  });
+
+  describe("sign() — full client-managed-ovk signing flow", function () {
+    // A separate seed/PSBT-builder for this block: `sign()` needs the actual private keys (not just
+    // the pubkey-only `walletKeys` used elsewhere in this file), so build from `getKeyTriple`
+    // directly.
+    const seed = "ironwood-sign-flow";
+    const signFlowWalletKeys = getWalletKeysForSeed(seed);
+    const [userKey, , bitgoKey] = getKeyTriple(seed);
+
+    function buildSignFlowPsbt(): ZcashIronwoodBitGoPsbt {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", signFlowWalletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput(
+        { txid: "22".repeat(32), vout: 0, value: 200_000_000n },
+        signFlowWalletKeys,
+        { scriptId: SCRIPT_ID, signPath: { signer: "user", cosigner: "bitgo" } },
+      );
+      psbt.addWalletOutput(signFlowWalletKeys, { chain: 1, index: 0, value: 99_900_000n });
+      psbt.addShieldedOutput(RECIPIENT, 100_000_000n, { anchor: new Uint8Array(32) });
+      return psbt;
+    }
+
+    it("user signs first (deriving ovk via ECDH), then bitgo signs, producing a combinable tx", function () {
+      const psbt = buildSignFlowPsbt();
+      const txidBefore = psbt.getId();
+      const sighashBefore = psbt.transparentSighash(0);
+
+      const signedByUser = psbt.sign(userKey, signFlowWalletKeys);
+      assert.deepStrictEqual(signedByUser, [0], "signed the one transparent input");
+      assert.notStrictEqual(
+        psbt.getId(),
+        txidBefore,
+        "user's call derived the ovk via ECDH and finalized out_ciphertext",
+      );
+      assert.notDeepStrictEqual(psbt.transparentSighash(0), sighashBefore);
+
+      const sighashAfterUser = psbt.transparentSighash(0);
+      const signedByBitgo = psbt.sign(bitgoKey, signFlowWalletKeys);
+      assert.deepStrictEqual(signedByBitgo, [0]);
+      assert.deepStrictEqual(
+        psbt.transparentSighash(0),
+        sighashAfterUser,
+        "bitgo's call did not touch out_ciphertext a second time",
+      );
+
+      // A placeholder proof of the real (4992-byte, single-action) size stands in for the external
+      // prover; the transparent side is what this test actually exercises.
+      const tx = psbt.combineProof(new Uint8Array(4992));
+      assert.ok(tx.length > 0, "produced a broadcast-ready v6 transaction");
+    });
+
+    it("accepts any WalletKeysArg form, not just a RootWalletKeys instance", function () {
+      // BitGoJS passes whatever `RootWalletKeys` it holds — potentially utxo-lib's, or this class
+      // resolved from a second copy of the package. Normalizing via `RootWalletKeys.from` (as
+      // `createEmpty` and `setShieldedOutCiphertext` do) keeps signing insensitive to class
+      // identity, so an xpub triple must derive the same ovk and produce the same signed sighash.
+      const xpubs = getKeyTriple(seed).map((k) => k.neutered().toBase58()) as [
+        string,
+        string,
+        string,
+      ];
+
+      // One shared PSBT: `addShieldedOutput` builds a fresh random note per call, so only the same
+      // serialized bytes make the two sighashes comparable.
+      const bytes = buildSignFlowPsbt().serialize();
+
+      const viaInstance = ZcashIronwoodBitGoPsbt.fromBytes(bytes, "zcashTest");
+      assert.deepStrictEqual(viaInstance.sign(userKey, signFlowWalletKeys), [0]);
+
+      const viaXpubs = ZcashIronwoodBitGoPsbt.fromBytes(bytes, "zcashTest");
+      assert.deepStrictEqual(viaXpubs.sign(userKey, xpubs), [0]);
+
+      assert.deepStrictEqual(
+        viaXpubs.transparentSighash(0),
+        viaInstance.transparentSighash(0),
+        "same wallet keys in a different form derive the same ovk",
+      );
+    });
+
+    it("throws if rootWalletKeys is omitted, rather than silently signing without the ovk step", function () {
+      const psbt = buildSignFlowPsbt();
+      assert.throws(() => psbt.sign(userKey), /rootWalletKeys is required/);
+    });
+
+    it("signing with an unrelated key signs nothing", function () {
+      // An xpriv from a different wallet: it matches no input's bip32_derivation, so nothing is
+      // signed — and the ovk step never runs either, since it only runs for a round that signs.
+      const psbt = buildSignFlowPsbt();
+      const txidBefore = psbt.getId();
+      const [stranger] = getKeyTriple("not-this-wallet-either");
+      assert.deepStrictEqual(psbt.sign(stranger, signFlowWalletKeys), []);
+      assert.strictEqual(psbt.getId(), txidBefore, "out_ciphertext untouched");
+    });
+
+    it("rejects a public-only key, which cannot sign or complete the ovk ECDH", function () {
+      const psbt = buildSignFlowPsbt();
+      assert.throws(
+        () => psbt.sign(userKey.neutered(), signFlowWalletKeys),
+        /xpriv from public key/i,
+      );
+    });
+
+    it("rejects the deprecated single-input overload", function () {
+      const psbt = buildSignFlowPsbt();
+      assert.throws(() => psbt.sign(0, userKey), /no ZIP-244 equivalent/);
+    });
+
+    it("rejects a raw privkey (ECPairArg), which has no bip32_derivation path", function () {
+      const psbt = buildSignFlowPsbt();
+      assert.throws(() => psbt.sign(new Uint8Array(32).fill(0x01)), /bip32_derivation/);
+    });
+
+    it("the ordering guard rejects setShieldedOutCiphertext once a real signature exists", function () {
+      const psbt = buildSignFlowPsbt();
+      // A real signature now exists (this call also finalizes out_ciphertext via its own ovk step).
+      psbt.sign(userKey, signFlowWalletKeys);
+      assert.throws(
+        () => psbt.setShieldedOutCiphertext(0, userKey, signFlowWalletKeys),
+        /after a transparent signature has been collected/,
+      );
+    });
+
+    it("rejects a first signing round opened by bitgo, rather than deriving an unusable ovk", function () {
+      // Only the user key can open the round, because that round is what fixes out_ciphertext under
+      // the wallet's ovk. If bitgo could sign first, its key would be used as the user's, producing
+      // an ovk neither side can reproduce — and the user's later round could not correct it, since a
+      // signature would already exist. The tx would still broadcast; the shielded output would simply
+      // never be recoverable. So this fails loudly instead.
+      const psbt = buildSignFlowPsbt();
+      const txidBefore = psbt.getId();
+      assert.throws(() => psbt.sign(bitgoKey, signFlowWalletKeys), /user root key/i);
+      assert.strictEqual(psbt.getId(), txidBefore, "out_ciphertext untouched");
+
+      // In the correct order it works: user first, then bitgo.
+      assert.deepStrictEqual(psbt.sign(userKey, signFlowWalletKeys), [0]);
+      assert.deepStrictEqual(psbt.sign(bitgoKey, signFlowWalletKeys), [0]);
+    });
   });
 });
