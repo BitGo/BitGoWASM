@@ -3234,6 +3234,7 @@ dependencies = [
  "hex",
  "num-bigint",
  "ptree",
+ "rand",
  "serde",
  "serde_json",
  "wasm-utxo",

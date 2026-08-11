@@ -6,10 +6,14 @@ use crate::network::NetworkArg;
 
 mod add_input;
 mod add_output;
+mod add_shielded_output;
+mod combine_ironwood_proof;
 mod common;
 mod create;
+mod create_zcash_v6;
 mod parse;
 mod sign;
+mod sign_v6_input;
 
 #[derive(Subcommand)]
 pub enum PsbtCommand {
@@ -88,6 +92,83 @@ pub enum PsbtCommand {
         #[arg(long, short, value_enum)]
         network: Option<NetworkArg>,
     },
+    /// Create an empty Zcash **v6 (Ironwood) shielding** PSBT, without embedding any xpubs.
+    /// Prints the PSBT as hex to stdout. Follow with `add-input` (transparent inputs),
+    /// `add-output` (transparent outputs), and `add-shielded-output` (the Ironwood output).
+    CreateZcashV6 {
+        /// Network (must be zec or tzec)
+        #[arg(long, short, value_enum)]
+        network: NetworkArg,
+        /// Zcash consensus branch ID, hex (0x...) or decimal — must be at or after NU6.3
+        /// (Ironwood) activation
+        #[arg(long)]
+        consensus_branch_id: String,
+        /// Transaction lock time (default: 0)
+        #[arg(long, default_value_t = 0)]
+        lock_time: u32,
+        /// Transaction expiry height (default: 0, no expiry)
+        #[arg(long, default_value_t = 0)]
+        expiry_height: u32,
+    },
+    /// Add the shielded (Ironwood) output to a v6 PSBT — the Constructor role. Exactly one
+    /// shielded output is supported. Prints the updated PSBT as hex to stdout.
+    AddShieldedOutput {
+        /// Path to the PSBT file (use '-' to read from stdin)
+        path: PathBuf,
+        /// Network (must be zec or tzec)
+        #[arg(long, short, value_enum)]
+        network: NetworkArg,
+        /// Raw 43-byte Orchard/Ironwood recipient address, hex-encoded
+        #[arg(long)]
+        recipient: String,
+        /// Value in zatoshi
+        #[arg(long)]
+        value: u64,
+        /// Current Ironwood note-commitment-tree root, hex-encoded (32 bytes)
+        #[arg(long)]
+        anchor: String,
+        /// Raw outgoing viewing key, hex-encoded (32 bytes)
+        #[arg(long)]
+        ovk: Option<String>,
+        /// Memo field, hex-encoded (512 bytes; default: all-zero)
+        #[arg(long)]
+        memo: Option<String>,
+    },
+    /// Sign one transparent input of a v6 PSBT with a single private key, over the ZIP-244
+    /// transparent sighash. Call once per required signature (2-of-3). Prints the updated PSBT
+    /// as hex to stdout.
+    SignV6Input {
+        /// Path to the PSBT file (use '-' to read from stdin)
+        path: PathBuf,
+        /// Network (must be zec or tzec)
+        #[arg(long, short, value_enum)]
+        network: NetworkArg,
+        /// Index of the transparent input to sign
+        #[arg(long)]
+        index: usize,
+        /// Controlling private key (WIF or hex)
+        #[arg(long)]
+        privkey: String,
+    },
+    /// Transaction Extractor role: given the external prover's proof bytes, finalize the
+    /// transparent inputs and splice in the shielded bundle to produce the broadcast-ready v6
+    /// transaction. The PSBT must already carry every transparent input's signatures (via
+    /// `sign-v6-input`) and the shielded output (via `add-shielded-output`). Prints the raw
+    /// transaction as hex to stdout.
+    CombineIronwoodProof {
+        /// Path to the PSBT file (use '-' to read from stdin)
+        path: PathBuf,
+        /// Network (must be zec or tzec)
+        #[arg(long, short, value_enum)]
+        network: NetworkArg,
+        /// Halo2 proof bytes from the external proof service, hex-encoded
+        #[arg(long)]
+        proof: Option<String>,
+        /// Produce the proof locally instead of supplying one via --proof (heavier: builds a
+        /// halo2 proving key and synthesizes the circuit)
+        #[arg(long)]
+        local_proof: bool,
+    },
     /// Sign all inputs with a single private key, then finalize and extract. The sighash
     /// algorithm is selected by --network: plain for BTC-like networks, FORKID for the
     /// BCH family, or Zcash ZIP-243. Prints the signed wire hex to stdout (overwintered
@@ -144,6 +225,51 @@ pub fn handle_command(command: PsbtCommand) -> Result<()> {
             value,
             network,
         } => add_output::handle_add_output_command(path, network, address, script, value),
+        PsbtCommand::CreateZcashV6 {
+            network,
+            consensus_branch_id,
+            lock_time,
+            expiry_height,
+        } => create_zcash_v6::handle_create_zcash_v6_command(
+            network.into(),
+            consensus_branch_id,
+            lock_time,
+            expiry_height,
+        ),
+        PsbtCommand::AddShieldedOutput {
+            path,
+            network,
+            recipient,
+            value,
+            anchor,
+            ovk,
+            memo,
+        } => add_shielded_output::handle_add_shielded_output_command(
+            path,
+            network.into(),
+            recipient,
+            value,
+            anchor,
+            ovk,
+            memo,
+        ),
+        PsbtCommand::SignV6Input {
+            path,
+            network,
+            index,
+            privkey,
+        } => sign_v6_input::handle_sign_v6_input_command(path, network.into(), index, privkey),
+        PsbtCommand::CombineIronwoodProof {
+            path,
+            network,
+            proof,
+            local_proof,
+        } => combine_ironwood_proof::handle_combine_ironwood_proof_command(
+            path,
+            network.into(),
+            proof,
+            local_proof,
+        ),
         PsbtCommand::Sign {
             path,
             network,
