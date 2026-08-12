@@ -925,6 +925,50 @@ impl ZcashBitGoPsbt {
             .map_err(|e| e.to_string())
     }
 
+    /// The value (zatoshi) and raw 43-byte recipient of the shielded Ironwood output, if one has
+    /// been added via [`Self::add_ironwood_output`] — `None` if no shielded output is present.
+    ///
+    /// The shielded side lives in a proprietary-map PCZT rather than `unsigned_tx.output`, so
+    /// transparent-only output parsing (`ParsedOutput`/`sum_output_values`) never sees it; this is
+    /// how callers (e.g. inspection tooling) surface it explicitly.
+    ///
+    /// The recipient is readable here — unlike the on-wire `IronwoodAction`
+    /// ([`crate::zcash::ironwood_build::action_to_ironwood`], which only carries the *encrypted*
+    /// note — because the PCZT keeps the Constructor's plaintext `recipient`/`value` fields
+    /// in-memory for the Prover/Signer roles; nothing needs decrypting.
+    ///
+    /// Only [`Self::add_ironwood_output`]'s single-output shape (dummy spend, one real output) is
+    /// supported elsewhere in this file, so this always reads action 0 — and only because
+    /// `construct_shield_pczt` builds with `BundleType::UNPADDED`, guaranteed to produce exactly
+    /// one action.
+    pub fn ironwood_shielded_output_info(
+        &self,
+    ) -> Result<Option<(u64, crate::zcash::ironwood_build::OrchardAddressBytes)>, String> {
+        if super::propkv::get_ironwood_pczt(&self.psbt).is_none() {
+            return Ok(None);
+        }
+        // `orchard::pczt::Bundle` only exposes a mutable actions accessor; we only read from it.
+        let mut pczt = self.ironwood_pczt()?;
+        let actions = pczt.actions_mut();
+        if actions.len() != 1 {
+            return Err(format!(
+                "expected exactly one Ironwood action (single-output shape), found {}",
+                actions.len()
+            ));
+        }
+        let action = &actions[0];
+        let output = action.output();
+        let value = output
+            .value()
+            .map(|v| v.inner())
+            .ok_or_else(|| "shielded output is missing its plaintext value".to_string())?;
+        let recipient = output
+            .recipient()
+            .map(|address| address.to_raw_address_bytes())
+            .ok_or_else(|| "shielded output is missing its plaintext recipient".to_string())?;
+        Ok(Some((value, recipient)))
+    }
+
     /// The spent-output value (zatoshi, as i64) and scriptPubKey of every transparent input, in
     /// input order — the amounts/scripts ZIP-244 commits to.
     fn transparent_input_amounts_and_scripts(
@@ -2252,6 +2296,69 @@ mod ironwood_v6_tests {
             generic.psbt().inputs[0].partial_sigs.is_empty(),
             "no ZIP-243 signature reached partial_sigs"
         );
+    }
+
+    /// `ironwood_shielded_output_info` returns `None` before a shielded output has been added, and
+    /// the exact (value, recipient) passed to `add_ironwood_output` afterwards — regardless of
+    /// whether the transparent input has been signed yet, since it reads the PCZT's plaintext
+    /// fields rather than anything sighash/signature-dependent.
+    #[test]
+    fn ironwood_shielded_output_info_reflects_added_output() {
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_output_info"));
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x44u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 99_900_000, &wallet_keys)
+            .unwrap();
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+
+        // No shielded output yet (unsigned transparent skeleton).
+        assert!(z.ironwood_shielded_output_info().unwrap().is_none());
+
+        let recipient = test_recipient();
+        z.add_ironwood_output(
+            &recipient,
+            100_000_000,
+            None,
+            &Anchor::empty_tree().to_bytes(),
+            &[0u8; 512],
+            OsRng,
+        )
+        .unwrap();
+        let (value, got_recipient) = z.ironwood_shielded_output_info().unwrap().unwrap();
+        assert_eq!(value, 100_000_000);
+        assert_eq!(got_recipient, recipient);
+
+        // Still reflects the same output once the transparent input is (half/fully) signed — the
+        // shielded output info does not depend on transparent signing state.
+        let secp = Secp256k1::new();
+        let sighash = z.v6_transparent_sighash(0).unwrap();
+        let msg = Message::from_digest(sighash);
+        let sk = signing_secret_keys("v6_output_info", 0, 0)[0];
+        let secp_pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+        let pubkey = PublicKey::from(CompressedPublicKey(secp_pk));
+        let mut der = secp.sign_ecdsa(&msg, &sk).serialize_der().to_vec();
+        der.push(0x01);
+        z.add_v6_transparent_signature(0, pubkey, &der).unwrap();
+        let (value, got_recipient) = z.ironwood_shielded_output_info().unwrap().unwrap();
+        assert_eq!(value, 100_000_000);
+        assert_eq!(got_recipient, recipient);
     }
 
     /// `combine_inputs` refuses a v6 PSBT outright.
