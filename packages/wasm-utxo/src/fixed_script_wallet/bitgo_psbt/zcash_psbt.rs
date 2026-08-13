@@ -719,6 +719,12 @@ impl ZcashBitGoPsbt {
         crate::zcash::ironwood_pczt::deserialize_pczt(&bytes).map_err(|e| e.to_string())
     }
 
+    /// The raw serialized orchard PCZT bytes stored in the proprietary map, or `None` if absent
+    /// (before [`Self::add_ironwood_output`], or after [`Self::combine_ironwood_proof`] drops it).
+    pub fn raw_ironwood_pczt_bytes(&self) -> Option<Vec<u8>> {
+        super::propkv::get_ironwood_pczt(&self.psbt)
+    }
+
     /// Client-managed `ovk`, raw-key form: re-encrypt the Ironwood output's `out_ciphertext` under
     /// an `ovk` derived as the ECDH agreement of `bitgo_pubkey` and `user_privkey`. The `ovk` never
     /// leaves this call — it is not returned and not persisted anywhere.

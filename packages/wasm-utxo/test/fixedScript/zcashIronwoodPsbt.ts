@@ -185,6 +185,32 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
     });
   });
 
+  describe("getPczt", function () {
+    it("is undefined before a shielded output has been added", function () {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      assert.strictEqual(psbt.getPczt(), undefined);
+    });
+
+    it("is present after addShieldedOutput, and survives a serialize round-trip", function () {
+      const psbt = buildShieldPsbt();
+      const pczt = psbt.getPczt();
+      assert.ok(pczt instanceof Uint8Array);
+      assert.ok(pczt.length > 0);
+
+      const round = ZcashIronwoodBitGoPsbt.fromBytes(psbt.serialize(), "zcashTest");
+      assert.deepStrictEqual(round.getPczt(), pczt);
+    });
+
+    it("stays present when combineProof fails, so the call is retryable", function () {
+      const psbt = buildShieldPsbt();
+      const pczt = psbt.getPczt();
+      assert.throws(() => psbt.combineProof(new Uint8Array(192)));
+      assert.deepStrictEqual(psbt.getPczt(), pczt);
+    });
+  });
+
   it("the default memo is the ZIP-302 no-memo encoding, not all zeros", function () {
     // `addShieldedOutput` defaults `memo` to this. Asserted on the encoding rather than by comparing
     // txids across two builds: `construct_shield_pczt` draws a random rseed, so two separately-built
@@ -421,8 +447,10 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
 
       // A placeholder proof of the real (4992-byte, single-action) size stands in for the external
       // prover; the transparent side is what this test actually exercises.
+      assert.ok(psbt.getPczt() !== undefined, "PCZT present before combine");
       const tx = psbt.combineProof(new Uint8Array(4992));
       assert.ok(tx.length > 0, "produced a broadcast-ready v6 transaction");
+      assert.strictEqual(psbt.getPczt(), undefined, "combineProof drops the stored PCZT");
     });
 
     it("accepts any WalletKeysArg form, not just a RootWalletKeys instance", function () {

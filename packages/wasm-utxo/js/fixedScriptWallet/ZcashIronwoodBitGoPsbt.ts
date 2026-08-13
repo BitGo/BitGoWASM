@@ -352,4 +352,21 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
   combineProof(proof: Uint8Array): Uint8Array {
     return this.wasm.combine_ironwood_proof(proof);
   }
+
+  /**
+   * The raw serialized orchard PCZT (Partially Created Zcash Transaction) bundle stored in this
+   * PSBT, or `undefined` if none is present.
+   *
+   * A PCZT is the shielded-bundle counterpart to a PSBT: it accumulates the orchard action
+   * (spend + output), the ZIP-244-committed `out_ciphertext`, and — once {@link combineProof} has
+   * run — the Halo2 `zkproof` and binding signature, bridging this PSBT to the external proof
+   * service and back.
+   *
+   * Present only after {@link addShieldedOutput} has been called; `undefined` beforehand, and
+   * `undefined` again after {@link combineProof} succeeds, since that call drops the stored PCZT
+   * to make extraction terminal (see its doc comment).
+   */
+  getPczt(): Uint8Array | undefined {
+    return this.wasm.ironwood_pczt_bytes();
+  }
 }
