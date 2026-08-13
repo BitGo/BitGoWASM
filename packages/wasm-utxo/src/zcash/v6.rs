@@ -524,13 +524,18 @@ pub fn compute_v6_sig_digest(
 /// ZIP-244 v6 **transparent** per-input signature hash (SIGHASH_ALL) — the message the key
 /// controlling transparent input `input_index` signs.
 ///
-/// `script_code` is the script being signed for that input (its prevout scriptPubKey for P2PKH,
-/// or the redeem/witness script for P2SH/P2WSH). `input_amounts` / `input_script_pubkeys` are the
-/// spent outputs' values and scriptPubKeys for every input, in input order.
+/// Per ZIP-244 §S.2g.iii (as implemented by `zcash_primitives::transaction::sighash_v5::
+/// transparent_sig_digest`, shared by v6), the per-input field committed here is the spent
+/// output's **scriptPubKey** — not the redeem/witness script ("scriptCode") used to actually
+/// execute the input's scriptSig. Those two coincide for P2PKH (which is all the "golden"
+/// production fixture exercises), but differ for P2SH/P2WSH, where using the redeem/witness
+/// script here instead produces a sighash real consensus rules reject. `input_amounts` /
+/// `input_script_pubkeys` are the spent outputs' values and scriptPubKeys for every input, in
+/// input order; `input_script_pubkeys[input_index]` is also the value used for this input's own
+/// per-input field.
 pub fn compute_v6_transparent_sighash(
     tx: &ZcashV6Transaction,
     input_index: usize,
-    script_code: &miniscript::bitcoin::Script,
     input_amounts: &[i64],
     input_script_pubkeys: &[miniscript::bitcoin::ScriptBuf],
 ) -> Result<[u8; 32], ZcashV6Error> {
@@ -542,14 +547,17 @@ pub fn compute_v6_transparent_sighash(
     let amount = *input_amounts
         .get(input_index)
         .ok_or(ZcashV6Error::UnexpectedEof)?;
+    let script_pubkey = input_script_pubkeys
+        .get(input_index)
+        .ok_or(ZcashV6Error::UnexpectedEof)?;
 
-    // S.2g: prevout ‖ value(8, signed LE) ‖ scriptCode(length-prefixed) ‖ nSequence(4, LE).
+    // S.2g: prevout ‖ value(8, signed LE) ‖ scriptPubKey(length-prefixed) ‖ nSequence(4, LE).
     let mut txin_data = Vec::new();
     txin.previous_output
         .consensus_encode(&mut txin_data)
         .expect("vec write is infallible");
     txin_data.extend_from_slice(&amount.to_le_bytes());
-    script_code
+    script_pubkey
         .consensus_encode(&mut txin_data)
         .expect("vec write is infallible");
     txin.sequence
@@ -1070,37 +1078,25 @@ mod tests {
         let tx = sample_tx_with_inputs();
         let amounts = [12_345i64];
         let scripts = [ScriptBuf::from(vec![0x76u8, 0xa9, 0x14])];
-        let script_code = ScriptBuf::from(vec![0x76u8, 0xa9, 0x14, 0x88, 0xac]);
 
         let shielded = compute_v6_sig_digest(&tx, &amounts, &scripts);
-        let transparent =
-            compute_v6_transparent_sighash(&tx, 0, script_code.as_script(), &amounts, &scripts)
-                .unwrap();
+        let transparent = compute_v6_transparent_sighash(&tx, 0, &amounts, &scripts).unwrap();
         // The per-input transparent sighash populates the txin component, so it must differ from
         // the shielded (empty-txin) digest over the same tx.
         assert_ne!(shielded, transparent);
         // Deterministic.
         assert_eq!(
             transparent,
-            compute_v6_transparent_sighash(&tx, 0, script_code.as_script(), &amounts, &scripts)
-                .unwrap()
+            compute_v6_transparent_sighash(&tx, 0, &amounts, &scripts).unwrap()
         );
-        // A different script_code changes the digest.
-        let other_code = ScriptBuf::from(vec![0x51u8]);
+        // A different spent scriptPubKey changes the digest.
+        let other_scripts = [ScriptBuf::from(vec![0x51u8])];
         assert_ne!(
             transparent,
-            compute_v6_transparent_sighash(&tx, 0, other_code.as_script(), &amounts, &scripts)
-                .unwrap()
+            compute_v6_transparent_sighash(&tx, 0, &amounts, &other_scripts).unwrap()
         );
         // Out-of-range input index is an error, not a panic.
-        assert!(compute_v6_transparent_sighash(
-            &tx,
-            9,
-            script_code.as_script(),
-            &amounts,
-            &scripts
-        )
-        .is_err());
+        assert!(compute_v6_transparent_sighash(&tx, 9, &amounts, &scripts).is_err());
     }
 
     /// Golden oracle for [`compute_v6_transparent_sighash`]: verify the **real** ECDSA signature
@@ -1152,7 +1148,6 @@ mod tests {
         let sighash = compute_v6_transparent_sighash(
             &tx,
             0,
-            prevout_script.as_script(),
             &[prevout_value],
             std::slice::from_ref(&prevout_script),
         )
@@ -1165,6 +1160,98 @@ mod tests {
         let pk = PublicKey::from_slice(pubkey_bytes).expect("valid pubkey");
         secp.verify_ecdsa(&msg, &sig, &pk)
             .expect("the tx's real signature verifies against compute_v6_transparent_sighash");
+    }
+
+    /// Regression test for the bug where `compute_v6_transparent_sighash` hashed the redeem
+    /// script (scriptCode) into the ZIP-244 §S.2g.iii per-input field instead of the spent
+    /// output's scriptPubKey. That distinction is invisible for a P2PKH input (its scriptCode
+    /// *is* its scriptPubKey — see [`golden_transparent_sighash_verifies_real_signature`]
+    /// above), but for a P2SH input they differ, and hashing the wrong one produces a sighash
+    /// real consensus rules reject.
+    ///
+    /// The fixture is a real transaction — spending a 2-of-3 P2SH multisig transparent input —
+    /// that was built with this codebase's CLI, submitted to a live Zcash testnet (NU6.3)
+    /// `zebrad` node via `sendrawtransaction`, and **accepted into its mempool**: real
+    /// consensus-rule validation of the transparent scriptSig, not merely self-consistency
+    /// against this codebase's own sighash.
+    #[test]
+    fn golden_multisig_transparent_sighash_verifies_real_signature() {
+        use miniscript::bitcoin::script::Instruction;
+        use miniscript::bitcoin::secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1};
+
+        let raw = hex::decode(load_zcash_fixture("v6_shield_multisig_rawtx.hex").trim()).unwrap();
+        let tx = decode_v6_transaction(&raw).unwrap();
+        assert_eq!(tx.transparent.input.len(), 1);
+        assert_eq!(tx.transparent.output.len(), 0);
+
+        // Spent output (a synthetic 2-of-3 P2SH multisig address funded on Zcash testnet, then
+        // spent by this tx); ZIP-244 commits to both.
+        let prevout_value: i64 = 2_000_000;
+        let prevout_script =
+            ScriptBuf::from(hex::decode("a914ed68766fe37d9e2325758ed209ac78db505425a987").unwrap());
+        let redeem_script = ScriptBuf::from(
+            hex::decode(
+                "5221023b4221b042fa25af6609d7e65d322fcb64c497b79ffc8f1891ea6b23d4e7d84a\
+                 2102feaf8248a2f8dcc34f2e2f520201801bb88d20ab549baf47b48bc9f2f4dfcc93\
+                 21030b82f01fd53e7dabe2d904938d64294e3352e9e836240af6ba2cfb9df8f837da53ae",
+            )
+            .unwrap(),
+        );
+        let pubkeys: Vec<Vec<u8>> = redeem_script
+            .instructions()
+            .map(|i| i.expect("valid redeem script"))
+            .filter_map(|i| match i {
+                Instruction::PushBytes(pb) => Some(pb.as_bytes().to_vec()),
+                Instruction::Op(_) => None,
+            })
+            .collect();
+        assert_eq!(pubkeys.len(), 3, "2-of-3 redeem script has 3 pubkeys");
+
+        // scriptSig = OP_0 <sig1> <sig2> <redeemScript>; the two signatures correspond to
+        // pubkeys[0] and pubkeys[2] (the redeem script's first and third keys).
+        let pushes: Vec<Vec<u8>> = tx.transparent.input[0]
+            .script_sig
+            .instructions()
+            .map(|i| i.expect("valid scriptSig"))
+            .filter_map(|i| match i {
+                Instruction::PushBytes(pb) if !pb.as_bytes().is_empty() => {
+                    Some(pb.as_bytes().to_vec())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            pushes.len(),
+            3,
+            "OP_0 dummy, 2 sigs, redeem script (dummy excluded above)"
+        );
+        let sig_pubkey_pairs = [(&pushes[0], &pubkeys[0]), (&pushes[1], &pubkeys[2])];
+
+        let sighash = compute_v6_transparent_sighash(
+            &tx,
+            0,
+            &[prevout_value],
+            std::slice::from_ref(&prevout_script),
+        )
+        .unwrap();
+
+        let secp = Secp256k1::verification_only();
+        let msg = Message::from_digest(sighash);
+        for (sig_bytes, pubkey_bytes) in sig_pubkey_pairs {
+            assert_eq!(
+                *sig_bytes.last().unwrap(),
+                SIGHASH_ALL,
+                "signature uses SIGHASH_ALL"
+            );
+            let mut sig =
+                Signature::from_der(&sig_bytes[..sig_bytes.len() - 1]).expect("DER signature");
+            sig.normalize_s();
+            let pk = PublicKey::from_slice(pubkey_bytes).expect("valid pubkey");
+            secp.verify_ecdsa(&msg, &sig, &pk).expect(
+                "the real mempool-accepted multisig tx's signature verifies against \
+                 compute_v6_transparent_sighash",
+            );
+        }
     }
 
     #[test]

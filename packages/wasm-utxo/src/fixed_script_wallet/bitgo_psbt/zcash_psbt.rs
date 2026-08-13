@@ -1082,19 +1082,14 @@ impl ZcashBitGoPsbt {
             .inputs
             .get(index)
             .ok_or_else(|| format!("input {index} out of range"))?;
-        let script_code = input
-            .witness_script
-            .as_ref()
-            .or(input.redeem_script.as_ref())
-            .ok_or_else(|| format!("input {index}: no redeem/witness script"))?;
-        crate::zcash::v6::compute_v6_transparent_sighash(
-            &tx,
-            index,
-            script_code.as_script(),
-            &amounts,
-            &scripts,
-        )
-        .map_err(|e| e.to_string())
+        // Not used in the digest itself (ZIP-244 §S.2g.iii commits the spent scriptPubKey, not
+        // the redeem/witness script — see `compute_v6_transparent_sighash`), but its presence
+        // confirms the input is actually spendable before we hand back a sighash to sign.
+        if input.witness_script.is_none() && input.redeem_script.is_none() {
+            return Err(format!("input {index}: no redeem/witness script"));
+        }
+        crate::zcash::v6::compute_v6_transparent_sighash(&tx, index, &amounts, &scripts)
+            .map_err(|e| e.to_string())
     }
 
     /// Ingest a transparent-input signature returned by the client/HSM into `partial_sigs`, after
@@ -2802,7 +2797,6 @@ mod ironwood_v6_tests {
         let codec_sighash = compute_v6_transparent_sighash(
             &tx,
             0,
-            prevout_script.as_script(),
             &[prevout_value],
             std::slice::from_ref(&prevout_script),
         )
