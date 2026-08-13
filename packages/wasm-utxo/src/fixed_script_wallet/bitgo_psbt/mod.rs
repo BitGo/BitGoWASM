@@ -158,6 +158,8 @@ pub enum ParseTransactionError {
     SpendAmountOverflow { index: usize },
     /// Fee calculation error (outputs exceed inputs)
     FeeCalculation,
+    /// Failed to read the shielded (Ironwood) output's value
+    ShieldedOutput(String),
 }
 
 impl std::fmt::Display for ParseTransactionError {
@@ -180,6 +182,9 @@ impl std::fmt::Display for ParseTransactionError {
             }
             ParseTransactionError::FeeCalculation => {
                 write!(f, "Fee calculation error: outputs exceed inputs")
+            }
+            ParseTransactionError::ShieldedOutput(error) => {
+                write!(f, "Shielded output: {}", error)
             }
         }
     }
@@ -1839,10 +1844,18 @@ impl BitGoPsbt {
             }
             BitGoPsbt::Zcash(zcash_psbt, _) => {
                 use miniscript::bitcoin::hashes::{sha256d, Hash};
-                // Compute txid from full Zcash transaction bytes
-                let txid_bytes = zcash_psbt
-                    .compute_txid()
-                    .expect("Failed to compute Zcash txid");
+                // A v6 (Ironwood) PSBT's txid is the ZIP-244 digest over the transparent skeleton
+                // plus shielded action data — the v4/Sapling path below builds an invalid
+                // transaction for it (wrong wire format entirely), so it must not be used here.
+                let txid_bytes = if zcash_psbt.is_ironwood_v6() {
+                    zcash_psbt
+                        .unsigned_v6_txid()
+                        .expect("Failed to compute v6 (Ironwood) txid")
+                } else {
+                    zcash_psbt
+                        .compute_txid()
+                        .expect("Failed to compute Zcash txid")
+                };
                 let hash = sha256d::Hash::from_byte_array(txid_bytes);
                 Txid::from_raw_hash(hash)
             }
@@ -2724,6 +2737,46 @@ impl BitGoPsbt {
             .collect()
     }
 
+    /// The synthesized `ParsedOutput` for this PSBT's shielded (Ironwood) output, and its value —
+    /// `None` if this isn't a v6 (Ironwood) PSBT, or it is but no shielded output has been added
+    /// yet. Shared by `parse_transaction_with_wallet_keys` (which also folds the value into
+    /// `miner_fee`/`spend_amount`) and `parse_outputs_with_wallet_keys` (which only needs the
+    /// output entry).
+    ///
+    /// The shielded output lives in a proprietary-map PCZT rather than `unsigned_tx.output`, so
+    /// plain transparent-output parsing never sees it; this is how callers surface it explicitly.
+    fn shielded_output(&self) -> Result<Option<(ParsedOutput, u64)>, ParseTransactionError> {
+        let BitGoPsbt::Zcash(z, _) = self else {
+            return Ok(None);
+        };
+        let Some((amount, recipient)) = z
+            .ironwood_shielded_output_info()
+            .map_err(ParseTransactionError::ShieldedOutput)?
+        else {
+            return Ok(None);
+        };
+        let address = crate::zcash::unified_address::encode_orchard_receiver(
+            &recipient,
+            self.network().to_coin_name(),
+        )
+        .map_err(|e| ParseTransactionError::ShieldedOutput(e.to_string()))?;
+        Ok(Some((
+            ParsedOutput {
+                address: Some(address),
+                // No scriptPubKey exists for a shielded output; the raw receiver is still
+                // available here (not a scriptPubKey, but the same "raw output-destination
+                // bytes" role this field plays for transparent outputs).
+                script: recipient.to_vec(),
+                value: amount,
+                script_id: None,
+                paygo: false,
+                derivation_path: None,
+                is_shielded: true,
+            },
+            amount,
+        )))
+    }
+
     /// Calculate total input value from parsed inputs
     ///
     /// # Returns
@@ -3382,7 +3435,11 @@ impl BitGoPsbt {
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
         paygo_pubkeys: &[secp256k1::PublicKey],
     ) -> Result<Vec<ParsedOutput>, ParseTransactionError> {
-        self.parse_outputs(wallet_keys, paygo_pubkeys)
+        let mut outputs = self.parse_outputs(wallet_keys, paygo_pubkeys)?;
+        if let Some((output, _amount)) = self.shielded_output()? {
+            outputs.push(output);
+        }
+        Ok(outputs)
     }
 
     /// Parse transaction with wallet keys to identify wallet inputs/outputs and calculate metrics
@@ -3405,12 +3462,30 @@ impl BitGoPsbt {
 
         // Parse inputs and outputs
         let parsed_inputs = self.parse_inputs(wallet_keys, replay_protection)?;
-        let parsed_outputs = self.parse_outputs(wallet_keys, paygo_pubkeys)?;
+        let mut parsed_outputs = self.parse_outputs(wallet_keys, paygo_pubkeys)?;
 
         // Calculate totals
         let total_input_value = Self::sum_input_values(&parsed_inputs)?;
-        let (total_output_value, spend_amount) =
+        let (mut total_output_value, mut spend_amount) =
             Self::sum_output_values(&psbt.unsigned_tx.output, &parsed_outputs)?;
+
+        // Fold in the shielded output, if any: it's invisible to the transparent-only parsing
+        // above, so without this it silently vanishes into `miner_fee` and `spend_amount`
+        // undercounts the send.
+        if let Some((output, amount)) = self.shielded_output()? {
+            let output_index = parsed_outputs.len();
+            parsed_outputs.push(output);
+            total_output_value = total_output_value.checked_add(amount).ok_or(
+                ParseTransactionError::OutputValueOverflow {
+                    index: output_index,
+                },
+            )?;
+            spend_amount = spend_amount.checked_add(amount).ok_or(
+                ParseTransactionError::SpendAmountOverflow {
+                    index: output_index,
+                },
+            )?;
+        }
 
         // Calculate miner fee
         let miner_fee = total_input_value

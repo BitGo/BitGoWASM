@@ -931,12 +931,31 @@ impl ZcashBitGoPsbt {
             .map_err(|e| e.to_string())
     }
 
+    /// Distinguishes "no shielded output has ever been added" (`Ok(false)`) from "one was added
+    /// and then extracted via [`Self::combine_ironwood_proof`]/`mark_ironwood_extracted`"
+    /// (`Err`) — both look identical as bare PCZT-presence (`None` either way), but only the
+    /// first is safe to treat as "there is no shielded output here". Call this before trusting an
+    /// absent PCZT to mean the latter.
+    fn require_no_shielded_output_ever_added(&self) -> Result<bool, String> {
+        if super::propkv::get_ironwood_pczt(&self.psbt).is_some() {
+            return Ok(false);
+        }
+        if super::propkv::is_ironwood_extracted(&self.psbt) {
+            return Err(
+                "this PSBT's Ironwood PCZT has already been extracted (via combine_ironwood_proof); \
+                 its shielded output data is gone, not merely absent"
+                    .to_string(),
+            );
+        }
+        Ok(true)
+    }
+
     /// The value (zatoshi) and raw 43-byte recipient of the shielded Ironwood output, if one has
-    /// been added via [`Self::add_ironwood_output`] — `None` if no shielded output is present.
+    /// been added via [`Self::add_ironwood_output`] — `None` if no shielded output is present yet.
     ///
     /// The shielded side lives in a proprietary-map PCZT rather than `unsigned_tx.output`, so
     /// transparent-only output parsing (`ParsedOutput`/`sum_output_values`) never sees it; this is
-    /// how callers (e.g. inspection tooling) surface it explicitly.
+    /// how callers surface it explicitly for spend/fee accounting.
     ///
     /// The recipient is readable here — unlike the on-wire `IronwoodAction`
     /// ([`crate::zcash::ironwood_build::action_to_ironwood`], which only carries the *encrypted*
@@ -945,12 +964,18 @@ impl ZcashBitGoPsbt {
     ///
     /// Only [`Self::add_ironwood_output`]'s single-output shape (dummy spend, one real output) is
     /// supported elsewhere in this file, so this always reads action 0 — and only because
-    /// `construct_shield_pczt` builds with `BundleType::UNPADDED`, guaranteed to produce exactly
-    /// one action.
+    /// `construct_shield_pczt` builds with `BundleType::UNPADDED`, which is guaranteed to produce
+    /// exactly one action. That guarantee is asserted below rather than assumed silently: if the
+    /// bundle type ever changes to one that pads/shuffles, a multi-action bundle's action 0 need
+    /// not be the real output (padding actions carry value 0 and a random recipient), so this
+    /// must error instead of quietly reading the wrong one.
+    ///
+    /// Errors (rather than returning `None`) if the PCZT is absent because it was already
+    /// extracted — see [`Self::require_no_shielded_output_ever_added`].
     pub fn ironwood_shielded_output_info(
         &self,
     ) -> Result<Option<(u64, crate::zcash::ironwood_build::OrchardAddressBytes)>, String> {
-        if super::propkv::get_ironwood_pczt(&self.psbt).is_none() {
+        if self.require_no_shielded_output_ever_added()? {
             return Ok(None);
         }
         // `orchard::pczt::Bundle` only exposes a mutable actions accessor; we only read from it.
@@ -1025,6 +1050,24 @@ impl ZcashBitGoPsbt {
     pub fn v6_txid(&self) -> Result<[u8; 32], String> {
         let bundle = self.ironwood_action_data()?;
         let tx = self.to_v6_transaction(self.psbt.unsigned_tx.clone(), Some(bundle))?;
+        Ok(crate::zcash::v6::compute_v6_txid(&tx))
+    }
+
+    /// The unsigned ZIP-244 txid for this v6 (Ironwood) PSBT, whatever state it's in: with a
+    /// shielded output present, this is [`Self::v6_txid`]; before one has been added, it is the
+    /// ZIP-244 txid of the transparent-only skeleton (a bundle-less v6 tx is a valid ZIP-244
+    /// input — `ironwood_bundle: None`).
+    ///
+    /// Exists so callers computing a general-purpose "unsigned txid" (like
+    /// `PsbtAccess::unsigned_tx_id`) don't need to know whether a shielded output has been added
+    /// yet — unlike [`Self::v6_txid`], this never errors just because one hasn't been.
+    pub fn unsigned_v6_txid(&self) -> Result<[u8; 32], String> {
+        let bundle = if self.require_no_shielded_output_ever_added()? {
+            None
+        } else {
+            Some(self.ironwood_action_data()?)
+        };
+        let tx = self.to_v6_transaction(self.psbt.unsigned_tx.clone(), bundle)?;
         Ok(crate::zcash::v6::compute_v6_txid(&tx))
     }
 
@@ -2155,6 +2198,70 @@ mod ironwood_v6_tests {
             err.contains("missing its Ironwood PCZT"),
             "unexpected error: {err}"
         );
+    }
+
+    /// `unsigned_v6_txid` and `ironwood_shielded_output_info` both key off PCZT presence to decide
+    /// whether a shielded output exists. Once extracted, the PCZT is gone but a shielded output
+    /// *did* exist — treating that the same as "never added" would silently compute a wrong
+    /// (transparent-only) txid, and silently drop the shielded amount back into the caller's fee
+    /// calculation. Both must error instead.
+    #[test]
+    fn unsigned_v6_txid_and_shielded_output_info_error_after_extraction() {
+        let mut z = build_shield_psbt("v6_extracted_accounting");
+
+        // Before extraction: both see the shielded output.
+        assert!(z.unsigned_v6_txid().is_ok());
+        assert!(
+            z.ironwood_shielded_output_info().unwrap().is_some(),
+            "shielded output present before extraction"
+        );
+
+        assert!(z.mark_ironwood_extracted(), "a PCZT was present");
+
+        // After extraction: neither silently falls back to "no shielded output".
+        let txid_err = z.unsigned_v6_txid().unwrap_err();
+        assert!(
+            txid_err.contains("already been extracted"),
+            "unexpected error: {txid_err}"
+        );
+        let info_err = z.ironwood_shielded_output_info().unwrap_err();
+        assert!(
+            info_err.contains("already been extracted"),
+            "unexpected error: {info_err}"
+        );
+    }
+
+    /// The counterpart to the extraction case above: a v6 PSBT that never had a shielded output
+    /// added at all must still work — `unsigned_v6_txid` computes the transparent-only txid, and
+    /// `ironwood_shielded_output_info` reports `None`, neither erroring.
+    #[test]
+    fn unsigned_v6_txid_and_shielded_output_info_handle_no_shielded_output_ever_added() {
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_never_shielded"));
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x44u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 199_900_000, &wallet_keys)
+            .unwrap();
+        let BitGoPsbt::Zcash(z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+
+        assert!(z.unsigned_v6_txid().is_ok());
+        assert!(z.ironwood_shielded_output_info().unwrap().is_none());
     }
 
     /// A signature from a key outside the input's redeem script is rejected at ingest, rather than

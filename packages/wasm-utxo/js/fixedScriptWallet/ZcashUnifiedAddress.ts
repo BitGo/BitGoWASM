@@ -68,6 +68,22 @@ export class ZcashUnifiedAddress {
     return this._wasm.contains(candidate);
   }
 
+  /**
+   * Encode a raw 43-byte Orchard/Ironwood receiver as a single-receiver Unified Address.
+   *
+   * Deliberately narrower than a general UA encoder: this always produces exactly one receiver,
+   * so it can't reproduce a multi-receiver UA (transparent + Sapling + Orchard) a sender might
+   * have originally pasted in — it only gives back *a* valid, usable address for the
+   * Orchard/Ironwood receiver itself.
+   *
+   * @param receiver - 43-byte raw Orchard/Ironwood receiver
+   * @param network - Zcash network name ("zcash", "zcashTest", "zec", "tzec")
+   * @throws If `receiver` is not 43 bytes, or `network` is unrecognized
+   */
+  static encodeOrchardReceiver(receiver: Uint8Array, network: ZcashNetworkName): string {
+    return WasmZcashUnifiedAddress.encodeOrchardReceiver(receiver, network);
+  }
+
   /** @internal */
   get wasm(): WasmZcashUnifiedAddress {
     return this._wasm;
