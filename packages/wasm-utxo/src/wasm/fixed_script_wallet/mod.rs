@@ -673,6 +673,22 @@ impl BitGoPsbt {
         Ok(tx)
     }
 
+    /// The raw serialized orchard PCZT (Partially Created Zcash Transaction) bundle stored in
+    /// this v6 (Ironwood) PSBT's proprietary key-value map, or `undefined` if none is present.
+    ///
+    /// A PCZT is the shielded-bundle counterpart to a PSBT: it accumulates the orchard action
+    /// (spend + output), the ZIP-244-committed `out_ciphertext`, and — once
+    /// [`Self::combine_ironwood_proof`] has run — the Halo2 `zkproof` and binding signature,
+    /// bridging this PSBT to the external proof service and back (see
+    /// [`crate::zcash::ironwood_pczt`] / [`crate::zcash::ironwood_build`]).
+    ///
+    /// Present only after [`Self::add_ironwood_output`] has been called on a v6 PSBT; `undefined`
+    /// beforehand, and `undefined` again after [`Self::combine_ironwood_proof`] succeeds, since
+    /// that call drops the stored PCZT to make extraction terminal (see its doc comment).
+    pub fn ironwood_pczt_bytes(&self) -> Option<Vec<u8>> {
+        self.zcash().ok().and_then(|z| z.raw_ironwood_pczt_bytes())
+    }
+
     /// Convert a half-signed legacy transaction to a psbt-lite.
     ///
     /// # Arguments
