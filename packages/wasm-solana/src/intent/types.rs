@@ -358,6 +358,12 @@ pub struct ConsolidateIntent {
     pub recipients: Vec<Recipient>,
     #[serde(default)]
     pub memo: Option<String>,
+    /// When true, emit idempotent CreateAssociatedTokenAccount before each token transfer
+    #[serde(default)]
+    pub create_associated_token_account: Option<bool>,
+    /// Owner of the destination ATA (wallet root address, NOT the sender/child address)
+    #[serde(default)]
+    pub ata_owner_address: Option<String>,
 }
 
 /// Authorize intent - pre-built transaction message

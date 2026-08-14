@@ -8,12 +8,18 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
 
 import assert from "assert";
-import { buildFromIntent, Transaction, parseTransaction } from "../dist/cjs/js/index.js";
+import {
+  buildFromIntent,
+  Transaction,
+  parseTransaction,
+  getAssociatedTokenAddress,
+} from "../dist/cjs/js/index.js";
 
 describe("buildFromIntent", function () {
   // Common test params
   const feePayer = "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB";
   const blockhash = "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4";
+  const splTokenProgramId = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 
   describe("payment intent", function () {
     it("should build a simple payment transaction", function () {
@@ -384,6 +390,272 @@ describe("buildFromIntent", function () {
       // Should have 2 Transfer instructions
       const transfers = parsed.instructionsData.filter((i: any) => i.type === "Transfer");
       assert.equal(transfers.length, 2, "Should have 2 transfer instructions");
+    });
+
+    it("should emit CreateAssociatedTokenAccount before TokenTransfer when createAssociatedTokenAccount is true", function () {
+      const childAddress = "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN";
+      const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      // Derive the correct ATA so it matches what build_consolidate derives
+      const destAta = getAssociatedTokenAddress(feePayer, usdcMint, splTokenProgramId);
+      const intent = {
+        intentType: "consolidate",
+        receiveAddress: childAddress,
+        createAssociatedTokenAccount: true,
+        ataOwnerAddress: feePayer,
+        recipients: [
+          {
+            address: { address: destAta },
+            amount: { value: 1000000n },
+            tokenAddress: usdcMint,
+            decimalPlaces: 6,
+          },
+        ],
+      };
+
+      const result = buildFromIntent(intent, {
+        feePayer,
+        nonce: { type: "blockhash", value: blockhash },
+      });
+
+      const parsed = parseTransaction(result.transaction);
+
+      const createAta = parsed.instructionsData.find(
+        (i: any) => i.type === "CreateAssociatedTokenAccount",
+      );
+      assert(createAta, "Should have CreateAssociatedTokenAccount instruction");
+
+      const tokenTransfer = parsed.instructionsData.find((i: any) => i.type === "TokenTransfer");
+      assert(tokenTransfer, "Should have TokenTransfer instruction");
+
+      // CreateAssociatedTokenAccount should come before TokenTransfer
+      const createAtaIndex = parsed.instructionsData.indexOf(createAta);
+      const tokenTransferIndex = parsed.instructionsData.indexOf(tokenTransfer);
+      assert(
+        createAtaIndex < tokenTransferIndex,
+        "CreateAssociatedTokenAccount should precede TokenTransfer",
+      );
+    });
+
+    it("should NOT emit CreateAssociatedTokenAccount when flag is omitted (backwards compat)", function () {
+      const childAddress = "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN";
+      const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      const intent = {
+        intentType: "consolidate",
+        receiveAddress: childAddress,
+        recipients: [
+          {
+            address: { address: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH" },
+            amount: { value: 1000000n },
+            tokenAddress: usdcMint,
+            decimalPlaces: 6,
+          },
+        ],
+      };
+
+      const result = buildFromIntent(intent, {
+        feePayer,
+        nonce: { type: "blockhash", value: blockhash },
+      });
+
+      const parsed = parseTransaction(result.transaction);
+
+      const createAta = parsed.instructionsData.find(
+        (i: any) => i.type === "CreateAssociatedTokenAccount",
+      );
+      assert(!createAta, "Should NOT have CreateAssociatedTokenAccount instruction");
+
+      const tokenTransfer = parsed.instructionsData.find((i: any) => i.type === "TokenTransfer");
+      assert(tokenTransfer, "Should have TokenTransfer instruction");
+    });
+
+    it("should throw when createAssociatedTokenAccount is true but ataOwnerAddress is missing", function () {
+      const childAddress = "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN";
+      const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      const intent = {
+        intentType: "consolidate",
+        receiveAddress: childAddress,
+        createAssociatedTokenAccount: true,
+        recipients: [
+          {
+            address: { address: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH" },
+            amount: { value: 1000000n },
+            tokenAddress: usdcMint,
+            decimalPlaces: 6,
+          },
+        ],
+      };
+
+      assert.throws(
+        () =>
+          buildFromIntent(intent, {
+            feePayer,
+            nonce: { type: "blockhash", value: blockhash },
+          }),
+        /ataOwnerAddress is required/,
+      );
+    });
+
+    it("should throw when recipient ATA does not match derived ATA", function () {
+      const childAddress = "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN";
+      const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      const intent = {
+        intentType: "consolidate",
+        receiveAddress: childAddress,
+        createAssociatedTokenAccount: true,
+        ataOwnerAddress: feePayer,
+        recipients: [
+          {
+            // Wrong address — does not match derived ATA for feePayer + usdcMint
+            address: { address: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH" },
+            amount: { value: 1000000n },
+            tokenAddress: usdcMint,
+            decimalPlaces: 6,
+          },
+        ],
+      };
+
+      assert.throws(
+        () =>
+          buildFromIntent(intent, {
+            feePayer,
+            nonce: { type: "blockhash", value: blockhash },
+          }),
+        /does not match derived ATA/,
+      );
+    });
+
+    it("should NOT emit CreateAssociatedTokenAccount when flag is explicitly false", function () {
+      const childAddress = "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN";
+      const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      const intent = {
+        intentType: "consolidate",
+        receiveAddress: childAddress,
+        createAssociatedTokenAccount: false,
+        recipients: [
+          {
+            address: { address: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH" },
+            amount: { value: 1000000n },
+            tokenAddress: usdcMint,
+            decimalPlaces: 6,
+          },
+        ],
+      };
+
+      const result = buildFromIntent(intent, {
+        feePayer,
+        nonce: { type: "blockhash", value: blockhash },
+      });
+
+      const parsed = parseTransaction(result.transaction);
+
+      const createAta = parsed.instructionsData.find(
+        (i: any) => i.type === "CreateAssociatedTokenAccount",
+      );
+      assert(!createAta, "Should NOT have CreateAssociatedTokenAccount when flag is false");
+    });
+
+    it("should emit CreateAssociatedTokenAccount for each token recipient in multi-token consolidate", function () {
+      const childAddress = "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN";
+      const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      const usdtMint = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+      const usdcAta = getAssociatedTokenAddress(feePayer, usdcMint, splTokenProgramId);
+      const usdtAta = getAssociatedTokenAddress(feePayer, usdtMint, splTokenProgramId);
+      const intent = {
+        intentType: "consolidate",
+        receiveAddress: childAddress,
+        createAssociatedTokenAccount: true,
+        ataOwnerAddress: feePayer,
+        recipients: [
+          {
+            address: { address: usdcAta },
+            amount: { value: 1000000n },
+            tokenAddress: usdcMint,
+            decimalPlaces: 6,
+          },
+          {
+            address: { address: usdtAta },
+            amount: { value: 2000000n },
+            tokenAddress: usdtMint,
+            decimalPlaces: 6,
+          },
+        ],
+      };
+
+      const result = buildFromIntent(intent, {
+        feePayer,
+        nonce: { type: "blockhash", value: blockhash },
+      });
+
+      const parsed = parseTransaction(result.transaction);
+
+      const createAtaInstructions = parsed.instructionsData.filter(
+        (i: any) => i.type === "CreateAssociatedTokenAccount",
+      );
+      assert.equal(
+        createAtaInstructions.length,
+        2,
+        "Should have 2 CreateAssociatedTokenAccount instructions",
+      );
+
+      const tokenTransfers = parsed.instructionsData.filter((i: any) => i.type === "TokenTransfer");
+      assert.equal(tokenTransfers.length, 2, "Should have 2 TokenTransfer instructions");
+
+      // Each Create-ATA should precede its corresponding TokenTransfer
+      for (let i = 0; i < createAtaInstructions.length; i++) {
+        const createIdx = parsed.instructionsData.indexOf(createAtaInstructions[i]);
+        const transferIdx = parsed.instructionsData.indexOf(tokenTransfers[i]);
+        assert(createIdx < transferIdx, `CreateATA #${i} should precede TokenTransfer #${i}`);
+      }
+    });
+
+    it("should emit CreateAssociatedTokenAccount only for token recipients, not native SOL", function () {
+      const childAddress = "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN";
+      const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      const destAta = getAssociatedTokenAddress(feePayer, usdcMint, splTokenProgramId);
+      const intent = {
+        intentType: "consolidate",
+        receiveAddress: childAddress,
+        createAssociatedTokenAccount: true,
+        ataOwnerAddress: feePayer,
+        recipients: [
+          {
+            // Native SOL recipient
+            address: { address: feePayer },
+            amount: { value: 50000000n },
+          },
+          {
+            // Token recipient
+            address: { address: destAta },
+            amount: { value: 1000000n },
+            tokenAddress: usdcMint,
+            decimalPlaces: 6,
+          },
+        ],
+      };
+
+      const result = buildFromIntent(intent, {
+        feePayer,
+        nonce: { type: "blockhash", value: blockhash },
+      });
+
+      const parsed = parseTransaction(result.transaction);
+
+      // Only one CreateAssociatedTokenAccount (for the token recipient)
+      const createAtaInstructions = parsed.instructionsData.filter(
+        (i: any) => i.type === "CreateAssociatedTokenAccount",
+      );
+      assert.equal(
+        createAtaInstructions.length,
+        1,
+        "Should have exactly 1 CreateAssociatedTokenAccount",
+      );
+
+      // Should have both Transfer (native) and TokenTransfer (SPL)
+      const nativeTransfer = parsed.instructionsData.find((i: any) => i.type === "Transfer");
+      assert(nativeTransfer, "Should have native SOL Transfer instruction");
+
+      const tokenTransfer = parsed.instructionsData.find((i: any) => i.type === "TokenTransfer");
+      assert(tokenTransfer, "Should have TokenTransfer instruction");
     });
   });
 
