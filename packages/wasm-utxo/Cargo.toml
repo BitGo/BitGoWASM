@@ -23,6 +23,12 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [features]
 default = []
 inspect = ["dep:num-bigint", "dep:serde_json", "dep:hex"]
+# Pulls in orchard's halo2 circuit/proving-key machinery so this crate can produce its own
+# Ironwood zk-proofs locally, instead of relying on an external proof service. Heavy (halo2
+# circuit synthesis + proving-key generation), so it's opt-in and off by default — the shipped
+# WASM build (browser consumers) must not link the circuit. Standalone tooling (the CLI) enables
+# it explicitly.
+orchard-proving = ["orchard/circuit"]
 
 [dependencies]
 wasm-bindgen = "0.2"

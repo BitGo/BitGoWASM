@@ -672,6 +672,42 @@ impl ZcashBitGoPsbt {
         z
     }
 
+    /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT without embedding any xpubs.
+    ///
+    /// [`Self::new_v6`] always stamps the PSBT with a [`RootWalletKeys`][crate::fixed_script_wallet::RootWalletKeys]'s
+    /// xpubs, which standalone tooling (e.g. the CLI) that builds/signs one key at a time rather
+    /// than through a fixed-script wallet has no use for and no wallet keys to supply. The xpubs
+    /// are purely informational metadata — every other v6 method reads/writes only the
+    /// proprietary-map fields this constructor also sets — so omitting them is safe.
+    pub fn new_v6_bare(
+        network: crate::Network,
+        consensus_branch_id: u32,
+        lock_time: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Self {
+        use miniscript::bitcoin::absolute::LockTime;
+        use miniscript::bitcoin::transaction::Version;
+
+        let version_group_id = crate::zcash::transaction::ZCASH_IRONWOOD_VERSION_GROUP_ID;
+        let expiry_height = expiry_height.unwrap_or(0);
+        let tx = Transaction {
+            version: Version(6),
+            lock_time: LockTime::from_consensus(lock_time.unwrap_or(0)),
+            input: vec![],
+            output: vec![],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(tx).expect("empty transaction should be valid");
+        super::propkv::set_zec_v6_params(&mut psbt, version_group_id, expiry_height);
+        super::propkv::set_zec_v6_consensus_branch_id(&mut psbt, consensus_branch_id);
+        Self {
+            psbt,
+            network,
+            version_group_id: Some(version_group_id),
+            expiry_height: Some(expiry_height),
+            sapling_fields: Vec::new(),
+        }
+    }
+
     /// Whether this PSBT is a v6 (Ironwood) PSBT.
     pub fn is_ironwood_v6(&self) -> bool {
         self.version_group_id == Some(crate::zcash::transaction::ZCASH_IRONWOOD_VERSION_GROUP_ID)
@@ -1254,6 +1290,36 @@ impl ZcashBitGoPsbt {
         crate::zcash::v6::encode_v6_transaction(&tx).map_err(|e| e.to_string())
     }
 
+    /// Like [`Self::combine_ironwood_proof`], but produces the `zkproof` itself (via
+    /// [`crate::zcash::ironwood_build::create_proof`]) rather than requiring it from an external
+    /// proof service. Behind the `orchard-proving` feature — standalone tooling (e.g. the CLI)
+    /// that has no external proof service to call can enable it; the shipped WASM build must not,
+    /// since it would link the halo2 circuit into every consumer. Consumes `self`.
+    #[cfg(feature = "orchard-proving")]
+    pub fn combine_ironwood_proof_locally<R: rand::RngCore + rand::CryptoRng>(
+        self,
+        mut rng: R,
+    ) -> Result<Vec<u8>, String> {
+        use crate::zcash::ironwood_build;
+
+        let transparent = self.finalized_transparent_tx()?;
+
+        let (amounts, scripts) = self.transparent_input_amounts_and_scripts()?;
+        let action_bundle = self.ironwood_action_data()?;
+        let sig_tx = self.to_v6_transaction(self.psbt.unsigned_tx.clone(), Some(action_bundle))?;
+        let sighash = crate::zcash::v6::compute_v6_sig_digest(&sig_tx, &amounts, &scripts);
+
+        let mut pczt = self.ironwood_pczt()?;
+        ironwood_build::finalize_shield_io(&mut pczt, sighash, &mut rng)
+            .map_err(|e| e.to_string())?;
+        ironwood_build::create_proof(&mut pczt, &mut rng).map_err(|e| e.to_string())?;
+        let full_bundle =
+            ironwood_build::combine(&pczt, sighash, &mut rng).map_err(|e| e.to_string())?;
+
+        let tx = self.to_v6_transaction(transparent, Some(full_bundle))?;
+        crate::zcash::v6::encode_v6_transaction(&tx).map_err(|e| e.to_string())
+    }
+
     /// Mark this v6 PSBT as extracted by dropping its PCZT, making [`Self::combine_ironwood_proof`]
     /// terminal for callers that cannot consume the PSBT by value (the wasm bindings, which must
     /// clone). Any later Ironwood operation then fails with "no Ironwood PCZT stored in PSBT"
@@ -1272,10 +1338,33 @@ impl ZcashBitGoPsbt {
     }
 
     /// Deserialize a v6 PSBT produced by [`Self::serialize_v6`], restoring the v6 header params from
-    /// the proprietary map.
+    /// the proprietary map. Requires the Ironwood PCZT (i.e. [`Self::add_ironwood_output`] must
+    /// already have been called) — use [`Self::deserialize_v6_pre_shield`] to load a v6 PSBT
+    /// that doesn't have one yet.
     pub fn deserialize_v6(
         bytes: &[u8],
         network: crate::Network,
+    ) -> Result<Self, super::DeserializeError> {
+        Self::decode_v6(bytes, network, true)
+    }
+
+    /// Deserialize a v6 PSBT that may not yet carry its Ironwood PCZT — for tooling (e.g. the
+    /// CLI) that builds the transparent skeleton (inputs/outputs) across separate
+    /// serialize/deserialize round-trips before calling [`Self::add_ironwood_output`], unlike the
+    /// in-process microservice flow [`Self::deserialize_v6`] otherwise assumes. Still validates
+    /// the v6 params and consensus branch id, so a bare transparent skeleton round-trips exactly
+    /// like a fully-shielded one.
+    pub fn deserialize_v6_pre_shield(
+        bytes: &[u8],
+        network: crate::Network,
+    ) -> Result<Self, super::DeserializeError> {
+        Self::decode_v6(bytes, network, false)
+    }
+
+    fn decode_v6(
+        bytes: &[u8],
+        network: crate::Network,
+        require_pczt: bool,
     ) -> Result<Self, super::DeserializeError> {
         let psbt = Psbt::deserialize(bytes)?;
         let (version_group_id, expiry_height) = super::propkv::get_zec_v6_params(&psbt)
@@ -1301,7 +1390,7 @@ impl ZcashBitGoPsbt {
                 "v6 PSBT is missing its consensus branch id".to_string(),
             ));
         }
-        if super::propkv::get_ironwood_pczt(&psbt).is_none() {
+        if require_pczt && super::propkv::get_ironwood_pczt(&psbt).is_none() {
             return Err(super::DeserializeError::Network(
                 "v6 PSBT is missing its Ironwood PCZT".to_string(),
             ));
@@ -1573,6 +1662,124 @@ mod ironwood_v6_tests {
             hex::encode(internal),
             "zebra txid == ours"
         );
+    }
+
+    /// `combine_ironwood_proof_locally` (the `orchard-proving` path) produces a *real* Halo2 proof
+    /// that verifies — unlike [`build_sign_combine_produces_valid_v6_tx`]'s canonical-length
+    /// all-zero placeholder, which is only structurally valid, not cryptographically. This is what
+    /// makes the CLI's locally-combined transaction actually broadcastable.
+    #[cfg(feature = "orchard-proving")]
+    #[test]
+    fn combine_ironwood_proof_locally_produces_a_verifying_proof() {
+        use nonempty::NonEmpty;
+        use orchard::bundle::{Authorized, Bundle as OrchardBundle, BundleVersion};
+        use orchard::circuit::{OrchardCircuitVersion, VerifyingKey};
+        use orchard::note::{ExtractedNoteCommitment, Nullifier, TransmittedNoteCiphertext};
+        use orchard::primitives::redpallas::{Binding, Signature, SpendAuth, VerificationKey};
+        use orchard::value::ValueCommitment;
+        use orchard::{Action as OrchardAction, Proof};
+
+        let seed = "ironwood_v6_local_proof";
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
+
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            nu6_3,
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x66u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 99_900_000, &wallet_keys)
+            .unwrap();
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+        z.add_ironwood_output(
+            &test_recipient(),
+            100_000_000,
+            None,
+            &Anchor::empty_tree().to_bytes(),
+            &[0u8; 512],
+            OsRng,
+        )
+        .unwrap();
+
+        let secp = Secp256k1::new();
+        let sighash = z.v6_transparent_sighash(0).unwrap();
+        let msg = Message::from_digest(sighash);
+        for i in [0usize, 2] {
+            let sk = signing_secret_keys(seed, 0, 0)[i];
+            let secp_pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+            let pubkey = PublicKey::from(CompressedPublicKey(secp_pk));
+            let mut der = secp.sign_ecdsa(&msg, &sk).serialize_der().to_vec();
+            der.push(0x01);
+            z.add_v6_transparent_signature(0, pubkey, &der).unwrap();
+        }
+
+        let raw = z.combine_ironwood_proof_locally(OsRng).unwrap();
+        let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+        let bundle = tx.ironwood_bundle.as_ref().unwrap();
+
+        // Reconstruct the fully-authorized orchard bundle from the on-wire action data, so we can
+        // ask orchard itself to verify the proof against a freshly-built verifying key.
+        let actions = bundle
+            .actions
+            .iter()
+            .zip(&bundle.spend_auth_sigs)
+            .map(|(a, sig)| {
+                let cv_net =
+                    Option::from(ValueCommitment::from_bytes(&a.cv)).expect("valid cv_net");
+                let rk = VerificationKey::<SpendAuth>::try_from(a.rk).expect("valid rk");
+                let cmx =
+                    Option::from(ExtractedNoteCommitment::from_bytes(&a.cmx)).expect("valid cmx");
+                let nf = Option::from(Nullifier::from_bytes(&a.nullifier)).expect("valid nf");
+                let encrypted_note = TransmittedNoteCiphertext {
+                    epk_bytes: a.ephemeral_key,
+                    enc_ciphertext: a.enc_ciphertext,
+                    out_ciphertext: a.out_ciphertext,
+                };
+                OrchardAction::from_parts(
+                    nf,
+                    rk,
+                    cmx,
+                    encrypted_note,
+                    cv_net,
+                    Signature::<SpendAuth>::from(*sig),
+                )
+                .expect("valid action")
+            })
+            .collect::<Vec<_>>();
+        let actions = NonEmpty::from_vec(actions).expect("at least one action");
+
+        let authorization = Authorized::from_parts(
+            Proof::new(bundle.proof.clone()),
+            Signature::<Binding>::from(bundle.binding_sig),
+        );
+        let orchard_bundle = OrchardBundle::<Authorized, i64>::try_from_parts(
+            actions,
+            BundleVersion::ironwood_v3().default_flags(),
+            bundle.value_balance,
+            Option::from(Anchor::from_bytes(bundle.anchor)).expect("valid anchor"),
+            authorization,
+            BundleVersion::ironwood_v3(),
+        )
+        .expect("valid authorized bundle");
+
+        let vk = VerifyingKey::build(OrchardCircuitVersion::PostNu6_3);
+        orchard_bundle
+            .verify_proof(&vk)
+            .expect("locally-produced proof verifies");
     }
 
     /// End-to-end: the server builds a **keyless** v6 shielding PSBT — one transparent input, one
@@ -2571,6 +2778,105 @@ mod ironwood_v6_tests {
         assert!(
             err.contains("missing its Ironwood PCZT"),
             "unexpected error: {err}"
+        );
+    }
+
+    /// `deserialize_v6_pre_shield` accepts exactly the bytes `deserialize_v6` rejects in the test
+    /// above — a v6 PSBT with its transparent skeleton but no PCZT yet — while still enforcing the
+    /// v6 params/branch id checks both share.
+    #[test]
+    fn deserialize_v6_pre_shield_accepts_a_missing_pczt() {
+        let z = build_shield_psbt("v6_pre_shield");
+        let mut psbt = z.psbt.clone();
+        psbt.proprietary.retain(|k, _| {
+            !(k.prefix == crate::fixed_script_wallet::bitgo_psbt::propkv::BITGO_ZEC_V6
+                && k.subtype == 0x01)
+        });
+        let bytes = psbt.serialize();
+
+        let err = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap_err();
+        assert!(err.to_string().contains("missing its Ironwood PCZT"));
+
+        let round = ZcashBitGoPsbt::deserialize_v6_pre_shield(&bytes, Network::ZcashTestnet)
+            .expect("pre-shield deserialize accepts a missing PCZT");
+        assert!(round.is_ironwood_v6());
+        assert!(round.ironwood_shielded_output_info().unwrap().is_none());
+
+        // Still rejects a v6 PSBT missing its branch id — that check isn't gated by `require_pczt`.
+        let mut psbt_no_branch = z.psbt.clone();
+        psbt_no_branch.proprietary.retain(|k, _| {
+            !(k.prefix == crate::fixed_script_wallet::bitgo_psbt::propkv::BITGO_ZEC_V6
+                && k.subtype == 0x00)
+        });
+        let err = ZcashBitGoPsbt::deserialize_v6_pre_shield(
+            &psbt_no_branch.serialize(),
+            Network::ZcashTestnet,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("missing its consensus branch id"));
+    }
+
+    /// `new_v6_bare` mirrors the CLI's standalone build flow — a bare v6 PSBT (no wallet xpubs),
+    /// with a transparent input/output and a shielded output added directly, round-tripping
+    /// through `serialize`/`deserialize_v6_pre_shield` between steps the way the CLI's
+    /// serialize-per-command round trip does.
+    #[test]
+    fn new_v6_bare_supports_the_cli_build_flow_end_to_end() {
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_bare_cli_flow"));
+
+        let consensus_branch_id = crate::zcash::branch_id_for_height(
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            false,
+        )
+        .unwrap();
+        let mut z =
+            ZcashBitGoPsbt::new_v6_bare(Network::ZcashTestnet, consensus_branch_id, None, None);
+        assert!(z.is_ironwood_v6());
+        assert!(z.ironwood_shielded_output_info().unwrap().is_none());
+
+        // Round-trip through serialize/deserialize before adding the transparent input, as the
+        // CLI does between each subcommand.
+        let bytes = z.serialize().unwrap();
+        z = ZcashBitGoPsbt::deserialize_v6_pre_shield(&bytes, Network::ZcashTestnet).unwrap();
+
+        let mut psbt = BitGoPsbt::Zcash(z, Network::ZcashTestnet);
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x44u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 99_900_000, &wallet_keys)
+            .unwrap();
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+
+        // Round-trip again before adding the shielded output, as the CLI does between
+        // `add-output` and `add-shielded-output`.
+        let bytes = z.serialize().unwrap();
+        z = ZcashBitGoPsbt::deserialize_v6_pre_shield(&bytes, Network::ZcashTestnet).unwrap();
+
+        z.add_ironwood_output(
+            &test_recipient(),
+            100_000_000,
+            None,
+            &Anchor::empty_tree().to_bytes(),
+            &[0u8; 512],
+            OsRng,
+        )
+        .unwrap();
+
+        // Final round-trip: now that the PCZT is present, plain `deserialize_v6` accepts it too.
+        let bytes = z.serialize().unwrap();
+        let round = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap();
+        assert!(round.ironwood_shielded_output_info().unwrap().is_some());
+        assert_eq!(
+            round.unsigned_v6_txid().unwrap(),
+            z.unsigned_v6_txid().unwrap()
         );
     }
 

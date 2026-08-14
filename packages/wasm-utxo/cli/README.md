@@ -173,6 +173,51 @@ wasm-utxo-cli psbt create --lock-time 0 \
 # Output: a signed Zcash overwintered (NU5) transaction, hex-encoded
 ```
 
+#### Build and sign a Zcash v6 (Ironwood) shielding transaction
+
+Six composable subcommands — `create-zcash-v6`, `add-input`, `add-output`, `add-shielded-output`,
+`sign-v6-input`, `combine-ironwood-proof` — each read a PSBT from a file or stdin (`-`) and print
+the result as hex, so they pipe together into a full build-and-sign flow for a **transparent →
+shielded** ("shielding") v6 transaction.
+
+```bash
+wasm-utxo-cli psbt create-zcash-v6 --network <NETWORK> --consensus-branch-id <ID> [--lock-time <LOCK_TIME>] [--expiry-height <HEIGHT>]
+wasm-utxo-cli psbt add-input <PATH> --network <NETWORK> --txid <TXID> --vout <VOUT> --value <VALUE> --script <SCRIPT_HEX> --descriptor <DESCRIPTOR>
+wasm-utxo-cli psbt add-output <PATH> (--address <ADDRESS> --network <NETWORK> | --script <SCRIPT_HEX>) --value <VALUE>
+wasm-utxo-cli psbt add-shielded-output <PATH> --network <NETWORK> --recipient <HEX43> --value <ZATOSHI> --anchor <HEX32> [--ovk <HEX32>] [--memo <HEX512>]
+wasm-utxo-cli psbt sign-v6-input <PATH> --network <NETWORK> --index <INDEX> --privkey <PRIVKEY>
+wasm-utxo-cli psbt combine-ironwood-proof <PATH> --network <NETWORK> (--proof <HEX> | --local-proof)
+```
+
+`add-output` is optional (a fully-shielding transaction may spend its whole input to the shielded
+output plus fee). `add-shielded-output` supports exactly one shielded output. `sign-v6-input` is
+called once per required signature — each spent transparent input's redeem script must be a 2-of-3
+CHECKMULTISIG script (BitGo's fixed-script wallet shape); a plain single-key (`pkh(...)`) input is
+not supported on this path. `combine-ironwood-proof` either splices in a proof obtained from an
+external prover (`--proof`) or produces one locally (`--local-proof`, heavier — builds a halo2
+proving key and synthesizes the circuit).
+
+**Example:**
+
+```bash
+# Zcash testnet: shield 1.9 TAZ from a 2-of-3 P2SH multisig transparent input into an
+# Ironwood/Orchard note, leaving no transparent change (fee = input - shielded amount).
+wasm-utxo-cli psbt create-zcash-v6 --network tzec --consensus-branch-id 0x37a5165b --expiry-height 4253200 \
+  | wasm-utxo-cli psbt add-input - --network tzec \
+      --txid 1ebd1da314f021d7c7b2ced6c0340067ebf3ce422bf8c53daa626d72cbd9fe73 --vout 1 \
+      --value 2000000 --script a914ed68766fe37d9e2325758ed209ac78db505425a987 \
+      --descriptor "sh(multi(2,023b4221b042fa25af6609d7e65d322fcb64c497b79ffc8f1891ea6b23d4e7d84a,02feaf8248a2f8dcc34f2e2f520201801bb88d20ab549baf47b48bc9f2f4dfcc93,030b82f01fd53e7dabe2d904938d64294e3352e9e836240af6ba2cfb9df8f837da))" \
+  | wasm-utxo-cli psbt add-shielded-output - --network tzec \
+      --recipient 4559029c0b5dbf941c5ad181a5fe8f45b34630f29d0c8dd8dc1cc3573386f416cb324133156d723df5e62d \
+      --value 1900000 --anchor 179fa4ebcadd3006a14b0ea80380e6e14287e453fc468fa93c7f73c88f87b408 \
+  | wasm-utxo-cli psbt sign-v6-input - --network tzec --index 0 --privkey cQ2ws3NRbFQVR3LUDxZoF1gvCHYM215QsiQ1gCHygJi1Jvdp1qzK \
+  | wasm-utxo-cli psbt sign-v6-input - --network tzec --index 0 --privkey cU7jx2bsp3Vj3DDi2v9vFJLuU777M9TcpFFa6Ga9qkKBsT4vbJHf \
+  | wasm-utxo-cli psbt combine-ironwood-proof - --network tzec --local-proof
+# Output: a broadcast-ready Zcash v6 (Ironwood) transaction, hex-encoded. This exact command was
+# submitted to a live Zcash testnet node and accepted into its mempool
+# (txid aa7d9d9401cf70901cf76c81cab06e7001879607f60e1a2ffa4d4afa4a786238).
+```
+
 ### Supported Networks
 
 The CLI supports the following networks (use with `--network` flag):

@@ -94,6 +94,8 @@ pub enum IronwoodBuildError {
     NoteCommitmentMismatch,
     /// The bitgo/user key bytes are not a valid secp256k1 public/private key.
     BadKey(String),
+    /// Local proof generation (`orchard-proving` feature) failed.
+    Prove(String),
 }
 
 impl core::fmt::Display for IronwoodBuildError {
@@ -129,6 +131,7 @@ impl core::fmt::Display for IronwoodBuildError {
                  not commit to the action's cmx; refusing to recompute out_ciphertext from it"
             ),
             Self::BadKey(e) => write!(f, "ironwood-build: invalid key: {e}"),
+            Self::Prove(e) => write!(f, "ironwood-build: proof generation failed: {e}"),
         }
     }
 }
@@ -184,6 +187,29 @@ pub fn finalize_shield_io<R: RngCore + CryptoRng>(
     bundle
         .finalize_io(sighash, rng)
         .map_err(|e| IronwoodBuildError::Finalize(e.to_string()))
+}
+
+/// Prover: attach a real Halo2 proof to the PCZT bundle in place, using a freshly-built proving
+/// key for the bundle's own circuit version.
+///
+/// Behind the `orchard-proving` feature (pulls in halo2's circuit/proving-key machinery — heavy,
+/// so it's opt-in). Building the proving key is expensive; callers proving many bundles in one
+/// process should build it once via `orchard::circuit::ProvingKey::build` and call
+/// `bundle.create_proof` directly rather than this convenience wrapper.
+///
+/// Order relative to [`finalize_shield_io`] does not matter — the two set disjoint PCZT fields
+/// (`zkproof` here, `spend_auth_sig`/`bsk` there) — but both must run before [`combine`].
+#[cfg(feature = "orchard-proving")]
+pub fn create_proof<R: RngCore + CryptoRng>(
+    bundle: &mut PcztBundle,
+    rng: R,
+) -> Result<(), IronwoodBuildError> {
+    use orchard::circuit::ProvingKey;
+
+    let pk = ProvingKey::build(BundleVersion::ironwood_v3().circuit_version());
+    bundle
+        .create_proof(&pk, rng)
+        .map_err(|e| IronwoodBuildError::Prove(e.to_string()))
 }
 
 /// Map an orchard action (in any authorization state) to the v6 wire action.
