@@ -1039,7 +1039,7 @@ fn build_close_ata(
 
 fn build_consolidate(
     intent_json: &serde_json::Value,
-    _params: &BuildParams,
+    params: &BuildParams,
 ) -> Result<(Vec<Instruction>, Vec<GeneratedKeypair>), WasmSolanaError> {
     let intent: ConsolidateIntent = serde_json::from_value(intent_json.clone())
         .map_err(|e| WasmSolanaError::new(&format!("Failed to parse consolidate intent: {}", e)))?;
@@ -1050,7 +1050,28 @@ fn build_consolidate(
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid receiveAddress (sender)"))?;
 
+    let fee_payer: Pubkey = params
+        .fee_payer
+        .parse()
+        .map_err(|_| WasmSolanaError::new("Invalid feePayer"))?;
+
     let default_token_program: Pubkey = SPL_TOKEN_PROGRAM_ID.parse().unwrap();
+    let system_program: Pubkey = SYSTEM_PROGRAM_ID.parse().unwrap();
+
+    let needs_create_ata = intent.create_associated_token_account.unwrap_or(false);
+    let ata_owner: Option<Pubkey> = if needs_create_ata {
+        let addr = intent.ata_owner_address.as_ref().ok_or_else(|| {
+            WasmSolanaError::new(
+                "ataOwnerAddress is required when createAssociatedTokenAccount is true",
+            )
+        })?;
+        Some(
+            addr.parse()
+                .map_err(|_| WasmSolanaError::new("Invalid ataOwnerAddress"))?,
+        )
+    } else {
+        None
+    };
 
     let mut instructions = Vec::new();
 
@@ -1097,6 +1118,26 @@ fn build_consolidate(
 
             // Destination ATA: passed in as-is (already exists on wallet root, caller provides it)
             let dest_ata = to_pubkey;
+
+            // Emit idempotent Create-ATA before the transfer when requested
+            if needs_create_ata {
+                let owner = ata_owner.unwrap(); // safe: validated above
+                let dest_ata_derived = derive_ata(&owner, &mint, &token_program);
+                if dest_ata_derived != dest_ata {
+                    return Err(WasmSolanaError::new(&format!(
+                        "Recipient ATA {} does not match derived ATA {} for owner {}",
+                        dest_ata, dest_ata_derived, owner
+                    )));
+                }
+                instructions.push(create_ata_idempotent_ix(
+                    &fee_payer,
+                    &dest_ata_derived,
+                    &owner,
+                    &mint,
+                    &system_program,
+                    &token_program,
+                ));
+            }
 
             use spl_token::instruction::TokenInstruction;
             let data = TokenInstruction::TransferChecked {

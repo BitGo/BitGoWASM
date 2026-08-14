@@ -180,6 +180,10 @@ export interface ConsolidateIntent extends BaseIntent {
   receiveAddress: string;
   /** Recipients (root address for native SOL, wallet ATAs for tokens) */
   recipients?: Recipient[];
+  /** When true, emit idempotent CreateAssociatedTokenAccount before each token transfer */
+  createAssociatedTokenAccount?: boolean;
+  /** Owner of the destination ATA (wallet root, not sender) — required when createAssociatedTokenAccount is true */
+  ataOwnerAddress?: string;
 }
 
 /** Authorize intent - pre-built transaction message */
