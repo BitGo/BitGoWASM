@@ -467,7 +467,7 @@ describe("Dimensions", function () {
   });
 
   describe("fromPsbt", function () {
-    it("misclassifies P2WSH inputs with nonstandard derivation paths as P2shP2pk", function () {
+    it("correctly classifies P2WSH inputs with nonstandard derivation paths", function () {
       const rootWalletKeys = getDefaultWalletKeys();
       const xpubs: [string, string, string] = [
         rootWalletKeys.userKey().toBase58(),
@@ -490,8 +490,9 @@ describe("Dimensions", function () {
 
       // Build an equivalent PSBT with nonstandard chain codes using the
       // WrapPsbt / descriptor API (same pattern as nonStandardPaths.ts).
-      // Swan self-signing PSBTs carry witness_script and derivations, but
-      // with chain codes that don't follow BitGo convention.
+      // Externally-built PSBTs may carry witness_script and derivations, but
+      // with chain codes that don't follow BitGo convention. The classifier
+      // must detect P2WSH from witness_script regardless of chain codes.
       const desc = Descriptor.fromString(
         formatNode({
           wsh: {
@@ -520,7 +521,7 @@ describe("Dimensions", function () {
       );
 
       // Sanity: external inputs have derivations (nonstandard chain codes)
-      // and witness_script.
+      // and witness_script; the classifier fires on witness_script.
       assert.ok(
         externalBitGoPsbt.getInputs().every((input) => input.bip32Derivation.length === 3),
         "external inputs should have 3 BIP32 derivations each",
@@ -529,28 +530,19 @@ describe("Dimensions", function () {
       const walletDim = Dimensions.fromPsbt(walletPsbt);
       const externalDim = Dimensions.fromPsbt(externalBitGoPsbt);
       const p2wshDim = Dimensions.fromInput({ scriptType: "p2wsh" });
-      const p2shP2pkDim = Dimensions.fromInput({ scriptType: "p2shP2pk" });
 
-      // With derivations: correctly classified as P2WSH (segwit).
+      // Both wallet and external PSBTs are classified as P2WSH (segwit)
+      // via witness_script parsing, regardless of derivation chain codes.
       assert.strictEqual(walletDim.hasSegwit, true);
+      assert.strictEqual(externalDim.hasSegwit, true);
       assert.strictEqual(walletDim.getInputWeight("max"), p2wshDim.getInputWeight("max") * 4);
+      assert.strictEqual(externalDim.getInputWeight("max"), p2wshDim.getInputWeight("max") * 4);
 
-      // Without standard derivations: incorrectly falls back to P2SH-P2PK
-      // (non-segwit), inflating vsize and understating fee rate.
-      assert.strictEqual(externalDim.hasSegwit, false);
-      assert.strictEqual(
-        externalDim.getInputWeight("max"),
-        p2shP2pkDim.getInputWeight("max") * 4,
-      );
-
-      // The non-segwit fallback inflates vsize, understating fee rate.
-      assert.ok(
-        externalDim.getVSize("max") > walletDim.getVSize("max"),
-        `external vsize ${externalDim.getVSize("max")} should exceed wallet vsize ${walletDim.getVSize("max")}`,
-      );
+      // Dimensions are identical because the script type is the same.
+      assert.strictEqual(externalDim.getInputWeight("max"), walletDim.getInputWeight("max"));
     });
 
-    it("falls back to P2shP2pk for replay protection input without derivations", function () {
+    it("correctly classifies P2SH-P2PK replay protection input without BIP32 derivations", function () {
       const rootWalletKeys = getDefaultWalletKeys();
       const xpubs: [string, string, string] = [
         rootWalletKeys.userKey().toBase58(),
@@ -577,9 +569,10 @@ describe("Dimensions", function () {
       const dim = Dimensions.fromPsbt(psbt);
       const p2shP2pkDim = Dimensions.fromInput({ scriptType: "p2shP2pk" });
 
-      // The fallback classifies this as P2shP2pk (non-segwit).
+      // The P2PK redeem-script shape check classifies this as P2shP2pk (non-segwit),
+      // validated from the redeem_script rather than assumed by default.
       assert.strictEqual(dim.hasSegwit, false);
-      assert.strictEqual(dim.getInputWeight("max"), p2shP2pkDim.getInputWeight("max") * 4);
+      assert.strictEqual(dim.getInputWeight("max"), p2shP2pkDim.getInputWeight("max"));
     });
 
     // Zcash has additional transaction overhead that we don't account for

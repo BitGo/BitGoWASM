@@ -3,9 +3,11 @@ use miniscript::bitcoin::psbt::{Input, Psbt};
 use miniscript::bitcoin::secp256k1::{self, PublicKey};
 use miniscript::bitcoin::{OutPoint, ScriptBuf, TapLeafHash, XOnlyPublicKey};
 
+use crate::address::is_p2mr;
 use crate::bitcoin::bip32::KeySource;
 use crate::fixed_script_wallet::{
-    OutputScriptType, ReplayProtection, RootWalletKeys, ScriptId, WalletOutputScript,
+    parse_multisig_script_2_of_3, parse_p2pk_script, OutputScriptType, ReplayProtection,
+    RootWalletKeys, ScriptId, WalletOutputScript,
 };
 use crate::Network;
 
@@ -399,23 +401,6 @@ pub fn get_derivation_paths(input: &Input) -> Vec<&DerivationPath> {
     }
 }
 
-pub fn parse_shared_chain_and_index(input: &Input) -> Result<(u32, u32), String> {
-    use crate::fixed_script_wallet::wallet_scripts::path_chain_index;
-
-    let paths = get_derivation_paths(input);
-    if paths.is_empty() {
-        return Err("no derivation paths".to_string());
-    }
-    let (chain, index) =
-        path_chain_index(paths[0]).ok_or_else(|| "invalid derivation path".to_string())?;
-    for path in &paths[1..] {
-        if path_chain_index(path) != Some((chain, index)) {
-            return Err("inconsistent derivation paths".to_string());
-        }
-    }
-    Ok((chain, index))
-}
-
 #[derive(Debug, strum::IntoStaticStr)]
 pub enum OutputScriptError {
     OutputIndexOutOfBounds { vout: u32 },
@@ -707,6 +692,92 @@ fn get_output_script_from_input(
 ) -> Result<&ScriptBuf, OutputScriptError> {
     // Delegate to get_output_script_and_value and return just the script
     get_output_script_and_value(input, prevout).map(|(script, _value)| script)
+}
+
+/// Check that the output-script shape is consistent with a candidate type.
+fn shape_matches(candidate: InputScriptType, output_script: &ScriptBuf) -> bool {
+    match candidate {
+        InputScriptType::P2shP2wsh | InputScriptType::P2sh | InputScriptType::P2shP2pk => {
+            output_script.is_p2sh()
+        }
+        InputScriptType::P2wsh => output_script.is_p2wsh(),
+        InputScriptType::P2trLegacy
+        | InputScriptType::P2trMusig2ScriptPath
+        | InputScriptType::P2trMusig2KeyPath => output_script.is_p2tr(),
+        InputScriptType::P2mr => is_p2mr(output_script),
+    }
+}
+
+/// Classify a PSBT input's script type by inspecting `witness_script` /
+/// `redeem_script` (and taproot metadata), verifying the script content
+/// (2-of-3 multisig, P2PK) and cross-checking the candidate against the
+/// output-script shape. Returns `Err` when no script metadata is present.
+pub fn infer_input_script_type(
+    psbt_input: &Input,
+    prevout: OutPoint,
+) -> Result<InputScriptType, String> {
+    let output_script = get_output_script_from_input(psbt_input, prevout)
+        .map_err(|e| format!("failed to extract output script: {}", e))?;
+
+    // witness_script present ⇒ segwit input; check it first and do not fall
+    // through to non-segwit redeem_script-only classification.
+    if let Some(witness_script) = psbt_input.witness_script.as_ref() {
+        if parse_multisig_script_2_of_3(witness_script).is_ok() {
+            let candidate = if psbt_input.redeem_script.is_some() {
+                InputScriptType::P2shP2wsh
+            } else {
+                InputScriptType::P2wsh
+            };
+            if shape_matches(candidate, output_script) {
+                return Ok(candidate);
+            }
+        }
+        // witness_script present but not a recognized 2-of-3 multisig, or shape
+        // mismatch: cannot classify (do NOT try redeem_script as P2sh —
+        // witness_script implies segwit).
+        return Err(format!(
+            "cannot classify segwit input: witness_script present but unrecognised or shape-mismatched (output {:x})",
+            output_script
+        ));
+    }
+
+    // redeem_script present (witness_script absent)
+    if let Some(redeem_script) = psbt_input.redeem_script.as_ref() {
+        if parse_p2pk_script(redeem_script).is_some() {
+            let candidate = InputScriptType::P2shP2pk;
+            if shape_matches(candidate, output_script) {
+                return Ok(candidate);
+            }
+        } else if parse_multisig_script_2_of_3(redeem_script).is_ok() {
+            let candidate = InputScriptType::P2sh;
+            if shape_matches(candidate, output_script) {
+                return Ok(candidate);
+            }
+        }
+        return Err(format!(
+            "cannot classify input: redeem_script present but unrecognised or shape-mismatched (output {:x})",
+            output_script
+        ));
+    }
+
+    // taproot metadata (no witness/redeem script)
+    if !psbt_input.tap_scripts.is_empty() && output_script.is_p2tr() {
+        // P2trLegacy and P2trMusig2ScriptPath have identical weights.
+        return Ok(InputScriptType::P2trMusig2ScriptPath);
+    }
+    if psbt_input.tap_internal_key.is_some() && output_script.is_p2tr() {
+        return Ok(InputScriptType::P2trMusig2KeyPath);
+    }
+
+    // P2MR: BIP-360 witness v2 program is unambiguous.
+    if is_p2mr(output_script) {
+        return Ok(InputScriptType::P2mr);
+    }
+
+    Err(format!(
+        "cannot classify input: no witness_script, redeem_script, taproot metadata, or p2mr output (output {:x})",
+        output_script
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, strum::IntoStaticStr)]
@@ -1128,4 +1199,151 @@ pub mod test_helpers {
         let expected_psbt_error = PsbtValidationError::InvalidInputs(expected_errors);
         assert_psbt_validation_error_eq(&actual_psbt_error, &expected_psbt_error);
     }, ignore: [BitcoinGold, BitcoinCash, Ecash, Zcash]);
+}
+
+#[cfg(test)]
+mod infer_tests {
+    use super::*;
+    use crate::fixed_script_wallet::wallet_keys::tests::get_test_wallet_keys;
+    use crate::fixed_script_wallet::wallet_scripts::chain_index_path;
+    use crate::fixed_script_wallet::{
+        build_multisig_script_2_of_3, build_p2pk_script, to_pub_triple,
+    };
+    use miniscript::bitcoin::psbt;
+    use miniscript::bitcoin::{Amount, TxOut};
+
+    /// Build a PSBT input with a P2WSH-shaped witness_utxo (output = multisig.to_p2wsh()).
+    fn p2wsh_input(witness_script: ScriptBuf) -> Input {
+        psbt::Input {
+            witness_script: Some(witness_script.clone()),
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(100_000),
+                script_pubkey: witness_script.to_p2wsh(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Build a PSBT input whose witness_utxo output script is `output_script`.
+    fn input_with_output(output_script: ScriptBuf) -> Input {
+        psbt::Input {
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(100_000),
+                script_pubkey: output_script,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn test_pub_triple() -> crate::fixed_script_wallet::PubTriple {
+        let wallet_keys = get_test_wallet_keys("infer_input_script_type");
+        let derived = wallet_keys
+            .derive_path(&chain_index_path(0, 0))
+            .expect("derive path");
+        to_pub_triple(&derived)
+    }
+
+    fn dummy_prevout() -> OutPoint {
+        OutPoint::new(miniscript::bitcoin::hashes::Hash::all_zeros(), 0)
+    }
+
+    #[test]
+    fn tier1_witness_script_2_of_3_no_derivations_is_p2wsh() {
+        let triple = test_pub_triple();
+        let multisig = build_multisig_script_2_of_3(&triple);
+        let input = p2wsh_input(multisig);
+
+        let result = infer_input_script_type(&input, dummy_prevout()).expect("should classify");
+        assert_eq!(result, InputScriptType::P2wsh);
+    }
+
+    #[test]
+    fn tier1_witness_script_plus_redeem_script_is_p2shp2wsh() {
+        let triple = test_pub_triple();
+        let multisig = build_multisig_script_2_of_3(&triple);
+        // P2shP2wsh: witness_script = multisig, redeem_script = P2WSH wrapper,
+        // output = P2SH of the P2WSH wrapper.
+        let redeem_script = multisig.to_p2wsh();
+        let output_script = redeem_script.to_p2sh();
+        let input = psbt::Input {
+            witness_script: Some(multisig),
+            redeem_script: Some(redeem_script),
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(100_000),
+                script_pubkey: output_script,
+            }),
+            ..Default::default()
+        };
+
+        let result = infer_input_script_type(&input, dummy_prevout()).expect("should classify");
+        assert_eq!(result, InputScriptType::P2shP2wsh);
+    }
+
+    #[test]
+    fn tier1_redeem_script_p2pk_no_derivations_is_p2shp2pk() {
+        let triple = test_pub_triple();
+        let p2pk = build_p2pk_script(triple[0]);
+        let output_script = p2pk.to_p2sh();
+        let input = psbt::Input {
+            redeem_script: Some(p2pk),
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(100_000),
+                script_pubkey: output_script,
+            }),
+            ..Default::default()
+        };
+
+        let result = infer_input_script_type(&input, dummy_prevout()).expect("should classify");
+        assert_eq!(result, InputScriptType::P2shP2pk);
+    }
+
+    #[test]
+    fn tier1_redeem_script_2_of_3_no_derivations_is_p2sh() {
+        let triple = test_pub_triple();
+        let multisig = build_multisig_script_2_of_3(&triple);
+        let output_script = multisig.to_p2sh();
+        let input = psbt::Input {
+            redeem_script: Some(multisig),
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(100_000),
+                script_pubkey: output_script,
+            }),
+            ..Default::default()
+        };
+
+        let result = infer_input_script_type(&input, dummy_prevout()).expect("should classify");
+        assert_eq!(result, InputScriptType::P2sh);
+    }
+
+    #[test]
+    fn bare_input_with_only_witness_utxo_errors() {
+        let triple = test_pub_triple();
+        let output_script = build_multisig_script_2_of_3(&triple).to_p2wsh();
+        let input = input_with_output(output_script);
+
+        let result = infer_input_script_type(&input, dummy_prevout());
+        assert!(result.is_err(), "expected error for bare input");
+    }
+
+    #[test]
+    fn witness_script_shape_cross_check_failure_errors() {
+        // witness_script parses as 2-of-3, but output is P2SH (not P2WSH).
+        let triple = test_pub_triple();
+        let multisig = build_multisig_script_2_of_3(&triple);
+        let p2sh_output = multisig.to_p2sh();
+        let input = psbt::Input {
+            witness_script: Some(multisig),
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(100_000),
+                script_pubkey: p2sh_output,
+            }),
+            ..Default::default()
+        };
+
+        let result = infer_input_script_type(&input, dummy_prevout());
+        assert!(
+            result.is_err(),
+            "expected error when shape cross-check fails"
+        );
+    }
 }

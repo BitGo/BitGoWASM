@@ -39,6 +39,7 @@ pub mod networks;
 pub mod utxolib_compat;
 
 pub use base58check::Base58CheckCodec;
+pub(crate) use bech32::is_p2mr;
 pub use bech32::Bech32Codec;
 pub use cashaddr::CashAddrCodec;
 pub use networks::{
