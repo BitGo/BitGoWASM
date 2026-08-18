@@ -84,3 +84,80 @@ export function runDsg(
   const sigs = [0, 1].map((i) => mps.ed25519_dsg_round3_process(dsg2[i ^ 1].msg, dsg2[i].state));
   return [sigs[0], sigs[1]];
 }
+
+const OTHER_IDX = [
+  [1, 2],
+  [0, 2],
+  [0, 1],
+];
+
+/** Run one DKG round0 for all 3 parties. */
+export function runDkgRound0(
+  keypairs: Array<{ privateKey: Uint8Array; publicKey: Uint8Array }>,
+  seeds: [Buffer, Buffer, Buffer],
+  withVrf: boolean,
+): mps.MsgState[] {
+  return [0, 1, 2].map((i) =>
+    mps.ed25519_dkg_round0_process(
+      i,
+      keypairs[i].privateKey,
+      OTHER_IDX[i].map((j) => keypairs[j].publicKey),
+      seeds[i],
+      withVrf,
+    ),
+  );
+}
+
+/** Run the real (non-import) ed25519 DKG (r0→r2) for 3 parties. */
+export function runRootDkg(
+  keypairs: Array<{ privateKey: Uint8Array; publicKey: Uint8Array }>,
+  withVrf = false,
+  seeds?: [Buffer, Buffer, Buffer],
+): mps.Share[] {
+  const dkgSeeds: [Buffer, Buffer, Buffer] = seeds ?? [
+    crypto.randomBytes(32),
+    crypto.randomBytes(32),
+    crypto.randomBytes(32),
+  ];
+
+  const r0 = runDkgRound0(keypairs, dkgSeeds, withVrf);
+
+  const r1 = [0, 1, 2].map((i) =>
+    mps.ed25519_dkg_round1_process(
+      OTHER_IDX[i].map((j) => r0[j].msg),
+      r0[i].state,
+    ),
+  );
+
+  return [0, 1, 2].map((i) =>
+    mps.ed25519_dkg_round2_process(
+      OTHER_IDX[i].map((j) => r1[j].msg),
+      r1[i].state,
+    ),
+  );
+}
+
+/**
+ * Run hard derivation (r0→r2) for 2 of the 3 combined-root holders — a
+ * genuine 2-of-3 threshold ceremony. Round0 bootstraps alone; round1/round2
+ * take a single peer message each.
+ */
+export function runHardDerive(
+  rootShares: mps.Share[],
+  path: string,
+  seeds: [Buffer, Buffer],
+  participants: [number, number] = [0, 2],
+): [mps.Share, mps.Share] {
+  const participatingIds = new Uint8Array(participants);
+
+  const hd0 = participants.map((p, i) =>
+    mps.ed25519_hard_derive_round0_process(rootShares[p].share, Buffer.from(path), seeds[i]),
+  );
+  const hd1 = [0, 1].map((i) =>
+    mps.ed25519_hard_derive_round1_process(hd0[i ^ 1].msg, hd0[i].state),
+  );
+  const derived = [0, 1].map((i) =>
+    mps.ed25519_hard_derive_round2_process(hd1[i ^ 1].msg, hd1[i].state, participatingIds),
+  );
+  return [derived[0], derived[1]];
+}

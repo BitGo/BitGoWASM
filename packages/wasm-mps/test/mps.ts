@@ -2,7 +2,7 @@ import assert from "assert";
 import crypto from "crypto";
 import * as mps from "../js";
 import sodium from "libsodium-wrappers-sumo";
-import { makeImportShares, runDsg, runImportDkg } from "./utils.js";
+import { makeImportShares, runDkgRound0, runDsg, runHardDerive, runRootDkg } from "./utils.js";
 
 await sodium.ready;
 
@@ -40,6 +40,7 @@ describe("mps", function () {
             keypairs[i].privateKey,
             otherIndices[i].map((i) => keypairs[i].publicKey),
             crypto.randomBytes(32),
+            false,
           );
           assert(Buffer.from(result.msg).slice(0, messagePrefix.length).equals(messagePrefix));
           assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
@@ -55,6 +56,7 @@ describe("mps", function () {
             keypairs[i].privateKey,
             otherIndices[i].map((i) => keypairs[i].publicKey),
             crypto.randomBytes(32),
+            false,
           ),
         );
       });
@@ -186,6 +188,50 @@ describe("mps", function () {
         }
       });
 
+      it("with_vrf=false is byte-identical across runs with the same seeds", function () {
+        const seeds: [Buffer, Buffer, Buffer] = [
+          Buffer.alloc(32, 1),
+          Buffer.alloc(32, 2),
+          Buffer.alloc(32, 3),
+        ];
+        const a = runDkgRound0(keypairs, seeds, false);
+        const b = runDkgRound0(keypairs, seeds, false);
+        for (let i = 0; i < 3; i++) {
+          assert(Buffer.from(a[i].msg).equals(Buffer.from(b[i].msg)));
+          assert(Buffer.from(a[i].state).equals(Buffer.from(b[i].state)));
+        }
+        const sharesA = runRootDkg(keypairs, false, seeds);
+        const sharesB = runRootDkg(keypairs, false, seeds);
+        for (let i = 0; i < 3; i++) {
+          assert(Buffer.from(sharesA[i].share).equals(Buffer.from(sharesB[i].share)));
+          assert.equal(sharesA[i].vrf_pk.length, 0);
+        }
+      });
+
+      it("with_vrf=true produces a combined root and agreeing VRF public keys", function () {
+        const shares = runRootDkg(keypairs, true);
+        for (let i = 0; i < 2; i++) {
+          assert(Buffer.from(shares[i].pk).equals(Buffer.from(shares[2].pk)));
+          assert(Buffer.from(shares[i].chaincode).equals(Buffer.from(shares[2].chaincode)));
+          assert(Buffer.from(shares[i].vrf_pk).equals(Buffer.from(shares[2].vrf_pk)));
+          assert(Buffer.from(shares[i].vrf_chaincode).equals(Buffer.from(shares[2].vrf_chaincode)));
+        }
+        assert(shares[0].vrf_pk.length === 32);
+        shouldThrow(() => mps.ed25519_dsg_round0_process(shares[0].share, "m", Buffer.from("x")));
+      });
+
+      it("rejects mixed VRF and non-VRF round1 messages", function () {
+        const seeds: [Buffer, Buffer, Buffer] = [
+          Buffer.alloc(32, 4),
+          Buffer.alloc(32, 5),
+          Buffer.alloc(32, 6),
+        ];
+        const plain = runDkgRound0(keypairs, seeds, false);
+        const vrf = runDkgRound0(keypairs, seeds, true);
+        shouldThrow(() => mps.ed25519_dkg_round1_process([vrf[1].msg, vrf[2].msg], plain[0].state));
+        shouldThrow(() => mps.ed25519_dkg_round1_process([plain[1].msg, vrf[2].msg], vrf[0].state));
+      });
+
       describe("input handling", function () {
         describe("round0_process", function () {
           it("does not panic on bad party size", function () {
@@ -195,6 +241,7 @@ describe("mps", function () {
                 Buffer.alloc(32),
                 [Buffer.alloc(32), Buffer.alloc(32)],
                 crypto.randomBytes(32),
+                false,
               ),
             );
           });
@@ -206,6 +253,7 @@ describe("mps", function () {
                 "encryption key",
                 [Buffer.alloc(32), Buffer.alloc(32)],
                 crypto.randomBytes(32),
+                false,
               ),
             );
             shouldThrow(() =>
@@ -214,6 +262,7 @@ describe("mps", function () {
                 Buffer.alloc(0),
                 [Buffer.alloc(32), Buffer.alloc(32)],
                 crypto.randomBytes(32),
+                false,
               ),
             );
           });
@@ -225,10 +274,11 @@ describe("mps", function () {
                 Buffer.alloc(0),
                 "decryption keys",
                 crypto.randomBytes(32),
+                false,
               ),
             );
             shouldThrow(() =>
-              mps.ed25519_dkg_round0_process(0, Buffer.alloc(0), [], crypto.randomBytes(32)),
+              mps.ed25519_dkg_round0_process(0, Buffer.alloc(0), [], crypto.randomBytes(32), false),
             );
             shouldThrow(() =>
               mps.ed25519_dkg_round0_process(
@@ -236,6 +286,7 @@ describe("mps", function () {
                 Buffer.alloc(0),
                 ["decryption key"],
                 crypto.randomBytes(32),
+                false,
               ),
             );
             shouldThrow(() =>
@@ -244,6 +295,7 @@ describe("mps", function () {
                 Buffer.alloc(0),
                 [Buffer.alloc(0)],
                 crypto.randomBytes(32),
+                false,
               ),
             );
             shouldThrow(() =>
@@ -252,6 +304,7 @@ describe("mps", function () {
                 Buffer.alloc(0),
                 [Buffer.alloc(32), Buffer.alloc(0)],
                 crypto.randomBytes(32),
+                false,
               ),
             );
           });
@@ -263,6 +316,7 @@ describe("mps", function () {
                 Buffer.alloc(0),
                 [Buffer.alloc(32), Buffer.alloc(32)],
                 "seed",
+                false,
               ),
             );
             shouldThrow(() =>
@@ -271,6 +325,7 @@ describe("mps", function () {
                 Buffer.alloc(0),
                 [Buffer.alloc(32), Buffer.alloc(32)],
                 Buffer.alloc(0),
+                false,
               ),
             );
           });
@@ -493,6 +548,7 @@ describe("mps", function () {
             keypairs[i].privateKey,
             otherIndices[i].map((i) => keypairs[i].publicKey),
             crypto.randomBytes(32),
+            false,
           ),
         );
         const results2 = [0, 1, 2].map((i) =>
@@ -1160,6 +1216,117 @@ describe("mps", function () {
             ),
           );
         }
+      });
+    });
+  });
+
+  describe("hard derivation (interleaved VRF DKG + hard derive)", function () {
+    function fromHex(s: string): Uint8Array {
+      return new Uint8Array(Buffer.from(s, "hex"));
+    }
+
+    function signChild(a: mps.Share, b: mps.Share, message: Buffer): Uint8Array {
+      const dsg0 = [a, b].map((s) => mps.ed25519_dsg_round0_process(s.share, "m", message));
+      const dsg1 = [0, 1].map((i) =>
+        mps.ed25519_dsg_round1_process(dsg0[i ^ 1].msg, dsg0[i].state),
+      );
+      const dsg2 = [0, 1].map((i) =>
+        mps.ed25519_dsg_round2_process(dsg1[i ^ 1].msg, dsg1[i].state),
+      );
+      const [sig0, sig1] = [0, 1].map((i) =>
+        mps.ed25519_dsg_round3_process(dsg2[i ^ 1].msg, dsg2[i].state),
+      );
+      assert(Buffer.from(sig0).equals(Buffer.from(sig1)));
+      return sig0;
+    }
+
+    describe("full chain: interleaved DKG -> hard derive -> sign", function () {
+      it("derives a consistent child from every 2-of-3 quorum", function () {
+        const rootShares = runRootDkg(keypairs, true);
+        const path = "m/999999'/0'";
+        const extraPath = "m/44'/0'/0'";
+        const hdSeeds: [Buffer, Buffer] = [Buffer.alloc(32, 10), Buffer.alloc(32, 11)];
+        const quorums: Array<[number, number]> = [
+          [0, 1],
+          [0, 2],
+          [1, 2],
+        ];
+
+        const derivedByQuorum = quorums.map((q) => runHardDerive(rootShares, path, hdSeeds, q));
+        for (const [d0, d1] of derivedByQuorum) {
+          assert(Buffer.from(d0.pk).equals(Buffer.from(d1.pk)));
+          assert(Buffer.from(d0.chaincode).equals(Buffer.from(d1.chaincode)));
+          assert(!Buffer.from(d0.pk).equals(Buffer.from(rootShares[0].pk)));
+        }
+        assert(Buffer.from(derivedByQuorum[0][0].pk).equals(Buffer.from(derivedByQuorum[1][0].pk)));
+        assert(Buffer.from(derivedByQuorum[1][0].pk).equals(Buffer.from(derivedByQuorum[2][0].pk)));
+
+        const extra = runHardDerive(rootShares, extraPath, hdSeeds, [0, 2]);
+        assert(!Buffer.from(extra[0].pk).equals(Buffer.from(derivedByQuorum[0][0].pk)));
+
+        const message = Buffer.from("hard-derive harness test message");
+        const [derived0, derived2] = derivedByQuorum[1];
+        const sig = signChild(derived0, derived2, message);
+        assert(
+          sodium.crypto_sign_verify_detached(Buffer.from(sig), message, Buffer.from(derived0.pk)),
+        );
+      });
+    });
+
+    describe("golden vector (cross-implementation agreement with sl-mps)", function () {
+      it("matches the derived pk/chaincode produced by the Rust (sl-mps) implementation", function () {
+        // Fixture bytes captured from one run of sl-mps's
+        // `vrf_dkg_hard_derive_and_sign_ed25519` test (root + VRF Keyshares
+        // for parties 0/1, bincode-encoded) and duplicated verbatim in
+        // hsm-firmware's `src/sl-mps/src/lib.rs` (`hard_derive_matches_golden_vector`).
+        const root0 = fromHex(
+          "020300510ba2d9807d478162c122ee6bd93fbf01c162554461bef21b57e94d7bc02903fed89f7b5f76a1f9956d12f1dca812b13cef803e7d75e3f70c1a12e65b26e7b2602fef6c18da4b231dab4f3aa1bb8548285f2de1f6ef1919840988504c60a21979795dc2091feed51e7a4fe3a23f7efb45c7565310180f5f5a05b6b72f960c729442307047067dfd9252c2c6696463253189b8052e393d67f1a49d92682da4f63e11b9aedf8726986b38496701900889d1f6390a6e2ce3d9f5ff109f5ae08f89b500c81e70b32e37854ef128d34706f53768bd106c2166b50b5f86ae1dc366a354f1ba9b44929c3b69660732137fc02757d6bc86e4356865a22324995ea65590fe8b",
+        );
+        const root1 = fromHex(
+          "02030179256ee54665afb0cac79b0cc71c55997be50b6ee51e08a20b1f7d3e26d05a0afed89f7b5f76a1f9956d12f1dca812b13cef803e7d75e3f70c1a12e65b26e7b2602fef6c18da4b231dab4f3aa1bb8548285f2de1f6ef1919840988504c60a21979795dc2091feed51e7a4fe3a23f7efb45c7565310180f5f5a05b6b72f960c729442307047067dfd9252c2c6696463253189b8052e393d67f1a49d92682da4f63e11b9aedf8726986b38496701900889d1f6390a6e2ce3d9f5ff109f5ae08f89b500c81e70b32e37854ef128d34706f53768bd106c2166b50b5f86ae1dc366a354f1ba9b44929c3b69660732137fc02757d6bc86e4356865a22324995ea65590fe8b",
+        );
+        const vrf0 = fromHex(
+          "0203007e9d1f3c4cab22497d43d2b42db7e6dbd8e5e5832fbc4591c1c660194ca00d07703059881be18310acf8d3c4245745bf920cc1d2a4366000e6574b04ecd7f119601cceadb743fc50a88c3cbd60449f2c76cf4a72f15835d87a9c447ad58523f95824b902529eee1abb183e328a2d79473b3216649c6cd28c6d5e67f0cb74db8828fcbed41bf2cd2f83ef58bf05218e70da4dbdfeb3f45bb801c981f95e1688083a5b7db6feeb887fb76524245d34fac53acb5d0be01159faaa1e56de48fd68af3500c43dd8d30860e7468984f03fe5722ec702e34ebc4bc449195f999cb26949eb4ffd52fd5af3fa730c78706c7943cf409e526b46adf46914e0188948acf934eea0",
+        );
+        const vrf1 = fromHex(
+          "020301e50d4d81352589c35ca45cc2605f20ba51e089aa0fc2210e0ae29dc98124e406703059881be18310acf8d3c4245745bf920cc1d2a4366000e6574b04ecd7f119601cceadb743fc50a88c3cbd60449f2c76cf4a72f15835d87a9c447ad58523f95824b902529eee1abb183e328a2d79473b3216649c6cd28c6d5e67f0cb74db8828fcbed41bf2cd2f83ef58bf05218e70da4dbdfeb3f45bb801c981f95e1688083a5b7db6feeb887fb76524245d34fac53acb5d0be01159faaa1e56de48fd68af3500c43dd8d30860e7468984f03fe5722ec702e34ebc4bc449195f999cb26949eb4ffd52fd5af3fa730c78706c7943cf409e526b46adf46914e0188948acf934eea0",
+        );
+
+        const expectedPk = fromHex(
+          "c11014176342e28c839709e764f57df045332e518e9fef163466be19b0df8892",
+        );
+        const expectedChaincode = fromHex(
+          "709028c8a5d46c58a8c42a527201c5d6c4964002a21003620c8efffebb9ac7bc",
+        );
+
+        const path = Buffer.from("m/999999'/0'");
+        const seed0 = Buffer.alloc(32, 20);
+        const seed1 = Buffer.alloc(32, 21);
+        const participatingIds = new Uint8Array([0, 1]);
+        const doc0 = mps.ed25519_encode_root_document(root0, vrf0);
+        const doc1 = mps.ed25519_encode_root_document(root1, vrf1);
+
+        const r0 = [
+          mps.ed25519_hard_derive_round0_process(doc0, path, seed0),
+          mps.ed25519_hard_derive_round0_process(doc1, path, seed1),
+        ];
+        const r1 = [0, 1].map((i) =>
+          mps.ed25519_hard_derive_round1_process(r0[i ^ 1].msg, r0[i].state),
+        );
+        const derived0 = mps.ed25519_hard_derive_round2_process(
+          r1[1].msg,
+          r1[0].state,
+          participatingIds,
+        );
+
+        assert(
+          Buffer.from(derived0.pk).equals(Buffer.from(expectedPk)),
+          "derived pk must match the golden vector produced by sl-mps",
+        );
+        assert(
+          Buffer.from(derived0.chaincode).equals(Buffer.from(expectedChaincode)),
+          "derived chaincode must match the golden vector produced by sl-mps",
+        );
       });
     });
   });

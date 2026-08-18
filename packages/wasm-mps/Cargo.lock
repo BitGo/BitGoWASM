@@ -885,6 +885,7 @@ dependencies = [
  "signature",
  "sl-mpc-derive",
  "sl-mpc-mate",
+ "sl-mpc-vrf",
  "thiserror 1.0.69",
  "zeroize",
 ]
@@ -1339,11 +1340,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "sl-mpc-vrf"
+version = "0.1.0-pre.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78aa6ea9cad657a879d3cc8d11e1df100c5c53b764902ed7139fbae32425b72e"
+dependencies = [
+ "crypto-bigint",
+ "curve25519-dalek",
+ "elliptic-curve",
+ "ff",
+ "rand",
+ "rand_chacha",
+ "serde",
+ "serde_bytes",
+ "sha2",
+ "sl-mpc-derive",
+ "sl-mpc-mate",
+ "sl-transcript",
+ "thiserror 1.0.69",
+ "zeroize",
+]
+
+[[package]]
 name = "sl-secret-sharing"
 version = "0.1.0-pre.1"
 source = "git+https://github.com/silence-laboratories/garbling?rev=268a8499bca4f1a1eea532117430fd6fd55310c8#268a8499bca4f1a1eea532117430fd6fd55310c8"
 dependencies = [
  "ff",
+]
+
+[[package]]
+name = "sl-transcript"
+version = "0.1.0-pre.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e33f0e5dbfa7ca28f40e1a16bb2763e468d10e6a3716f24d2ecf498d262832e3"
+dependencies = [
+ "elliptic-curve",
 ]
 
 [[package]]

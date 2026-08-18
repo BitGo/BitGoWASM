@@ -19,8 +19,16 @@ mod mps {
             PartialSign, SignError, SignReady, SignerParty, R0 as DsgR0, R1 as DsgR1, R2 as DsgR2,
         },
     };
+    use multi_party_schnorr::{
+        derive::{with_ristretto_vrf_ed25519, HardDerivePartyEd25519, MpcDeriveInitEd25519},
+        vrf::{
+            dkg::Party as VrfParty, keyshare_after_hard_derive, HardDeriveMsg0, HardDeriveMsg1,
+            HardDeriveR0, HardDeriveR1, HardDeriveR2, VrfDkgParty, VrfDkgR0, VrfDkgR1, VrfDkgR2,
+            VrfKeygenMsg1, VrfKeygenMsg2, VrfPoint,
+        },
+    };
     use rand::Rng;
-    use serde::{Deserialize, Serialize};
+    use serde::{de::DeserializeOwned, Deserialize, Serialize};
     use std::{
         io::{Cursor, Read},
         sync::Arc,
@@ -77,6 +85,31 @@ mod mps {
         pub party_id: u8,
         pub msg: KeygenMsg2<G>,
         pub party: KeygenParty<DkgR2, G>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct VrfDkgStateR1 {
+        party_id: u8,
+        msg: VrfKeygenMsg1,
+        party: VrfDkgParty<VrfDkgR1>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct VrfDkgStateR2 {
+        party_id: u8,
+        msg: VrfKeygenMsg2,
+        party: VrfDkgParty<VrfDkgR2>,
+    }
+
+    pub const ROOT_DOCUMENT_VERSION: u8 = 1;
+
+    /// Combined root document produced by Ed25519 DKG when `with_vrf` is true.
+    /// Ordinary DKG (`with_vrf=false`) still encodes a bare `Keyshare<EdwardsPoint>`.
+    #[derive(Serialize, Deserialize)]
+    pub struct RootDocument {
+        pub version: u8,
+        pub signing: Keyshare<EdwardsPoint>,
+        pub vrf: Keyshare<VrfPoint>,
     }
 
     /// Internal DSG state used for round 1.
@@ -137,6 +170,8 @@ mod mps {
         pub share: Vec<u8>,
         pub pk: [u8; 32],
         pub chaincode: [u8; 32],
+        pub vrf_pk: Option<[u8; 32]>,
+        pub vrf_chaincode: Option<[u8; 32]>,
     }
 
     pub struct MsgDerivationInit {
@@ -205,6 +240,85 @@ mod mps {
         result
     }
 
+    fn encode_head_tail<H: Serialize, T: Serialize>(
+        head: &H,
+        tail: Option<&T>,
+    ) -> Result<Vec<u8>, MpsError> {
+        let mut buf = bincode::serde::encode_to_vec(head, bincode::config::standard())
+            .map_err(|_| MpsError::SerializationError)?;
+        if let Some(t) = tail {
+            buf.extend(
+                bincode::serde::encode_to_vec(t, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            );
+        }
+        Ok(buf)
+    }
+
+    fn decode_head_tail<H: DeserializeOwned, T: DeserializeOwned>(
+        data: &[u8],
+    ) -> Result<(H, Option<T>), MpsError> {
+        let (head, n) = bincode::serde::decode_from_slice(data, bincode::config::standard())
+            .map_err(|_| MpsError::DeserializationError)?;
+        let rest = &data[n..];
+        if rest.is_empty() {
+            return Ok((head, None));
+        }
+        let (tail, n2) = bincode::serde::decode_from_slice(rest, bincode::config::standard())
+            .map_err(|_| MpsError::DeserializationError)?;
+        if n2 != rest.len() {
+            return Err(MpsError::DeserializationError);
+        }
+        Ok((head, Some(tail)))
+    }
+
+    pub fn encode_root_document_from_bytes(
+        signing_bytes: &[u8],
+        vrf_bytes: &[u8],
+    ) -> Result<Vec<u8>, MpsError> {
+        let (signing, n): (Keyshare<EdwardsPoint>, usize) =
+            bincode::serde::decode_from_slice(signing_bytes, bincode::config::standard())
+                .map_err(|_| MpsError::DeserializationError)?;
+        if n != signing_bytes.len() {
+            return Err(MpsError::DeserializationError);
+        }
+        let (vrf, n): (Keyshare<VrfPoint>, usize) =
+            bincode::serde::decode_from_slice(vrf_bytes, bincode::config::standard())
+                .map_err(|_| MpsError::DeserializationError)?;
+        if n != vrf_bytes.len() {
+            return Err(MpsError::DeserializationError);
+        }
+        encode_root_document(&signing, &vrf)
+    }
+
+    pub fn encode_root_document(
+        signing: &Keyshare<EdwardsPoint>,
+        vrf: &Keyshare<VrfPoint>,
+    ) -> Result<Vec<u8>, MpsError> {
+        bincode::serde::encode_to_vec(
+            &RootDocument {
+                version: ROOT_DOCUMENT_VERSION,
+                signing: signing.clone(),
+                vrf: vrf.clone(),
+            },
+            bincode::config::standard(),
+        )
+        .map_err(|_| MpsError::SerializationError)
+    }
+
+    pub fn decode_root_document(data: &[u8]) -> Result<RootDocument, MpsError> {
+        let (doc, n): (RootDocument, usize) =
+            bincode::serde::decode_from_slice(data, bincode::config::standard())
+                .map_err(|_| MpsError::DeserializationError)?;
+        if n != data.len() {
+            return Err(MpsError::DeserializationError);
+        }
+        if doc.version != ROOT_DOCUMENT_VERSION {
+            return Err(MpsError::InvalidInput);
+        }
+        Ok(doc)
+    }
+
     /// Serialize a message pool as a concatenation of individually-encoded messages.
     /// This format supports simple byte concatenation to merge pools.
     pub fn serialize_pool(prefix: &str, msgs: &[DrvMessage]) -> Result<Vec<u8>, MpsError> {
@@ -244,6 +358,7 @@ mod mps {
         decryption_key: &[u8; 32],
         encryption_keys: &[Vec<u8>; 2],
         seed: &[u8; 32],
+        with_vrf: bool,
     ) -> Result<MsgState, MpsError>
     where
         G: GroupElem,
@@ -300,11 +415,24 @@ mod mps {
             party: p1,
         };
 
+        let vrf_state = if with_vrf {
+            let mut rng = rand::thread_rng();
+            let vrf_party = VrfParty::new(3, 2, party_id);
+            let vp0 = VrfDkgParty::<VrfDkgR0>::new(vrf_party, *seed, &mut rng)
+                .map_err(|_| MpsError::ProtocolError)?;
+            let (vp1, vrf_msg1) = vp0.process(()).map_err(|_| MpsError::ProtocolError)?;
+            Some(VrfDkgStateR1 {
+                party_id,
+                msg: vrf_msg1,
+                party: vp1,
+            })
+        } else {
+            None
+        };
+
         Ok(MsgState {
-            msg: bincode::serde::encode_to_vec(msg1, bincode::config::standard())
-                .map_err(|_| MpsError::SerializationError)?,
-            state: bincode::serde::encode_to_vec(&state, bincode::config::standard())
-                .map_err(|_| MpsError::SerializationError)?,
+            msg: encode_head_tail(&state.msg, vrf_state.as_ref().map(|s| &s.msg))?,
+            state: encode_head_tail(&state, vrf_state.as_ref())?,
         })
     }
 
@@ -316,35 +444,39 @@ mod mps {
         G: GroupElem,
         G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
     {
-        // Parse state
-        let state: DkgStateR1<G> =
-            bincode::serde::decode_from_slice(state, bincode::config::standard())
-                .map(|(v, _)| v)
-                .map_err(|_| MpsError::DeserializationError)?;
+        let (state, vrf_state): (DkgStateR1<G>, Option<VrfDkgStateR1>) = decode_head_tail(state)?;
 
-        // Parse messages
-        let i0_msg1: KeygenMsg1 = bincode::serde::decode_from_slice(
-            round1_messages[0].as_slice(),
-            bincode::config::standard(),
-        )
-        .map(|(v, _)| v)
-        .map_err(|_| MpsError::DeserializationError)?;
-        let i1_msg1: KeygenMsg1 = bincode::serde::decode_from_slice(
-            round1_messages[1].as_slice(),
-            bincode::config::standard(),
-        )
-        .map(|(v, _)| v)
-        .map_err(|_| MpsError::DeserializationError)?;
-        let msgs = vec![i0_msg1, i1_msg1, state.msg];
+        let (i0_msg1, i0_vrf): (KeygenMsg1, Option<VrfKeygenMsg1>) =
+            decode_head_tail(round1_messages[0].as_slice())?;
+        let (i1_msg1, i1_vrf): (KeygenMsg1, Option<VrfKeygenMsg1>) =
+            decode_head_tail(round1_messages[1].as_slice())?;
 
-        // Process all round0 messages together
+        let with_vrf = vrf_state.is_some();
+        if with_vrf != i0_vrf.is_some() || with_vrf != i1_vrf.is_some() {
+            return Err(MpsError::InvalidInput);
+        }
+
         let party_id = state.party_id;
+        let msgs = vec![i0_msg1, i1_msg1, state.msg];
         let (p2, msg2) = state
             .party
             .process(msgs)
             .map_err(|_| MpsError::ProtocolError)?;
 
-        // Create the state for storage between rounds
+        let next_vrf = if let Some(vrf_state) = vrf_state {
+            let (vp2, vrf_msg2) = vrf_state
+                .party
+                .process(vec![i0_vrf.unwrap(), i1_vrf.unwrap(), vrf_state.msg])
+                .map_err(|_| MpsError::ProtocolError)?;
+            Some(VrfDkgStateR2 {
+                party_id,
+                msg: vrf_msg2,
+                party: vp2,
+            })
+        } else {
+            None
+        };
+
         let state = DkgStateR2 {
             party_id,
             msg: msg2.clone(),
@@ -352,50 +484,51 @@ mod mps {
         };
 
         Ok(MsgState {
-            msg: bincode::serde::encode_to_vec(&msg2, bincode::config::standard())
-                .map_err(|_| MpsError::SerializationError)?,
-            state: bincode::serde::encode_to_vec(&state, bincode::config::standard())
-                .map_err(|_| MpsError::SerializationError)?,
+            msg: encode_head_tail(&msg2, next_vrf.as_ref().map(|s| &s.msg))?,
+            state: encode_head_tail(&state, next_vrf.as_ref())?,
         })
     }
+
+    type DkgRound2Result<G> = (Keyshare<G>, u8, Option<Keyshare<VrfPoint>>);
 
     fn internal_dkg_round2_process<G>(
         round2_messages: &[Vec<u8>; 2],
         state: &[u8],
-    ) -> Result<(Keyshare<G>, u8), MpsError>
+    ) -> Result<DkgRound2Result<G>, MpsError>
     where
         G: GroupElem,
         G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
     {
-        // Deserialize round2 messages from other parties
-        let i0_msg2: KeygenMsg2<G> = bincode::serde::decode_from_slice(
-            round2_messages[0].as_slice(),
-            bincode::config::standard(),
-        )
-        .map(|(v, _)| v)
-        .map_err(|_| MpsError::DeserializationError)?;
-        let i1_msg2: KeygenMsg2<G> = bincode::serde::decode_from_slice(
-            round2_messages[1].as_slice(),
-            bincode::config::standard(),
-        )
-        .map(|(v, _)| v)
-        .map_err(|_| MpsError::DeserializationError)?;
+        let (i0_msg2, i0_vrf): (KeygenMsg2<G>, Option<VrfKeygenMsg2>) =
+            decode_head_tail(round2_messages[0].as_slice())?;
+        let (i1_msg2, i1_vrf): (KeygenMsg2<G>, Option<VrfKeygenMsg2>) =
+            decode_head_tail(round2_messages[1].as_slice())?;
 
-        // Deserialize state
-        let state: DkgStateR2<G> =
-            bincode::serde::decode_from_slice(state, bincode::config::standard())
-                .map(|(v, _)| v)
-                .map_err(|_| MpsError::DeserializationError)?;
+        let (state, vrf_state): (DkgStateR2<G>, Option<VrfDkgStateR2>) = decode_head_tail(state)?;
+
+        let with_vrf = vrf_state.is_some();
+        if with_vrf != i0_vrf.is_some() || with_vrf != i1_vrf.is_some() {
+            return Err(MpsError::InvalidInput);
+        }
 
         let party_id = state.party_id;
-
-        // Generate share
         let share = state
             .party
             .process(vec![i0_msg2, i1_msg2, state.msg])
             .map_err(|_| MpsError::ProtocolError)?;
 
-        Ok((share, party_id))
+        let vrf_share = if let Some(vrf_state) = vrf_state {
+            Some(
+                vrf_state
+                    .party
+                    .process(vec![i0_vrf.unwrap(), i1_vrf.unwrap(), vrf_state.msg])
+                    .map_err(|_| MpsError::ProtocolError)?,
+            )
+        } else {
+            None
+        };
+
+        Ok((share, party_id, vrf_share))
     }
 
     fn internal_dsg_round0_process<G>(p0: SignerParty<DsgR0, G>) -> Result<MsgState, MpsError>
@@ -540,12 +673,14 @@ mod mps {
         decryption_key: &[u8; 32],
         encryption_keys: &[Vec<u8>; 2],
         seed: &[u8; 32],
+        with_vrf: bool,
     ) -> Result<MsgState, MpsError> {
         let result = internal_dkg_round0_process::<EdwardsPoint>(
             party_id,
             decryption_key,
             encryption_keys,
             seed,
+            with_vrf,
         )?;
         Ok(MsgState {
             msg: add_prefix("mps-ed25519-dkg-round1-message$", &result.msg),
@@ -698,12 +833,28 @@ mod mps {
         let i0_msg2 = rem_prefix("mps-ed25519-dkg-round2-message$", &round2_messages[0])?;
         let i1_msg2 = rem_prefix("mps-ed25519-dkg-round2-message$", &round2_messages[1])?;
         let state = rem_prefix("mps-ed25519-dkg-round2-state$", state)?;
-        let (share, _) = internal_dkg_round2_process::<EdwardsPoint>(&[i0_msg2, i1_msg2], &state)?;
+        let (share, _, vrf_share) =
+            internal_dkg_round2_process::<EdwardsPoint>(&[i0_msg2, i1_msg2], &state)?;
+        let (share_bytes, vrf_pk, vrf_chaincode) = if let Some(vrf) = vrf_share {
+            (
+                encode_root_document(&share, &vrf)?,
+                Some(vrf.public_key.compress().to_bytes()),
+                Some(vrf.root_chain_code),
+            )
+        } else {
+            (
+                bincode::serde::encode_to_vec(&share, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+                None,
+                None,
+            )
+        };
         Ok(Share {
-            share: bincode::serde::encode_to_vec(&share, bincode::config::standard())
-                .map_err(|_| MpsError::SerializationError)?,
+            share: share_bytes,
             pk: share.public_key.compress().to_bytes(),
             chaincode: share.root_chain_code,
+            vrf_pk,
+            vrf_chaincode,
         })
     }
 
@@ -793,6 +944,122 @@ mod mps {
         Ok(sig)
     }
 
+    // Hard derive (ed25519) — consumes a combined RootDocument (signing + VRF
+    // shares from with_vrf DKG). 2-of-3 threshold; round0 bootstraps alone,
+    // round1/round2 take a single peer message each. `path` is opaque bytes.
+
+    #[derive(Serialize, Deserialize)]
+    struct HardDeriveStateR1Ed25519 {
+        msg: HardDeriveMsg0,
+        party: HardDerivePartyEd25519<HardDeriveR1>,
+        init: MpcDeriveInitEd25519,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct HardDeriveStateR2Ed25519 {
+        msg: HardDeriveMsg1,
+        party: HardDerivePartyEd25519<HardDeriveR2>,
+        init: MpcDeriveInitEd25519,
+    }
+
+    pub fn ed25519_hard_derive_round0_process(
+        root_share: &[u8],
+        path: &[u8],
+        _seed: &[u8],
+    ) -> Result<MsgState, MpsError> {
+        let doc = decode_root_document(root_share)?;
+        let init: MpcDeriveInitEd25519 = with_ristretto_vrf_ed25519(doc.signing, doc.vrf);
+        let mut rng = rand::thread_rng();
+        let p0 = HardDerivePartyEd25519::<HardDeriveR0>::new(init.clone(), path.to_vec(), &mut rng)
+            .map_err(|_| MpsError::ProtocolError)?;
+        let (p1, msg0) = p0.process(()).map_err(|_| MpsError::ProtocolError)?;
+        let state = HardDeriveStateR1Ed25519 {
+            msg: msg0.clone(),
+            party: p1,
+            init,
+        };
+        Ok(MsgState {
+            msg: add_prefix(
+                "mps-ed25519-hard-derive-round1-message$",
+                &bincode::serde::encode_to_vec(&msg0, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            ),
+            state: add_prefix(
+                "mps-ed25519-hard-derive-round1-state$",
+                &bincode::serde::encode_to_vec(&state, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            ),
+        })
+    }
+
+    pub fn ed25519_hard_derive_round1_process(
+        round1_message: &[u8],
+        state: &[u8],
+    ) -> Result<MsgState, MpsError> {
+        let state = rem_prefix("mps-ed25519-hard-derive-round1-state$", state)?;
+        let state: HardDeriveStateR1Ed25519 =
+            bincode::serde::decode_from_slice(&state, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
+        let round1_message = rem_prefix("mps-ed25519-hard-derive-round1-message$", round1_message)?;
+        let peer: HardDeriveMsg0 =
+            bincode::serde::decode_from_slice(&round1_message, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
+        let (p2, msg1) = state
+            .party
+            .process(vec![peer, state.msg])
+            .map_err(|_| MpsError::ProtocolError)?;
+        let new_state = HardDeriveStateR2Ed25519 {
+            msg: msg1.clone(),
+            party: p2,
+            init: state.init,
+        };
+        Ok(MsgState {
+            msg: add_prefix(
+                "mps-ed25519-hard-derive-round2-message$",
+                &bincode::serde::encode_to_vec(&msg1, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            ),
+            state: add_prefix(
+                "mps-ed25519-hard-derive-round2-state$",
+                &bincode::serde::encode_to_vec(&new_state, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            ),
+        })
+    }
+
+    pub fn ed25519_hard_derive_round2_process(
+        round2_message: &[u8],
+        state: &[u8],
+        participating_party_ids: &[u8; 2],
+    ) -> Result<Share, MpsError> {
+        let state = rem_prefix("mps-ed25519-hard-derive-round2-state$", state)?;
+        let state: HardDeriveStateR2Ed25519 =
+            bincode::serde::decode_from_slice(&state, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
+        let round2_message = rem_prefix("mps-ed25519-hard-derive-round2-message$", round2_message)?;
+        let peer: HardDeriveMsg1 =
+            bincode::serde::decode_from_slice(&round2_message, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
+        let output = state
+            .party
+            .process(vec![peer, state.msg])
+            .map_err(|_| MpsError::ProtocolError)?;
+        let derived: Keyshare<EdwardsPoint> =
+            keyshare_after_hard_derive(&state.init, &output, participating_party_ids.as_slice());
+        Ok(Share {
+            share: bincode::serde::encode_to_vec(&derived, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+            pk: derived.public_key.compress().to_bytes(),
+            chaincode: derived.root_chain_code,
+            vrf_pk: None,
+            vrf_chaincode: None,
+        })
+    }
+
     /// Process round 0 of RedPallas DKG (same flow as ed25519).
     pub fn redpallas_dkg_round0_process(
         party_id: u8,
@@ -805,6 +1072,7 @@ mod mps {
             decryption_key,
             encryption_keys,
             seed,
+            false,
         )?;
         Ok(MsgState {
             msg: add_prefix("mps-redpallas-dkg-round1-message$", &result.msg),
@@ -836,7 +1104,7 @@ mod mps {
         let i0_msg2 = rem_prefix("mps-redpallas-dkg-round2-message$", &round2_messages[0])?;
         let i1_msg2 = rem_prefix("mps-redpallas-dkg-round2-message$", &round2_messages[1])?;
         let state = rem_prefix("mps-redpallas-dkg-round2-state$", state)?;
-        let (share, party_id) =
+        let (share, party_id, _) =
             internal_dkg_round2_process::<RedPallasPoint>(&[i0_msg2, i1_msg2], &state)?;
         let pk = RedPallasPointBytes::from(share.public_key).0;
         let share_bytes = bincode::serde::encode_to_vec(&share, bincode::config::standard())
@@ -1071,6 +1339,7 @@ mod tests {
                 pub_keys[2].1.to_bytes().to_vec(),
             ],
             &seeds[0],
+            false,
         )
         .unwrap();
         let p1_0 = mps::ed25519_dkg_round0_process(
@@ -1081,6 +1350,7 @@ mod tests {
                 pub_keys[2].1.to_bytes().to_vec(),
             ],
             &seeds[1],
+            false,
         )
         .unwrap();
         let p2_0 = mps::ed25519_dkg_round0_process(
@@ -1091,6 +1361,7 @@ mod tests {
                 pub_keys[1].1.to_bytes().to_vec(),
             ],
             &seeds[2],
+            false,
         )
         .unwrap();
 
@@ -1258,6 +1529,7 @@ mod tests {
                 pub_keys[2].1.to_bytes().to_vec(),
             ],
             &seeds[0],
+            false,
         )
         .unwrap();
         let dkg_p1_0 = mps::ed25519_dkg_round0_process(
@@ -1268,6 +1540,7 @@ mod tests {
                 pub_keys[2].1.to_bytes().to_vec(),
             ],
             &seeds[1],
+            false,
         )
         .unwrap();
         let dkg_p2_0 = mps::ed25519_dkg_round0_process(
@@ -1278,6 +1551,7 @@ mod tests {
                 pub_keys[1].1.to_bytes().to_vec(),
             ],
             &seeds[2],
+            false,
         )
         .unwrap();
 
@@ -1500,6 +1774,113 @@ mod tests {
         rk.verify(msg, &sig)
             .expect("signature must verify against rk");
     }
+
+    #[test]
+    fn test_root_document_roundtrip_and_bare_keyshare() {
+        use multi_party_schnorr::{curve25519_dalek::EdwardsPoint, keygen::Keyshare};
+
+        let mut prv_keys = Vec::new();
+        let mut pub_keys = Vec::new();
+        let mut seeds = Vec::new();
+        for i in 0..3 {
+            let secret_key = crypto_box::SecretKey::generate(&mut rand::thread_rng());
+            let public_key = secret_key.public_key();
+            prv_keys.push(secret_key);
+            pub_keys.push((i, public_key));
+            let seed: [u8; 32] = rand::thread_rng().gen();
+            seeds.push(seed);
+        }
+        let other = [[1usize, 2], [0, 2], [0, 1]];
+
+        let r0: Vec<_> = (0..3)
+            .map(|i| {
+                mps::ed25519_dkg_round0_process(
+                    i as u8,
+                    &prv_keys[i].to_bytes(),
+                    &[
+                        pub_keys[other[i][0]].1.to_bytes().to_vec(),
+                        pub_keys[other[i][1]].1.to_bytes().to_vec(),
+                    ],
+                    &seeds[i],
+                    false,
+                )
+                .unwrap()
+            })
+            .collect();
+        let r1: Vec<_> = (0..3)
+            .map(|i| {
+                mps::ed25519_dkg_round1_process(
+                    &[r0[other[i][0]].msg.clone(), r0[other[i][1]].msg.clone()],
+                    r0[i].state.as_slice(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let bare = mps::ed25519_dkg_round2_process(
+            &[r1[other[0][0]].msg.clone(), r1[other[0][1]].msg.clone()],
+            r1[0].state.as_slice(),
+        )
+        .unwrap();
+
+        assert!(bare.vrf_pk.is_none());
+        let (keyshare, n): (Keyshare<EdwardsPoint>, usize) =
+            bincode::serde::decode_from_slice(&bare.share, bincode::config::standard()).unwrap();
+        assert_eq!(n, bare.share.len());
+        assert!(mps::decode_root_document(&bare.share).is_err());
+        assert_eq!(keyshare.public_key.compress().to_bytes(), bare.pk);
+
+        let r0v: Vec<_> = (0..3)
+            .map(|i| {
+                mps::ed25519_dkg_round0_process(
+                    i as u8,
+                    &prv_keys[i].to_bytes(),
+                    &[
+                        pub_keys[other[i][0]].1.to_bytes().to_vec(),
+                        pub_keys[other[i][1]].1.to_bytes().to_vec(),
+                    ],
+                    &seeds[i],
+                    true,
+                )
+                .unwrap()
+            })
+            .collect();
+        let r1v: Vec<_> = (0..3)
+            .map(|i| {
+                mps::ed25519_dkg_round1_process(
+                    &[r0v[other[i][0]].msg.clone(), r0v[other[i][1]].msg.clone()],
+                    r0v[i].state.as_slice(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let shares: Vec<_> = (0..3)
+            .map(|i| {
+                mps::ed25519_dkg_round2_process(
+                    &[r1v[other[i][0]].msg.clone(), r1v[other[i][1]].msg.clone()],
+                    r1v[i].state.as_slice(),
+                )
+                .unwrap()
+            })
+            .collect();
+
+        assert_eq!(shares[0].pk, shares[1].pk);
+        assert_eq!(shares[1].pk, shares[2].pk);
+        assert_eq!(shares[0].chaincode, shares[2].chaincode);
+        assert_eq!(shares[0].vrf_pk, shares[1].vrf_pk);
+        assert_eq!(shares[1].vrf_pk, shares[2].vrf_pk);
+        assert!(shares[0].vrf_pk.is_some());
+
+        let doc = mps::decode_root_document(&shares[0].share).unwrap();
+        assert_eq!(doc.version, mps::ROOT_DOCUMENT_VERSION);
+        let encoded = mps::encode_root_document(&doc.signing, &doc.vrf).unwrap();
+        assert_eq!(encoded, shares[0].share);
+
+        assert!(mps::ed25519_dkg_round1_process(
+            &[r0v[1].msg.clone(), r0[2].msg.clone()],
+            r0v[0].state.as_slice(),
+        )
+        .is_err());
+    }
 }
 
 use js_sys::Array;
@@ -1529,6 +1910,8 @@ pub struct Share {
     share: Vec<u8>,
     pk: Vec<u8>,
     chaincode: Vec<u8>,
+    vrf_pk: Vec<u8>,
+    vrf_chaincode: Vec<u8>,
 }
 
 #[wasm_bindgen]
@@ -1546,6 +1929,26 @@ impl Share {
     #[wasm_bindgen(getter)]
     pub fn chaincode(&self) -> Vec<u8> {
         self.chaincode.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn vrf_pk(&self) -> Vec<u8> {
+        self.vrf_pk.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn vrf_chaincode(&self) -> Vec<u8> {
+        self.vrf_chaincode.clone()
+    }
+}
+
+fn share_from_mps(result: mps::Share) -> Share {
+    Share {
+        share: result.share,
+        pk: result.pk.to_vec(),
+        chaincode: result.chaincode.to_vec(),
+        vrf_pk: result.vrf_pk.map(|p| p.to_vec()).unwrap_or_default(),
+        vrf_chaincode: result.vrf_chaincode.map(|p| p.to_vec()).unwrap_or_default(),
     }
 }
 
@@ -1660,13 +2063,19 @@ pub fn ed25519_dkg_round0_process(
     decryption_key: &[u8],
     encryption_keys: Array,
     seed: &[u8],
+    with_vrf: bool,
 ) -> Result<MsgState, String> {
     let decryption_key_32: [u8; 32] = decryption_key.try_into().map_err(|_| "Invalid input")?;
     let seed_32: [u8; 32] = seed.try_into().map_err(|_| "Invalid input")?;
     let [ek0, ek1] = js_array_to_2_bufs(&encryption_keys)?;
-    let result =
-        mps::ed25519_dkg_round0_process(party_id, &decryption_key_32, &[ek0, ek1], &seed_32)
-            .map_err(|e| e.to_string())?;
+    let result = mps::ed25519_dkg_round0_process(
+        party_id,
+        &decryption_key_32,
+        &[ek0, ek1],
+        &seed_32,
+        with_vrf,
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(MsgState {
         msg: result.msg,
@@ -1726,12 +2135,7 @@ pub fn ed25519_dkg_round1_process(
 pub fn ed25519_dkg_round2_process(round2_messages: Array, state: &[u8]) -> Result<Share, String> {
     let [m0, m1] = js_array_to_2_bufs(&round2_messages)?;
     let result = mps::ed25519_dkg_round2_process(&[m0, m1], state).map_err(|e| e.to_string())?;
-
-    Ok(Share {
-        share: result.share,
-        pk: result.pk.to_vec(),
-        chaincode: result.chaincode.to_vec(),
-    })
+    Ok(share_from_mps(result))
 }
 
 #[wasm_bindgen]
@@ -1777,6 +2181,52 @@ pub fn ed25519_dsg_round3_process(round3_message: &[u8], state: &[u8]) -> Result
         mps::ed25519_dsg_round3_process(round3_message, state).map_err(|e| e.to_string())?;
 
     Ok(result.to_vec())
+}
+
+#[wasm_bindgen]
+pub fn ed25519_encode_root_document(signing: &[u8], vrf: &[u8]) -> Result<Vec<u8>, String> {
+    mps::encode_root_document_from_bytes(signing, vrf).map_err(|e| e.to_string())
+}
+
+#[wasm_bindgen]
+pub fn ed25519_hard_derive_round0_process(
+    root_share: &[u8],
+    path: &[u8],
+    seed: &[u8],
+) -> Result<MsgState, String> {
+    let result = mps::ed25519_hard_derive_round0_process(root_share, path, seed)
+        .map_err(|e| e.to_string())?;
+    Ok(MsgState {
+        msg: result.msg,
+        state: result.state,
+    })
+}
+
+#[wasm_bindgen]
+pub fn ed25519_hard_derive_round1_process(
+    round1_message: &[u8],
+    state: &[u8],
+) -> Result<MsgState, String> {
+    let result = mps::ed25519_hard_derive_round1_process(round1_message, state)
+        .map_err(|e| e.to_string())?;
+    Ok(MsgState {
+        msg: result.msg,
+        state: result.state,
+    })
+}
+
+#[wasm_bindgen]
+pub fn ed25519_hard_derive_round2_process(
+    round2_message: &[u8],
+    state: &[u8],
+    participating_party_ids: &[u8],
+) -> Result<Share, String> {
+    let ids: [u8; 2] = participating_party_ids
+        .try_into()
+        .map_err(|_| "participating_party_ids must be exactly 2 ids")?;
+    let result = mps::ed25519_hard_derive_round2_process(round2_message, state, &ids)
+        .map_err(|e| e.to_string())?;
+    Ok(share_from_mps(result))
 }
 
 #[wasm_bindgen]
