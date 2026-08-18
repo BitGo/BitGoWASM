@@ -1,5 +1,6 @@
 import assert from "node:assert";
-import { Dimensions, fixedScriptWallet } from "../js/index.js";
+import { Dimensions, Descriptor, ECPair, fixedScriptWallet, Psbt } from "../js/index.js";
+import { formatNode } from "../js/ast/index.js";
 import { Transaction } from "../js/transaction.js";
 import {
   loadPsbtFixture,
@@ -8,6 +9,7 @@ import {
   type Output,
 } from "./fixedScript/fixtureUtil.js";
 import { mainnetCoinNames } from "./fixedScript/networkSupport.util.js";
+import { getDefaultWalletKeys } from "../js/testutils/index.js";
 import type { InputScriptType } from "../js/fixedScriptWallet/BitGoPsbt.js";
 
 /**
@@ -465,6 +467,121 @@ describe("Dimensions", function () {
   });
 
   describe("fromPsbt", function () {
+    it("misclassifies P2WSH inputs with nonstandard derivation paths as P2shP2pk", function () {
+      const rootWalletKeys = getDefaultWalletKeys();
+      const xpubs: [string, string, string] = [
+        rootWalletKeys.userKey().toBase58(),
+        rootWalletKeys.backupKey().toBase58(),
+        rootWalletKeys.bitgoKey().toBase58(),
+      ];
+
+      // Build a P2WSH PSBT with full wallet metadata. addWalletInput sets
+      // witness_script (2-of-3 multisig) + BIP32 derivations.
+      const walletPsbt = fixedScriptWallet.BitGoPsbt.createEmpty("bitcoin", xpubs);
+      for (let i = 0; i < 4; i++) {
+        walletPsbt.addWalletInput(
+          { txid: (i + 1).toString(16).padStart(64, "0"), vout: 0, value: 100_000n },
+          xpubs,
+          { scriptId: { chain: 20, index: i } },
+        );
+      }
+      const outputScript = Buffer.concat([Buffer.from([0x00, 0x20]), Buffer.alloc(32, 0x01)]);
+      walletPsbt.addOutput(outputScript, 399_000n);
+
+      // Build an equivalent PSBT with nonstandard chain codes using the
+      // WrapPsbt / descriptor API (same pattern as nonStandardPaths.ts).
+      // Swan self-signing PSBTs carry witness_script and derivations, but
+      // with chain codes that don't follow BitGo convention.
+      const desc = Descriptor.fromString(
+        formatNode({
+          wsh: {
+            multi: [2, `${xpubs[0]}/0/*`, `${xpubs[1]}/0/*`, `${xpubs[2]}/0/*`],
+          },
+        }),
+        "derivable",
+      );
+      const externalPsbt = new Psbt();
+      for (let i = 0; i < 4; i++) {
+        const descAt = desc.atDerivationIndex(i);
+        externalPsbt.addInput(
+          (i + 1).toString(16).padStart(64, "0"),
+          0,
+          100_000n,
+          Buffer.from(descAt.scriptPubkey()),
+        );
+        externalPsbt.updateInputWithDescriptor(i, descAt);
+      }
+      externalPsbt.addOutput(outputScript, 399_000n);
+
+      // Wrap as BitGoPsbt for Dimensions.fromPsbt.
+      const externalBitGoPsbt = fixedScriptWallet.BitGoPsbt.fromBytes(
+        externalPsbt.serialize(),
+        "bitcoin",
+      );
+
+      // Sanity: external inputs have derivations (nonstandard chain codes)
+      // and witness_script.
+      assert.ok(
+        externalBitGoPsbt.getInputs().every((input) => input.bip32Derivation.length === 3),
+        "external inputs should have 3 BIP32 derivations each",
+      );
+
+      const walletDim = Dimensions.fromPsbt(walletPsbt);
+      const externalDim = Dimensions.fromPsbt(externalBitGoPsbt);
+      const p2wshDim = Dimensions.fromInput({ scriptType: "p2wsh" });
+      const p2shP2pkDim = Dimensions.fromInput({ scriptType: "p2shP2pk" });
+
+      // With derivations: correctly classified as P2WSH (segwit).
+      assert.strictEqual(walletDim.hasSegwit, true);
+      assert.strictEqual(walletDim.getInputWeight("max"), p2wshDim.getInputWeight("max") * 4);
+
+      // Without standard derivations: incorrectly falls back to P2SH-P2PK
+      // (non-segwit), inflating vsize and understating fee rate.
+      assert.strictEqual(externalDim.hasSegwit, false);
+      assert.strictEqual(
+        externalDim.getInputWeight("max"),
+        p2shP2pkDim.getInputWeight("max") * 4,
+      );
+
+      // The non-segwit fallback inflates vsize, understating fee rate.
+      assert.ok(
+        externalDim.getVSize("max") > walletDim.getVSize("max"),
+        `external vsize ${externalDim.getVSize("max")} should exceed wallet vsize ${walletDim.getVSize("max")}`,
+      );
+    });
+
+    it("falls back to P2shP2pk for replay protection input without derivations", function () {
+      const rootWalletKeys = getDefaultWalletKeys();
+      const xpubs: [string, string, string] = [
+        rootWalletKeys.userKey().toBase58(),
+        rootWalletKeys.backupKey().toBase58(),
+        rootWalletKeys.bitgoKey().toBase58(),
+      ];
+
+      // A replay protection key: derive an ECPair from the user key's public key.
+      const rpEcpair = ECPair.fromPublicKey(Buffer.from(rootWalletKeys.userKey().publicKey));
+
+      // Build a PSBT with a single replay protection input. addReplayProtectionInput
+      // sets redeem_script to a P2PK script (<pubkey> OP_CHECKSIG) and does not add
+      // any BIP32 derivations, which is exactly the case the fallback must handle.
+      const psbt = fixedScriptWallet.BitGoPsbt.createEmpty("bitcoin", xpubs);
+      psbt.addReplayProtectionInput({ txid: "01".repeat(32), vout: 0, value: 100_000n }, rpEcpair);
+      const outputScript = Buffer.concat([Buffer.from([0x00, 0x20]), Buffer.alloc(32, 0x01)]);
+      psbt.addOutput(outputScript, 99_000n);
+
+      // Sanity: the RP input has no BIP32 derivations (the fallback case).
+      const inputs = psbt.getInputs();
+      assert.strictEqual(inputs.length, 1);
+      assert.strictEqual(inputs[0].bip32Derivation.length, 0);
+
+      const dim = Dimensions.fromPsbt(psbt);
+      const p2shP2pkDim = Dimensions.fromInput({ scriptType: "p2shP2pk" });
+
+      // The fallback classifies this as P2shP2pk (non-segwit).
+      assert.strictEqual(dim.hasSegwit, false);
+      assert.strictEqual(dim.getInputWeight("max"), p2shP2pkDim.getInputWeight("max") * 4);
+    });
+
     // Zcash has additional transaction overhead that we don't account for
     const networksToTest = mainnetCoinNames.filter((n) => n !== "zec");
 
