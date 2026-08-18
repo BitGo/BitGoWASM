@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use crate::error::WasmUtxoError;
 use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::{
-    parse_shared_chain_and_index, InputScriptType,
+    infer_input_script_type, InputScriptType,
 };
 use crate::fixed_script_wallet::wallet_scripts::OutputScriptType;
 use crate::fixed_script_wallet::Chain;
@@ -404,8 +404,10 @@ impl WasmDimensions {
     /// Create dimensions from a BitGoPsbt
     ///
     /// Parses PSBT inputs and outputs to compute weight bounds without
-    /// requiring wallet keys. Input types are detected from BIP32 derivation
-    /// paths stored in the PSBT.
+    /// requiring wallet keys. Each input is classified by inspecting its
+    /// `witness_script` / `redeem_script` (and taproot metadata), so BitGo
+    /// wallet inputs, replay-protection inputs, and externally-signed inputs
+    /// are all detected correctly.
     pub fn from_psbt(psbt: &BitGoPsbt) -> Result<WasmDimensions, WasmUtxoError> {
         let inner_psbt = psbt.psbt.psbt();
         let unsigned_tx = &inner_psbt.unsigned_tx;
@@ -416,45 +418,10 @@ impl WasmDimensions {
 
         // Process inputs
         for (i, psbt_input) in inner_psbt.inputs.iter().enumerate() {
-            // Try to get chain from derivation paths
-            let weights = match parse_shared_chain_and_index(psbt_input) {
-                Ok((chain, _index)) => {
-                    // Determine script type from chain and PSBT input metadata
-                    let chain_enum = Chain::try_from(chain).map_err(|e| {
-                        WasmUtxoError::new(&format!(
-                            "Invalid chain {} at input {}: {}",
-                            chain, i, e
-                        ))
-                    })?;
-
-                    // For p2trMusig2, check if it's keypath or scriptpath
-                    let script_type = match chain_enum.script_type {
-                        OutputScriptType::P2sh => InputScriptType::P2sh,
-                        OutputScriptType::P2shP2wsh => InputScriptType::P2shP2wsh,
-                        OutputScriptType::P2wsh => InputScriptType::P2wsh,
-                        OutputScriptType::P2trLegacy => InputScriptType::P2trLegacy,
-                        OutputScriptType::P2trMusig2 => {
-                            // Check if tap_scripts are populated to distinguish keypath/scriptpath
-                            if !psbt_input.tap_script_sigs.is_empty()
-                                || !psbt_input.tap_scripts.is_empty()
-                            {
-                                InputScriptType::P2trMusig2ScriptPath
-                            } else {
-                                InputScriptType::P2trMusig2KeyPath
-                            }
-                        }
-                        OutputScriptType::P2mr => InputScriptType::P2mr,
-                    };
-
-                    get_input_weights_for_type(script_type, false)
-                }
-                Err(_) => {
-                    // No derivation path - check if it's a replay protection input
-                    // Replay protection inputs have unknownKeyVals with specific markers
-                    // For now, assume p2shP2pk for inputs without derivation paths
-                    get_input_weights_for_type(InputScriptType::P2shP2pk, false)
-                }
-            };
+            let prevout = unsigned_tx.input[i].previous_output;
+            let script_type = infer_input_script_type(psbt_input, prevout)
+                .map_err(|e| WasmUtxoError::new(&format!("Cannot classify input {}: {}", i, e)))?;
+            let weights = get_input_weights_for_type(script_type, false);
 
             input_weight_min += weights.min;
             input_weight_max += weights.max;
