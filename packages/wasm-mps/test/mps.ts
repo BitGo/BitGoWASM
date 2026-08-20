@@ -2,7 +2,7 @@ import assert from "assert";
 import crypto from "crypto";
 import * as mps from "../js";
 import sodium from "libsodium-wrappers-sumo";
-import { makeImportShares, runDsg, runImportDkg } from "./utils.js";
+import { makeImportShares, runDsg } from "./utils.js";
 
 await sodium.ready;
 
@@ -807,10 +807,9 @@ describe("mps", function () {
           ),
         );
         for (let i = 0; i < results3.length; i++) {
-          if (results3[i].msg.length) {
-            assert(
-              Buffer.from(results3[i].msg).slice(0, messagePrefix.length).equals(messagePrefix),
-            );
+          const msg = results3[i].msg as Record<string, Uint8Array>;
+          for (const value of Object.values(msg)) {
+            assert(Buffer.from(value).slice(0, messagePrefix.length).equals(messagePrefix));
           }
           assert(Buffer.from(results3[i].state).slice(0, statePrefix.length).equals(statePrefix));
         }
@@ -879,31 +878,38 @@ describe("mps", function () {
         );
       });
 
+      function enqueue(messages: Record<number, Uint8Array[]>, msg: unknown) {
+        for (const [recipient, value] of Object.entries(msg as Record<string, Uint8Array>)) {
+          messages[Number(recipient)].push(value);
+        }
+      }
+
       it("runs derivation to completion", function () {
         this.timeout(30000);
         const messagePrefix = Buffer.from("mps-redpallas-dkg-derivation-message$");
         const statePrefix = Buffer.from("mps-redpallas-dkg-derivation-state$");
-        let message = Buffer.concat(results3.map((d) => Buffer.from(d.msg)));
+        const messages: Record<number, Uint8Array[]> = { 0: [], 1: [], 2: [] };
+        for (const result of results3) {
+          enqueue(messages, result.msg);
+        }
         const states = results3.map((d) => d.state);
         const derivedKeys: Map<number, mps.MsgDerivation> = new Map();
-        for (let round = 0; round < 500 && Array.from(derivedKeys.keys()).length < 3; round++) {
+        for (let round = 0; round < 500 && derivedKeys.size < 3; round++) {
           for (let party = 0; party < 3; party++) {
-            const result = mps.redpallas_derivation_process(message, states[party]);
-            if (result.msg.length) {
-              assert(Buffer.from(result.msg).slice(0, messagePrefix.length).equals(messagePrefix));
-            }
+            const input = messages[party].length > 0 ? messages[party].shift() : new Uint8Array(0);
+            const result = mps.redpallas_derivation_process(input, states[party]);
             assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
-            message = result.msg;
             states[party] = result.state;
+            for (const value of Object.values(result.msg as Record<string, Uint8Array>)) {
+              assert(Buffer.from(value).slice(0, messagePrefix.length).equals(messagePrefix));
+            }
+            enqueue(messages, result.msg);
             if (result.done) {
               derivedKeys.set(party, result);
             }
           }
         }
-        assert.ok(
-          Array.from(derivedKeys.keys()).length == 3,
-          "derivation did not complete within 500 rounds",
-        );
+        assert.ok(derivedKeys.size == 3, "derivation did not complete within 500 rounds");
         for (let i = 0; i < 3; i++) {
           const k = derivedKeys.get(i);
           assert.equal(k.ask.length, 32);

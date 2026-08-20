@@ -2,6 +2,8 @@
 
 mod mps {
 
+    const MAX_MESSAGES: usize = 500;
+
     use multi_party_schnorr::{
         common::{
             redpallas::{RedPallasPoint, RedPallasPointBytes},
@@ -22,7 +24,7 @@ mod mps {
     use rand::Rng;
     use serde::{Deserialize, Serialize};
     use std::{
-        io::{Cursor, Read},
+        collections::{HashMap, VecDeque},
         sync::Arc,
     };
     use thiserror::Error;
@@ -44,6 +46,9 @@ mod mps {
 
         #[error("Protocol Error")]
         ProtocolError,
+
+        #[error("Unexpected Error")]
+        UnexpectedError,
     }
 
     /// Internal DKG state used for round 1.
@@ -142,7 +147,7 @@ mod mps {
     pub struct MsgDerivationInit {
         pub share: Vec<u8>,
         pub pk: [u8; 32],
-        pub msg: Vec<u8>,
+        pub msg: HashMap<u8, Vec<u8>>,
         pub state: Vec<u8>,
     }
 
@@ -154,7 +159,7 @@ mod mps {
     }
 
     pub struct MsgDerivation {
-        pub msg: Vec<u8>,
+        pub msg: HashMap<u8, Vec<u8>>,
         pub state: Vec<u8>,
         pub done: bool,
         pub ask: Option<[u8; 32]>,
@@ -203,40 +208,6 @@ mod mps {
         result.extend_from_slice(prefix.as_bytes());
         result.extend_from_slice(data.as_slice());
         result
-    }
-
-    /// Serialize a message pool as a concatenation of individually-encoded messages.
-    /// This format supports simple byte concatenation to merge pools.
-    pub fn serialize_pool(prefix: &str, msgs: &[DrvMessage]) -> Result<Vec<u8>, MpsError> {
-        let mut buf = Vec::new();
-        for msg in msgs {
-            buf.extend(add_prefix(
-                prefix,
-                &bincode::serde::encode_to_vec(msg, bincode::config::standard())
-                    .map_err(|_| MpsError::SerializationError)?,
-            ));
-        }
-        Ok(buf)
-    }
-
-    /// Deserialize a pool produced by `serialize_pool`.
-    pub fn deserialize_pool(prefix: &str, data: &[u8]) -> Result<Vec<DrvMessage>, MpsError> {
-        let mut cursor = Cursor::new(data);
-        let mut msgs = Vec::new();
-        while (cursor.position() as usize) < data.len() {
-            let mut buf_prefix = vec![0u8; prefix.len()];
-            cursor
-                .read_exact(&mut buf_prefix)
-                .map_err(|_| MpsError::DeserializationError)?;
-            let _ = buf_prefix
-                .strip_prefix(prefix.as_bytes())
-                .ok_or(MpsError::InvalidInput)?;
-            let msg: DrvMessage =
-                bincode::serde::decode_from_std_read(&mut cursor, bincode::config::standard())
-                    .map_err(|_| MpsError::DeserializationError)?;
-            msgs.push(msg);
-        }
-        Ok(msgs)
     }
 
     fn internal_dkg_round0_process<G>(
@@ -827,6 +798,33 @@ mod mps {
         })
     }
 
+    fn derivation_msgs_to_hashmap(
+        prefix: &str,
+        party_id: u8,
+        msgs: Vec<DrvMessage>,
+    ) -> Result<HashMap<u8, Vec<u8>>, MpsError> {
+        let mut msg_map: HashMap<u8, Vec<DrvMessage>> = Default::default();
+        for msg in msgs {
+            let idx = msg.receiver().ok_or(MpsError::ProtocolError)?;
+            if idx == party_id || idx >= 3 {
+                return Err(MpsError::UnexpectedError);
+            }
+            msg_map.entry(idx).or_default().push(msg);
+        }
+        let mut vec_map: HashMap<u8, Vec<u8>> = Default::default();
+        for (idx, msgs) in msg_map {
+            vec_map.insert(
+                idx,
+                add_prefix(
+                    prefix,
+                    &bincode::serde::encode_to_vec(msgs, bincode::config::standard())
+                        .map_err(|_| MpsError::SerializationError)?,
+                ),
+            );
+        }
+        Ok(vec_map)
+    }
+
     /// Process round 2 of RedPallas DKG; finalizes keyshare and starts derivation session.
     pub fn redpallas_dkg_round2_process(
         round2_messages: &[Vec<u8>; 2],
@@ -846,16 +844,23 @@ mod mps {
             DerivationSession::new(party_id, *share.shamir_share(), *derivation_seed)
                 .map_err(|_| MpsError::ProtocolError)?;
 
-        let drv = serialize_pool("mps-redpallas-dkg-derivation-message$", &initial_outgoing)?;
+        let msg = derivation_msgs_to_hashmap(
+            "mps-redpallas-dkg-derivation-message$",
+            party_id,
+            initial_outgoing,
+        )?;
+        let incoming: VecDeque<DrvMessage> = Default::default();
 
-        let state =
-            bincode::serde::encode_to_vec((party_id, &drv_session), bincode::config::standard())
-                .map_err(|_| MpsError::SerializationError)?;
+        let state = bincode::serde::encode_to_vec(
+            (party_id, &drv_session, &incoming),
+            bincode::config::standard(),
+        )
+        .map_err(|_| MpsError::SerializationError)?;
 
         Ok(MsgDerivationInit {
             share: share_bytes,
             pk,
-            msg: drv,
+            msg,
             state: add_prefix("mps-redpallas-dkg-derivation-state$", &state),
         })
     }
@@ -870,30 +875,43 @@ mod mps {
         state: &[u8],
     ) -> Result<MsgDerivation, MpsError> {
         let state = rem_prefix("mps-redpallas-dkg-derivation-state$", state)?;
-        let (party_id, mut session): (u8, DerivationSession) =
+        let (party_id, mut session, mut incoming): (u8, DerivationSession, VecDeque<DrvMessage>) =
             bincode::serde::decode_from_slice(&state, bincode::config::standard())
                 .map(|(v, _)| v)
                 .map_err(|_| MpsError::DeserializationError)?;
 
-        let mut pool = deserialize_pool("mps-redpallas-dkg-derivation-message$", messages)?;
+        if !messages.is_empty() {
+            let pool: Vec<DrvMessage> = bincode::serde::decode_from_slice(
+                &rem_prefix("mps-redpallas-dkg-derivation-message$", messages)?,
+                bincode::config::standard(),
+            )
+            .map(|(v, _)| v)
+            .map_err(|_| MpsError::DeserializationError)?;
+            if incoming.len() + pool.len() > MAX_MESSAGES {
+                return Err(MpsError::InvalidInput);
+            }
+            for msg in &pool {
+                if msg.receiver() != Some(party_id) {
+                    return Err(MpsError::InvalidInput);
+                }
+            }
+            incoming.extend(pool);
+        }
 
-        // Find and consume the first message in the pool addressed to this party.
-        let pos = pool
-            .iter()
-            .position(|msg| msg.receiver().is_none_or(|to| to == party_id));
-        if let Some(idx) = pos {
-            let msg = pool.remove(idx);
-            let mut outgoing: Vec<DrvMessage> = Vec::new();
+        let mut outgoing: Vec<DrvMessage> = Default::default();
+        if let Some(msg) = incoming.pop_front() {
             let status = session
                 .handle_messages(vec![msg], &mut outgoing)
                 .map_err(|_| MpsError::ProtocolError)?;
             if let DerivationStatus::Aborted(_) = status {
                 return Err(MpsError::ProtocolError);
             }
-            pool.extend(outgoing);
         }
-
-        let new_messages = serialize_pool("mps-redpallas-dkg-derivation-message$", &pool)?;
+        let msg = derivation_msgs_to_hashmap(
+            "mps-redpallas-dkg-derivation-message$",
+            party_id,
+            outgoing,
+        )?;
 
         let (done, ask, nk, rivk, internal_ivk, external_ivk) =
             if let Some(keys) = session.derived_keys() {
@@ -909,12 +927,14 @@ mod mps {
                 (false, [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 64], [0u8; 64])
             };
 
-        let new_state =
-            bincode::serde::encode_to_vec((party_id, &session), bincode::config::standard())
-                .map_err(|_| MpsError::SerializationError)?;
+        let new_state = bincode::serde::encode_to_vec(
+            (party_id, &session, &incoming),
+            bincode::config::standard(),
+        )
+        .map_err(|_| MpsError::SerializationError)?;
 
         Ok(MsgDerivation {
-            msg: new_messages,
+            msg,
             state: add_prefix("mps-redpallas-dkg-derivation-state$", &new_state),
             done,
             ask: if done { Some(ask) } else { None },
@@ -1502,7 +1522,8 @@ mod tests {
     }
 }
 
-use js_sys::Array;
+use js_sys::{Array, Object, Reflect, Uint8Array};
+use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -1553,7 +1574,7 @@ impl Share {
 pub struct MsgDerivationInit {
     share: Vec<u8>,
     pk: Vec<u8>,
-    msg: Vec<u8>,
+    msg: Result<JsValue, JsValue>,
     state: Vec<u8>,
 }
 
@@ -1570,7 +1591,7 @@ impl MsgDerivationInit {
     }
 
     #[wasm_bindgen(getter)]
-    pub fn msg(&self) -> Vec<u8> {
+    pub fn msg(&self) -> Result<JsValue, JsValue> {
         self.msg.clone()
     }
 
@@ -1582,7 +1603,7 @@ impl MsgDerivationInit {
 
 #[wasm_bindgen]
 pub struct MsgDerivation {
-    msg: Vec<u8>,
+    msg: Result<JsValue, JsValue>,
     state: Vec<u8>,
     done: bool,
     ask: Option<Vec<u8>>,
@@ -1595,7 +1616,7 @@ pub struct MsgDerivation {
 #[wasm_bindgen]
 impl MsgDerivation {
     #[wasm_bindgen(getter)]
-    pub fn msg(&self) -> Vec<u8> {
+    pub fn msg(&self) -> Result<JsValue, JsValue> {
         self.msg.clone()
     }
 
@@ -1827,20 +1848,31 @@ pub fn redpallas_dkg_round2_process(
     Ok(MsgDerivationInit {
         share: result.share,
         pk: result.pk.to_vec(),
-        msg: result.msg,
+        msg: hashmap_to_js(result.msg),
         state: result.state,
     })
 }
 
+fn hashmap_to_js(map: HashMap<u8, Vec<u8>>) -> Result<JsValue, JsValue> {
+    let obj = Object::new();
+
+    for (key, value) in map {
+        Reflect::set(
+            &obj,
+            &JsValue::from(key),
+            &Uint8Array::from(value.as_slice()),
+        )?;
+    }
+
+    Ok(obj.into())
+}
+
 #[wasm_bindgen]
-pub fn redpallas_derivation_process(
-    messages: &[u8],
-    state: &[u8],
-) -> Result<MsgDerivation, String> {
-    let result = mps::redpallas_derivation_process(messages, state).map_err(|e| e.to_string())?;
+pub fn redpallas_derivation_process(message: &[u8], state: &[u8]) -> Result<MsgDerivation, String> {
+    let result = mps::redpallas_derivation_process(message, state).map_err(|e| e.to_string())?;
 
     Ok(MsgDerivation {
-        msg: result.msg,
+        msg: hashmap_to_js(result.msg),
         state: result.state,
         done: result.done,
         ask: result.ask.map(|ask| ask.to_vec()),
