@@ -424,6 +424,89 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
     );
   });
 
+  describe("addShieldedOutputs (multi-recipient)", function () {
+    // A second, distinct Orchard receiver — reusing the multi-receiver UA fixture's Orchard
+    // component, which is unrelated to RECIPIENT.
+    const RECIPIENT_2 = Buffer.from(
+      ZcashUnifiedAddress.parse(MULTI_RECEIVER_UA, "zcashTest").orchardReceiver ?? [],
+    );
+
+    function emptyPsbtWithoutShieldedOutput(): ZcashIronwoodBitGoPsbt {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput({ txid: "11".repeat(32), vout: 0, value: 300_000_000n }, walletKeys, {
+        scriptId: SCRIPT_ID,
+        signPath: { signer: "user", cosigner: "bitgo" },
+      });
+      psbt.addWalletOutput(walletKeys, { chain: 1, index: 0, value: 99_900_000n });
+      return psbt;
+    }
+
+    it("adds multiple recipients in a single call, each with its own value and UA", function () {
+      const psbt = emptyPsbtWithoutShieldedOutput();
+      psbt.addShieldedOutputs(
+        [
+          { recipient: RECIPIENT, amount: 100_000_000n, unifiedAddress: undefined },
+          { recipient: RECIPIENT_2, amount: 50_000_000n, unifiedAddress: MULTI_RECEIVER_UA },
+        ],
+        new Uint8Array(32),
+      );
+
+      const round = ZcashIronwoodBitGoPsbt.fromBytes(psbt.serialize(), "zcashTest");
+      const outputs = round.parseOutputsWithWalletKeys(walletKeys);
+      const shielded = outputs.filter((o) => o.isShielded);
+      assert.strictEqual(shielded.length, 2);
+
+      const byScript = new Map(shielded.map((o) => [Buffer.from(o.script).toString("hex"), o]));
+      const outA = byScript.get(RECIPIENT.toString("hex"));
+      const outB = byScript.get(RECIPIENT_2.toString("hex"));
+      assert.ok(outA, "recipient A present");
+      assert.ok(outB, "recipient B present");
+      assert.strictEqual(outA.value, 100_000_000n);
+      assert.strictEqual(outB.value, 50_000_000n);
+
+      // Only recipient B's UA was stored; recipient A falls back to a re-encoded single-receiver UA.
+      assert.strictEqual(outB.address, MULTI_RECEIVER_UA);
+      assert.notStrictEqual(outA.address, MULTI_RECEIVER_UA);
+      assert.ok(outA.address);
+      const recoveredA = ZcashUnifiedAddress.parse(outA.address, "zcashTest");
+      assert.deepStrictEqual(Buffer.from(recoveredA.orchardReceiver ?? []), RECIPIENT);
+    });
+
+    it("folds every recipient's value into spendAmount/minerFee via parseTransactionWithWalletKeys", function () {
+      const psbt = emptyPsbtWithoutShieldedOutput();
+      psbt.addShieldedOutputs(
+        [
+          { recipient: RECIPIENT, amount: 100_000_000n, unifiedAddress: undefined },
+          { recipient: RECIPIENT_2, amount: 50_000_000n, unifiedAddress: undefined },
+        ],
+        new Uint8Array(32),
+      );
+
+      const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, {
+        replayProtection: { publicKeys: [] },
+      });
+      const shielded = parsed.outputs.filter((o) => o.isShielded);
+      assert.strictEqual(shielded.length, 2);
+      // 300_000_000 in - (99_900_000 transparent change + 150_000_000 shielded) = 50_100_000 fee.
+      assert.strictEqual(parsed.minerFee, 50_100_000n);
+      assert.strictEqual(parsed.spendAmount, 150_000_000n);
+    });
+
+    it("rejects a second call, even to add more recipients", function () {
+      const psbt = buildShieldPsbt();
+      assert.throws(
+        () =>
+          psbt.addShieldedOutputs(
+            [{ recipient: RECIPIENT_2, amount: 1n, unifiedAddress: undefined }],
+            new Uint8Array(32),
+          ),
+        /already present/,
+      );
+    });
+  });
+
   describe("combineProof", function () {
     // The Rust `combine_ironwood_proof` consumes `self`, so the wasm binding clones and only calls
     // `mark_ironwood_extracted()` after the clone has actually produced a transaction. That ordering

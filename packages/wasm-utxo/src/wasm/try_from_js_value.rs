@@ -291,3 +291,70 @@ impl TryFromJsValue for crate::fixed_script_wallet::bitgo_psbt::HydrationUnspent
         }
     }
 }
+
+// =============================================================================
+// IronwoodOutputRequest: one requested multi-recipient Ironwood shielded output
+// =============================================================================
+
+impl TryFromJsValue for crate::fixed_script_wallet::bitgo_psbt::zcash_psbt::IronwoodOutputRequest {
+    fn try_from_js_value(item: &JsValue) -> Result<Self, WasmUtxoError> {
+        use crate::zcash::ironwood_build::{MemoBytes, OrchardAddressBytes, OvkBytes};
+
+        let recipient_val = js_sys::Reflect::get(item, &"recipient".into())
+            .map_err(|_| WasmUtxoError::new("Missing 'recipient' field on Ironwood output"))?;
+        if recipient_val.is_undefined() {
+            return Err(WasmUtxoError::new(
+                "Missing 'recipient' field on Ironwood output",
+            ));
+        }
+        let recipient: OrchardAddressBytes = Bytes::<43>::try_from_js_value(&recipient_val)?.into();
+
+        let amount_val = js_sys::Reflect::get(item, &"amount".into())
+            .map_err(|_| WasmUtxoError::new("Missing 'amount' field on Ironwood output"))?;
+        if amount_val.is_undefined() {
+            return Err(WasmUtxoError::new(
+                "Missing 'amount' field on Ironwood output",
+            ));
+        }
+        if !amount_val.is_bigint() {
+            return Err(WasmUtxoError::new("'amount' must be a bigint"));
+        }
+        let amount = u64::try_from(js_sys::BigInt::unchecked_from_js(amount_val))
+            .map_err(|_| WasmUtxoError::new("'amount' must be a bigint convertible to u64"))?;
+
+        let memo_val = js_sys::Reflect::get(item, &"memo".into())
+            .map_err(|_| WasmUtxoError::new("Missing 'memo' field on Ironwood output"))?;
+        if memo_val.is_undefined() {
+            return Err(WasmUtxoError::new(
+                "Missing 'memo' field on Ironwood output",
+            ));
+        }
+        let memo: MemoBytes = Bytes::<512>::try_from_js_value(&memo_val)?.into();
+
+        let ovk_val = js_sys::Reflect::get(item, &"ovk".into()).unwrap_or(JsValue::UNDEFINED);
+        let ovk: Option<OvkBytes> = if ovk_val.is_undefined() || ovk_val.is_null() {
+            None
+        } else {
+            Some(Bytes::<32>::try_from_js_value(&ovk_val)?.into())
+        };
+
+        let unified_address_val =
+            js_sys::Reflect::get(item, &"unifiedAddress".into()).unwrap_or(JsValue::UNDEFINED);
+        let unified_address = if unified_address_val.is_undefined() || unified_address_val.is_null()
+        {
+            None
+        } else {
+            Some(String::try_from_js_value(&unified_address_val)?)
+        };
+
+        Ok(
+            crate::fixed_script_wallet::bitgo_psbt::zcash_psbt::IronwoodOutputRequest {
+                recipient,
+                amount,
+                ovk,
+                memo,
+                unified_address,
+            },
+        )
+    }
+}

@@ -572,6 +572,46 @@ impl BitGoPsbt {
                 unified_address.as_deref(),
                 rand::rngs::OsRng,
             )
+            .map(|_action_index| ())
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// Constructor: add one or more shielded Ironwood outputs as a single orchard PCZT stored in
+    /// the PSBT — the multi-recipient counterpart to [`Self::add_ironwood_output`].
+    ///
+    /// `outputs` is an array of `{ recipient: Uint8Array, amount: bigint, memo: Uint8Array,
+    /// ovk?: Uint8Array, unifiedAddress?: string }`, one entry per recipient — see
+    /// [`Self::add_ironwood_output`] for the meaning of each field. `anchor` is shared by every
+    /// output.
+    ///
+    /// Returns the action index assigned to each output, in the same order as `outputs` — the
+    /// orchard builder pads/reorders actions, so a client-managed-`ovk` caller must use these
+    /// indices (not the position in `outputs`) when later calling `set_ironwood_out_ciphertext`
+    /// for a specific recipient.
+    pub fn add_ironwood_outputs(
+        &mut self,
+        outputs: JsValue,
+        anchor: &[u8],
+    ) -> Result<Vec<u32>, WasmUtxoError> {
+        use crate::fixed_script_wallet::bitgo_psbt::zcash_psbt::IronwoodOutputRequest;
+        use crate::zcash::ironwood_build::{AnchorBytes, ANCHOR_SIZE};
+
+        let anchor: AnchorBytes = anchor.try_into().map_err(|_| {
+            WasmUtxoError::new(&format!(
+                "anchor must be {ANCHOR_SIZE} bytes, got {}",
+                anchor.len()
+            ))
+        })?;
+
+        let arr = js_sys::Array::from(&outputs);
+        let requests = arr
+            .iter()
+            .map(|item| IronwoodOutputRequest::try_from_js_value(&item))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.zcash_mut()?
+            .add_ironwood_outputs(&requests, &anchor, rand::rngs::OsRng)
+            .map(|indices| indices.into_iter().map(|i| i as u32).collect())
             .map_err(|e| WasmUtxoError::new(&e))
     }
 

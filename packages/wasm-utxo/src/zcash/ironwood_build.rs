@@ -138,16 +138,73 @@ impl core::fmt::Display for IronwoodBuildError {
 
 crate::impl_wasm_error_code!(IronwoodBuildError);
 
-/// Constructor: build a transparent → Ironwood shielding bundle as an orchard PCZT.
+/// One requested Ironwood shielded output, as passed to [`construct_shield_pczt_multi`].
+#[derive(Clone, Copy)]
+pub struct IronwoodOutputSpec {
+    /// 43-byte raw Orchard/Ironwood address.
+    pub recipient: OrchardAddressBytes,
+    /// Note value in zatoshi.
+    pub amount: u64,
+    /// Outgoing viewing key, if the output should be recoverable by the sender; `None` for a
+    /// keyless build.
+    pub ovk: Option<OvkBytes>,
+    /// ZIP-302 memo field.
+    pub memo: MemoBytes,
+}
+
+/// Constructor: build a transparent → Ironwood shielding bundle with one or more outputs, as an
+/// orchard PCZT.
 ///
-/// Produces a single output note of `amount` zatoshi to `recipient` (a 43-byte raw Orchard/Ironwood
-/// address), paired with a dummy spend (`BundleType::UNPADDED` ⇒ exactly one action). `anchor` is
-/// the current Ironwood note-commitment-tree root. `ovk`, if given, is the raw outgoing viewing key
-/// used to make the output recoverable by the sender; pass `None` for a keyless build. `rng` must be
-/// a CSPRNG — it seeds the note randomness (`rseed`, `rcv`) that fixes the action data.
+/// Each entry in `outputs` becomes one output note, each paired with a fabricated dummy spend
+/// (`BundleType::UNPADDED` ⇒ exactly `outputs.len()` actions, no additional padding). `anchor` is
+/// the current Ironwood note-commitment-tree root, shared by every action. `rng` must be a CSPRNG —
+/// it seeds the note randomness (`rseed`, `rcv`) that fixes the action data.
+///
+/// Actions are randomized (reordered) relative to `outputs`' order (see
+/// `orchard::builder::BundleMetadata`), so the returned `Vec<usize>` gives, for each `outputs[i]`,
+/// the action index it landed at in the bundle — callers that need to associate per-output data (a
+/// stored Unified Address, a per-output `ovk` re-encryption) with the right action must go through
+/// this mapping rather than assuming index `i`.
 ///
 /// The returned PCZT carries no signatures or proof yet; run [`finalize_shield_io`] once the sighash
 /// is known, then hand it to the prover and [`combine`].
+pub fn construct_shield_pczt_multi<R: RngCore + CryptoRng>(
+    outputs: &[IronwoodOutputSpec],
+    anchor: &AnchorBytes,
+    rng: R,
+) -> Result<(PcztBundle, Vec<usize>), IronwoodBuildError> {
+    if outputs.is_empty() {
+        return Err(IronwoodBuildError::EmptyBundle);
+    }
+    let anchor = Option::from(Anchor::from_bytes(*anchor)).ok_or(IronwoodBuildError::BadAnchor)?;
+
+    let bundle_version = BundleVersion::ironwood_v3();
+    let flags = bundle_version.default_flags();
+    let mut builder = Builder::new(BundleType::UNPADDED, bundle_version, flags, anchor)
+        .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
+    for spec in outputs {
+        let recipient = Option::from(Address::from_raw_address_bytes(&spec.recipient))
+            .ok_or(IronwoodBuildError::BadRecipient)?;
+        let ovk = spec.ovk.map(OutgoingViewingKey::from);
+        builder
+            .add_output(ovk, recipient, NoteValue::from_raw(spec.amount), spec.memo)
+            .map_err(|e| IronwoodBuildError::Output(e.to_string()))?;
+    }
+    let (bundle, meta) = builder
+        .build_for_pczt(rng)
+        .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
+    let action_indices = (0..outputs.len())
+        .map(|i| {
+            meta.output_action_index(i)
+                .ok_or(IronwoodBuildError::ActionIndexOutOfRange)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((bundle, action_indices))
+}
+
+/// Constructor: build a transparent → Ironwood shielding bundle as an orchard PCZT, for a single
+/// output. A thin wrapper over [`construct_shield_pczt_multi`]; see it for the general (and
+/// multi-output) contract.
 pub fn construct_shield_pczt<R: RngCore + CryptoRng>(
     recipient: &OrchardAddressBytes,
     amount: u64,
@@ -156,21 +213,16 @@ pub fn construct_shield_pczt<R: RngCore + CryptoRng>(
     memo: &MemoBytes,
     rng: R,
 ) -> Result<PcztBundle, IronwoodBuildError> {
-    let recipient = Option::from(Address::from_raw_address_bytes(recipient))
-        .ok_or(IronwoodBuildError::BadRecipient)?;
-    let anchor = Option::from(Anchor::from_bytes(*anchor)).ok_or(IronwoodBuildError::BadAnchor)?;
-    let ovk = ovk.map(OutgoingViewingKey::from);
-
-    let bundle_version = BundleVersion::ironwood_v3();
-    let flags = bundle_version.default_flags();
-    let mut builder = Builder::new(BundleType::UNPADDED, bundle_version, flags, anchor)
-        .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
-    builder
-        .add_output(ovk, recipient, NoteValue::from_raw(amount), *memo)
-        .map_err(|e| IronwoodBuildError::Output(e.to_string()))?;
-    let (bundle, _meta) = builder
-        .build_for_pczt(rng)
-        .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
+    let (bundle, _action_indices) = construct_shield_pczt_multi(
+        &[IronwoodOutputSpec {
+            recipient: *recipient,
+            amount,
+            ovk,
+            memo: *memo,
+        }],
+        anchor,
+        rng,
+    )?;
     Ok(bundle)
 }
 

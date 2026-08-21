@@ -664,29 +664,37 @@ fn transparent_signing_state(inputs: &[crate::bitcoin::psbt::Input]) -> &'static
     "half_signed"
 }
 
-/// The `ironwood` node: the shielded output value/recipient and action-data (commitments,
-/// ciphertexts, flags, value balance, anchor) read from the PCZT stored in the proprietary map.
-/// Reports an error message inline rather than aborting the whole parse if the PCZT is malformed
-/// or missing (e.g. a v6 PSBT that had `add_ironwood_output` never called, or was already
-/// extracted via `combine_ironwood_proof`).
+/// The `ironwood` node: every shielded output's value/recipient (one per action) and the bundle's
+/// action-data (commitments, ciphertexts, flags, value balance, anchor) read from the PCZT stored
+/// in the proprietary map. Reports an error message inline rather than aborting the whole parse if
+/// the PCZT is malformed or missing (e.g. a v6 PSBT that had `add_ironwood_output`/
+/// `add_ironwood_outputs` never called, or was already extracted via `combine_ironwood_proof`).
 fn ironwood_shielded_state_to_node(zcash_psbt: &ZcashBitGoPsbt) -> Node {
     let mut node = Node::new("ironwood", Primitive::None);
 
-    match zcash_psbt.ironwood_shielded_output_info() {
-        Ok(Some((value, recipient))) => {
-            let mut output_node = Node::new("shielded_output", Primitive::None);
-            output_node.add_child(Node::new("value", Primitive::U64(value)));
-            output_node.add_child(Node::new(
-                "recipient",
-                Primitive::Buffer(recipient.to_vec()),
-            ));
-            node.add_child(output_node);
-        }
-        Ok(None) => {
+    match zcash_psbt.ironwood_shielded_outputs_info() {
+        Ok(outputs) if outputs.is_empty() => {
             node.add_child(Node::new(
-                "shielded_output",
+                "shielded_outputs",
                 Primitive::String("none".to_string()),
             ));
+        }
+        Ok(outputs) => {
+            let mut outputs_node = Node::new("shielded_outputs", Primitive::None);
+            for (action_index, value, recipient) in outputs {
+                let mut output_node = Node::new("shielded_output", Primitive::None);
+                output_node.add_child(Node::new(
+                    "action_index",
+                    Primitive::U64(action_index as u64),
+                ));
+                output_node.add_child(Node::new("value", Primitive::U64(value)));
+                output_node.add_child(Node::new(
+                    "recipient",
+                    Primitive::Buffer(recipient.to_vec()),
+                ));
+                outputs_node.add_child(output_node);
+            }
+            node.add_child(outputs_node);
         }
         Err(e) => {
             node.add_child(Node::new("shielded_output_error", Primitive::String(e)));
@@ -873,7 +881,8 @@ mod ironwood_v6_tests {
 
     fn assert_shielded_output(node: &Node, expected_value: u64, expected_recipient: &[u8; 43]) {
         let ironwood = find(node, "ironwood").expect("ironwood node present");
-        let output = find(ironwood, "shielded_output").expect("shielded_output node present");
+        let outputs = find(ironwood, "shielded_outputs").expect("shielded_outputs node present");
+        let output = find(outputs, "shielded_output").expect("shielded_output node present");
         let value = find(output, "value").expect("value present");
         match &value.value {
             Primitive::U64(v) => assert_eq!(*v, expected_value),

@@ -2737,50 +2737,55 @@ impl BitGoPsbt {
             .collect()
     }
 
-    /// The synthesized `ParsedOutput` for this PSBT's shielded (Ironwood) output, and its value —
-    /// `None` if this isn't a v6 (Ironwood) PSBT, or it is but no shielded output has been added
-    /// yet. Shared by `parse_transaction_with_wallet_keys` (which also folds the value into
-    /// `miner_fee`/`spend_amount`) and `parse_outputs_with_wallet_keys` (which only needs the
-    /// output entry).
+    /// The synthesized `ParsedOutput` for every one of this PSBT's shielded (Ironwood) outputs,
+    /// paired with its value — empty if this isn't a v6 (Ironwood) PSBT, or it is but no shielded
+    /// output has been added yet. Shared by `parse_transaction_with_wallet_keys` (which also folds
+    /// each value into `miner_fee`/`spend_amount`) and `parse_outputs_with_wallet_keys` (which only
+    /// needs the output entries).
     ///
-    /// The shielded output lives in a proprietary-map PCZT rather than `unsigned_tx.output`, so
-    /// plain transparent-output parsing never sees it; this is how callers surface it explicitly.
-    fn shielded_output(&self) -> Result<Option<(ParsedOutput, u64)>, ParseTransactionError> {
+    /// The shielded outputs live in a proprietary-map PCZT rather than `unsigned_tx.output`, so
+    /// plain transparent-output parsing never sees them; this is how callers surface them
+    /// explicitly.
+    fn shielded_outputs(&self) -> Result<Vec<(ParsedOutput, u64)>, ParseTransactionError> {
         let BitGoPsbt::Zcash(z, _) = self else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
-        let Some((amount, recipient)) = z
-            .ironwood_shielded_output_info()
-            .map_err(ParseTransactionError::ShieldedOutput)?
-        else {
-            return Ok(None);
-        };
-        // Prefer the caller's original Unified Address (if `add_ironwood_output` was given one):
-        // it may carry a transparent/Sapling receiver alongside the Orchard one, which a
-        // single-receiver reconstruction from `recipient` alone cannot recover.
-        let address = match propkv::get_ironwood_unified_address(&z.psbt) {
-            Some(ua) => ua,
-            None => crate::zcash::unified_address::encode_orchard_receiver(
-                &recipient,
-                self.network().to_coin_name(),
-            )
-            .map_err(|e| ParseTransactionError::ShieldedOutput(e.to_string()))?,
-        };
-        Ok(Some((
-            ParsedOutput {
-                address: Some(address),
-                // No scriptPubKey exists for a shielded output; the raw receiver is still
-                // available here (not a scriptPubKey, but the same "raw output-destination
-                // bytes" role this field plays for transparent outputs).
-                script: recipient.to_vec(),
-                value: amount,
-                script_id: None,
-                paygo: false,
-                derivation_path: None,
-                is_shielded: Some(true),
-            },
-            amount,
-        )))
+        let infos = z
+            .ironwood_shielded_outputs_info()
+            .map_err(ParseTransactionError::ShieldedOutput)?;
+        infos
+            .into_iter()
+            .map(|(action_index, amount, recipient)| {
+                // Prefer the caller's original Unified Address (if `add_ironwood_outputs` was
+                // given one for this action): it may carry a transparent/Sapling receiver
+                // alongside the Orchard one, which a single-receiver reconstruction from
+                // `recipient` alone cannot recover.
+                let address = match propkv::get_ironwood_unified_address(&z.psbt, action_index) {
+                    Some(ua) => ua,
+                    None => crate::zcash::unified_address::encode_orchard_receiver(
+                        &recipient,
+                        self.network().to_coin_name(),
+                    )
+                    .map_err(|e| ParseTransactionError::ShieldedOutput(e.to_string()))?,
+                };
+                Ok((
+                    ParsedOutput {
+                        address: Some(address),
+                        // No scriptPubKey exists for a shielded output; the raw receiver is
+                        // still available here (not a scriptPubKey, but the same "raw
+                        // output-destination bytes" role this field plays for transparent
+                        // outputs).
+                        script: recipient.to_vec(),
+                        value: amount,
+                        script_id: None,
+                        paygo: false,
+                        derivation_path: None,
+                        is_shielded: Some(true),
+                    },
+                    amount,
+                ))
+            })
+            .collect()
     }
 
     /// Calculate total input value from parsed inputs
@@ -3442,7 +3447,7 @@ impl BitGoPsbt {
         paygo_pubkeys: &[secp256k1::PublicKey],
     ) -> Result<Vec<ParsedOutput>, ParseTransactionError> {
         let mut outputs = self.parse_outputs(wallet_keys, paygo_pubkeys)?;
-        if let Some((output, _amount)) = self.shielded_output()? {
+        for (output, _amount) in self.shielded_outputs()? {
             outputs.push(output);
         }
         Ok(outputs)
@@ -3475,10 +3480,10 @@ impl BitGoPsbt {
         let (mut total_output_value, mut spend_amount) =
             Self::sum_output_values(&psbt.unsigned_tx.output, &parsed_outputs)?;
 
-        // Fold in the shielded output, if any: it's invisible to the transparent-only parsing
-        // above, so without this it silently vanishes into `miner_fee` and `spend_amount`
+        // Fold in the shielded outputs, if any: they're invisible to the transparent-only parsing
+        // above, so without this they silently vanish into `miner_fee` and `spend_amount`
         // undercounts the send.
-        if let Some((output, amount)) = self.shielded_output()? {
+        for (output, amount) in self.shielded_outputs()? {
             let output_index = parsed_outputs.len();
             parsed_outputs.push(output);
             total_output_value = total_output_value.checked_add(amount).ok_or(

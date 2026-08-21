@@ -222,6 +222,44 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
   }
 
   /**
+   * Add one or more shielded outputs (Constructor role) as a single orchard PCZT — the
+   * multi-recipient counterpart to {@link addShieldedOutput}. Every recipient must be passed in
+   * one call: only one call to `addShieldedOutput`/`addShieldedOutputs` is supported per PSBT (see
+   * {@link addShieldedOutput}).
+   *
+   * @param outputs - one entry per recipient; `memo` defaults per-entry to the ZIP-302 "no memo"
+   *   encoding, exactly as {@link addShieldedOutput}'s does
+   * @param anchor - 32-byte Ironwood note-commitment-tree root, shared by every output
+   * @returns the action index assigned to each output, in the same order as `outputs` — the
+   *   orchard builder pads/reorders actions, so a client-managed-`ovk` caller must use these
+   *   indices (not the position in `outputs`) when later calling
+   *   `setIronwoodOutCiphertext`/`setIronwoodOutCiphertextForUser` for a specific recipient.
+   */
+  addShieldedOutputs(
+    outputs: Array<{
+      recipient: Uint8Array;
+      amount: bigint;
+      memo?: Uint8Array;
+      ovk?: Uint8Array;
+      unifiedAddress?: string;
+    }>,
+    anchor: Uint8Array,
+  ): number[] {
+    return Array.from(
+      this.wasm.add_ironwood_outputs(
+        outputs.map((o) => ({
+          recipient: o.recipient,
+          amount: o.amount,
+          memo: o.memo ?? zip302NoMemo(),
+          ovk: o.ovk,
+          unifiedAddress: o.unifiedAddress,
+        })),
+        anchor,
+      ),
+    );
+  }
+
+  /**
    * Client-managed `ovk`: re-encrypt the shielded output's `out_ciphertext` under **this wallet's**
    * `ovk`, derived as the ECDH agreement of `rootWalletKeys.bitgoKey()` and `userKey`. Both are root
    * keys, so the `ovk` does not depend on which inputs the transaction spends, and the server can
