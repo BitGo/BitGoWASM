@@ -17,7 +17,7 @@ import {
   type InputScriptType,
   type OutputScriptType,
 } from "../../js/fixedScriptWallet/index.js";
-import { Descriptor, Transaction } from "../../js/index.js";
+import { Descriptor } from "../../js/index.js";
 import { createPsbt } from "../../js/descriptorWallet/psbt/createPsbt.js";
 import { signWithKey } from "../../js/descriptorWallet/psbt/sign.js";
 import type { CoinName } from "../../js/coinName.js";
@@ -61,7 +61,7 @@ function bytesToHex(bytes: Uint8Array): string {
 async function nextMiningCoinbase(
   rpc: RpcClient,
   height: number,
-): Promise<{ txid: string; vout: number; value: bigint; prevTxHex: string }> {
+): Promise<{ txid: string; vout: number; value: bigint }> {
   const hash = await rpc.getBlockHash(height);
   const block = await rpc.getBlockVerbose(hash, 2);
   const txs = block.rawtx ?? (block.tx as RpcTxVerbose[]);
@@ -73,7 +73,6 @@ async function nextMiningCoinbase(
     txid: coinbase.txid,
     vout: out.n,
     value,
-    prevTxHex: coinbase.hex,
   };
 }
 
@@ -93,8 +92,6 @@ async function fundScriptFromMining(
   );
 
   const descriptor = Descriptor.fromString(PEARL_MINING_DESCRIPTOR, "definite");
-  const prevTx = Transaction.fromBytes(hexToBytes(coinbase.prevTxHex));
-
   const psbt = createPsbt(
     { version: 2, locktime: 0 },
     [
@@ -105,7 +102,6 @@ async function fundScriptFromMining(
           script: hexToBytes(PEARL_MINING_TAPROOT_SCRIPT),
           value: coinbase.value,
         },
-        nonWitnessUtxo: prevTx.toBytes(),
         descriptor,
       },
     ],

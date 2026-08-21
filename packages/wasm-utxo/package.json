@@ -60,7 +60,8 @@
     "./dist/cjs/js/wasm/wasm_utxo.js"
   ],
   "scripts": {
-    "test": "npm run test:mocha && npm run test:wasm-pack && npm run test:imports",
+    "test": "npm run build:test && npm run test:mocha && npm run test:wasm-pack && npm run test:imports",
+    "build:test": "tsc --noEmit --project tsconfig.test.json",
     "test:mocha": "mocha --recursive 'test/**/*.ts'",
     "test:integrationLocalRpc": "mocha --config .mocharc.integrationLocalRpc.json --recursive 'test/integrationLocalRpc/**/*.test.ts'",
     "test:integrationLocalRpc:generate": "tsx --experimental-wasm-modules test/integrationLocalRpc/generate/main.ts",
@@ -76,7 +77,7 @@
     "build:ts-cjs": "tsc --project tsconfig.cjs.json",
     "build:ts": "npm run build:ts-esm && npm run build:ts-cjs",
     "build:package-json": "echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
-    "build": "npm run build:wasm && npm run build:ts && npm run build:package-json",
+    "build": "npm run build:wasm && npm run build:ts && npm run build:test && npm run build:package-json",
     "check-fmt": "npm run lint:prettier && npm run lint:rustfmt",
     "lint:prettier": "prettier --check .",
     "lint:eslint": "eslint .",

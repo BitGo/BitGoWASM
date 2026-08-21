@@ -3,7 +3,6 @@ import { describe } from "mocha";
 import { getNetworkList, getNetworkName } from "../networks.js";
 import { testFixtureArray, txValidTestFile, TxValidVector } from "./fixtures.js";
 import { Transaction } from "../../js/index.js";
-import { toCoinName } from "../../js/coinName.js";
 
 describe("Third-Party Fixtures", function () {
   getNetworkList().forEach((network) => {
@@ -14,15 +13,14 @@ describe("Third-Party Fixtures", function () {
           const buffer = Buffer.from(txHex, "hex");
 
           // Parse transaction using factory dispatch
-          const coin = toCoinName(getNetworkName(network));
-          const tx = Transaction.fromBytes(buffer, coin);
+          const tx = Transaction.fromBytes(buffer, network);
 
           // Round-trip to verify serialization
           const serialized = Buffer.from(tx.toBytes());
           assert.deepEqual(
             serialized,
             buffer,
-            `Transaction round-trip failed for ${coin} vector ${i}`,
+            `Transaction round-trip failed for ${network} vector ${i}`,
           );
         });
       });

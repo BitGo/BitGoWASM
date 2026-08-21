@@ -185,17 +185,14 @@ describe("parseTransactionWithWalletKeys", function () {
               // isShielded is only meaningful for Zcash (Orchard/Ironwood); every other coin
               // omits it since it has no concept of a shielded output.
               if (networkName === "zec") {
+                assert.ok("isShielded" in output, `Output ${i} should expose isShielded for Zcash`);
                 assert.strictEqual(
                   output.isShielded,
                   false,
                   `Output ${i} isShielded should be false for a transparent Zcash output`,
                 );
               } else {
-                assert.strictEqual(
-                  output.isShielded,
-                  undefined,
-                  `Output ${i} isShielded should be absent for a non-Zcash coin`,
-                );
+                assert.ok(!("isShielded" in output), `Output ${i} should not expose isShielded`);
               }
             });
 
