@@ -43,6 +43,7 @@ export { BitGoKeySubtype, type PsbtKvKey } from "./BitGoKeySubtype.js";
 export {
   ZcashBitGoPsbt,
   type ZcashNetworkName,
+  type ZcashParsedOutput,
   type CreateEmptyZcashOptions,
   IRONWOOD_VERSION_GROUP_ID,
 } from "./ZcashBitGoPsbt.js";

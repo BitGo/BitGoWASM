@@ -16,11 +16,17 @@ pub(crate) trait TryIntoJsValue {
 }
 
 macro_rules! js_obj {
-    ( $( $key:expr => $value:expr ),* ) => {{
+    ( $( $key:expr => $value:expr ),* $(, ? $optional_key:expr => $optional_value:expr)* $(,)? ) => {{
         let obj = js_sys::Object::new();
         $(
             js_sys::Reflect::set(&obj, &$key.into(), &$value.try_to_js_value()?.into())
                 .map_err(|_| WasmUtxoError::new("Failed to set object property"))?;
+        )*
+        $(
+            if let Some(value) = &$optional_value {
+                js_sys::Reflect::set(&obj, &$optional_key.into(), &value.try_to_js_value()?.into())
+                    .map_err(|_| WasmUtxoError::new("Failed to set object property"))?;
+            }
         )*
         Ok(Into::<JsValue>::into(obj)) as Result<JsValue, WasmUtxoError>
     }};
@@ -392,7 +398,7 @@ impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedOutput {
             "scriptId" => self.script_id,
             "paygo" => self.paygo,
             "derivationPath" => self.derivation_path.clone(),
-            "isShielded" => self.is_shielded
+            ? "isShielded" => self.is_shielded
         )
     }
 }
@@ -586,4 +592,32 @@ pub fn collect_partial_signatures(input: &Input) -> Vec<PartialSignature> {
     }
 
     signatures
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    fn optional_properties_object() -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "required" => true,
+            ? "present" => Some(true),
+            ? "absent" => Option::<bool>::None
+        )
+    }
+
+    #[wasm_bindgen_test]
+    fn js_obj_omits_none_optional_properties() {
+        let object = optional_properties_object().unwrap();
+
+        assert!(js_sys::Reflect::has(&object, &"required".into()).unwrap());
+        assert_eq!(
+            js_sys::Reflect::get(&object, &"present".into())
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
+        assert!(!js_sys::Reflect::has(&object, &"absent".into()).unwrap());
+    }
 }

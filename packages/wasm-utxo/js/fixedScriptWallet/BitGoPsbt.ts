@@ -53,21 +53,11 @@ export type ParsedOutput = {
   paygo: boolean;
   /** Full BIP32 derivation path from the wallet xpub (e.g. "0/1"). Null for external outputs. */
   derivationPath: string | null;
-  /**
-   * True for a shielded (Orchard/Ironwood) output. Such an output has no `unsigned_tx` entry of
-   * its own — it lives in the PSBT's proprietary-map PCZT, read from its plaintext (not
-   * encrypted/decrypted) recipient field. `address` is a single-receiver ZIP-316 unified address
-   * (`u1...`/`utest1...`) encoding that receiver — a real, usable Zcash address, though not
-   * necessarily byte-identical to whatever multi-receiver UA the sender originally pasted in (a
-   * UA with a transparent/Sapling receiver too would round-trip to a different string carrying
-   * only the Orchard one). `script` holds the same receiver as raw 43 bytes.
-   */
-  isShielded: boolean;
 };
 
-export type ParsedTransaction = {
+export type ParsedTransaction<TOutput extends ParsedOutput = ParsedOutput> = {
   inputs: ParsedInput[];
-  outputs: ParsedOutput[];
+  outputs: TOutput[];
   spendAmount: bigint;
   minerFee: bigint;
   virtualSize: number;
@@ -145,7 +135,10 @@ export type HydrationUnspent =
   | { chain: number; index: number; value: bigint } // wallet input
   | { pubkey: Uint8Array; value: bigint }; // P2SH-P2PK replay protection input
 
-export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddress {
+export class BitGoPsbt<TOutput extends ParsedOutput = ParsedOutput>
+  extends PsbtBase<WasmBitGoPsbt>
+  implements IPsbtWithAddress
+{
   protected constructor(wasm: WasmBitGoPsbt) {
     super(wasm);
   }
@@ -626,7 +619,7 @@ export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddre
   parseTransactionWithWalletKeys(
     walletKeys: WalletKeysArg,
     options: ParseTransactionOptions,
-  ): ParsedTransaction {
+  ): ParsedTransaction<TOutput> {
     const keys = RootWalletKeys.from(walletKeys);
     const rp = ReplayProtection.from(options.replayProtection, this._wasm.network());
     const pubkeys = options.payGoPubkeys?.map((arg) => ECPair.from(arg).wasm);
@@ -634,7 +627,7 @@ export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddre
       keys.wasm,
       rp.wasm,
       pubkeys,
-    ) as ParsedTransaction;
+    ) as ParsedTransaction<TOutput>;
   }
 
   /**
@@ -650,13 +643,10 @@ export class BitGoPsbt extends PsbtBase<WasmBitGoPsbt> implements IPsbtWithAddre
    * @returns Array of parsed outputs
    * @note This method does NOT validate wallet inputs. It only parses outputs.
    */
-  parseOutputsWithWalletKeys(
-    walletKeys: WalletKeysArg,
-    options?: ParseOutputsOptions,
-  ): ParsedOutput[] {
+  parseOutputsWithWalletKeys(walletKeys: WalletKeysArg, options?: ParseOutputsOptions): TOutput[] {
     const keys = RootWalletKeys.from(walletKeys);
     const pubkeys = options?.payGoPubkeys?.map((arg) => ECPair.from(arg).wasm);
-    return this._wasm.parse_outputs_with_wallet_keys(keys.wasm, pubkeys) as ParsedOutput[];
+    return this._wasm.parse_outputs_with_wallet_keys(keys.wasm, pubkeys) as TOutput[];
   }
 
   /**

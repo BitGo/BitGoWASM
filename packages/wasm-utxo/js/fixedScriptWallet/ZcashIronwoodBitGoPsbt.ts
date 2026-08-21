@@ -198,14 +198,27 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
    * @param options.anchor - 32-byte Ironwood note-commitment-tree root
    * @param options.memo - optional 512-byte memo (defaults to the ZIP-302 "no memo" encoding)
    * @param options.ovk - optional 32-byte outgoing viewing key (omit for a keyless build)
+   * @param options.unifiedAddress - optional full Unified Address string this output was addressed
+   *   to. Its Orchard receiver must equal `recipient`. The PCZT itself only carries the raw 43-byte
+   *   receiver — a lossy encoding for a multi-receiver UA, since any transparent/Sapling receiver
+   *   can't be recovered from it — so passing this stores the original UA verbatim, letting a later
+   *   `parseOutputsWithWalletKeys`/`parseTransactionWithWalletKeys` (even after a
+   *   serialize/deserialize round-trip) return it in full instead of a re-encoded single-receiver UA.
    */
   addShieldedOutput(
     recipient: Uint8Array,
     amount: bigint,
-    options: { anchor: Uint8Array; memo?: Uint8Array; ovk?: Uint8Array },
+    options: { anchor: Uint8Array; memo?: Uint8Array; ovk?: Uint8Array; unifiedAddress?: string },
   ): void {
     const memo = options.memo ?? zip302NoMemo();
-    this.wasm.add_ironwood_output(recipient, amount, options.ovk, options.anchor, memo);
+    this.wasm.add_ironwood_output(
+      recipient,
+      amount,
+      options.ovk,
+      options.anchor,
+      memo,
+      options.unifiedAddress,
+    );
   }
 
   /**

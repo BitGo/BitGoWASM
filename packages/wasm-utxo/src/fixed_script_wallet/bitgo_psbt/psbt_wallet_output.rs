@@ -16,9 +16,10 @@ pub struct ParsedOutput {
     /// `None` for outputs that do not belong to this wallet.
     pub derivation_path: Option<DerivationPath>,
     /// Whether this output is a shielded (Orchard/Ironwood) output rather than a transparent one.
-    /// Always `false` for outputs parsed from `tx_output`/`psbt_output` — set by the caller when
-    /// synthesizing a `ParsedOutput` for the shielded side of a v6 (Ironwood) transaction.
-    pub is_shielded: bool,
+    /// `None` for coins that don't support shielded outputs. Always `Some(false)` for outputs
+    /// parsed from `tx_output`/`psbt_output` on a Zcash PSBT — set to `Some(true)` by the caller
+    /// when synthesizing a `ParsedOutput` for the shielded side of a v6 (Ironwood) transaction.
+    pub is_shielded: Option<bool>,
 }
 
 impl ParsedOutput {
@@ -63,7 +64,7 @@ impl ParsedOutput {
             script_id,
             paygo,
             derivation_path,
-            is_shielded: false,
+            is_shielded: matches!(network, Network::Zcash | Network::ZcashTestnet).then_some(false),
         })
     }
 

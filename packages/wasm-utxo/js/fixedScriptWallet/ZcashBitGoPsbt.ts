@@ -4,11 +4,29 @@ import {
   zcash_ironwood_version_group_id,
 } from "../wasm/wasm_utxo.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
-import { BitGoPsbt, type CreateEmptyOptions, type HydrationUnspent } from "./BitGoPsbt.js";
+import {
+  BitGoPsbt,
+  type CreateEmptyOptions,
+  type HydrationUnspent,
+  type ParsedOutput,
+} from "./BitGoPsbt.js";
 import { ZcashTransaction, type ITransaction } from "../transaction.js";
 
 /** Zcash network names */
 export type ZcashNetworkName = "zcash" | "zcashTest" | "zec" | "tzec";
+
+export type ZcashParsedOutput = ParsedOutput & {
+  /**
+   * True for a shielded (Orchard/Ironwood) output. Such an output has no `unsigned_tx` entry of
+   * its own — it lives in the PSBT's proprietary-map PCZT, read from its plaintext (not
+   * encrypted/decrypted) recipient field. `address` is a single-receiver ZIP-316 unified address
+   * (`u1...`/`utest1...`) encoding that receiver — a real, usable Zcash address, though not
+   * necessarily byte-identical to whatever multi-receiver UA the sender originally pasted in (a
+   * UA with a transparent/Sapling receiver too would round-trip to a different string carrying
+   * only the Orchard one). `script` holds the same receiver as raw 43 bytes.
+   */
+  isShielded: boolean;
+};
 
 /**
  * Zcash v6 (Ironwood) version group id (0xd884b698). Its presence marks a PSBT as v6 — see
@@ -62,7 +80,7 @@ export type CreateEmptyZcashWithConsensusBranchIdOptions = CreateEmptyOptions & 
  * const psbt = ZcashBitGoPsbt.fromBytes(bytes, "zcash");
  * ```
  */
-export class ZcashBitGoPsbt extends BitGoPsbt {
+export class ZcashBitGoPsbt extends BitGoPsbt<ZcashParsedOutput> {
   /**
    * Create an empty Zcash PSBT with consensus branch ID determined from block height
    *

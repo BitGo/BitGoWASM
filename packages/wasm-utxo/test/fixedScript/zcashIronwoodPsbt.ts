@@ -1,4 +1,7 @@
 import assert from "node:assert";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "mocha";
 
 import {
@@ -8,7 +11,9 @@ import {
 import {
   IRONWOOD_VERSION_GROUP_ID,
   ZcashBitGoPsbt,
+  type ZcashParsedOutput,
 } from "../../js/fixedScriptWallet/ZcashBitGoPsbt.js";
+import type { ParsedTransaction } from "../../js/fixedScriptWallet/BitGoPsbt.js";
 import { getKeyTriple, getWalletKeysForSeed } from "../../js/testutils/index.js";
 import { ZcashUnifiedAddress } from "../../js/fixedScriptWallet/ZcashUnifiedAddress.js";
 
@@ -23,6 +28,20 @@ const RECIPIENT = Buffer.from(
 );
 
 const SCRIPT_ID = { chain: 0, index: 0 } as const;
+
+// The testnet fixture UA carries *two* receivers — transparent and Orchard/Ironwood — which is what
+// makes it usable to show what a multi-receiver UA loses on its way into the PCZT.
+const MULTI_RECEIVER_UA = (
+  JSON.parse(
+    fs.readFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../fixtures/zcash/unified_address.json",
+      ),
+      "utf8",
+    ),
+  ) as { testnetWallet: { unified: string } }
+).testnetWallet.unified;
 
 describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
   const walletKeys = getWalletKeysForSeed("ironwood-ts");
@@ -146,9 +165,12 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
     // surfaced explicitly via `isShielded`.
     it("surfaces the shielded output as isShielded and folds its value into fee/spend accounting", function () {
       const psbt = buildShieldPsbt();
-      const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, {
-        replayProtection: { publicKeys: [] },
-      });
+      const parsed: ParsedTransaction<ZcashParsedOutput> = psbt.parseTransactionWithWalletKeys(
+        walletKeys,
+        {
+          replayProtection: { publicKeys: [] },
+        },
+      );
 
       assert.strictEqual(parsed.outputs.length, 2);
       const shielded = parsed.outputs.filter((o) => o.isShielded);
@@ -197,7 +219,7 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
     // belonging to a different wallet than the inputs) would silently miss the shielded note.
     it("surfaces the shielded output alongside the transparent change output", function () {
       const psbt = buildShieldPsbt();
-      const outputs = psbt.parseOutputsWithWalletKeys(walletKeys);
+      const outputs: ZcashParsedOutput[] = psbt.parseOutputsWithWalletKeys(walletKeys);
 
       assert.strictEqual(outputs.length, 2);
       const shielded = outputs.filter((o) => o.isShielded);
@@ -225,6 +247,138 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
       const outputs = psbt.parseOutputsWithWalletKeys(walletKeys);
       assert.strictEqual(outputs.length, 1);
       assert.strictEqual(outputs[0].isShielded, false);
+    });
+
+    // A multi-receiver UA is *lossy* through the PSBT by default: `addShieldedOutput` stores only
+    // the 43-byte Orchard receiver in the PCZT's `recipient` field, so the transparent (and any
+    // Sapling) receiver is dropped at construction and cannot come back out unless the caller also
+    // passes `options.unifiedAddress` (see the round-trip test below). Without it, parsing returns a
+    // freshly encoded *single*-receiver UA for the Orchard receiver alone.
+    it("persists only the Orchard receiver of a multi-receiver unified address, if unifiedAddress is omitted", function () {
+      const ua = ZcashUnifiedAddress.parse(MULTI_RECEIVER_UA, "zcashTest");
+      const orchard = ua.orchardReceiver;
+      assert.ok(orchard, "fixture UA has an Orchard receiver");
+      assert.ok(ua.transparentScript, "fixture UA also has a transparent receiver");
+
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput({ txid: "11".repeat(32), vout: 0, value: 200_000_000n }, walletKeys, {
+        scriptId: SCRIPT_ID,
+        signPath: { signer: "user", cosigner: "bitgo" },
+      });
+      psbt.addWalletOutput(walletKeys, { chain: 1, index: 0, value: 99_900_000n });
+      psbt.addShieldedOutput(orchard, 100_000_000n, { anchor: new Uint8Array(32) });
+
+      // Survives a serialize round-trip: the receiver lives in the PSBT bytes, not just in memory.
+      const round = ZcashIronwoodBitGoPsbt.fromBytes(psbt.serialize(), "zcashTest");
+      const shielded = round.parseOutputsWithWalletKeys(walletKeys).filter((o) => o.isShielded);
+      assert.strictEqual(shielded.length, 1);
+      assert.deepStrictEqual(Buffer.from(shielded[0].script), Buffer.from(orchard));
+
+      // The returned address is *not* the UA that was passed in — it re-encodes the Orchard
+      // receiver on its own.
+      const recovered = shielded[0].address;
+      assert.ok(recovered);
+      assert.notStrictEqual(recovered, MULTI_RECEIVER_UA);
+      const recoveredUa = ZcashUnifiedAddress.parse(recovered, "zcashTest");
+      assert.deepStrictEqual(
+        Buffer.from(recoveredUa.orchardReceiver ?? []),
+        Buffer.from(orchard),
+        "same Orchard receiver",
+      );
+      assert.strictEqual(
+        recoveredUa.transparentScript,
+        undefined,
+        "the transparent receiver did not survive",
+      );
+      assert.strictEqual(
+        recoveredUa.saplingReceiver,
+        undefined,
+        "nor would a Sapling receiver have",
+      );
+
+      // Still the same payee, though: every receiver of the recovered UA is a receiver of the
+      // original, so a caller can verify the shielded output against the address the user pasted.
+      assert.strictEqual(ua.contains(recovered), true);
+    });
+
+    // Passing `options.unifiedAddress` stores the full UA verbatim, so it survives a
+    // serialize/deserialize round-trip byte-for-byte — receivers and all — instead of being
+    // rebuilt from just the Orchard receiver.
+    it("round-trips the full multi-receiver unified address when unifiedAddress is provided", function () {
+      const ua = ZcashUnifiedAddress.parse(MULTI_RECEIVER_UA, "zcashTest");
+      const orchard = ua.orchardReceiver;
+      assert.ok(orchard, "fixture UA has an Orchard receiver");
+      assert.ok(ua.transparentScript, "fixture UA also has a transparent receiver");
+
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput({ txid: "11".repeat(32), vout: 0, value: 200_000_000n }, walletKeys, {
+        scriptId: SCRIPT_ID,
+        signPath: { signer: "user", cosigner: "bitgo" },
+      });
+      psbt.addWalletOutput(walletKeys, { chain: 1, index: 0, value: 99_900_000n });
+      psbt.addShieldedOutput(orchard, 100_000_000n, {
+        anchor: new Uint8Array(32),
+        unifiedAddress: MULTI_RECEIVER_UA,
+      });
+
+      // Survives a serialize round-trip: the UA lives in the PSBT bytes, not just in memory.
+      const round = ZcashIronwoodBitGoPsbt.fromBytes(psbt.serialize(), "zcashTest");
+      const shielded = round.parseOutputsWithWalletKeys(walletKeys).filter((o) => o.isShielded);
+      assert.strictEqual(shielded.length, 1);
+      assert.deepStrictEqual(Buffer.from(shielded[0].script), Buffer.from(orchard));
+
+      // The exact original UA comes back, transparent receiver included — not a re-encoded
+      // single-receiver UA.
+      assert.strictEqual(shielded[0].address, MULTI_RECEIVER_UA);
+
+      // Also true through `parseTransactionWithWalletKeys`, which shares the same output-parsing
+      // path.
+      const parsed = round.parseTransactionWithWalletKeys(walletKeys, {
+        replayProtection: { publicKeys: [] },
+      });
+      const parsedShielded = parsed.outputs.filter((o) => o.isShielded);
+      assert.strictEqual(parsedShielded.length, 1);
+      assert.strictEqual(parsedShielded[0].address, MULTI_RECEIVER_UA);
+    });
+
+    function emptyPsbtWithoutShieldedOutput(): ZcashIronwoodBitGoPsbt {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput({ txid: "11".repeat(32), vout: 0, value: 200_000_000n }, walletKeys, {
+        scriptId: SCRIPT_ID,
+        signPath: { signer: "user", cosigner: "bitgo" },
+      });
+      psbt.addWalletOutput(walletKeys, { chain: 1, index: 0, value: 99_900_000n });
+      return psbt;
+    }
+
+    it("rejects a unifiedAddress whose Orchard receiver does not match recipient", function () {
+      const psbt = emptyPsbtWithoutShieldedOutput();
+      assert.throws(
+        () =>
+          psbt.addShieldedOutput(RECIPIENT, 100_000_000n, {
+            anchor: new Uint8Array(32),
+            unifiedAddress: MULTI_RECEIVER_UA,
+          }),
+        /does not match recipient/,
+      );
+    });
+
+    it("rejects a unifiedAddress that is not a valid unified address", function () {
+      const psbt = emptyPsbtWithoutShieldedOutput();
+      assert.throws(
+        () =>
+          psbt.addShieldedOutput(RECIPIENT, 100_000_000n, {
+            anchor: new Uint8Array(32),
+            unifiedAddress: "not-a-valid-unified-address",
+          }),
+        /invalid unified_address/,
+      );
     });
   });
 
