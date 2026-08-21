@@ -15,6 +15,7 @@ pub fn handle_add_shielded_output_command(
     anchor: String,
     ovk: Option<String>,
     memo: Option<String>,
+    unified_address: Option<String>,
 ) -> Result<()> {
     let raw_bytes = read_input_bytes(&path, "PSBT")?;
     let bytes = decode_input(&raw_bytes)?;
@@ -45,9 +46,17 @@ pub fn handle_add_shielded_output_command(
         None => [0u8; 512],
     };
 
-    psbt.add_ironwood_output(&recipient, value, ovk, &anchor, &memo, OsRng)
-        .map_err(|e| anyhow!(e))
-        .context("failed to add shielded output")?;
+    psbt.add_ironwood_output(
+        &recipient,
+        value,
+        ovk,
+        &anchor,
+        &memo,
+        unified_address.as_deref(),
+        OsRng,
+    )
+    .map_err(|e| anyhow!(e))
+    .context("failed to add shielded output")?;
 
     println!("{}", hex::encode(psbt.serialize().map_err(|e| anyhow!(e))?));
     Ok(())

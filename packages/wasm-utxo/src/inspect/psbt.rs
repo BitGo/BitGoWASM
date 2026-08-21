@@ -824,6 +824,7 @@ mod ironwood_v6_tests {
             None,
             &Anchor::empty_tree().to_bytes(),
             &[0u8; 512],
+            None, // unified_address
             OsRng,
         )
         .unwrap();

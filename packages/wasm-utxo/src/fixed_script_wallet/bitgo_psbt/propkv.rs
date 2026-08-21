@@ -271,6 +271,13 @@ pub enum ZecV6KeySubtype {
     /// happened, not just "no shielded output was ever added"). Persists even though the PCZT
     /// itself is gone, so a later read can tell the two "no PCZT" states apart.
     IronwoodExtracted = 0x04,
+    /// The full ZIP-316 Unified Address string (UTF-8) the shielded output was addressed to, if
+    /// the caller supplied one to [`crate::fixed_script_wallet::bitgo_psbt::zcash_psbt`]'s
+    /// `add_ironwood_output`. The PCZT itself only carries the raw 43-byte Orchard receiver, which
+    /// is lossy for a multi-receiver UA (transparent/Sapling receivers can't be recovered from it);
+    /// storing the original string here lets output parsing return the exact UA the caller passed,
+    /// receivers and all, after a serialize/deserialize round-trip.
+    UnifiedAddress = 0x05,
 }
 
 fn set_zec_v6(
@@ -290,6 +297,15 @@ fn get_zec_v6(psbt: &miniscript::bitcoin::psbt::Psbt, subtype: ZecV6KeySubtype) 
     find_kv_iter(&psbt.proprietary, BITGO_ZEC_V6, Some(subtype as u8))
         .next()
         .map(|(_, v)| v.clone())
+}
+
+fn remove_zec_v6(psbt: &mut miniscript::bitcoin::psbt::Psbt, subtype: ZecV6KeySubtype) {
+    let key = ProprietaryKey {
+        prefix: BITGO_ZEC_V6.to_vec(),
+        subtype: subtype as u8,
+        key: vec![],
+    };
+    psbt.proprietary.remove(&key);
 }
 
 fn set_zec_v6_u32(
@@ -375,6 +391,36 @@ pub fn get_zec_v6_params(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<(u32,
     let vgid = get_zec_v6_u32(psbt, ZecV6KeySubtype::VersionGroupId)?;
     let expiry = get_zec_v6_u32(psbt, ZecV6KeySubtype::ExpiryHeight)?;
     Some((vgid, expiry))
+}
+
+/// Store the full Unified Address string the Ironwood shielded output was addressed to, so it
+/// survives a serialize/deserialize round-trip verbatim (receivers and all) instead of being
+/// rebuilt from just the raw Orchard receiver. Overwrites any existing value.
+pub fn set_ironwood_unified_address(psbt: &mut miniscript::bitcoin::psbt::Psbt, ua: &str) {
+    set_zec_v6(
+        psbt,
+        ZecV6KeySubtype::UnifiedAddress,
+        ua.as_bytes().to_vec(),
+    );
+}
+
+/// Fetch the Unified Address string stored by [`set_ironwood_unified_address`], if present and
+/// valid UTF-8.
+pub fn get_ironwood_unified_address(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<String> {
+    let bytes = get_zec_v6(psbt, ZecV6KeySubtype::UnifiedAddress)?;
+    String::from_utf8(bytes).ok()
+}
+
+/// Remove the Unified Address string set by [`set_ironwood_unified_address`], if present.
+///
+/// Callers that build a shielded output without a `unified_address` must call this rather than
+/// simply not calling [`set_ironwood_unified_address`]: `add_ironwood_output` can be called again
+/// on a PSBT whose PCZT was previously extracted (see `take_ironwood_pczt`/
+/// `mark_ironwood_extracted`, which drop only the PCZT key, not this one), and without an explicit
+/// removal a UA stored for an earlier shielded output would otherwise survive and be silently
+/// misattributed to the new one.
+pub fn remove_ironwood_unified_address(psbt: &mut miniscript::bitcoin::psbt::Psbt) {
+    remove_zec_v6(psbt, ZecV6KeySubtype::UnifiedAddress);
 }
 
 #[cfg(test)]

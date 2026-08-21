@@ -61,8 +61,10 @@ export type ParsedOutput = {
    * necessarily byte-identical to whatever multi-receiver UA the sender originally pasted in (a
    * UA with a transparent/Sapling receiver too would round-trip to a different string carrying
    * only the Orchard one). `script` holds the same receiver as raw 43 bytes.
+   *
+   * `null` for coins that don't support shielded outputs (i.e. anything but Zcash).
    */
-  isShielded: boolean;
+  isShielded: boolean | null;
 };
 
 export type ParsedTransaction = {

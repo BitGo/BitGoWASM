@@ -724,6 +724,13 @@ impl ZcashBitGoPsbt {
     ///
     /// Exactly one shielded output is supported; calling this twice is an error rather than a silent
     /// overwrite of the first note (whose value the transparent side would still be funding).
+    ///
+    /// `unified_address`, if supplied, must be a Unified Address whose Orchard receiver is exactly
+    /// `recipient` — it is stored verbatim in the proprietary map (see
+    /// [`super::propkv::set_ironwood_unified_address`]) so that output parsing can later return the
+    /// original multi-receiver UA rather than reconstructing a single-receiver one from `recipient`
+    /// alone, which drops any transparent/Sapling receiver the caller's UA carried.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_ironwood_output<R: rand::RngCore + rand::CryptoRng>(
         &mut self,
         recipient: &crate::zcash::ironwood_build::OrchardAddressBytes,
@@ -731,12 +738,32 @@ impl ZcashBitGoPsbt {
         ovk: Option<crate::zcash::ironwood_build::OvkBytes>,
         anchor: &crate::zcash::ironwood_build::AnchorBytes,
         memo: &crate::zcash::ironwood_build::MemoBytes,
+        unified_address: Option<&str>,
         rng: R,
     ) -> Result<(), String> {
         if super::propkv::get_ironwood_pczt(&self.psbt).is_some() {
             return Err(
                 "an Ironwood shielded output is already present; only one is supported".to_string(),
             );
+        }
+        if let Some(ua) = unified_address {
+            let parsed = crate::zcash::unified_address::UnifiedAddress::parse(
+                ua,
+                self.network.to_coin_name(),
+            )
+            .map_err(|e| format!("invalid unified_address: {e}"))?;
+            let orchard = parsed
+                .orchard_receiver()
+                .map_err(|e| format!("invalid unified_address: {e}"))?
+                .ok_or_else(|| {
+                    "unified_address has no Orchard receiver, but recipient is an Orchard address"
+                        .to_string()
+                })?;
+            if orchard.as_slice() != recipient.as_slice() {
+                return Err(
+                    "unified_address's Orchard receiver does not match recipient".to_string(),
+                );
+            }
         }
         let pczt = crate::zcash::ironwood_build::construct_shield_pczt(
             recipient, amount, ovk, anchor, memo, rng,
@@ -745,6 +772,14 @@ impl ZcashBitGoPsbt {
         let bytes =
             crate::zcash::ironwood_pczt::serialize_pczt(&pczt).map_err(|e| e.to_string())?;
         super::propkv::set_ironwood_pczt(&mut self.psbt, bytes);
+        // Set-or-remove, not set-only: this can run again on a PSBT whose PCZT was previously
+        // extracted (mark_ironwood_extracted/take_ironwood_pczt drop only the PCZT key, not this
+        // one), so a `None` here must clear any UA left over from an earlier shielded output rather
+        // than leaving it to be silently misattributed to this one.
+        match unified_address {
+            Some(ua) => super::propkv::set_ironwood_unified_address(&mut self.psbt, ua),
+            None => super::propkv::remove_ironwood_unified_address(&mut self.psbt),
+        }
         Ok(())
     }
 
@@ -1602,6 +1637,7 @@ mod ironwood_v6_tests {
             None,
             &Anchor::empty_tree().to_bytes(),
             &[0u8; 512],
+            None, // unified_address
             OsRng,
         )
         .unwrap();
@@ -1711,6 +1747,7 @@ mod ironwood_v6_tests {
             None,
             &Anchor::empty_tree().to_bytes(),
             &[0u8; 512],
+            None, // unified_address
             OsRng,
         )
         .unwrap();
@@ -1826,6 +1863,7 @@ mod ironwood_v6_tests {
                 None, // keyless: the server never sees an ovk
                 &Anchor::empty_tree().to_bytes(),
                 &[0u8; 512],
+                None, // unified_address
                 OsRng,
             )
             .unwrap();
@@ -1988,6 +2026,7 @@ mod ironwood_v6_tests {
             None,
             &Anchor::empty_tree().to_bytes(),
             &[0u8; 512],
+            None, // unified_address
             OsRng,
         )
         .unwrap();
@@ -2363,6 +2402,7 @@ mod ironwood_v6_tests {
                 None,
                 &Anchor::empty_tree().to_bytes(),
                 &[0u8; 512],
+                None, // unified_address
                 OsRng,
             )
             .unwrap_err();
@@ -2653,6 +2693,7 @@ mod ironwood_v6_tests {
             None,
             &Anchor::empty_tree().to_bytes(),
             &[0u8; 512],
+            None, // unified_address
             OsRng,
         )
         .unwrap();
@@ -2674,6 +2715,164 @@ mod ironwood_v6_tests {
         let (value, got_recipient) = z.ironwood_shielded_output_info().unwrap().unwrap();
         assert_eq!(value, 100_000_000);
         assert_eq!(got_recipient, recipient);
+    }
+
+    /// `add_ironwood_output`'s optional `unified_address` is stored verbatim in the proprietary map
+    /// and survives a `serialize_v6`/`deserialize_v6` round-trip, so a caller who supplies the UA
+    /// they built the output from gets it back byte-for-byte later — unlike the raw 43-byte
+    /// `recipient`, which alone cannot reconstruct a multi-receiver UA.
+    #[test]
+    fn add_ironwood_output_unified_address_round_trips() {
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_ua_roundtrip"));
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x55u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 99_900_000, &wallet_keys)
+            .unwrap();
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+
+        let recipient = test_recipient();
+        let ua =
+            crate::zcash::unified_address::encode_orchard_receiver(&recipient, "tzec").unwrap();
+        z.add_ironwood_output(
+            &recipient,
+            100_000_000,
+            None,
+            &Anchor::empty_tree().to_bytes(),
+            &[0u8; 512],
+            Some(&ua),
+            OsRng,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(&z.psbt),
+            Some(ua.clone())
+        );
+
+        // Survives serialize/deserialize, not just in-memory state.
+        let round =
+            ZcashBitGoPsbt::deserialize_v6(&z.serialize_v6(), Network::ZcashTestnet).unwrap();
+        assert_eq!(
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(
+                &round.psbt
+            ),
+            Some(ua)
+        );
+    }
+
+    /// `add_ironwood_output` rejects a `unified_address` whose Orchard receiver doesn't match
+    /// `recipient` — a caller passing mismatched values is a bug, not something to silently store.
+    #[test]
+    fn add_ironwood_output_rejects_mismatched_unified_address() {
+        let mut z = build_shield_psbt("v6_ua_mismatch");
+        // Force a second call attempt by clearing the PCZT the helper already added, so we can
+        // exercise the mismatch path in isolation (the "already present" guard would otherwise fire
+        // first).
+        z.mark_ironwood_extracted();
+        assert!(
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_pczt(&z.psbt).is_none()
+        );
+
+        let other_recipient = {
+            let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([9u8; 32])).unwrap();
+            FullViewingKey::from(&sk)
+                .address_at(0u32, Scope::External)
+                .to_raw_address_bytes()
+        };
+        let mismatched_ua =
+            crate::zcash::unified_address::encode_orchard_receiver(&other_recipient, "tzec")
+                .unwrap();
+
+        let err = z
+            .add_ironwood_output(
+                &test_recipient(),
+                100_000_000,
+                None,
+                &Anchor::empty_tree().to_bytes(),
+                &[0u8; 512],
+                Some(&mismatched_ua),
+                OsRng,
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("does not match recipient"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A stored `unified_address` must not survive onto a *different* shielded output added later
+    /// in the PSBT's lifetime. `mark_ironwood_extracted`/`take_ironwood_pczt` drop only the PCZT
+    /// key, not the UA key, so `add_ironwood_output` is reachable a second time on the same PSBT
+    /// (exactly as in `add_ironwood_output_rejects_mismatched_unified_address` above); a `None`
+    /// `unified_address` on that second call must clear the first call's UA rather than leaving it
+    /// to be silently misattributed to the new recipient.
+    #[test]
+    fn add_ironwood_output_clears_stale_unified_address_on_reuse() {
+        let mut z = build_shield_psbt("v6_ua_stale");
+        z.mark_ironwood_extracted();
+        assert!(
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_pczt(&z.psbt).is_none()
+        );
+
+        let recipient_a = test_recipient();
+        let ua_a =
+            crate::zcash::unified_address::encode_orchard_receiver(&recipient_a, "tzec").unwrap();
+        z.add_ironwood_output(
+            &recipient_a,
+            100_000_000,
+            None,
+            &Anchor::empty_tree().to_bytes(),
+            &[0u8; 512],
+            Some(&ua_a),
+            OsRng,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(&z.psbt),
+            Some(ua_a.clone())
+        );
+
+        // Reuse the PSBT for a second (different) shielded output, without a unified_address.
+        z.mark_ironwood_extracted();
+        let recipient_b = {
+            let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([13u8; 32])).unwrap();
+            FullViewingKey::from(&sk)
+                .address_at(0u32, Scope::External)
+                .to_raw_address_bytes()
+        };
+        assert_ne!(recipient_a, recipient_b);
+        z.add_ironwood_output(
+            &recipient_b,
+            100_000_000,
+            None,
+            &Anchor::empty_tree().to_bytes(),
+            &[0u8; 512],
+            None, // unified_address
+            OsRng,
+        )
+        .unwrap();
+
+        // The stale UA from recipient_a must be gone, not silently attributed to recipient_b.
+        assert_eq!(
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(&z.psbt),
+            None
+        );
     }
 
     /// `combine_inputs` refuses a v6 PSBT outright.
@@ -2866,6 +3065,7 @@ mod ironwood_v6_tests {
             None,
             &Anchor::empty_tree().to_bytes(),
             &[0u8; 512],
+            None, // unified_address
             OsRng,
         )
         .unwrap();

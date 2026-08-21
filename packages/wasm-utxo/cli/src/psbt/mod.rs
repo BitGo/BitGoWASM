@@ -133,6 +133,11 @@ pub enum PsbtCommand {
         /// Memo field, hex-encoded (512 bytes; default: all-zero)
         #[arg(long)]
         memo: Option<String>,
+        /// Full Unified Address this output was addressed to, if known. Its Orchard receiver must
+        /// match --recipient. Stored verbatim so it survives a serialize/deserialize round-trip
+        /// instead of being reconstructed as a single-receiver UA when the PSBT is later parsed.
+        #[arg(long)]
+        unified_address: Option<String>,
     },
     /// Sign one transparent input of a v6 PSBT with a single private key, over the ZIP-244
     /// transparent sighash. Call once per required signature (2-of-3). Prints the updated PSBT
@@ -244,6 +249,7 @@ pub fn handle_command(command: PsbtCommand) -> Result<()> {
             anchor,
             ovk,
             memo,
+            unified_address,
         } => add_shielded_output::handle_add_shielded_output_command(
             path,
             network.into(),
@@ -252,6 +258,7 @@ pub fn handle_command(command: PsbtCommand) -> Result<()> {
             anchor,
             ovk,
             memo,
+            unified_address,
         ),
         PsbtCommand::SignV6Input {
             path,

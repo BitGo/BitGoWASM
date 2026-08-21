@@ -2755,11 +2755,17 @@ impl BitGoPsbt {
         else {
             return Ok(None);
         };
-        let address = crate::zcash::unified_address::encode_orchard_receiver(
-            &recipient,
-            self.network().to_coin_name(),
-        )
-        .map_err(|e| ParseTransactionError::ShieldedOutput(e.to_string()))?;
+        // Prefer the caller's original Unified Address (if `add_ironwood_output` was given one):
+        // it may carry a transparent/Sapling receiver alongside the Orchard one, which a
+        // single-receiver reconstruction from `recipient` alone cannot recover.
+        let address = match propkv::get_ironwood_unified_address(&z.psbt) {
+            Some(ua) => ua,
+            None => crate::zcash::unified_address::encode_orchard_receiver(
+                &recipient,
+                self.network().to_coin_name(),
+            )
+            .map_err(|e| ParseTransactionError::ShieldedOutput(e.to_string()))?,
+        };
         Ok(Some((
             ParsedOutput {
                 address: Some(address),
@@ -2771,7 +2777,7 @@ impl BitGoPsbt {
                 script_id: None,
                 paygo: false,
                 derivation_path: None,
-                is_shielded: true,
+                is_shielded: Some(true),
             },
             amount,
         )))

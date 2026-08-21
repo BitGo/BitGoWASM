@@ -528,6 +528,10 @@ impl BitGoPsbt {
     /// * `ovk` - optional outgoing viewing key ([`OVK_SIZE`] bytes; `None` for a keyless build)
     /// * `anchor` - Ironwood note-commitment-tree root ([`ANCHOR_SIZE`] bytes)
     /// * `memo` - ZIP-302 memo field ([`MEMO_SIZE`] bytes)
+    /// * `unified_address` - optional full Unified Address the output was addressed to; if given,
+    ///   its Orchard receiver must match `recipient`, and it is stored verbatim so output parsing
+    ///   can later return it in full (transparent/Sapling receivers included) instead of
+    ///   reconstructing a single-receiver UA from `recipient` alone
     ///
     /// [`ORCHARD_ADDRESS_SIZE`]: crate::zcash::ironwood_build::ORCHARD_ADDRESS_SIZE
     /// [`OVK_SIZE`]: crate::zcash::ironwood_build::OVK_SIZE
@@ -540,6 +544,7 @@ impl BitGoPsbt {
         ovk: Option<Vec<u8>>,
         anchor: &[u8],
         memo: &[u8],
+        unified_address: Option<String>,
     ) -> Result<(), WasmUtxoError> {
         use crate::zcash::ironwood_build::{
             AnchorBytes, MemoBytes, OrchardAddressBytes, OvkBytes, ANCHOR_SIZE, MEMO_SIZE,
@@ -558,7 +563,15 @@ impl BitGoPsbt {
         let memo: MemoBytes = fixed::<MEMO_SIZE>(memo, "memo")?;
         let ovk: Option<OvkBytes> = ovk.map(|v| fixed::<OVK_SIZE>(&v, "ovk")).transpose()?;
         self.zcash_mut()?
-            .add_ironwood_output(&recipient, amount, ovk, &anchor, &memo, rand::rngs::OsRng)
+            .add_ironwood_output(
+                &recipient,
+                amount,
+                ovk,
+                &anchor,
+                &memo,
+                unified_address.as_deref(),
+                rand::rngs::OsRng,
+            )
             .map_err(|e| WasmUtxoError::new(&e))
     }
 

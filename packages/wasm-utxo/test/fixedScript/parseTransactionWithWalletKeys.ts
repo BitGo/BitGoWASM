@@ -181,6 +181,22 @@ describe("parseTransactionWithWalletKeys", function () {
               } else {
                 assert.ok(output.value > 0n, `Output ${i} value should be > 0`);
               }
+
+              // isShielded is only meaningful for Zcash (Orchard/Ironwood); every other coin
+              // reports null since it has no concept of a shielded output.
+              if (networkName === "zec") {
+                assert.strictEqual(
+                  output.isShielded,
+                  false,
+                  `Output ${i} isShielded should be false for a transparent Zcash output`,
+                );
+              } else {
+                assert.strictEqual(
+                  output.isShielded,
+                  null,
+                  `Output ${i} isShielded should be null for a non-Zcash coin`,
+                );
+              }
             });
 
             // Verify spend amount: AcidTest uses other wallet (800) + null wallet (700) = 1500
