@@ -6,7 +6,8 @@ import {
   type DescriptorNode,
   type MiniscriptNode,
 } from "../js/ast/index.js";
-import { Descriptor, Miniscript } from "../js/index.js";
+import { Descriptor, Miniscript, Psbt } from "../js/index.js";
+import { getKey, getKeyTriple } from "../js/testutils/keys.js";
 
 // PoX-5 Bitcoin Staking lockup script (P2WSH + CLTV conditional branch).
 //
@@ -71,6 +72,64 @@ const POX5_MINISCRIPT_NODE: MiniscriptNode = {
 const POX5_DESCRIPTOR_NODE: DescriptorNode = { wsh: POX5_MINISCRIPT_NODE };
 const POX5_MINISCRIPT = formatNode(POX5_MINISCRIPT_NODE);
 const POX5_DESCRIPTOR = formatNode(POX5_DESCRIPTOR_NODE);
+
+function createEarlyExitPsbt(): {
+  psbt: Psbt;
+  principalPreimage: Buffer;
+} {
+  const [user, backup, bitgo] = getKeyTriple("pox5-finalization");
+  const earlyExit = getKey("pox5-early-exit");
+  const incompleteKey = getKey("pox5-incomplete");
+  const principalPreimage = Buffer.alloc(32, 0x42);
+  const descriptor = Descriptor.fromString(
+    formatNode({
+      wsh: {
+        and_v: [
+          {
+            "v:or_i": [
+              { after: UNLOCK_HEIGHT },
+              {
+                and_v: [
+                  {
+                    "v:sha256": crypto.createHash("sha256").update(principalPreimage).digest("hex"),
+                  },
+                  { pk: Buffer.from(earlyExit.publicKey).toString("hex") },
+                ],
+              },
+            ],
+          },
+          {
+            multi: [
+              2,
+              Buffer.from(user.publicKey).toString("hex"),
+              Buffer.from(backup.publicKey).toString("hex"),
+              Buffer.from(bitgo.publicKey).toString("hex"),
+            ],
+          },
+        ],
+      },
+    }),
+    "definite",
+  );
+  const scriptPubKey = descriptor.scriptPubkey();
+  const psbt = Psbt.create(2, 0);
+  psbt.addInput("01".repeat(32), 0, 100_000n, scriptPubKey, 0xfffffffe);
+  psbt.addOutput(scriptPubKey, 90_000n);
+  psbt.updateInputWithDescriptor(0, descriptor);
+
+  const incompleteDescriptor = Descriptor.fromString(
+    formatNode({ wsh: { pk: Buffer.from(incompleteKey.publicKey).toString("hex") } }),
+    "definite",
+  );
+  psbt.addInput("02".repeat(32), 0, 100_000n, incompleteDescriptor.scriptPubkey(), 0xfffffffe);
+  psbt.updateInputWithDescriptor(1, incompleteDescriptor);
+
+  for (const key of [user, backup, earlyExit]) {
+    assert.ok(key.privateKey, "test key must include private key material");
+    psbt.signWithPrv(key.privateKey);
+  }
+  return { psbt, principalPreimage };
+}
 
 // Expected script flow, verified structurally against construct-lockup-script (pox-5.clar:3711-3732).
 //
@@ -159,6 +218,26 @@ describe("PoX-5 Bitcoin Staking lockup script", function () {
       // Descriptor.toString() appends a BIP-380 checksum (#...); strip it for comparison.
       const toString = desc.toString();
       assert.strictEqual(toString.split("#")[0], POX5_DESCRIPTOR);
+    });
+  });
+
+  describe("PSBT early-exit finalization", function () {
+    it("satisfies the SHA256 branch from standard PSBT preimage metadata", function () {
+      const { psbt, principalPreimage } = createEarlyExitPsbt();
+
+      // Leave a second descriptor input incomplete to prove this only finalizes
+      // the requested input rather than requiring every input to be complete.
+      assert.throws(() => psbt.finalizeInput(0), /satisfy|preimage|finalize/i);
+      psbt.addSha256Preimage(0, principalPreimage);
+      psbt.finalizeInput(0);
+
+      assert.deepStrictEqual(psbt.getPartialSignatures(0), []);
+      assert.throws(() => psbt.finalizeInput(1), /satisfy|signature|finalize/i);
+    });
+
+    it("rejects non-32-byte SHA256 preimages", function () {
+      const { psbt } = createEarlyExitPsbt();
+      assert.throws(() => psbt.addSha256Preimage(0, Buffer.alloc(31)), /32 bytes/);
     });
   });
 

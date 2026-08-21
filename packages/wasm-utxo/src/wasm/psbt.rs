@@ -8,6 +8,7 @@ use crate::wasm::psbt_ops::WasmPsbtOps;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use crate::wasm::WrapDescriptor;
 use crate::zcash::transaction::{ZcashTransactionParts, ZCASH_SAPLING_VERSION_GROUP_ID};
+use miniscript::bitcoin::hashes::{sha256, Hash};
 use miniscript::bitcoin::locktime::absolute::LockTime;
 use miniscript::bitcoin::secp256k1::Secp256k1;
 use miniscript::bitcoin::transaction::{Transaction, Version};
@@ -358,6 +359,27 @@ impl WrapPsbt {
         }
     }
 
+    /// Add a 32-byte SHA256 preimage to an input's standard BIP174 metadata.
+    ///
+    /// Descriptor finalization uses this metadata to satisfy `sha256(H)`
+    /// Miniscript fragments when `H == sha256(preimage)`.
+    pub fn add_sha256_preimage(
+        &mut self,
+        input_index: usize,
+        preimage: Vec<u8>,
+    ) -> Result<(), WasmUtxoError> {
+        let preimage: [u8; 32] = preimage
+            .try_into()
+            .map_err(|_| WasmUtxoError::new("sha256 preimage must be 32 bytes"))?;
+        let input = self.0.inputs.get_mut(input_index).ok_or_else(|| {
+            WasmUtxoError::new(&format!("Input index {} out of bounds", input_index))
+        })?;
+        input
+            .sha256_preimages
+            .insert(sha256::Hash::hash(&preimage), preimage.to_vec());
+        Ok(())
+    }
+
     pub fn sign_with_xprv(&mut self, xprv: String) -> Result<JsValue, WasmUtxoError> {
         let key = bip32::Xpriv::from_str(&xprv).map_err(|_| WasmUtxoError::new("Invalid xprv"))?;
         self.0
@@ -526,6 +548,13 @@ impl WrapPsbt {
         self.0
             .finalize_mut(&Secp256k1::verification_only())
             .map_err(WasmUtxoError::from_errors)
+    }
+
+    /// Finalize one Miniscript input, preserving any other incomplete inputs.
+    pub fn finalize_input(&mut self, input_index: usize) -> Result<(), WasmUtxoError> {
+        self.0
+            .finalize_inp_mut(&Secp256k1::verification_only(), input_index)
+            .map_err(|error| WasmUtxoError::new(&error.to_string()))
     }
 
     /// Finalize all Zcash transparent inputs using ZIP-243 sighash verification.
