@@ -299,4 +299,15 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    fn test_to_asm_string() {
+        let key = "02ae7c3c0ebc315a33151a1985ebb1fdcae72b3b91c38e3193c40ebabfffe9c343";
+        let desc = WrapDescriptor::from_string(&format!("wsh(pk({key}))"), "definite").unwrap();
+
+        assert_eq!(
+            desc.to_asm_string().unwrap(),
+            format!("OP_PUSHBYTES_33 {key} OP_CHECKSIG")
+        );
+    }
 }
