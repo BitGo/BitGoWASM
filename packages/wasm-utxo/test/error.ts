@@ -39,7 +39,7 @@ describe("isWasmUtxoError", function () {
     before(function () {
       try {
         // Invalid pk_type triggers WasmUtxoError::new("Invalid descriptor type") → StringError
-        Descriptor.fromString("wsh(pk(abc))", "invalid_pk_type");
+        Descriptor.fromString("wsh(pk(abc))", "invalid_pk_type" as never);
       } catch (e) {
         error = e;
       }

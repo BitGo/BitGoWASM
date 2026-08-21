@@ -18,12 +18,15 @@
 import assert from "node:assert";
 import * as utxolib from "@bitgo/utxo-lib";
 import { AcidTest } from "../../js/testutils/AcidTest.js";
+import { getKeyTriple } from "../../js/testutils/keys.js";
 import { BitGoPsbt } from "../../js/fixedScriptWallet/BitGoPsbt.js";
 import { ECPair } from "../../js/ecpair.js";
 import type { HydrationUnspent } from "../../js/fixedScriptWallet/BitGoPsbt.js";
 
+const [userXprv, , bitgoXprv] = getKeyTriple("default");
+
 function buildHydrationUnspents(acid: AcidTest): HydrationUnspent[] {
-  const rpPubkey = acid.userXprv.publicKey;
+  const rpPubkey = userXprv.publicKey;
   return acid.inputs.map((input, i) => {
     if ("scriptType" in input && input.scriptType === "p2shP2pk") {
       return { pubkey: rpPubkey, value: input.value };
@@ -39,7 +42,7 @@ describe("BCH p2shP2pk hydration (regression: 'Invalid hashType 0' / sig lost in
     describe(`txFormat: ${txFormat}`, function () {
       it("p2shP2pk sig preserved after fromNetworkFormat on half-signed tx", function () {
         const acid = AcidTest.withConfig("bch", "halfsigned", txFormat);
-        const rpECPair = ECPair.fromPrivateKey(Buffer.from(acid.userXprv.privateKey));
+        const rpECPair = ECPair.fromPrivateKey(Buffer.from(userXprv.privateKey));
         const rpIdx = acid.inputs.findIndex(
           (i) => "scriptType" in i && i.scriptType === "p2shP2pk",
         );
@@ -65,7 +68,7 @@ describe("BCH p2shP2pk hydration (regression: 'Invalid hashType 0' / sig lost in
 
       it("p2shP2pk sig preserved after fromNetworkFormat on fully-signed tx", function () {
         const acid = AcidTest.withConfig("bch", "fullsigned", txFormat);
-        const rpECPair = ECPair.fromPrivateKey(Buffer.from(acid.userXprv.privateKey));
+        const rpECPair = ECPair.fromPrivateKey(Buffer.from(userXprv.privateKey));
         const rpIdx = acid.inputs.findIndex(
           (i) => "scriptType" in i && i.scriptType === "p2shP2pk",
         );
@@ -92,7 +95,7 @@ describe("BCH p2shP2pk hydration (regression: 'Invalid hashType 0' / sig lost in
 
       it("finalization succeeds via utxolib after hydrate-and-cosign (wallet-platform scenario)", function () {
         const acid = AcidTest.withConfig("bch", "halfsigned", txFormat);
-        const rpECPair = ECPair.fromPrivateKey(Buffer.from(acid.userXprv.privateKey));
+        const rpECPair = ECPair.fromPrivateKey(Buffer.from(userXprv.privateKey));
         const rpIdx = acid.inputs.findIndex(
           (i) => "scriptType" in i && i.scriptType === "p2shP2pk",
         );
@@ -110,7 +113,7 @@ describe("BCH p2shP2pk hydration (regression: 'Invalid hashType 0' / sig lost in
         );
 
         // 3. HSM co-signs wallet inputs + p2shP2pk
-        hydratedPsbt.sign(acid.bitgoXprv);
+        hydratedPsbt.sign(bitgoXprv);
         if (rpIdx >= 0) hydratedPsbt.signInput(rpIdx, rpECPair);
 
         // 4. wallet-platform finalizes via utxolib
