@@ -11,7 +11,9 @@ import {
 import {
   IRONWOOD_VERSION_GROUP_ID,
   ZcashBitGoPsbt,
+  type ZcashParsedOutput,
 } from "../../js/fixedScriptWallet/ZcashBitGoPsbt.js";
+import type { ParsedTransaction } from "../../js/fixedScriptWallet/BitGoPsbt.js";
 import { getKeyTriple, getWalletKeysForSeed } from "../../js/testutils/index.js";
 import { ZcashUnifiedAddress } from "../../js/fixedScriptWallet/ZcashUnifiedAddress.js";
 
@@ -163,9 +165,12 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
     // surfaced explicitly via `isShielded`.
     it("surfaces the shielded output as isShielded and folds its value into fee/spend accounting", function () {
       const psbt = buildShieldPsbt();
-      const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, {
-        replayProtection: { publicKeys: [] },
-      });
+      const parsed: ParsedTransaction<ZcashParsedOutput> = psbt.parseTransactionWithWalletKeys(
+        walletKeys,
+        {
+          replayProtection: { publicKeys: [] },
+        },
+      );
 
       assert.strictEqual(parsed.outputs.length, 2);
       const shielded = parsed.outputs.filter((o) => o.isShielded);
@@ -214,7 +219,7 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
     // belonging to a different wallet than the inputs) would silently miss the shielded note.
     it("surfaces the shielded output alongside the transparent change output", function () {
       const psbt = buildShieldPsbt();
-      const outputs = psbt.parseOutputsWithWalletKeys(walletKeys);
+      const outputs: ZcashParsedOutput[] = psbt.parseOutputsWithWalletKeys(walletKeys);
 
       assert.strictEqual(outputs.length, 2);
       const shielded = outputs.filter((o) => o.isShielded);
