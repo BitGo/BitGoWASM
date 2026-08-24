@@ -2,6 +2,7 @@ use std::ops::Deref;
 
 use crate::address::utxolib_compat::{CashAddr, UtxolibNetwork};
 use crate::error::WasmUtxoError;
+use crate::zcash::ironwood_build::{MemoBytes, OrchardAddressBytes, OvkBytes};
 use miniscript::bitcoin::psbt::raw;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -298,8 +299,6 @@ impl TryFromJsValue for crate::fixed_script_wallet::bitgo_psbt::HydrationUnspent
 
 impl TryFromJsValue for crate::fixed_script_wallet::bitgo_psbt::zcash_psbt::IronwoodOutputRequest {
     fn try_from_js_value(item: &JsValue) -> Result<Self, WasmUtxoError> {
-        use crate::zcash::ironwood_build::{MemoBytes, OrchardAddressBytes, OvkBytes};
-
         let recipient_val = js_sys::Reflect::get(item, &"recipient".into())
             .map_err(|_| WasmUtxoError::new("Missing 'recipient' field on Ironwood output"))?;
         if recipient_val.is_undefined() {
