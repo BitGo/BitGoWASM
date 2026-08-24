@@ -299,15 +299,6 @@ fn get_zec_v6(psbt: &miniscript::bitcoin::psbt::Psbt, subtype: ZecV6KeySubtype) 
         .map(|(_, v)| v.clone())
 }
 
-fn remove_zec_v6(psbt: &mut miniscript::bitcoin::psbt::Psbt, subtype: ZecV6KeySubtype) {
-    let key = ProprietaryKey {
-        prefix: BITGO_ZEC_V6.to_vec(),
-        subtype: subtype as u8,
-        key: vec![],
-    };
-    psbt.proprietary.remove(&key);
-}
-
 fn set_zec_v6_u32(
     psbt: &mut miniscript::bitcoin::psbt::Psbt,
     subtype: ZecV6KeySubtype,
@@ -393,34 +384,53 @@ pub fn get_zec_v6_params(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<(u32,
     Some((vgid, expiry))
 }
 
-/// Store the full Unified Address string the Ironwood shielded output was addressed to, so it
-/// survives a serialize/deserialize round-trip verbatim (receivers and all) instead of being
-/// rebuilt from just the raw Orchard receiver. Overwrites any existing value.
-pub fn set_ironwood_unified_address(psbt: &mut miniscript::bitcoin::psbt::Psbt, ua: &str) {
-    set_zec_v6(
-        psbt,
-        ZecV6KeySubtype::UnifiedAddress,
-        ua.as_bytes().to_vec(),
-    );
+/// Store the full Unified Address string one Ironwood shielded output (identified by its
+/// `action_index` in the orchard bundle) was addressed to, so it survives a serialize/deserialize
+/// round-trip verbatim (receivers and all) instead of being rebuilt from just the raw Orchard
+/// receiver. Keyed by `action_index` (as the `ProprietaryKey`'s `key` bytes) so a multi-recipient
+/// bundle can store one UA per action. Overwrites any existing value for that index.
+pub fn set_ironwood_unified_address(
+    psbt: &mut miniscript::bitcoin::psbt::Psbt,
+    action_index: usize,
+    ua: &str,
+) {
+    let key = ProprietaryKey {
+        prefix: BITGO_ZEC_V6.to_vec(),
+        subtype: ZecV6KeySubtype::UnifiedAddress as u8,
+        key: (action_index as u32).to_le_bytes().to_vec(),
+    };
+    psbt.proprietary.insert(key, ua.as_bytes().to_vec());
 }
 
-/// Fetch the Unified Address string stored by [`set_ironwood_unified_address`], if present and
-/// valid UTF-8.
-pub fn get_ironwood_unified_address(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<String> {
-    let bytes = get_zec_v6(psbt, ZecV6KeySubtype::UnifiedAddress)?;
-    String::from_utf8(bytes).ok()
+/// Fetch the Unified Address string stored by [`set_ironwood_unified_address`] for `action_index`,
+/// if present and valid UTF-8.
+pub fn get_ironwood_unified_address(
+    psbt: &miniscript::bitcoin::psbt::Psbt,
+    action_index: usize,
+) -> Option<String> {
+    let key = ProprietaryKey {
+        prefix: BITGO_ZEC_V6.to_vec(),
+        subtype: ZecV6KeySubtype::UnifiedAddress as u8,
+        key: (action_index as u32).to_le_bytes().to_vec(),
+    };
+    let bytes = psbt.proprietary.get(&key)?;
+    String::from_utf8(bytes.clone()).ok()
 }
 
-/// Remove the Unified Address string set by [`set_ironwood_unified_address`], if present.
+/// Remove every Unified Address stored by [`set_ironwood_unified_address`], regardless of action
+/// index.
 ///
-/// Callers that build a shielded output without a `unified_address` must call this rather than
-/// simply not calling [`set_ironwood_unified_address`]: `add_ironwood_output` can be called again
-/// on a PSBT whose PCZT was previously extracted (see `take_ironwood_pczt`/
-/// `mark_ironwood_extracted`, which drop only the PCZT key, not this one), and without an explicit
-/// removal a UA stored for an earlier shielded output would otherwise survive and be silently
-/// misattributed to the new one.
-pub fn remove_ironwood_unified_address(psbt: &mut miniscript::bitcoin::psbt::Psbt) {
-    remove_zec_v6(psbt, ZecV6KeySubtype::UnifiedAddress);
+/// Callers building a fresh batch of shielded outputs must call this before storing the new
+/// batch's UAs (rather than only overwriting the indices the new batch happens to use):
+/// `add_ironwood_output`/`add_ironwood_outputs` can run again on a PSBT whose PCZT was previously
+/// extracted (see `take_ironwood_pczt`/`mark_ironwood_extracted`, which drop only the PCZT key, not
+/// these), and a new batch's action count/indices need not match the old one's — so without a
+/// blanket clear, a UA stored for a since-gone action index would survive and (if the new bundle
+/// happens to reuse that index) be silently misattributed to a different recipient.
+pub fn clear_ironwood_unified_addresses(psbt: &mut miniscript::bitcoin::psbt::Psbt) {
+    psbt.proprietary.retain(|k, _| {
+        !(k.prefix == BITGO_ZEC_V6 && k.subtype == ZecV6KeySubtype::UnifiedAddress as u8)
+    });
 }
 
 #[cfg(test)]

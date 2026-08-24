@@ -605,6 +605,29 @@ impl ZcashBitGoPsbt {
 // PSBT goes to the external proof service for the Halo2 `zkproof`, and `combine_ironwood_proof`
 // finalizes the transparent inputs and splices in the proof + shielded bundle to produce the
 // broadcast-ready v6 transaction. See `crate::zcash::ironwood_build` for the PCZT role bridge.
+
+/// One requested Ironwood shielded output, as passed to
+/// [`ZcashBitGoPsbt::add_ironwood_outputs`].
+#[derive(Clone)]
+pub struct IronwoodOutputRequest {
+    /// 43-byte raw Orchard/Ironwood address.
+    pub recipient: crate::zcash::ironwood_build::OrchardAddressBytes,
+    /// Note value in zatoshi.
+    pub amount: u64,
+    /// Outgoing viewing key, if the output should be recoverable by the sender; `None` for a
+    /// keyless build.
+    pub ovk: Option<crate::zcash::ironwood_build::OvkBytes>,
+    /// ZIP-302 memo field.
+    pub memo: crate::zcash::ironwood_build::MemoBytes,
+    /// Full Unified Address this output was addressed to, if the caller wants it preserved. If
+    /// given, must be a Unified Address whose Orchard receiver is exactly `recipient` — it is
+    /// stored verbatim, keyed by this output's action index (see
+    /// [`super::propkv::set_ironwood_unified_address`]), so that output parsing can later return
+    /// the original multi-receiver UA rather than reconstructing a single-receiver one from
+    /// `recipient` alone, which drops any transparent/Sapling receiver the caller's UA carried.
+    pub unified_address: Option<String>,
+}
+
 impl ZcashBitGoPsbt {
     /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT, with the consensus branch id resolved
     /// from `block_height`, which must be at or after NU6.3 activation.
@@ -713,40 +736,44 @@ impl ZcashBitGoPsbt {
         self.version_group_id == Some(crate::zcash::transaction::ZCASH_IRONWOOD_VERSION_GROUP_ID)
     }
 
-    /// Constructor role: build the shielded output (one Ironwood note to `recipient`) as an orchard
-    /// PCZT and store it in the PSBT. `recipient` is a 43-byte raw Orchard/Ironwood address,
-    /// `anchor` the current Ironwood note-commitment-tree root, `ovk` an optional raw outgoing
-    /// viewing key, `memo` the 512-byte memo field.
+    /// Constructor role: build the shielded output(s) as a single orchard PCZT and store it in the
+    /// PSBT. One Ironwood note is produced per entry of `requests`, each paired with a fabricated
+    /// dummy spend; `anchor` (the current Ironwood note-commitment-tree root) is shared by all of
+    /// them.
     ///
     /// Ordering relative to the transparent inputs/outputs does not matter — the shielded action
     /// data does not depend on them — but the sighash does, so all transparent I/O must be in place
     /// before signing.
     ///
-    /// Exactly one shielded output is supported; calling this twice is an error rather than a silent
-    /// overwrite of the first note (whose value the transparent side would still be funding).
+    /// Only one call to this (or [`Self::add_ironwood_output`]) is supported per PSBT — calling it
+    /// again is an error rather than a silent overwrite of the first batch (whose value the
+    /// transparent side would still be funding). Multiple recipients in one transaction must
+    /// therefore all be passed in a single `requests` slice.
     ///
-    /// `unified_address`, if supplied, must be a Unified Address whose Orchard receiver is exactly
-    /// `recipient` — it is stored verbatim in the proprietary map (see
-    /// [`super::propkv::set_ironwood_unified_address`]) so that output parsing can later return the
-    /// original multi-receiver UA rather than reconstructing a single-receiver one from `recipient`
-    /// alone, which drops any transparent/Sapling receiver the caller's UA carried.
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_ironwood_output<R: rand::RngCore + rand::CryptoRng>(
+    /// Returns the action index assigned to each request, in the same order as `requests` — the
+    /// orchard builder pads/reorders actions, so request order does not equal action order. A
+    /// client-managed-`ovk` caller must use these indices (not the request index) when later
+    /// calling [`Self::set_ironwood_out_ciphertext`]/[`Self::set_ironwood_out_ciphertext_for_user`]
+    /// for a specific recipient.
+    pub fn add_ironwood_outputs<R: rand::RngCore + rand::CryptoRng>(
         &mut self,
-        recipient: &crate::zcash::ironwood_build::OrchardAddressBytes,
-        amount: u64,
-        ovk: Option<crate::zcash::ironwood_build::OvkBytes>,
+        requests: &[IronwoodOutputRequest],
         anchor: &crate::zcash::ironwood_build::AnchorBytes,
-        memo: &crate::zcash::ironwood_build::MemoBytes,
-        unified_address: Option<&str>,
         rng: R,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<usize>, String> {
         if super::propkv::get_ironwood_pczt(&self.psbt).is_some() {
             return Err(
-                "an Ironwood shielded output is already present; only one is supported".to_string(),
+                "an Ironwood shielded output is already present; only one call is supported"
+                    .to_string(),
             );
         }
-        if let Some(ua) = unified_address {
+        if requests.is_empty() {
+            return Err("at least one Ironwood output is required".to_string());
+        }
+        for req in requests {
+            let Some(ua) = &req.unified_address else {
+                continue;
+            };
             let parsed = crate::zcash::unified_address::UnifiedAddress::parse(
                 ua,
                 self.network.to_coin_name(),
@@ -759,28 +786,67 @@ impl ZcashBitGoPsbt {
                     "unified_address has no Orchard receiver, but recipient is an Orchard address"
                         .to_string()
                 })?;
-            if orchard.as_slice() != recipient.as_slice() {
+            if orchard.as_slice() != req.recipient.as_slice() {
                 return Err(
                     "unified_address's Orchard receiver does not match recipient".to_string(),
                 );
             }
         }
-        let pczt = crate::zcash::ironwood_build::construct_shield_pczt(
-            recipient, amount, ovk, anchor, memo, rng,
-        )
-        .map_err(|e| e.to_string())?;
+
+        let specs: Vec<crate::zcash::ironwood_build::IronwoodOutputSpec> = requests
+            .iter()
+            .map(|req| crate::zcash::ironwood_build::IronwoodOutputSpec {
+                recipient: req.recipient,
+                amount: req.amount,
+                ovk: req.ovk,
+                memo: req.memo,
+            })
+            .collect();
+        let (pczt, action_indices) =
+            crate::zcash::ironwood_build::construct_shield_pczt_multi(&specs, anchor, rng)
+                .map_err(|e| e.to_string())?;
         let bytes =
             crate::zcash::ironwood_pczt::serialize_pczt(&pczt).map_err(|e| e.to_string())?;
         super::propkv::set_ironwood_pczt(&mut self.psbt, bytes);
-        // Set-or-remove, not set-only: this can run again on a PSBT whose PCZT was previously
-        // extracted (mark_ironwood_extracted/take_ironwood_pczt drop only the PCZT key, not this
-        // one), so a `None` here must clear any UA left over from an earlier shielded output rather
-        // than leaving it to be silently misattributed to this one.
-        match unified_address {
-            Some(ua) => super::propkv::set_ironwood_unified_address(&mut self.psbt, ua),
-            None => super::propkv::remove_ironwood_unified_address(&mut self.psbt),
+        // Clear any UAs left over from a previous batch (this can run again on a PSBT whose PCZT
+        // was previously extracted — mark_ironwood_extracted/take_ironwood_pczt drop only the PCZT
+        // key, not these) before writing the new batch's, so a since-gone action index's stale UA
+        // can never be silently misattributed to a different recipient in the new bundle.
+        super::propkv::clear_ironwood_unified_addresses(&mut self.psbt);
+        for (req, &action_index) in requests.iter().zip(action_indices.iter()) {
+            if let Some(ua) = &req.unified_address {
+                super::propkv::set_ironwood_unified_address(&mut self.psbt, action_index, ua);
+            }
         }
-        Ok(())
+        Ok(action_indices)
+    }
+
+    /// Constructor role: build a single shielded output as an orchard PCZT and store it in the
+    /// PSBT. A thin wrapper over [`Self::add_ironwood_outputs`]; see it for the general (and
+    /// multi-recipient) contract, including the "only one call per PSBT" rule.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_ironwood_output<R: rand::RngCore + rand::CryptoRng>(
+        &mut self,
+        recipient: &crate::zcash::ironwood_build::OrchardAddressBytes,
+        amount: u64,
+        ovk: Option<crate::zcash::ironwood_build::OvkBytes>,
+        anchor: &crate::zcash::ironwood_build::AnchorBytes,
+        memo: &crate::zcash::ironwood_build::MemoBytes,
+        unified_address: Option<&str>,
+        rng: R,
+    ) -> Result<usize, String> {
+        let action_indices = self.add_ironwood_outputs(
+            &[IronwoodOutputRequest {
+                recipient: *recipient,
+                amount,
+                ovk,
+                memo: *memo,
+                unified_address: unified_address.map(str::to_string),
+            }],
+            anchor,
+            rng,
+        )?;
+        Ok(action_indices[0])
     }
 
     /// Deserialize the stored orchard PCZT.
@@ -814,8 +880,12 @@ impl ZcashBitGoPsbt {
     /// [`Self::add_ironwood_output`]/[`Self::deserialize_v6`] and before
     /// [`Self::v6_transparent_sighash`]/[`Self::add_v6_transparent_signature`].
     ///
-    /// `action_index` is currently always `0`: [`Self::add_ironwood_output`] permits only one
-    /// shielded output per transaction.
+    /// `action_index` is the index a shielded output landed at in the bundle — for a
+    /// multi-recipient build via [`Self::add_ironwood_outputs`], this is the value returned
+    /// alongside it by [`Self::ironwood_shielded_outputs_info`], not necessarily the position the
+    /// output was passed in at (see [`crate::zcash::ironwood_build::construct_shield_pczt_multi`]
+    /// for why actions get reordered). Call once per recipient that needs its own client-managed
+    /// `ovk`.
     pub fn set_ironwood_out_ciphertext(
         &mut self,
         action_index: usize,
@@ -1021,8 +1091,9 @@ impl ZcashBitGoPsbt {
         Ok(true)
     }
 
-    /// The value (zatoshi) and raw 43-byte recipient of the shielded Ironwood output, if one has
-    /// been added via [`Self::add_ironwood_output`] — `None` if no shielded output is present yet.
+    /// The action index, value (zatoshi), and raw 43-byte recipient of every shielded Ironwood
+    /// output added via [`Self::add_ironwood_output`]/[`Self::add_ironwood_outputs`] — empty if no
+    /// shielded output is present yet.
     ///
     /// The shielded side lives in a proprietary-map PCZT rather than `unsigned_tx.output`, so
     /// transparent-only output parsing (`ParsedOutput`/`sum_output_values`) never sees it; this is
@@ -1033,42 +1104,51 @@ impl ZcashBitGoPsbt {
     /// note — because the PCZT keeps the Constructor's plaintext `recipient`/`value` fields
     /// in-memory for the Prover/Signer roles; nothing needs decrypting.
     ///
-    /// Only [`Self::add_ironwood_output`]'s single-output shape (dummy spend, one real output) is
-    /// supported elsewhere in this file, so this always reads action 0 — and only because
-    /// `construct_shield_pczt` builds with `BundleType::UNPADDED`, which is guaranteed to produce
-    /// exactly one action. That guarantee is asserted below rather than assumed silently: if the
-    /// bundle type ever changes to one that pads/shuffles, a multi-action bundle's action 0 need
-    /// not be the real output (padding actions carry value 0 and a random recipient), so this
-    /// must error instead of quietly reading the wrong one.
+    /// Every action here is a real requested output: [`Self::add_ironwood_outputs`] builds with
+    /// `BundleType::UNPADDED` and zero requested spends, so (per `orchard`'s cross-address-disabled
+    /// pairing) each action pairs a fabricated *dummy spend* with one real output — there are no
+    /// dummy-*output* actions to filter out, unlike a bundle that also spends real notes.
     ///
-    /// Errors (rather than returning `None`) if the PCZT is absent because it was already
+    /// The returned action index is what [`super::propkv::get_ironwood_unified_address`] is keyed
+    /// by, for callers that want the original Unified Address (if one was stored) rather than just
+    /// the raw recipient.
+    ///
+    /// Errors (rather than returning empty) if the PCZT is absent because it was already
     /// extracted — see [`Self::require_no_shielded_output_ever_added`].
-    pub fn ironwood_shielded_output_info(
+    pub fn ironwood_shielded_outputs_info(
         &self,
-    ) -> Result<Option<(u64, crate::zcash::ironwood_build::OrchardAddressBytes)>, String> {
+    ) -> Result<
+        Vec<(
+            usize,
+            u64,
+            crate::zcash::ironwood_build::OrchardAddressBytes,
+        )>,
+        String,
+    > {
         if self.require_no_shielded_output_ever_added()? {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         // `orchard::pczt::Bundle` only exposes a mutable actions accessor; we only read from it.
         let mut pczt = self.ironwood_pczt()?;
         let actions = pczt.actions_mut();
-        if actions.len() != 1 {
-            return Err(format!(
-                "expected exactly one Ironwood action (single-output shape), found {}",
-                actions.len()
-            ));
-        }
-        let action = &actions[0];
-        let output = action.output();
-        let value = output
-            .value()
-            .map(|v| v.inner())
-            .ok_or_else(|| "shielded output is missing its plaintext value".to_string())?;
-        let recipient = output
-            .recipient()
-            .map(|address| address.to_raw_address_bytes())
-            .ok_or_else(|| "shielded output is missing its plaintext recipient".to_string())?;
-        Ok(Some((value, recipient)))
+        actions
+            .iter()
+            .enumerate()
+            .map(|(action_index, action)| {
+                let output = action.output();
+                let value = output
+                    .value()
+                    .map(|v| v.inner())
+                    .ok_or_else(|| "shielded output is missing its plaintext value".to_string())?;
+                let recipient = output
+                    .recipient()
+                    .map(|address| address.to_raw_address_bytes())
+                    .ok_or_else(|| {
+                        "shielded output is missing its plaintext recipient".to_string()
+                    })?;
+                Ok((action_index, value, recipient))
+            })
+            .collect()
     }
 
     /// The spent-output value (zatoshi, as i64) and scriptPubKey of every transparent input, in
@@ -2442,7 +2522,7 @@ mod ironwood_v6_tests {
         );
     }
 
-    /// `unsigned_v6_txid` and `ironwood_shielded_output_info` both key off PCZT presence to decide
+    /// `unsigned_v6_txid` and `ironwood_shielded_outputs_info` both key off PCZT presence to decide
     /// whether a shielded output exists. Once extracted, the PCZT is gone but a shielded output
     /// *did* exist — treating that the same as "never added" would silently compute a wrong
     /// (transparent-only) txid, and silently drop the shielded amount back into the caller's fee
@@ -2454,7 +2534,7 @@ mod ironwood_v6_tests {
         // Before extraction: both see the shielded output.
         assert!(z.unsigned_v6_txid().is_ok());
         assert!(
-            z.ironwood_shielded_output_info().unwrap().is_some(),
+            !z.ironwood_shielded_outputs_info().unwrap().is_empty(),
             "shielded output present before extraction"
         );
 
@@ -2466,7 +2546,7 @@ mod ironwood_v6_tests {
             txid_err.contains("already been extracted"),
             "unexpected error: {txid_err}"
         );
-        let info_err = z.ironwood_shielded_output_info().unwrap_err();
+        let info_err = z.ironwood_shielded_outputs_info().unwrap_err();
         assert!(
             info_err.contains("already been extracted"),
             "unexpected error: {info_err}"
@@ -2475,7 +2555,7 @@ mod ironwood_v6_tests {
 
     /// The counterpart to the extraction case above: a v6 PSBT that never had a shielded output
     /// added at all must still work — `unsigned_v6_txid` computes the transparent-only txid, and
-    /// `ironwood_shielded_output_info` reports `None`, neither erroring.
+    /// `ironwood_shielded_outputs_info` reports an empty Vec, neither erroring.
     #[test]
     fn unsigned_v6_txid_and_shielded_output_info_handle_no_shielded_output_ever_added() {
         let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_never_shielded"));
@@ -2503,7 +2583,7 @@ mod ironwood_v6_tests {
         };
 
         assert!(z.unsigned_v6_txid().is_ok());
-        assert!(z.ironwood_shielded_output_info().unwrap().is_none());
+        assert!(z.ironwood_shielded_outputs_info().unwrap().is_empty());
     }
 
     /// A signature from a key outside the input's redeem script is rejected at ingest, rather than
@@ -2653,7 +2733,7 @@ mod ironwood_v6_tests {
         );
     }
 
-    /// `ironwood_shielded_output_info` returns `None` before a shielded output has been added, and
+    /// `ironwood_shielded_outputs_info` returns an empty Vec before a shielded output has been added, and
     /// the exact (value, recipient) passed to `add_ironwood_output` afterwards — regardless of
     /// whether the transparent input has been signed yet, since it reads the PCZT's plaintext
     /// fields rather than anything sighash/signature-dependent.
@@ -2684,7 +2764,7 @@ mod ironwood_v6_tests {
         };
 
         // No shielded output yet (unsigned transparent skeleton).
-        assert!(z.ironwood_shielded_output_info().unwrap().is_none());
+        assert!(z.ironwood_shielded_outputs_info().unwrap().is_empty());
 
         let recipient = test_recipient();
         z.add_ironwood_output(
@@ -2697,7 +2777,9 @@ mod ironwood_v6_tests {
             OsRng,
         )
         .unwrap();
-        let (value, got_recipient) = z.ironwood_shielded_output_info().unwrap().unwrap();
+        let outputs = z.ironwood_shielded_outputs_info().unwrap();
+        assert_eq!(outputs.len(), 1);
+        let (_action_index, value, got_recipient) = outputs[0];
         assert_eq!(value, 100_000_000);
         assert_eq!(got_recipient, recipient);
 
@@ -2712,7 +2794,9 @@ mod ironwood_v6_tests {
         let mut der = secp.sign_ecdsa(&msg, &sk).serialize_der().to_vec();
         der.push(0x01);
         z.add_v6_transparent_signature(0, pubkey, &der).unwrap();
-        let (value, got_recipient) = z.ironwood_shielded_output_info().unwrap().unwrap();
+        let outputs = z.ironwood_shielded_outputs_info().unwrap();
+        assert_eq!(outputs.len(), 1);
+        let (_action_index, value, got_recipient) = outputs[0];
         assert_eq!(value, 100_000_000);
         assert_eq!(got_recipient, recipient);
     }
@@ -2761,7 +2845,9 @@ mod ironwood_v6_tests {
         )
         .unwrap();
         assert_eq!(
-            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(&z.psbt),
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(
+                &z.psbt, 0
+            ),
             Some(ua.clone())
         );
 
@@ -2770,7 +2856,8 @@ mod ironwood_v6_tests {
             ZcashBitGoPsbt::deserialize_v6(&z.serialize_v6(), Network::ZcashTestnet).unwrap();
         assert_eq!(
             crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(
-                &round.psbt
+                &round.psbt,
+                0
             ),
             Some(ua)
         );
@@ -2844,7 +2931,9 @@ mod ironwood_v6_tests {
         )
         .unwrap();
         assert_eq!(
-            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(&z.psbt),
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(
+                &z.psbt, 0
+            ),
             Some(ua_a.clone())
         );
 
@@ -2870,9 +2959,138 @@ mod ironwood_v6_tests {
 
         // The stale UA from recipient_a must be gone, not silently attributed to recipient_b.
         assert_eq!(
-            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(&z.psbt),
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(
+                &z.psbt, 0
+            ),
             None
         );
+    }
+
+    /// `add_ironwood_outputs` builds a single bundle with one action per recipient — each carrying
+    /// its own value, recipient, and (if supplied) stored Unified Address — and that survives a
+    /// serialize/deserialize round-trip. This is the actual multi-recipient path;
+    /// `add_ironwood_output` is just its one-recipient special case.
+    #[test]
+    fn add_ironwood_outputs_supports_multiple_recipients() {
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_multi_recipient"));
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x66u8; 32]),
+            0,
+            300_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 99_900_000, &wallet_keys)
+            .unwrap();
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+
+        let recipient_a = test_recipient();
+        let recipient_b = {
+            let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([11u8; 32])).unwrap();
+            FullViewingKey::from(&sk)
+                .address_at(0u32, Scope::External)
+                .to_raw_address_bytes()
+        };
+        let ua_a =
+            crate::zcash::unified_address::encode_orchard_receiver(&recipient_a, "tzec").unwrap();
+
+        z.add_ironwood_outputs(
+            &[
+                IronwoodOutputRequest {
+                    recipient: recipient_a,
+                    amount: 100_000_000,
+                    ovk: None,
+                    memo: [0u8; 512],
+                    unified_address: Some(ua_a.clone()),
+                },
+                IronwoodOutputRequest {
+                    recipient: recipient_b,
+                    amount: 100_000_000,
+                    ovk: None,
+                    memo: [0u8; 512],
+                    unified_address: None,
+                },
+            ],
+            &Anchor::empty_tree().to_bytes(),
+            OsRng,
+        )
+        .unwrap();
+
+        // Both recipients are present, each with its own value/recipient, and each's stored UA
+        // (or lack of one) tracks its own action index — not just index 0.
+        let outputs = z.ironwood_shielded_outputs_info().unwrap();
+        assert_eq!(outputs.len(), 2);
+        let mut by_recipient: std::collections::HashMap<_, _> = outputs
+            .iter()
+            .map(|&(action_index, value, recipient)| (recipient, (action_index, value)))
+            .collect();
+        let (index_a, value_a) = by_recipient
+            .remove(&recipient_a)
+            .expect("recipient_a present");
+        let (index_b, value_b) = by_recipient
+            .remove(&recipient_b)
+            .expect("recipient_b present");
+        assert_eq!(value_a, 100_000_000);
+        assert_eq!(value_b, 100_000_000);
+        assert_ne!(index_a, index_b);
+        assert_eq!(
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(
+                &z.psbt, index_a
+            ),
+            Some(ua_a.clone())
+        );
+        assert_eq!(
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(
+                &z.psbt, index_b
+            ),
+            None
+        );
+
+        // Survives serialize/deserialize.
+        let round =
+            ZcashBitGoPsbt::deserialize_v6(&z.serialize_v6(), Network::ZcashTestnet).unwrap();
+        let round_outputs = round.ironwood_shielded_outputs_info().unwrap();
+        assert_eq!(round_outputs.len(), 2);
+        assert_eq!(
+            crate::fixed_script_wallet::bitgo_psbt::propkv::get_ironwood_unified_address(
+                &round.psbt,
+                index_a
+            ),
+            Some(ua_a)
+        );
+    }
+
+    /// A second call to `add_ironwood_outputs`/`add_ironwood_output` is rejected outright, even for
+    /// a multi-recipient batch: every recipient must go in the single call.
+    #[test]
+    fn add_ironwood_outputs_twice_is_rejected() {
+        let mut z = build_shield_psbt("v6_multi_twice");
+        let err = z
+            .add_ironwood_outputs(
+                &[IronwoodOutputRequest {
+                    recipient: test_recipient(),
+                    amount: 1,
+                    ovk: None,
+                    memo: [0u8; 512],
+                    unified_address: None,
+                }],
+                &Anchor::empty_tree().to_bytes(),
+                OsRng,
+            )
+            .unwrap_err();
+        assert!(err.contains("already present"), "unexpected error: {err}");
     }
 
     /// `combine_inputs` refuses a v6 PSBT outright.
@@ -2999,7 +3217,7 @@ mod ironwood_v6_tests {
         let round = ZcashBitGoPsbt::deserialize_v6_pre_shield(&bytes, Network::ZcashTestnet)
             .expect("pre-shield deserialize accepts a missing PCZT");
         assert!(round.is_ironwood_v6());
-        assert!(round.ironwood_shielded_output_info().unwrap().is_none());
+        assert!(round.ironwood_shielded_outputs_info().unwrap().is_empty());
 
         // Still rejects a v6 PSBT missing its branch id — that check isn't gated by `require_pczt`.
         let mut psbt_no_branch = z.psbt.clone();
@@ -3031,7 +3249,7 @@ mod ironwood_v6_tests {
         let mut z =
             ZcashBitGoPsbt::new_v6_bare(Network::ZcashTestnet, consensus_branch_id, None, None);
         assert!(z.is_ironwood_v6());
-        assert!(z.ironwood_shielded_output_info().unwrap().is_none());
+        assert!(z.ironwood_shielded_outputs_info().unwrap().is_empty());
 
         // Round-trip through serialize/deserialize before adding the transparent input, as the
         // CLI does between each subcommand.
@@ -3073,7 +3291,7 @@ mod ironwood_v6_tests {
         // Final round-trip: now that the PCZT is present, plain `deserialize_v6` accepts it too.
         let bytes = z.serialize().unwrap();
         let round = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap();
-        assert!(round.ironwood_shielded_output_info().unwrap().is_some());
+        assert!(!round.ironwood_shielded_outputs_info().unwrap().is_empty());
         assert_eq!(
             round.unsigned_v6_txid().unwrap(),
             z.unsigned_v6_txid().unwrap()
