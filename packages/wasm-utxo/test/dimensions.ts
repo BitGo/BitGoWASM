@@ -11,6 +11,7 @@ import {
 import { mainnetCoinNames } from "./fixedScript/networkSupport.util.js";
 import { getDefaultWalletKeys } from "../js/testutils/index.js";
 import type { InputScriptType } from "../js/fixedScriptWallet/BitGoPsbt.js";
+import { ZcashUnifiedAddress } from "../js/fixedScriptWallet/ZcashUnifiedAddress.js";
 
 /**
  * Map fixture psbtInput type to InputScriptType
@@ -240,6 +241,88 @@ describe("Dimensions", function () {
         Dimensions.fromOutput({ scriptType: "p2wsh" }).getOutputWeight(),
         Dimensions.fromOutput({ length: 34 }).getOutputWeight(),
       );
+    });
+
+    // Zcash still fees transactions with legacy `vsize * feerate`, not ZIP-317's
+    // per-logical-action accounting. An Orchard/Ironwood shielded output has no scriptPubKey —
+    // its recipient is a ZIP-316 Unified Address, not a transparent address — but rather than
+    // modeling the Orchard action's real on-chain byte layout, it's run through the same
+    // length-based formula as a transparent output, sized from the UA's decoded 43-byte
+    // receiver. `isShielded: true` forwards to `toOutputScriptWithCoin`'s `canBeShieldedOutput`,
+    // which is what lets a UA decode at all instead of failing as an invalid transparent address.
+    describe("Zcash Orchard/Ironwood shielded output", function () {
+      const ORCHARD_RECEIVER_SIZE = 43;
+      // A valid raw Orchard/Ironwood receiver (43 bytes), encoded as a single-receiver UA.
+      const RECEIVER = Buffer.from(
+        "4559029c0b5dbf941c5ad181a5fe8f45b34630f29d0c8dd8dc1cc3573386f416cb324133156d723df5e62d",
+        "hex",
+      );
+      const UNIFIED_ADDRESS = ZcashUnifiedAddress.encodeOrchardReceiver(RECEIVER, "zcashTest");
+
+      it("sizes a shielded output the same as a 43-byte scriptPubKey", function () {
+        const shieldedOutput = Dimensions.fromOutput(UNIFIED_ADDRESS, "tzec", { isShielded: true });
+
+        // Output weight = 4 * (8 + 1 + 43) = 208
+        assert.strictEqual(shieldedOutput.getOutputWeight(), 208);
+        assert.strictEqual(
+          shieldedOutput.getOutputWeight(),
+          Dimensions.fromOutput({ length: ORCHARD_RECEIVER_SIZE }).getOutputWeight(),
+        );
+      });
+
+      it("throws for a UA without isShielded (not a valid transparent address)", function () {
+        assert.throws(() => Dimensions.fromOutput(UNIFIED_ADDRESS, "tzec"));
+      });
+
+      it("still decodes an ordinary transparent zcash address with isShielded: true", function () {
+        // A zcash testnet p2sh address -> ordinary 23-byte scriptPubKey
+        const transparentAddress = "t288NZMrzYi6oednBEnw8UZvGoqX4Z6NXys";
+        const dim = Dimensions.fromOutput(transparentAddress, "tzec", { isShielded: true });
+
+        assert.strictEqual(
+          dim.getOutputWeight(),
+          Dimensions.fromOutput({ length: 23 }).getOutputWeight(),
+        );
+      });
+
+      it("does not count as segwit", function () {
+        const shieldedOutput = Dimensions.fromOutput(UNIFIED_ADDRESS, "tzec", { isShielded: true });
+        assert.strictEqual(shieldedOutput.hasSegwit, false);
+      });
+
+      it("combines with a transparent input the same way any other output would", function () {
+        const shieldedOutput = Dimensions.fromOutput(UNIFIED_ADDRESS, "tzec", { isShielded: true });
+        const transparentInput = Dimensions.fromInput({ chain: 0 });
+        const combined = transparentInput.plus(shieldedOutput);
+
+        // Overhead (non-segwit tx structure, 4 * 10 = 40) is only counted once, not once per
+        // side — combined weight is strictly less than the naive sum of the two standalone
+        // weights (which would each already include their own copy of the overhead).
+        assert.strictEqual(
+          combined.getWeight("max"),
+          transparentInput.getInputWeight("max") + shieldedOutput.getOutputWeight() + 40,
+        );
+        assert.ok(
+          combined.getWeight("max") <
+            transparentInput.getWeight("max") + shieldedOutput.getWeight("max"),
+        );
+      });
+
+      it("legacy fee for a shielded output clears the ZIP-317 marginal fee for one action", function () {
+        // ZIP-317 marginal fee per logical action: 5000 zatoshis (0.00005 ZEC).
+        const ZIP_317_MARGINAL_FEE_ZATOSHIS = 5000;
+        // A representative legacy fee rate (zatoshis per kvB), same order of magnitude as
+        // default relay fee rates used elsewhere for legacy fee estimation.
+        const FEE_RATE_ZAT_PER_KVB = 150_000;
+
+        const shieldedOutput = Dimensions.fromOutput(UNIFIED_ADDRESS, "tzec", { isShielded: true });
+        const legacyFee = (shieldedOutput.getOutputVSize() * FEE_RATE_ZAT_PER_KVB) / 1000;
+
+        assert.ok(
+          legacyFee > ZIP_317_MARGINAL_FEE_ZATOSHIS,
+          `expected legacy fee (${legacyFee} zats) to exceed the ZIP-317 marginal fee (${ZIP_317_MARGINAL_FEE_ZATOSHIS} zats)`,
+        );
+      });
     });
   });
 

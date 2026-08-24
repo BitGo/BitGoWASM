@@ -18,6 +18,17 @@ export type FromInputOptions = {
 };
 
 /**
+ * Options for output dimension calculation
+ */
+export type FromOutputOptions = {
+  /**
+   * Set when `address` may be a ZIP-316 Unified Address whose Orchard receiver should be sized
+   * as a shielded output. Forwarded to `toOutputScriptWithCoin`'s `canBeShieldedOutput`.
+   */
+  isShielded?: boolean;
+};
+
+/**
  * Dimensions class for estimating transaction virtual size.
  *
  * Tracks weight internally with min/max bounds to handle ECDSA signature variance.
@@ -72,9 +83,12 @@ export class Dimensions {
    */
   static fromOutput(script: Uint8Array): Dimensions;
   /**
-   * Create dimensions for a single output from an address
+   * Create dimensions for a single output from an address.
+   *
+   * Pass `{ isShielded: true }` when `address` may be a ZIP-316 Unified Address whose Orchard
+   * receiver should be sized as a shielded output
    */
-  static fromOutput(address: string, network: CoinName): Dimensions;
+  static fromOutput(address: string, network: CoinName, options?: FromOutputOptions): Dimensions;
   /**
    * Create dimensions for a single output from script length only
    */
@@ -86,12 +100,13 @@ export class Dimensions {
   static fromOutput(
     params: Uint8Array | string | { length: number } | { scriptType: OutputScriptType },
     network?: CoinName,
+    options?: FromOutputOptions,
   ): Dimensions {
     if (typeof params === "string") {
       if (network === undefined) {
         throw new Error("network is required when passing an address string");
       }
-      const script = toOutputScriptWithCoin(params, network);
+      const script = toOutputScriptWithCoin(params, network, options?.isShielded);
       return new Dimensions(WasmDimensions.from_output_script_length(script.length));
     }
     if (typeof params === "object" && "scriptType" in params) {

@@ -9,6 +9,7 @@ use wasm_bindgen::JsValue;
 
 use crate::address::networks::AddressFormat;
 use crate::error::WasmUtxoError;
+use crate::fixed_script_wallet::bitgo_psbt::zcash_psbt::IronwoodOutputRequest;
 use crate::fixed_script_wallet::bitgo_psbt::ExtractFeePolicy;
 use crate::fixed_script_wallet::wallet_scripts::{chain_index_path, OutputScriptType};
 use crate::fixed_script_wallet::{Chain, Scope, WalletScripts};
@@ -20,6 +21,10 @@ use crate::wasm::replay_protection::WasmReplayProtection;
 use crate::wasm::try_from_js_value::TryFromJsValue;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use crate::wasm::wallet_keys::WasmRootWalletKeys;
+use crate::zcash::ironwood_build::{
+    AnchorBytes, MemoBytes, OrchardAddressBytes, OvkBytes, ANCHOR_SIZE, MEMO_SIZE,
+    ORCHARD_ADDRESS_SIZE, OVK_SIZE,
+};
 
 /// Parse a network from a string that can be either a utxolib name or a coin name
 fn parse_network(network_str: &str) -> Result<crate::networks::Network, WasmUtxoError> {
@@ -546,11 +551,6 @@ impl BitGoPsbt {
         memo: &[u8],
         unified_address: Option<String>,
     ) -> Result<(), WasmUtxoError> {
-        use crate::zcash::ironwood_build::{
-            AnchorBytes, MemoBytes, OrchardAddressBytes, OvkBytes, ANCHOR_SIZE, MEMO_SIZE,
-            ORCHARD_ADDRESS_SIZE, OVK_SIZE,
-        };
-
         /// Length-check a boundary byte string, naming the field and its expected size in the error.
         fn fixed<const N: usize>(bytes: &[u8], field: &str) -> Result<[u8; N], WasmUtxoError> {
             bytes.try_into().map_err(|_| {
@@ -593,9 +593,6 @@ impl BitGoPsbt {
         outputs: JsValue,
         anchor: &[u8],
     ) -> Result<Vec<u32>, WasmUtxoError> {
-        use crate::fixed_script_wallet::bitgo_psbt::zcash_psbt::IronwoodOutputRequest;
-        use crate::zcash::ironwood_build::{AnchorBytes, ANCHOR_SIZE};
-
         let anchor: AnchorBytes = anchor.try_into().map_err(|_| {
             WasmUtxoError::new(&format!(
                 "anchor must be {ANCHOR_SIZE} bytes, got {}",
