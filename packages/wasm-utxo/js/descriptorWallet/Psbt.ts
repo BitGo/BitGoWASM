@@ -89,6 +89,11 @@ export class Psbt extends PsbtBase<WasmPsbt> implements IPsbt {
     this._wasm.update_output_with_descriptor(outputIndex, descriptor);
   }
 
+  /** Add a 32-byte SHA256 preimage for Miniscript descriptor finalization. */
+  addSha256Preimage(inputIndex: number, preimage: Uint8Array): void {
+    this._wasm.add_sha256_preimage(inputIndex, preimage);
+  }
+
   // -- Signing --
 
   signWithXprv(xprv: string): SignPsbtResult {
@@ -138,6 +143,11 @@ export class Psbt extends PsbtBase<WasmPsbt> implements IPsbt {
 
   finalize(): void {
     this._wasm.finalize_mut();
+  }
+
+  /** Finalize one Miniscript input without requiring all inputs to be complete. */
+  finalizeInput(inputIndex: number): void {
+    this._wasm.finalize_input(inputIndex);
   }
 
   extractTransaction(): Transaction {
