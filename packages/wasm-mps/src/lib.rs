@@ -12,6 +12,7 @@ mod mps {
             Bip32Public,
         },
         curve25519_dalek::EdwardsPoint,
+        derive::{HardDeriveOutputEd25519, HardDerivePartyEd25519, MpcDeriveInitEd25519},
         keygen::{
             KeyRefreshData, KeygenMsg1, KeygenMsg2, KeygenParty, Keyshare, R0 as DkgR0,
             R1 as DkgR1, R2 as DkgR2,
@@ -19,6 +20,11 @@ mod mps {
         sign::{
             messages::{SignMsg1, SignMsg2, SignMsg3},
             PartialSign, SignError, SignReady, SignerParty, R0 as DsgR0, R1 as DsgR1, R2 as DsgR2,
+        },
+        vrf::{
+            dkg::Party as VrfDkgConfig, keyshare_after_hard_derive, HardDeriveMsg0, HardDeriveMsg1,
+            HardDeriveR0, HardDeriveR1, HardDeriveR2, VrfDkgParty, VrfDkgR0, VrfDkgR1, VrfDkgR2,
+            VrfKeygenMsg1, VrfKeygenMsg2, VrfPoint,
         },
     };
     use rand::Rng;
@@ -149,6 +155,18 @@ mod mps {
         pub pk: [u8; 32],
         pub msg: HashMap<u8, Vec<u8>>,
         pub state: Vec<u8>,
+    }
+
+    /// Result from processing that includes a per-recipient message pool
+    /// (see [`MsgDerivationInit::msg`]) and a private state to be stored in memory.
+    pub struct MsgStateMap {
+        pub msg: HashMap<u8, Vec<u8>>,
+        pub state: Vec<u8>,
+    }
+
+    /// VRF signing share returned from the final round of VRF DKG.
+    pub struct VrfShare {
+        pub share: Vec<u8>,
     }
 
     /// Result from round 3 of RedPallas DSG.
@@ -675,6 +693,317 @@ mod mps {
                 .map_err(|_| MpsError::SerializationError)?,
             pk: share.public_key.compress().to_bytes(),
             chaincode: share.root_chain_code,
+        })
+    }
+
+    /// Internal DKG state for VRF DKG (Ristretto) round 1.
+    #[derive(Serialize, Deserialize)]
+    struct VrfDkgStateR1 {
+        pub party_id: u8,
+        pub msg: VrfKeygenMsg1,
+        pub party: VrfDkgParty<VrfDkgR1>,
+    }
+
+    /// Internal DKG state for VRF DKG (Ristretto) round 2.
+    #[derive(Serialize, Deserialize)]
+    struct VrfDkgStateR2 {
+        pub party_id: u8,
+        pub msg: VrfKeygenMsg2,
+        pub party: VrfDkgParty<VrfDkgR2>,
+    }
+
+    /// Duplicate a single broadcast payload into a per-recipient message pool
+    /// addressed to every other party in a 3-party quorum.
+    fn broadcast_to_hashmap(party_id: u8, msg: Vec<u8>) -> HashMap<u8, Vec<u8>> {
+        (0..3)
+            .filter(|&pid| pid != party_id)
+            .map(|pid| (pid, msg.clone()))
+            .collect()
+    }
+
+    /// Process round 0 of VRF DKG (Ristretto, used to back hard derivation).
+    /// party_id: Party identifier / index.
+    /// seed: PRNG seed for entropy.
+    pub fn ed25519_vrf_dkg_round0_process(
+        party_id: u8,
+        seed: &[u8; 32],
+    ) -> Result<MsgState, MpsError> {
+        if party_id >= 3 {
+            return Err(MpsError::InvalidInput);
+        }
+
+        let p0 = VrfDkgParty::<VrfDkgR0>::new(
+            VrfDkgConfig::new(3, 2, party_id),
+            *seed,
+            &mut rand::thread_rng(),
+        )
+        .map_err(|_| MpsError::ProtocolError)?;
+        let (p1, msg1) = p0.process(()).map_err(|_| MpsError::ProtocolError)?;
+
+        let state = VrfDkgStateR1 {
+            party_id,
+            msg: msg1,
+            party: p1,
+        };
+
+        Ok(MsgState {
+            msg: add_prefix(
+                "mps-ed25519-vrf-dkg-round1-message$",
+                &bincode::serde::encode_to_vec(msg1, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            ),
+            state: add_prefix(
+                "mps-ed25519-vrf-dkg-round1-state$",
+                &bincode::serde::encode_to_vec(&state, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            ),
+        })
+    }
+
+    /// Process round 1 of VRF DKG.
+    /// round1_messages: Public messages from other parties.
+    /// state: Private state result from round 0.
+    /// Returns a per-recipient message pool: round 2's message carries plaintext
+    /// polynomial shares for every party, so it must never share a pool slot
+    /// across recipients (see `redpallas_derivation_process` for the same pattern).
+    pub fn ed25519_vrf_dkg_round1_process(
+        round1_messages: &[Vec<u8>; 2],
+        state: &[u8],
+    ) -> Result<MsgStateMap, MpsError> {
+        let i0_msg1: VrfKeygenMsg1 = bincode::serde::decode_from_slice(
+            &rem_prefix("mps-ed25519-vrf-dkg-round1-message$", &round1_messages[0])?,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+        let i1_msg1: VrfKeygenMsg1 = bincode::serde::decode_from_slice(
+            &rem_prefix("mps-ed25519-vrf-dkg-round1-message$", &round1_messages[1])?,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+        let state: VrfDkgStateR1 = bincode::serde::decode_from_slice(
+            &rem_prefix("mps-ed25519-vrf-dkg-round1-state$", state)?,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+
+        let party_id = state.party_id;
+        let (p2, msg2) = state
+            .party
+            .process(vec![i0_msg1, i1_msg1, state.msg])
+            .map_err(|_| MpsError::ProtocolError)?;
+
+        let new_state = VrfDkgStateR2 {
+            party_id,
+            msg: msg2.clone(),
+            party: p2,
+        };
+
+        let msg = add_prefix(
+            "mps-ed25519-vrf-dkg-round2-message$",
+            &bincode::serde::encode_to_vec(&msg2, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+        );
+
+        Ok(MsgStateMap {
+            msg: broadcast_to_hashmap(party_id, msg),
+            state: add_prefix(
+                "mps-ed25519-vrf-dkg-round2-state$",
+                &bincode::serde::encode_to_vec(&new_state, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            ),
+        })
+    }
+
+    /// Process round 2 of VRF DKG; finalizes the VRF signing share.
+    /// round2_messages: Public messages from other parties.
+    /// state: Private state result from round 1.
+    pub fn ed25519_vrf_dkg_round2_process(
+        round2_messages: &[Vec<u8>; 2],
+        state: &[u8],
+    ) -> Result<VrfShare, MpsError> {
+        let i0_msg2: VrfKeygenMsg2 = bincode::serde::decode_from_slice(
+            &rem_prefix("mps-ed25519-vrf-dkg-round2-message$", &round2_messages[0])?,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+        let i1_msg2: VrfKeygenMsg2 = bincode::serde::decode_from_slice(
+            &rem_prefix("mps-ed25519-vrf-dkg-round2-message$", &round2_messages[1])?,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+        let state: VrfDkgStateR2 = bincode::serde::decode_from_slice(
+            &rem_prefix("mps-ed25519-vrf-dkg-round2-state$", state)?,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+
+        let share = state
+            .party
+            .process(vec![i0_msg2, i1_msg2, state.msg])
+            .map_err(|_| MpsError::ProtocolError)?;
+
+        Ok(VrfShare {
+            share: bincode::serde::encode_to_vec(&share, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+        })
+    }
+
+    /// Internal hard-derivation state for round 1.
+    #[derive(Serialize, Deserialize)]
+    struct HardDeriveStateR1 {
+        pub init: MpcDeriveInitEd25519,
+        pub msg: HardDeriveMsg0,
+        pub party: HardDerivePartyEd25519<HardDeriveR1>,
+    }
+
+    /// Internal hard-derivation state for round 2.
+    #[derive(Serialize, Deserialize)]
+    struct HardDeriveStateR2 {
+        pub init: MpcDeriveInitEd25519,
+        pub msg: HardDeriveMsg1,
+        pub party: HardDerivePartyEd25519<HardDeriveR2>,
+    }
+
+    /// Process round 0 of MPC hard derivation.
+    /// vrf_share: VRF signing share from VRF DKG.
+    /// root_share: Signing share from DKG, whose hardened child is being derived.
+    /// path: Arbitrary derivation path bytes (e.g. `"m/44'/0'/0'"`), evaluated in one shot.
+    pub fn ed25519_hard_derive_round0_process(
+        vrf_share: &[u8],
+        root_share: &[u8],
+        path: String,
+    ) -> Result<MsgState, MpsError> {
+        let vrf_keyshare: Keyshare<VrfPoint> =
+            bincode::serde::decode_from_slice(vrf_share, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
+        let root_keyshare: Keyshare<EdwardsPoint> =
+            bincode::serde::decode_from_slice(root_share, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
+        if vrf_keyshare.party_id() != root_keyshare.party_id() {
+            return Err(MpsError::InvalidInput);
+        }
+
+        let init = MpcDeriveInitEd25519::new(vrf_keyshare, root_keyshare);
+        let p0 = HardDerivePartyEd25519::<HardDeriveR0>::new(
+            init.clone(),
+            path.into_bytes(),
+            &mut rand::thread_rng(),
+        )
+        .map_err(|_| MpsError::ProtocolError)?;
+        let (p1, msg0) = p0.process(()).map_err(|_| MpsError::ProtocolError)?;
+
+        let state = HardDeriveStateR1 {
+            init,
+            msg: msg0.clone(),
+            party: p1,
+        };
+
+        Ok(MsgState {
+            msg: add_prefix(
+                "mps-ed25519-hard-derive-round1-message$",
+                &bincode::serde::encode_to_vec(&msg0, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            ),
+            state: add_prefix(
+                "mps-ed25519-hard-derive-round1-state$",
+                &bincode::serde::encode_to_vec(&state, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            ),
+        })
+    }
+
+    /// Process round 1 of MPC hard derivation.
+    /// round1_message: Public message from the other active party.
+    /// state: Private state result from round 0.
+    pub fn ed25519_hard_derive_round1_process(
+        round1_message: &[u8],
+        state: &[u8],
+    ) -> Result<MsgState, MpsError> {
+        let other_msg0: HardDeriveMsg0 = bincode::serde::decode_from_slice(
+            &rem_prefix("mps-ed25519-hard-derive-round1-message$", round1_message)?,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+        let state: HardDeriveStateR1 = bincode::serde::decode_from_slice(
+            &rem_prefix("mps-ed25519-hard-derive-round1-state$", state)?,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+
+        let (p2, msg1) = state
+            .party
+            .process(vec![other_msg0, state.msg])
+            .map_err(|_| MpsError::ProtocolError)?;
+
+        let new_state = HardDeriveStateR2 {
+            init: state.init,
+            msg: msg1.clone(),
+            party: p2,
+        };
+
+        Ok(MsgState {
+            msg: add_prefix(
+                "mps-ed25519-hard-derive-round2-message$",
+                &bincode::serde::encode_to_vec(&msg1, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            ),
+            state: add_prefix(
+                "mps-ed25519-hard-derive-round2-state$",
+                &bincode::serde::encode_to_vec(&new_state, bincode::config::standard())
+                    .map_err(|_| MpsError::SerializationError)?,
+            ),
+        })
+    }
+
+    /// Process round 2 of MPC hard derivation; returns the derived child share.
+    /// The returned share plugs directly into `ed25519_dsg_round0_process`,
+    /// optionally with a further soft `derivation_path` on top.
+    /// round2_message: Public message from the other active party.
+    /// state: Private state result from round 1.
+    pub fn ed25519_hard_derive_round2_process(
+        round2_message: &[u8],
+        state: &[u8],
+    ) -> Result<Share, MpsError> {
+        let other_msg1: HardDeriveMsg1 = bincode::serde::decode_from_slice(
+            &rem_prefix("mps-ed25519-hard-derive-round2-message$", round2_message)?,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+        let state: HardDeriveStateR2 = bincode::serde::decode_from_slice(
+            &rem_prefix("mps-ed25519-hard-derive-round2-state$", state)?,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .map_err(|_| MpsError::DeserializationError)?;
+
+        let self_party_id = state.init.party_id();
+        let other_party_id = other_msg1.party_id();
+
+        let output: HardDeriveOutputEd25519 = state
+            .party
+            .process(vec![other_msg1, state.msg])
+            .map_err(|_| MpsError::ProtocolError)?;
+
+        let mut participating_party_ids = [self_party_id, other_party_id];
+        participating_party_ids.sort_unstable();
+        let derived = keyshare_after_hard_derive(&state.init, &output, &participating_party_ids);
+
+        Ok(Share {
+            share: bincode::serde::encode_to_vec(&derived, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+            pk: derived.public_key.compress().to_bytes(),
+            chaincode: derived.root_chain_code,
         })
     }
 
@@ -1387,6 +1716,146 @@ mod tests {
             .unwrap();
     }
 
+    /// Test full VRF DKG + MPC hard derivation, then DSG with the derived share.
+    #[test]
+    fn test_ed25519_hard_derive() {
+        // Generate root signing shares (parties 0 and 2 will be the active quorum).
+        let mut prv_keys = Vec::new();
+        let mut pub_keys = Vec::new();
+        let mut seeds = Vec::new();
+        let mut vrf_seeds = Vec::new();
+        for i in 0..3 {
+            let secret_key = crypto_box::SecretKey::generate(&mut rand::thread_rng());
+            let public_key = secret_key.public_key();
+            prv_keys.push(secret_key);
+            pub_keys.push((i, public_key));
+            seeds.push(rand::thread_rng().gen::<[u8; 32]>());
+            vrf_seeds.push(rand::thread_rng().gen::<[u8; 32]>());
+        }
+
+        let dkg_r0: Vec<_> = (0u8..3)
+            .map(|i| {
+                let others: Vec<Vec<u8>> = (0u8..3)
+                    .filter(|&j| j != i)
+                    .map(|j| pub_keys[j as usize].1.to_bytes().to_vec())
+                    .collect();
+                mps::ed25519_dkg_round0_process(
+                    i,
+                    &prv_keys[i as usize].to_bytes(),
+                    &[others[0].clone(), others[1].clone()],
+                    &seeds[i as usize],
+                )
+                .unwrap()
+            })
+            .collect();
+        let dkg_r1: Vec<_> = (0u8..3)
+            .map(|i| {
+                let others: Vec<Vec<u8>> = (0u8..3)
+                    .filter(|&j| j != i)
+                    .map(|j| dkg_r0[j as usize].msg.clone())
+                    .collect();
+                mps::ed25519_dkg_round1_process(
+                    &[others[0].clone(), others[1].clone()],
+                    &dkg_r0[i as usize].state,
+                )
+                .unwrap()
+            })
+            .collect();
+        let dkg_p0_share = mps::ed25519_dkg_round2_process(
+            &[dkg_r1[1].msg.clone(), dkg_r1[2].msg.clone()],
+            &dkg_r1[0].state,
+        )
+        .unwrap();
+        let dkg_p2_share = mps::ed25519_dkg_round2_process(
+            &[dkg_r1[0].msg.clone(), dkg_r1[1].msg.clone()],
+            &dkg_r1[2].state,
+        )
+        .unwrap();
+
+        // Generate the VRF signing shares backing hard derivation.
+        let vrf_r0: Vec<_> = (0u8..3)
+            .map(|i| mps::ed25519_vrf_dkg_round0_process(i, &vrf_seeds[i as usize]).unwrap())
+            .collect();
+        let vrf_r1: Vec<_> = (0u8..3)
+            .map(|i| {
+                let others: Vec<Vec<u8>> = (0u8..3)
+                    .filter(|&j| j != i)
+                    .map(|j| vrf_r0[j as usize].msg.clone())
+                    .collect();
+                mps::ed25519_vrf_dkg_round1_process(
+                    &[others[0].clone(), others[1].clone()],
+                    &vrf_r0[i as usize].state,
+                )
+                .unwrap()
+            })
+            .collect();
+        let vrf_p0_share = mps::ed25519_vrf_dkg_round2_process(
+            &[vrf_r1[1].msg[&0].clone(), vrf_r1[2].msg[&0].clone()],
+            &vrf_r1[0].state,
+        )
+        .unwrap();
+        let vrf_p2_share = mps::ed25519_vrf_dkg_round2_process(
+            &[vrf_r1[0].msg[&2].clone(), vrf_r1[1].msg[&2].clone()],
+            &vrf_r1[2].state,
+        )
+        .unwrap();
+
+        // Hard-derive a single hardened path in one shot (parties 0 and 2 active).
+        let path = "m/44'/0'/0'".to_string();
+        let hd_p0_0 = mps::ed25519_hard_derive_round0_process(
+            &vrf_p0_share.share,
+            &dkg_p0_share.share,
+            path.clone(),
+        )
+        .unwrap();
+        let hd_p2_0 =
+            mps::ed25519_hard_derive_round0_process(&vrf_p2_share.share, &dkg_p2_share.share, path)
+                .unwrap();
+
+        let hd_p0_1 =
+            mps::ed25519_hard_derive_round1_process(&hd_p2_0.msg, &hd_p0_0.state).unwrap();
+        let hd_p2_1 =
+            mps::ed25519_hard_derive_round1_process(&hd_p0_0.msg, &hd_p2_0.state).unwrap();
+
+        let hd_p0_share =
+            mps::ed25519_hard_derive_round2_process(&hd_p2_1.msg, &hd_p0_1.state).unwrap();
+        let hd_p2_share =
+            mps::ed25519_hard_derive_round2_process(&hd_p0_1.msg, &hd_p2_1.state).unwrap();
+
+        assert_eq!(hd_p0_share.pk, hd_p2_share.pk, "derived pubkeys differ");
+        assert_eq!(
+            hd_p0_share.chaincode, hd_p2_share.chaincode,
+            "derived chain codes differ"
+        );
+        assert_ne!(
+            hd_p0_share.pk, dkg_p0_share.pk,
+            "derived pubkey must differ from the root pubkey"
+        );
+
+        // Sign with the derived share and verify against the derived pubkey.
+        let msg = b"hard-derived signing test";
+        let dsg_p0_0 =
+            mps::ed25519_dsg_round0_process(&hd_p0_share.share, "m".to_string(), msg).unwrap();
+        let dsg_p2_0 =
+            mps::ed25519_dsg_round0_process(&hd_p2_share.share, "m".to_string(), msg).unwrap();
+        let dsg_p0_1 = mps::ed25519_dsg_round1_process(&dsg_p2_0.msg, &dsg_p0_0.state).unwrap();
+        let dsg_p2_1 = mps::ed25519_dsg_round1_process(&dsg_p0_0.msg, &dsg_p2_0.state).unwrap();
+        let dsg_p0_2 = mps::ed25519_dsg_round2_process(&dsg_p2_1.msg, &dsg_p0_1.state).unwrap();
+        let dsg_p2_2 = mps::ed25519_dsg_round2_process(&dsg_p0_1.msg, &dsg_p2_1.state).unwrap();
+        let dsg_p0_sig = mps::ed25519_dsg_round3_process(&dsg_p2_2.msg, &dsg_p0_2.state).unwrap();
+        let dsg_p2_sig = mps::ed25519_dsg_round3_process(&dsg_p0_2.msg, &dsg_p2_2.state).unwrap();
+
+        assert_eq!(dsg_p0_sig, dsg_p2_sig, "signatures differ");
+
+        VerifyingKey::from_bytes(&hd_p0_share.pk)
+            .unwrap()
+            .verify(
+                msg,
+                &Signature::from_bytes(dsg_p0_sig.as_slice().try_into().unwrap()),
+            )
+            .unwrap();
+    }
+
     /// Test full RedPallas DSG protocol; verifies alpha is non-zero, consistent
     /// between parties, and that the signature verifies against rk.
     #[test]
@@ -1571,6 +2040,19 @@ impl Share {
 }
 
 #[wasm_bindgen]
+pub struct VrfShare {
+    share: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl VrfShare {
+    #[wasm_bindgen(getter)]
+    pub fn share(&self) -> Vec<u8> {
+        self.share.clone()
+    }
+}
+
+#[wasm_bindgen]
 pub struct MsgDerivationInit {
     share: Vec<u8>,
     pk: Vec<u8>,
@@ -1590,6 +2072,25 @@ impl MsgDerivationInit {
         self.pk.clone()
     }
 
+    #[wasm_bindgen(getter)]
+    pub fn msg(&self) -> Result<JsValue, JsValue> {
+        self.msg.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn state(&self) -> Vec<u8> {
+        self.state.clone()
+    }
+}
+
+#[wasm_bindgen]
+pub struct MsgStateMap {
+    msg: Result<JsValue, JsValue>,
+    state: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl MsgStateMap {
     #[wasm_bindgen(getter)]
     pub fn msg(&self) -> Result<JsValue, JsValue> {
         self.msg.clone()
@@ -1756,6 +2257,47 @@ pub fn ed25519_dkg_round2_process(round2_messages: Array, state: &[u8]) -> Resul
 }
 
 #[wasm_bindgen]
+pub fn ed25519_vrf_dkg_round0_process(party_id: u8, seed: &[u8]) -> Result<MsgState, String> {
+    let seed_32: [u8; 32] = seed.try_into().map_err(|_| "Invalid input")?;
+    let result =
+        mps::ed25519_vrf_dkg_round0_process(party_id, &seed_32).map_err(|e| e.to_string())?;
+
+    Ok(MsgState {
+        msg: result.msg,
+        state: result.state,
+    })
+}
+
+#[wasm_bindgen]
+pub fn ed25519_vrf_dkg_round1_process(
+    round1_messages: Array,
+    state: &[u8],
+) -> Result<MsgStateMap, String> {
+    let [m0, m1] = js_array_to_2_bufs(&round1_messages)?;
+    let result =
+        mps::ed25519_vrf_dkg_round1_process(&[m0, m1], state).map_err(|e| e.to_string())?;
+
+    Ok(MsgStateMap {
+        msg: hashmap_to_js(result.msg),
+        state: result.state,
+    })
+}
+
+#[wasm_bindgen]
+pub fn ed25519_vrf_dkg_round2_process(
+    round2_messages: Array,
+    state: &[u8],
+) -> Result<VrfShare, String> {
+    let [m0, m1] = js_array_to_2_bufs(&round2_messages)?;
+    let result =
+        mps::ed25519_vrf_dkg_round2_process(&[m0, m1], state).map_err(|e| e.to_string())?;
+
+    Ok(VrfShare {
+        share: result.share,
+    })
+}
+
+#[wasm_bindgen]
 pub fn ed25519_dsg_round0_process(
     share: &[u8],
     derivation_path: String,
@@ -1798,6 +2340,50 @@ pub fn ed25519_dsg_round3_process(round3_message: &[u8], state: &[u8]) -> Result
         mps::ed25519_dsg_round3_process(round3_message, state).map_err(|e| e.to_string())?;
 
     Ok(result.to_vec())
+}
+
+#[wasm_bindgen]
+pub fn ed25519_hard_derive_round0_process(
+    vrf_share: &[u8],
+    root_share: &[u8],
+    path: String,
+) -> Result<MsgState, String> {
+    let result = mps::ed25519_hard_derive_round0_process(vrf_share, root_share, path)
+        .map_err(|e| e.to_string())?;
+
+    Ok(MsgState {
+        msg: result.msg,
+        state: result.state,
+    })
+}
+
+#[wasm_bindgen]
+pub fn ed25519_hard_derive_round1_process(
+    round1_message: &[u8],
+    state: &[u8],
+) -> Result<MsgState, String> {
+    let result = mps::ed25519_hard_derive_round1_process(round1_message, state)
+        .map_err(|e| e.to_string())?;
+
+    Ok(MsgState {
+        msg: result.msg,
+        state: result.state,
+    })
+}
+
+#[wasm_bindgen]
+pub fn ed25519_hard_derive_round2_process(
+    round2_message: &[u8],
+    state: &[u8],
+) -> Result<Share, String> {
+    let result = mps::ed25519_hard_derive_round2_process(round2_message, state)
+        .map_err(|e| e.to_string())?;
+
+    Ok(Share {
+        share: result.share,
+        pk: result.pk.to_vec(),
+        chaincode: result.chaincode.to_vec(),
+    })
 }
 
 #[wasm_bindgen]

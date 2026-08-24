@@ -696,6 +696,374 @@ describe("mps", function () {
         }
       });
     });
+
+    describe("vrf_dkg", function () {
+      it("performs round 0", function () {
+        const messagePrefix = Buffer.from("mps-ed25519-vrf-dkg-round1-message$");
+        const statePrefix = Buffer.from("mps-ed25519-vrf-dkg-round1-state$");
+        for (let i = 0; i < keypairs.length; i++) {
+          const result = mps.ed25519_vrf_dkg_round0_process(i, crypto.randomBytes(32));
+          assert(Buffer.from(result.msg).slice(0, messagePrefix.length).equals(messagePrefix));
+          assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
+        }
+      });
+
+      let results1: Array<mps.MsgState>;
+
+      before("performs round 0", function () {
+        results1 = [0, 1, 2].map((i) =>
+          mps.ed25519_vrf_dkg_round0_process(i, crypto.randomBytes(32)),
+        );
+      });
+
+      it("performs round 1", function () {
+        const messagePrefix = Buffer.from("mps-ed25519-vrf-dkg-round2-message$");
+        const statePrefix = Buffer.from("mps-ed25519-vrf-dkg-round2-state$");
+        for (let i = 0; i < results1.length; i++) {
+          const result = mps.ed25519_vrf_dkg_round1_process(
+            otherIndices[i].map((i) => results1[i].msg),
+            results1[i].state,
+          );
+          for (const value of Object.values(result.msg as Record<string, Uint8Array>)) {
+            assert(Buffer.from(value).slice(0, messagePrefix.length).equals(messagePrefix));
+          }
+          assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
+        }
+      });
+
+      it("fails to perform round 1 with invalid message prefix", function () {
+        const messagePrefix = Buffer.from("mps-ed25519-vrf-dkg-round1-message$");
+        for (let i = 0; i < results1.length; i++) {
+          shouldThrow(() =>
+            mps.ed25519_vrf_dkg_round1_process(
+              otherIndices[i].map((i) => Buffer.from(results1[i].msg).slice(messagePrefix.length)),
+              results1[i].state,
+            ),
+          );
+          shouldThrow(() =>
+            mps.ed25519_vrf_dkg_round1_process(
+              otherIndices[i].map((i) =>
+                Buffer.concat([
+                  Buffer.from("mps-ed25519-vrf-dkg-round2-message$"),
+                  Buffer.from(results1[i].msg).slice(messagePrefix.length),
+                ]),
+              ),
+              results1[i].state,
+            ),
+          );
+        }
+      });
+
+      it("fails to perform round 1 with invalid state prefix", function () {
+        const statePrefix = Buffer.from("mps-ed25519-vrf-dkg-round1-state$");
+        for (let i = 0; i < results1.length; i++) {
+          shouldThrow(() =>
+            mps.ed25519_vrf_dkg_round1_process(
+              otherIndices[i].map((i) => results1[i].msg),
+              Buffer.from(results1[i].state).slice(statePrefix.length),
+            ),
+          );
+          shouldThrow(() =>
+            mps.ed25519_vrf_dkg_round1_process(
+              otherIndices[i].map((j) => results1[j].msg),
+              Buffer.concat([
+                Buffer.from("mps-ed25519-vrf-dkg-round2-state$"),
+                Buffer.from(results1[i].state).slice(statePrefix.length),
+              ]),
+            ),
+          );
+        }
+      });
+
+      let results2: Array<mps.MsgStateMap>;
+
+      before("performs round 1", function () {
+        results2 = [0, 1, 2].map((i) =>
+          mps.ed25519_vrf_dkg_round1_process(
+            otherIndices[i].map((i) => results1[i].msg),
+            results1[i].state,
+          ),
+        );
+      });
+
+      it("performs round 2", function () {
+        const shares = [0, 1, 2].map((i) =>
+          mps.ed25519_vrf_dkg_round2_process(
+            otherIndices[i].map((j) => (results2[j].msg as Record<string, Uint8Array>)[i]),
+            results2[i].state,
+          ),
+        );
+        for (const share of shares) {
+          assert.ok(share.share.length > 0);
+        }
+      });
+
+      it("fails to perform round 2 with invalid message prefix", function () {
+        const messagePrefix = Buffer.from("mps-ed25519-vrf-dkg-round2-message$");
+        for (let i = 0; i < results2.length; i++) {
+          shouldThrow(() =>
+            mps.ed25519_vrf_dkg_round2_process(
+              otherIndices[i].map((j) =>
+                Buffer.from((results2[j].msg as Record<string, Uint8Array>)[i]).slice(
+                  messagePrefix.length,
+                ),
+              ),
+              results2[i].state,
+            ),
+          );
+          shouldThrow(() =>
+            mps.ed25519_vrf_dkg_round2_process(
+              otherIndices[i].map((j) =>
+                Buffer.concat([
+                  Buffer.from("mps-ed25519-vrf-dkg-round3-message$"),
+                  Buffer.from((results2[j].msg as Record<string, Uint8Array>)[i]).slice(
+                    messagePrefix.length,
+                  ),
+                ]),
+              ),
+              results2[i].state,
+            ),
+          );
+        }
+      });
+
+      it("fails to perform round 2 with invalid state prefix", function () {
+        const statePrefix = Buffer.from("mps-ed25519-vrf-dkg-round2-state$");
+        for (let i = 0; i < results2.length; i++) {
+          shouldThrow(() =>
+            mps.ed25519_vrf_dkg_round2_process(
+              otherIndices[i].map((j) => (results2[j].msg as Record<string, Uint8Array>)[i]),
+              Buffer.from(results2[i].state).slice(statePrefix.length),
+            ),
+          );
+          shouldThrow(() =>
+            mps.ed25519_vrf_dkg_round2_process(
+              otherIndices[i].map((j) => (results2[j].msg as Record<string, Uint8Array>)[i]),
+              Buffer.concat([
+                Buffer.from("mps-ed25519-vrf-dkg-round3-state$"),
+                Buffer.from(results2[i].state).slice(statePrefix.length),
+              ]),
+            ),
+          );
+        }
+      });
+    });
+
+    describe("hard_derive", function () {
+      const otherIndex = [1, 0];
+      let rootShares: Array<mps.Share>;
+      let vrfShares: Array<mps.VrfShare>;
+
+      before("performs root dkg", function () {
+        const results1 = [0, 1, 2].map((i) =>
+          mps.ed25519_dkg_round0_process(
+            i,
+            keypairs[i].privateKey,
+            otherIndices[i].map((i) => keypairs[i].publicKey),
+            crypto.randomBytes(32),
+          ),
+        );
+        const results2 = [0, 1, 2].map((i) =>
+          mps.ed25519_dkg_round1_process(
+            otherIndices[i].map((i) => results1[i].msg),
+            results1[i].state,
+          ),
+        );
+        rootShares = [0, 1, 2].map((i) =>
+          mps.ed25519_dkg_round2_process(
+            otherIndices[i].map((i) => results2[i].msg),
+            results2[i].state,
+          ),
+        );
+      });
+
+      before("performs vrf dkg", function () {
+        const results1 = [0, 1, 2].map((i) =>
+          mps.ed25519_vrf_dkg_round0_process(i, crypto.randomBytes(32)),
+        );
+        const results2 = [0, 1, 2].map((i) =>
+          mps.ed25519_vrf_dkg_round1_process(
+            otherIndices[i].map((i) => results1[i].msg),
+            results1[i].state,
+          ),
+        );
+        vrfShares = [0, 1, 2].map((i) =>
+          mps.ed25519_vrf_dkg_round2_process(
+            otherIndices[i].map((j) => (results2[j].msg as Record<string, Uint8Array>)[i]),
+            results2[i].state,
+          ),
+        );
+      });
+
+      const path = "m/44'/0'/0'";
+
+      it("performs round 0", function () {
+        const messagePrefix = Buffer.from("mps-ed25519-hard-derive-round1-message$");
+        const statePrefix = Buffer.from("mps-ed25519-hard-derive-round1-state$");
+        for (const i of [0, 2]) {
+          const result = mps.ed25519_hard_derive_round0_process(
+            vrfShares[i].share,
+            rootShares[i].share,
+            path,
+          );
+          assert(Buffer.from(result.msg).slice(0, messagePrefix.length).equals(messagePrefix));
+          assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
+        }
+      });
+
+      let results0: Array<mps.MsgState>;
+
+      before("performs round 0", function () {
+        results0 = [0, 2].map((i) =>
+          mps.ed25519_hard_derive_round0_process(vrfShares[i].share, rootShares[i].share, path),
+        );
+      });
+
+      it("performs round 1", function () {
+        const messagePrefix = Buffer.from("mps-ed25519-hard-derive-round2-message$");
+        const statePrefix = Buffer.from("mps-ed25519-hard-derive-round2-state$");
+        for (let i = 0; i < results0.length; i++) {
+          const result = mps.ed25519_hard_derive_round1_process(
+            results0[otherIndex[i]].msg,
+            results0[i].state,
+          );
+          assert(Buffer.from(result.msg).slice(0, messagePrefix.length).equals(messagePrefix));
+          assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
+        }
+      });
+
+      it("fails to perform round 1 with invalid message prefix", function () {
+        const messagePrefix = Buffer.from("mps-ed25519-hard-derive-round1-message$");
+        for (let i = 0; i < results0.length; i++) {
+          shouldThrow(() =>
+            mps.ed25519_hard_derive_round1_process(
+              Buffer.from(results0[otherIndex[i]].msg).slice(messagePrefix.length),
+              results0[i].state,
+            ),
+          );
+          shouldThrow(() =>
+            mps.ed25519_hard_derive_round1_process(
+              Buffer.concat([
+                Buffer.from("mps-ed25519-hard-derive-round2-message$"),
+                Buffer.from(results0[otherIndex[i]].msg).slice(messagePrefix.length),
+              ]),
+              results0[i].state,
+            ),
+          );
+        }
+      });
+
+      it("fails to perform round 1 with invalid state prefix", function () {
+        const statePrefix = Buffer.from("mps-ed25519-hard-derive-round1-state$");
+        for (let i = 0; i < results0.length; i++) {
+          shouldThrow(() =>
+            mps.ed25519_hard_derive_round1_process(
+              results0[otherIndex[i]].msg,
+              Buffer.from(results0[i].state).slice(statePrefix.length),
+            ),
+          );
+          shouldThrow(() =>
+            mps.ed25519_hard_derive_round1_process(
+              results0[otherIndex[i]].msg,
+              Buffer.concat([
+                Buffer.from("mps-ed25519-hard-derive-round2-state$"),
+                results0[i].state,
+              ]),
+            ),
+          );
+        }
+      });
+
+      let results1: Array<mps.MsgState>;
+
+      before("performs round 1", function () {
+        results1 = [0, 1].map((i) =>
+          mps.ed25519_hard_derive_round1_process(results0[otherIndex[i]].msg, results0[i].state),
+        );
+      });
+
+      it("performs round 2", function () {
+        const shares = [0, 1].map((i) =>
+          mps.ed25519_hard_derive_round2_process(results1[otherIndex[i]].msg, results1[i].state),
+        );
+        assert.deepStrictEqual(shares[0].pk, shares[1].pk, "derived pubkeys differ");
+        assert.deepStrictEqual(
+          shares[0].chaincode,
+          shares[1].chaincode,
+          "derived chain codes differ",
+        );
+        assert.notDeepStrictEqual(
+          shares[0].pk,
+          rootShares[0].pk,
+          "derived pubkey must differ from the root pubkey",
+        );
+      });
+
+      it("fails to perform round 2 with invalid message prefix", function () {
+        const messagePrefix = Buffer.from("mps-ed25519-hard-derive-round2-message$");
+        for (let i = 0; i < results1.length; i++) {
+          shouldThrow(() =>
+            mps.ed25519_hard_derive_round2_process(
+              Buffer.from(results1[otherIndex[i]].msg).slice(messagePrefix.length),
+              results1[i].state,
+            ),
+          );
+          shouldThrow(() =>
+            mps.ed25519_hard_derive_round2_process(
+              Buffer.concat([
+                Buffer.from("mps-ed25519-hard-derive-round3-message$"),
+                Buffer.from(results1[otherIndex[i]].msg).slice(messagePrefix.length),
+              ]),
+              results1[i].state,
+            ),
+          );
+        }
+      });
+
+      it("fails to perform round 2 with invalid state prefix", function () {
+        const statePrefix = Buffer.from("mps-ed25519-hard-derive-round2-state$");
+        for (let i = 0; i < results1.length; i++) {
+          shouldThrow(() =>
+            mps.ed25519_hard_derive_round2_process(
+              results1[otherIndex[i]].msg,
+              Buffer.from(results1[i].state).slice(statePrefix.length),
+            ),
+          );
+          shouldThrow(() =>
+            mps.ed25519_hard_derive_round2_process(
+              results1[otherIndex[i]].msg,
+              Buffer.concat([
+                Buffer.from("mps-ed25519-hard-derive-round3-state$"),
+                Buffer.from(results1[i].state).slice(statePrefix.length),
+              ]),
+            ),
+          );
+        }
+      });
+
+      const derivedShares: Array<mps.Share> = [];
+
+      before("performs round 2", function () {
+        const shares = [0, 1].map((i) =>
+          mps.ed25519_hard_derive_round2_process(results1[otherIndex[i]].msg, results1[i].state),
+        );
+        derivedShares[0] = shares[0];
+        derivedShares[2] = shares[1];
+      });
+
+      it("signs with the derived share and verifies against the derived pubkey", function () {
+        const message = Buffer.from("hard-derived signing test");
+        const [sig0, sig2] = runDsg(derivedShares, "m", message);
+        assert.deepStrictEqual(sig0, sig2);
+        assert.ok(sodium.crypto_sign_verify_detached(sig0, message, derivedShares[0].pk));
+      });
+
+      it("composes soft derivation on top of a hard-derived share", function () {
+        const message = Buffer.from("soft-on-hard signing test");
+        const [sig0, sig2] = runDsg(derivedShares, "m/0/1", message);
+        assert.deepStrictEqual(sig0, sig2);
+      });
+    });
   });
 
   describe("redpallas", function () {
