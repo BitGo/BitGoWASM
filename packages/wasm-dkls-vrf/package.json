@@ -1,0 +1,69 @@
+{
+  "name": "@bitgo/wasm-dkls-vrf",
+  "description": "WebAssembly wrapper for DKLS23 VRF keygen and MPC hard derivation",
+  "version": "0.0.1",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BitGo/BitGoWASM"
+  },
+  "license": "MIT",
+  "files": [
+    "dist/esm/js/**/*",
+    "dist/cjs/js/**/*",
+    "dist/cjs/package.json",
+    "dist/web/js/**/*"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/js/index.d.ts",
+        "default": "./dist/esm/js/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/js/index.d.ts",
+        "default": "./dist/cjs/js/index.js"
+      }
+    },
+    "./web": {
+      "types": "./dist/web/js/wasm/wasm_dkls_vrf.d.ts",
+      "default": "./dist/web/js/wasm/wasm_dkls_vrf.js"
+    }
+  },
+  "main": "./dist/cjs/js/index.js",
+  "module": "./dist/esm/js/index.js",
+  "types": "./dist/esm/js/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "web": [
+        "./dist/web/js/wasm/wasm_dkls_vrf.d.ts"
+      ]
+    }
+  },
+  "sideEffects": [
+    "./dist/esm/js/wasm/wasm_dkls_vrf.js",
+    "./dist/cjs/js/wasm/wasm_dkls_vrf.js"
+  ],
+  "scripts": {
+    "test": "npm run test:mocha",
+    "test:mocha": "mocha --recursive test --node-option=disable-warning=ExperimentalWarning",
+    "build:wasm": "make js/wasm && make dist/esm/js/wasm && make dist/cjs/js/wasm && make dist/web/js/wasm",
+    "build:ts-esm": "tsc",
+    "build:ts-cjs": "tsc --project tsconfig.cjs.json",
+    "build:ts": "npm run build:ts-esm && npm run build:ts-cjs",
+    "build:package-json": "echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
+    "build": "npm run build:wasm && npm run build:ts && npm run build:package-json",
+    "check-fmt": "prettier --check . && cargo fmt -- --check",
+    "lint": "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings"
+  },
+  "devDependencies": {
+    "@silencelaboratories/dkls-wasm-ll-node": "1.2.0",
+    "mocha": "10.6.0",
+    "tsx": "4.20.6",
+    "typescript": "5.5.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

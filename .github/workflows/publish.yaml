@@ -49,6 +49,12 @@ jobs:
           name: wasm-mps-build
           path: packages/wasm-mps/
 
+      - name: Download wasm-dkls-vrf build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-dkls-vrf-build
+          path: packages/wasm-dkls-vrf/
+
       - name: Download wasm-dot build artifacts
         uses: actions/download-artifact@v4
         with:

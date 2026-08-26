@@ -5,6 +5,7 @@
 # These owners and first officers will be the default owners for everything in the repo.
 *   @BitGo/btc-team
 packages/wasm-mps @BitGo/hsm
+packages/wasm-dkls-vrf @BitGo/wallet-core @BitGo/wallet-core-india @BitGo/hsm
 packages/wasm-privacy-coin @BitGo/coinsshield
 
 # Zcash-specific paths in wasm-utxo

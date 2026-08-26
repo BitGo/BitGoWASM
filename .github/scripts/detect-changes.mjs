@@ -15,6 +15,7 @@ const PACKAGE_CONFIG = [
   { package: "wasm-utxo", "needs-wasm-pack": true, "has-wasm-pack-tests": true },
   { package: "wasm-bip32", "needs-wasm-pack": false, "has-wasm-pack-tests": false },
   { package: "wasm-mps", "needs-wasm-pack": false, "has-wasm-pack-tests": false },
+  { package: "wasm-dkls-vrf", "needs-wasm-pack": false, "has-wasm-pack-tests": false },
   { package: "wasm-solana", "needs-wasm-pack": false, "has-wasm-pack-tests": false },
   { package: "wasm-dot", "needs-wasm-pack": false, "has-wasm-pack-tests": false },
   { package: "wasm-ton", "needs-wasm-pack": false, "has-wasm-pack-tests": false },
