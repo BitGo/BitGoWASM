@@ -1165,22 +1165,12 @@ describe("mps", function () {
       });
 
       it("performs round 2", function () {
-        const messagePrefix = Buffer.from("mps-redpallas-dkg-derivation-message$");
-        const statePrefix = Buffer.from("mps-redpallas-dkg-derivation-state$");
         const results3 = [0, 1, 2].map((i) =>
           mps.redpallas_dkg_round2_process(
             otherIndices[i].map((i) => results2[i].msg),
             results2[i].state,
-            crypto.randomBytes(32),
           ),
         );
-        for (let i = 0; i < results3.length; i++) {
-          const msg = results3[i].msg as Record<string, Uint8Array>;
-          for (const value of Object.values(msg)) {
-            assert(Buffer.from(value).slice(0, messagePrefix.length).equals(messagePrefix));
-          }
-          assert(Buffer.from(results3[i].state).slice(0, statePrefix.length).equals(statePrefix));
-        }
         for (let i = 0; i < 2; i++) {
           assert.ok(results3[i].pk.every((value, index) => value === results3[2].pk[index]));
         }
@@ -1193,7 +1183,6 @@ describe("mps", function () {
             mps.redpallas_dkg_round2_process(
               otherIndices[i].map((i) => Buffer.from(results2[i].msg).slice(messagePrefix.length)),
               results2[i].state,
-              crypto.randomBytes(32),
             ),
           );
           shouldThrow(() =>
@@ -1205,7 +1194,6 @@ describe("mps", function () {
                 ]),
               ),
               results2[i].state,
-              crypto.randomBytes(32),
             ),
           );
         }
@@ -1218,7 +1206,6 @@ describe("mps", function () {
             mps.redpallas_dkg_round2_process(
               otherIndices[i].map((i) => results2[i].msg),
               Buffer.from(results2[i].state).slice(statePrefix.length),
-              crypto.randomBytes(32),
             ),
           );
           shouldThrow(() =>
@@ -1228,93 +1215,15 @@ describe("mps", function () {
                 Buffer.from("mps-redpallas-dkg-round3-state$"),
                 Buffer.from(results2[i].state).slice(statePrefix.length),
               ]),
-              crypto.randomBytes(32),
             ),
           );
-        }
-      });
-
-      let results3: Array<mps.MsgDerivationInit>;
-
-      before("performs round 2", function () {
-        results3 = [0, 1, 2].map((i) =>
-          mps.redpallas_dkg_round2_process(
-            otherIndices[i].map((i) => results2[i].msg),
-            results2[i].state,
-            crypto.randomBytes(32),
-          ),
-        );
-      });
-
-      function enqueue(messages: Record<number, Uint8Array[]>, msg: unknown) {
-        for (const [recipient, value] of Object.entries(msg as Record<string, Uint8Array>)) {
-          messages[Number(recipient)].push(value);
-        }
-      }
-
-      it("runs derivation to completion", function () {
-        this.timeout(30000);
-        const messagePrefix = Buffer.from("mps-redpallas-dkg-derivation-message$");
-        const statePrefix = Buffer.from("mps-redpallas-dkg-derivation-state$");
-        const messages: Record<number, Uint8Array[]> = { 0: [], 1: [], 2: [] };
-        for (const result of results3) {
-          enqueue(messages, result.msg);
-        }
-        const states = results3.map((d) => d.state);
-        const derivedKeys: Map<number, mps.MsgDerivation> = new Map();
-        for (let round = 0; round < 500 && derivedKeys.size < 3; round++) {
-          for (let party = 0; party < 3; party++) {
-            const input = messages[party].length > 0 ? messages[party].shift() : new Uint8Array(0);
-            const result = mps.redpallas_derivation_process(input, states[party]);
-            assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
-            states[party] = result.state;
-            for (const value of Object.values(result.msg as Record<string, Uint8Array>)) {
-              assert(Buffer.from(value).slice(0, messagePrefix.length).equals(messagePrefix));
-            }
-            enqueue(messages, result.msg);
-            if (result.done) {
-              derivedKeys.set(party, result);
-            }
-          }
-        }
-        assert.ok(derivedKeys.size == 3, "derivation did not complete within 500 rounds");
-        for (let i = 0; i < 3; i++) {
-          const k = derivedKeys.get(i);
-          assert.equal(k.ask.length, 32);
-          assert.equal(k.nk.length, 32);
-          assert.equal(k.rivk.length, 32);
-          assert.equal(k.internal_ivk.length, 64);
-          assert.equal(k.external_ivk.length, 64);
-        }
-        const hsmKeys = derivedKeys.get(2); // HSM is always part 2.
-        for (let i = 0; i < 2; i++) {
-          const k = derivedKeys.get(i);
-          assert.deepStrictEqual(k.ask, hsmKeys.ask);
-          assert.deepStrictEqual(k.nk, hsmKeys.nk);
-          assert.deepStrictEqual(k.rivk, hsmKeys.rivk);
-          assert.deepStrictEqual(k.internal_ivk, hsmKeys.internal_ivk);
-          assert.deepStrictEqual(k.external_ivk, hsmKeys.external_ivk);
-        }
-        for (let i = 0; i < 3; i++) {
-          const k = derivedKeys.get(i);
-          assert(!k.ask.every((b) => b === 0));
-          assert(!k.nk.every((b) => b === 0));
-          assert(!k.rivk.every((b) => b === 0));
-          assert(!k.internal_ivk.every((b) => b === 0));
-          assert(!k.external_ivk.every((b) => b === 0));
-        }
-        for (let i = 0; i < 3; i++) {
-          const k = derivedKeys.get(i);
-          const ivks = mps.redpallas_fvk_to_ivks(k.ask, k.nk, k.rivk);
-          assert.deepStrictEqual(ivks.internal_ivk, k.internal_ivk);
-          assert.deepStrictEqual(ivks.external_ivk, k.external_ivk);
         }
       });
     });
 
     describe("dsg", function () {
       const otherIndex = [1, 0];
-      let shares: Array<mps.MsgDerivationInit>;
+      let shares: Array<mps.RedPallasShare>;
 
       before("performs dkg", function () {
         const results1 = [0, 1, 2].map((i) =>
@@ -1335,7 +1244,6 @@ describe("mps", function () {
           mps.redpallas_dkg_round2_process(
             otherIndices[i].map((j) => results2[j].msg),
             results2[i].state,
-            crypto.randomBytes(32),
           ),
         );
       });

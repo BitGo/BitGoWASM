@@ -2,8 +2,6 @@
 
 mod mps {
 
-    const MAX_MESSAGES: usize = 500;
-
     use multi_party_schnorr::{
         common::{
             redpallas::{RedPallasPoint, RedPallasPointBytes},
@@ -29,14 +27,8 @@ mod mps {
     };
     use rand::Rng;
     use serde::{Deserialize, Serialize};
-    use std::{
-        collections::{HashMap, VecDeque},
-        sync::Arc,
-    };
+    use std::{collections::HashMap, sync::Arc};
     use thiserror::Error;
-    use zcash::derivation_session::{
-        DerivationStatus, Message as DrvMessage, Session as DerivationSession,
-    };
 
     /// Errors that can be returned as results.
     #[derive(Debug, Error)]
@@ -52,9 +44,6 @@ mod mps {
 
         #[error("Protocol Error")]
         ProtocolError,
-
-        #[error("Unexpected Error")]
-        UnexpectedError,
     }
 
     /// Internal DKG state used for round 1.
@@ -150,15 +139,13 @@ mod mps {
         pub chaincode: [u8; 32],
     }
 
-    pub struct MsgDerivationInit {
+    /// Signing share returned from RedPallas DKG round 2.
+    pub struct RedPallasShare {
         pub share: Vec<u8>,
         pub pk: [u8; 32],
-        pub msg: HashMap<u8, Vec<u8>>,
-        pub state: Vec<u8>,
     }
 
-    /// Result from processing that includes a per-recipient message pool
-    /// (see [`MsgDerivationInit::msg`]) and a private state to be stored in memory.
+    /// Result from processing that includes a per-recipient message pool and a private state to be stored in memory.
     pub struct MsgStateMap {
         pub msg: HashMap<u8, Vec<u8>>,
         pub state: Vec<u8>,
@@ -174,23 +161,6 @@ mod mps {
         pub signature: Vec<u8>,
         pub rk: [u8; 32],
         pub alpha: [u8; 32],
-    }
-
-    pub struct MsgDerivation {
-        pub msg: HashMap<u8, Vec<u8>>,
-        pub state: Vec<u8>,
-        pub done: bool,
-        pub ask: Option<[u8; 32]>,
-        pub nk: Option<[u8; 32]>,
-        pub rivk: Option<[u8; 32]>,
-        pub internal_ivk: Option<[u8; 64]>,
-        pub external_ivk: Option<[u8; 64]>,
-    }
-
-    /// Orchard incoming viewing keys derived from FVK components.
-    pub struct RedPallasIvks {
-        pub internal_ivk: [u8; 64],
-        pub external_ivk: [u8; 64],
     }
 
     trait IntoSignReady<G: GroupElem> {
@@ -765,7 +735,7 @@ mod mps {
     /// state: Private state result from round 0.
     /// Returns a per-recipient message pool: round 2's message carries plaintext
     /// polynomial shares for every party, so it must never share a pool slot
-    /// across recipients (see `redpallas_derivation_process` for the same pattern).
+    /// across recipients.
     pub fn ed25519_vrf_dkg_round1_process(
         round1_messages: &[Vec<u8>; 2],
         state: &[u8],
@@ -1127,150 +1097,23 @@ mod mps {
         })
     }
 
-    fn derivation_msgs_to_hashmap(
-        prefix: &str,
-        party_id: u8,
-        msgs: Vec<DrvMessage>,
-    ) -> Result<HashMap<u8, Vec<u8>>, MpsError> {
-        let mut msg_map: HashMap<u8, Vec<DrvMessage>> = Default::default();
-        for msg in msgs {
-            let idx = msg.receiver().ok_or(MpsError::ProtocolError)?;
-            if idx == party_id || idx >= 3 {
-                return Err(MpsError::UnexpectedError);
-            }
-            msg_map.entry(idx).or_default().push(msg);
-        }
-        let mut vec_map: HashMap<u8, Vec<u8>> = Default::default();
-        for (idx, msgs) in msg_map {
-            vec_map.insert(
-                idx,
-                add_prefix(
-                    prefix,
-                    &bincode::serde::encode_to_vec(msgs, bincode::config::standard())
-                        .map_err(|_| MpsError::SerializationError)?,
-                ),
-            );
-        }
-        Ok(vec_map)
-    }
-
-    /// Process round 2 of RedPallas DKG; finalizes keyshare and starts derivation session.
+    /// Process round 2 of RedPallas DKG; finalizes keyshare.
     pub fn redpallas_dkg_round2_process(
         round2_messages: &[Vec<u8>; 2],
         state: &[u8],
-        derivation_seed: &[u8; 32],
-    ) -> Result<MsgDerivationInit, MpsError> {
+    ) -> Result<RedPallasShare, MpsError> {
         let i0_msg2 = rem_prefix("mps-redpallas-dkg-round2-message$", &round2_messages[0])?;
         let i1_msg2 = rem_prefix("mps-redpallas-dkg-round2-message$", &round2_messages[1])?;
         let state = rem_prefix("mps-redpallas-dkg-round2-state$", state)?;
-        let (share, party_id) =
+        let (share, _party_id) =
             internal_dkg_round2_process::<RedPallasPoint>(&[i0_msg2, i1_msg2], &state)?;
         let pk = RedPallasPointBytes::from(share.public_key).0;
         let share_bytes = bincode::serde::encode_to_vec(&share, bincode::config::standard())
             .map_err(|_| MpsError::SerializationError)?;
 
-        let (drv_session, initial_outgoing) =
-            DerivationSession::new(party_id, *share.shamir_share(), *derivation_seed)
-                .map_err(|_| MpsError::ProtocolError)?;
-
-        let msg = derivation_msgs_to_hashmap(
-            "mps-redpallas-dkg-derivation-message$",
-            party_id,
-            initial_outgoing,
-        )?;
-        let incoming: VecDeque<DrvMessage> = Default::default();
-
-        let state = bincode::serde::encode_to_vec(
-            (party_id, &drv_session, &incoming),
-            bincode::config::standard(),
-        )
-        .map_err(|_| MpsError::SerializationError)?;
-
-        Ok(MsgDerivationInit {
+        Ok(RedPallasShare {
             share: share_bytes,
             pk,
-            msg,
-            state: add_prefix("mps-redpallas-dkg-derivation-state$", &state),
-        })
-    }
-
-    /// Drive the Orchard derivation session forward by one message.
-    /// `messages` is the global pool shared across all parties. One message
-    /// addressed to this party (or broadcast with no receiver) is consumed; any generated messages are added.
-    /// The updated pool is returned as `messages`. Completion is detectable on
-    /// any subsequent call via `session.derived_keys()`.
-    pub fn redpallas_derivation_process(
-        messages: &[u8],
-        state: &[u8],
-    ) -> Result<MsgDerivation, MpsError> {
-        let state = rem_prefix("mps-redpallas-dkg-derivation-state$", state)?;
-        let (party_id, mut session, mut incoming): (u8, DerivationSession, VecDeque<DrvMessage>) =
-            bincode::serde::decode_from_slice(&state, bincode::config::standard())
-                .map(|(v, _)| v)
-                .map_err(|_| MpsError::DeserializationError)?;
-
-        if !messages.is_empty() {
-            let pool: Vec<DrvMessage> = bincode::serde::decode_from_slice(
-                &rem_prefix("mps-redpallas-dkg-derivation-message$", messages)?,
-                bincode::config::standard(),
-            )
-            .map(|(v, _)| v)
-            .map_err(|_| MpsError::DeserializationError)?;
-            if incoming.len() + pool.len() > MAX_MESSAGES {
-                return Err(MpsError::InvalidInput);
-            }
-            for msg in &pool {
-                if msg.receiver() != Some(party_id) {
-                    return Err(MpsError::InvalidInput);
-                }
-            }
-            incoming.extend(pool);
-        }
-
-        let mut outgoing: Vec<DrvMessage> = Default::default();
-        if let Some(msg) = incoming.pop_front() {
-            let status = session
-                .handle_messages(vec![msg], &mut outgoing)
-                .map_err(|_| MpsError::ProtocolError)?;
-            if let DerivationStatus::Aborted(_) = status {
-                return Err(MpsError::ProtocolError);
-            }
-        }
-        let msg = derivation_msgs_to_hashmap(
-            "mps-redpallas-dkg-derivation-message$",
-            party_id,
-            outgoing,
-        )?;
-
-        let (done, ask, nk, rivk, internal_ivk, external_ivk) =
-            if let Some(keys) = session.derived_keys() {
-                (
-                    true,
-                    keys.ask,
-                    keys.nk,
-                    keys.rivk,
-                    keys.internal_ivk,
-                    keys.external_ivk,
-                )
-            } else {
-                (false, [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 64], [0u8; 64])
-            };
-
-        let new_state = bincode::serde::encode_to_vec(
-            (party_id, &session, &incoming),
-            bincode::config::standard(),
-        )
-        .map_err(|_| MpsError::SerializationError)?;
-
-        Ok(MsgDerivation {
-            msg,
-            state: add_prefix("mps-redpallas-dkg-derivation-state$", &new_state),
-            done,
-            ask: if done { Some(ask) } else { None },
-            nk: if done { Some(nk) } else { None },
-            rivk: if done { Some(rivk) } else { None },
-            internal_ivk: if done { Some(internal_ivk) } else { None },
-            external_ivk: if done { Some(external_ivk) } else { None },
         })
     }
 
@@ -1321,51 +1164,6 @@ mod mps {
         Ok(MsgState {
             msg: add_prefix("mps-redpallas-dsg-round3-message$", &result.msg),
             state: add_prefix("mps-redpallas-dsg-round3-state$", &result.state),
-        })
-    }
-
-    /// Derive Orchard incoming viewing keys from FVK components (ask, nk, rivk).
-    /// Applies sign correction to ask so the resulting ak has a positive x-coordinate
-    /// (bit 255 of encoding == 0), matching the Orchard FVK convention.
-    pub fn redpallas_fvk_to_ivks(
-        ask: &[u8; 32],
-        nk: &[u8; 32],
-        rivk: &[u8; 32],
-    ) -> Result<RedPallasIvks, MpsError> {
-        use multi_party_schnorr::group::ff::PrimeField;
-        use orchard::{
-            keys::{FullViewingKey, Scope},
-            primitives::redpallas::{SigningKey, SpendAuth, VerificationKey},
-        };
-        use pasta_curves::pallas;
-
-        // Compute ak = ask * G_SpendAuth with sign correction (bit 255 must be 0).
-        let mut ask_eff: pallas::Scalar =
-            Option::from(pallas::Scalar::from_repr(*ask)).ok_or(MpsError::InvalidInput)?;
-        let ak_bytes: [u8; 32] = loop {
-            let sk: SigningKey<SpendAuth> = ask_eff
-                .to_repr()
-                .try_into()
-                .map_err(|_| MpsError::InvalidInput)?;
-            let vk: VerificationKey<SpendAuth> = (&sk).into();
-            let ak_candidate: [u8; 32] = (&vk).into();
-            if (ak_candidate[31] >> 7) == 1 {
-                ask_eff = -ask_eff;
-                continue;
-            }
-            break ak_candidate;
-        };
-
-        let mut fvk_bytes = [0u8; 96];
-        fvk_bytes[0..32].copy_from_slice(&ak_bytes);
-        fvk_bytes[32..64].copy_from_slice(nk);
-        fvk_bytes[64..96].copy_from_slice(rivk);
-
-        let fvk = FullViewingKey::from_bytes(&fvk_bytes).ok_or(MpsError::InvalidInput)?;
-
-        Ok(RedPallasIvks {
-            internal_ivk: fvk.to_ivk(Scope::Internal).to_bytes(),
-            external_ivk: fvk.to_ivk(Scope::External).to_bytes(),
         })
     }
 
@@ -1873,7 +1671,6 @@ mod tests {
             let seed: [u8; 32] = rand::thread_rng().gen();
             seeds.push(seed);
         }
-        let derivation_seed: [u8; 32] = rand::thread_rng().gen();
 
         // DKG round 0
         let dkg_p0_0 = mps::redpallas_dkg_round0_process(
@@ -1928,13 +1725,11 @@ mod tests {
         let dkg_p0_init = mps::redpallas_dkg_round2_process(
             &[dkg_p1_1.msg.clone(), dkg_p2_1.msg.clone()],
             dkg_p0_1.state.as_slice(),
-            &derivation_seed,
         )
         .unwrap();
         let dkg_p2_init = mps::redpallas_dkg_round2_process(
             &[dkg_p0_1.msg.clone(), dkg_p1_1.msg.clone()],
             dkg_p2_1.state.as_slice(),
-            &derivation_seed,
         )
         .unwrap();
 
@@ -2040,28 +1835,13 @@ impl Share {
 }
 
 #[wasm_bindgen]
-pub struct VrfShare {
-    share: Vec<u8>,
-}
-
-#[wasm_bindgen]
-impl VrfShare {
-    #[wasm_bindgen(getter)]
-    pub fn share(&self) -> Vec<u8> {
-        self.share.clone()
-    }
-}
-
-#[wasm_bindgen]
-pub struct MsgDerivationInit {
+pub struct RedPallasShare {
     share: Vec<u8>,
     pk: Vec<u8>,
-    msg: Result<JsValue, JsValue>,
-    state: Vec<u8>,
 }
 
 #[wasm_bindgen]
-impl MsgDerivationInit {
+impl RedPallasShare {
     #[wasm_bindgen(getter)]
     pub fn share(&self) -> Vec<u8> {
         self.share.clone()
@@ -2070,16 +1850,6 @@ impl MsgDerivationInit {
     #[wasm_bindgen(getter)]
     pub fn pk(&self) -> Vec<u8> {
         self.pk.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn msg(&self) -> Result<JsValue, JsValue> {
-        self.msg.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn state(&self) -> Vec<u8> {
-        self.state.clone()
     }
 }
 
@@ -2103,57 +1873,15 @@ impl MsgStateMap {
 }
 
 #[wasm_bindgen]
-pub struct MsgDerivation {
-    msg: Result<JsValue, JsValue>,
-    state: Vec<u8>,
-    done: bool,
-    ask: Option<Vec<u8>>,
-    nk: Option<Vec<u8>>,
-    rivk: Option<Vec<u8>>,
-    internal_ivk: Option<Vec<u8>>,
-    external_ivk: Option<Vec<u8>>,
+pub struct VrfShare {
+    share: Vec<u8>,
 }
 
 #[wasm_bindgen]
-impl MsgDerivation {
+impl VrfShare {
     #[wasm_bindgen(getter)]
-    pub fn msg(&self) -> Result<JsValue, JsValue> {
-        self.msg.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn state(&self) -> Vec<u8> {
-        self.state.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn done(&self) -> bool {
-        self.done
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn ask(&self) -> Option<Vec<u8>> {
-        self.ask.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn nk(&self) -> Option<Vec<u8>> {
-        self.nk.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn rivk(&self) -> Option<Vec<u8>> {
-        self.rivk.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn internal_ivk(&self) -> Option<Vec<u8>> {
-        self.internal_ivk.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn external_ivk(&self) -> Option<Vec<u8>> {
-        self.external_ivk.clone()
+    pub fn share(&self) -> Vec<u8> {
+        self.share.clone()
     }
 }
 
@@ -2420,25 +2148,6 @@ pub fn redpallas_dkg_round1_process(
     })
 }
 
-#[wasm_bindgen]
-pub fn redpallas_dkg_round2_process(
-    round2_messages: Array,
-    state: &[u8],
-    derivation_seed: &[u8],
-) -> Result<MsgDerivationInit, String> {
-    let derivation_seed_32: [u8; 32] = derivation_seed.try_into().map_err(|_| "Invalid input")?;
-    let [m0, m1] = js_array_to_2_bufs(&round2_messages)?;
-    let result = mps::redpallas_dkg_round2_process(&[m0, m1], state, &derivation_seed_32)
-        .map_err(|e| e.to_string())?;
-
-    Ok(MsgDerivationInit {
-        share: result.share,
-        pk: result.pk.to_vec(),
-        msg: hashmap_to_js(result.msg),
-        state: result.state,
-    })
-}
-
 fn hashmap_to_js(map: HashMap<u8, Vec<u8>>) -> Result<JsValue, JsValue> {
     let obj = Object::new();
 
@@ -2454,22 +2163,16 @@ fn hashmap_to_js(map: HashMap<u8, Vec<u8>>) -> Result<JsValue, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn redpallas_derivation_process(message: &[u8], state: &[u8]) -> Result<MsgDerivation, String> {
-    let result = mps::redpallas_derivation_process(message, state).map_err(|e| e.to_string())?;
+pub fn redpallas_dkg_round2_process(
+    round2_messages: Array,
+    state: &[u8],
+) -> Result<RedPallasShare, String> {
+    let [m0, m1] = js_array_to_2_bufs(&round2_messages)?;
+    let result = mps::redpallas_dkg_round2_process(&[m0, m1], state).map_err(|e| e.to_string())?;
 
-    Ok(MsgDerivation {
-        msg: hashmap_to_js(result.msg),
-        state: result.state,
-        done: result.done,
-        ask: result.ask.map(|ask| ask.to_vec()),
-        nk: result.nk.map(|nk| nk.to_vec()),
-        rivk: result.rivk.map(|rivk| rivk.to_vec()),
-        internal_ivk: result
-            .internal_ivk
-            .map(|internal_ivk| internal_ivk.to_vec()),
-        external_ivk: result
-            .external_ivk
-            .map(|external_ivk| external_ivk.to_vec()),
+    Ok(RedPallasShare {
+        share: result.share,
+        pk: result.pk.to_vec(),
     })
 }
 
@@ -2547,38 +2250,6 @@ pub fn redpallas_dsg_round3_process(
         signature: result.signature,
         rk: result.rk.to_vec(),
         alpha: result.alpha.to_vec(),
-    })
-}
-
-#[wasm_bindgen]
-pub struct RedPallasIvks {
-    internal_ivk: Vec<u8>,
-    external_ivk: Vec<u8>,
-}
-
-#[wasm_bindgen]
-impl RedPallasIvks {
-    #[wasm_bindgen(getter)]
-    pub fn internal_ivk(&self) -> Vec<u8> {
-        self.internal_ivk.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn external_ivk(&self) -> Vec<u8> {
-        self.external_ivk.clone()
-    }
-}
-
-#[wasm_bindgen]
-pub fn redpallas_fvk_to_ivks(ask: &[u8], nk: &[u8], rivk: &[u8]) -> Result<RedPallasIvks, String> {
-    let ask_32: [u8; 32] = ask.try_into().map_err(|_| "ask must be 32 bytes")?;
-    let nk_32: [u8; 32] = nk.try_into().map_err(|_| "nk must be 32 bytes")?;
-    let rivk_32: [u8; 32] = rivk.try_into().map_err(|_| "rivk must be 32 bytes")?;
-    let result =
-        mps::redpallas_fvk_to_ivks(&ask_32, &nk_32, &rivk_32).map_err(|e| e.to_string())?;
-    Ok(RedPallasIvks {
-        internal_ivk: result.internal_ivk.to_vec(),
-        external_ivk: result.external_ivk.to_vec(),
     })
 }
 

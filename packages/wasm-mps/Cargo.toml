@@ -19,7 +19,6 @@ getrandom = { version = "0.2", features = ["js"] }
 js-sys = "0.3"
 multi-party-schnorr = { git = "https://github.com/silence-laboratories/multi-party-schnorr", rev = "09185d1e4e78d096f2ab3e64d877fb0c88099688", features = ["serde", "eddsa", "redpallas", "vrf"] }
 orchard = { version = "0.13", default-features = false }
-zcash = { git = "https://github.com/silence-laboratories/garbling", rev = "268a8499bca4f1a1eea532117430fd6fd55310c8", features = ["dkg"] }
 pasta_curves = { version = "0.5", default-features = false }
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
