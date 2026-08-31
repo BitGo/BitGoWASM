@@ -1075,6 +1075,37 @@ impl BitGoPsbt {
         Ok(self.psbt.add_output_with_address(address, value)?)
     }
 
+    /// Zcash-only: add a plain transparent output. Just `script`/`value`
+    /// (`unified_address: undefined`) is the legacy `add_output` behavior, unchanged.
+    ///
+    /// If `unified_address` is given, this PSBT must be a legacy v4 Zcash PSBT — a v6 (Ironwood)
+    /// PSBT's shielded side already has its own UA path (`add_ironwood_output`). The UA must be a
+    /// Unified Address whose transparent receiver is exactly `script`; mismatches are rejected
+    /// rather than silently stored. It is then kept verbatim, keyed by this output's index, so
+    /// `transparent_output_unified_address` can later return the original UA string rather than
+    /// just the bare scriptPubkey.
+    pub fn add_transparent_output(
+        &mut self,
+        script: &[u8],
+        value: u64,
+        unified_address: Option<String>,
+    ) -> Result<usize, WasmUtxoError> {
+        use miniscript::bitcoin::ScriptBuf;
+        let script = ScriptBuf::from_bytes(script.to_vec());
+        self.zcash_mut()?
+            .add_transparent_output(script, value, unified_address.as_deref())
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
+    /// Zcash-only: the Unified Address stored by [`Self::add_transparent_output`] for output
+    /// `index`, if the caller supplied one — `undefined` otherwise (including for a non-Zcash
+    /// PSBT).
+    pub fn transparent_output_unified_address(&self, index: usize) -> Option<String> {
+        self.zcash()
+            .ok()
+            .and_then(|z| z.transparent_output_unified_address(index))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn add_wallet_input_at_index(
         &mut self,

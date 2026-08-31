@@ -2728,11 +2728,29 @@ impl BitGoPsbt {
             .zip(psbt.outputs.iter())
             .enumerate()
             .map(|(output_index, (tx_output, psbt_output))| {
-                ParsedOutput::parse(psbt_output, tx_output, wallet_keys, network, paygo_pubkeys)
-                    .map_err(|error| ParseTransactionError::Output {
-                        index: output_index,
-                        error,
-                    })
+                let mut parsed = ParsedOutput::parse(
+                    psbt_output,
+                    tx_output,
+                    wallet_keys,
+                    network,
+                    paygo_pubkeys,
+                )
+                .map_err(|error| ParseTransactionError::Output {
+                    index: output_index,
+                    error,
+                })?;
+                // Prefer the caller's original Unified Address (if `add_transparent_output` was
+                // given one for this output): mirrors `shielded_outputs`'s treatment of
+                // `add_ironwood_output`'s UA — the caller-supplied UA, not a bare address
+                // reconstructed from the scriptPubKey alone, is what a client actually pasted in.
+                if let BitGoPsbt::Zcash(z, _) = self {
+                    if let Some(ua) =
+                        propkv::get_transparent_output_unified_address(&z.psbt, output_index)
+                    {
+                        parsed.address = Some(ua);
+                    }
+                }
+                Ok(parsed)
             })
             .collect()
     }

@@ -278,6 +278,14 @@ pub enum ZecV6KeySubtype {
     /// storing the original string here lets output parsing return the exact UA the caller passed,
     /// receivers and all, after a serialize/deserialize round-trip.
     UnifiedAddress = 0x05,
+    /// The full ZIP-316 Unified Address string (UTF-8) a plain transparent output (identified by
+    /// its index in `unsigned_tx.output`) was addressed to, if the caller supplied one to
+    /// [`crate::fixed_script_wallet::bitgo_psbt::zcash_psbt`]'s `add_transparent_output`. Mirrors
+    /// `UnifiedAddress` above, but keyed by transparent output index rather than Orchard action
+    /// index, and stored only for the output's transparent receiver (already fully recoverable
+    /// from the scriptPubKey) — kept so output parsing can hand back the exact UA the caller
+    /// passed, not one reconstructed as a bare transparent address.
+    TransparentUnifiedAddress = 0x06,
 }
 
 fn set_zec_v6(
@@ -431,6 +439,38 @@ pub fn clear_ironwood_unified_addresses(psbt: &mut miniscript::bitcoin::psbt::Ps
     psbt.proprietary.retain(|k, _| {
         !(k.prefix == BITGO_ZEC_V6 && k.subtype == ZecV6KeySubtype::UnifiedAddress as u8)
     });
+}
+
+/// Store the full Unified Address string one plain transparent output (identified by its
+/// `output_index` in `unsigned_tx.output`) was addressed to, so it survives a
+/// serialize/deserialize round-trip verbatim rather than being lost down to just the
+/// scriptPubKey. Keyed by `output_index`. Overwrites any existing value for that index.
+pub fn set_transparent_output_unified_address(
+    psbt: &mut miniscript::bitcoin::psbt::Psbt,
+    output_index: usize,
+    ua: &str,
+) {
+    let key = ProprietaryKey {
+        prefix: BITGO_ZEC_V6.to_vec(),
+        subtype: ZecV6KeySubtype::TransparentUnifiedAddress as u8,
+        key: (output_index as u32).to_le_bytes().to_vec(),
+    };
+    psbt.proprietary.insert(key, ua.as_bytes().to_vec());
+}
+
+/// Fetch the Unified Address string stored by [`set_transparent_output_unified_address`] for
+/// `output_index`, if present and valid UTF-8.
+pub fn get_transparent_output_unified_address(
+    psbt: &miniscript::bitcoin::psbt::Psbt,
+    output_index: usize,
+) -> Option<String> {
+    let key = ProprietaryKey {
+        prefix: BITGO_ZEC_V6.to_vec(),
+        subtype: ZecV6KeySubtype::TransparentUnifiedAddress as u8,
+        key: (output_index as u32).to_le_bytes().to_vec(),
+    };
+    let bytes = psbt.proprietary.get(&key)?;
+    String::from_utf8(bytes.clone()).ok()
 }
 
 #[cfg(test)]
