@@ -42,6 +42,78 @@ pub fn zcash_ironwood_version_group_id() -> u32 {
     crate::zcash::transaction::ZCASH_IRONWOOD_VERSION_GROUP_ID
 }
 
+/// A validated Merkle witness for an Ironwood/Orchard note commitment, from
+/// [`ironwood_build_witness`].
+///
+/// Not yet installed anywhere — see [`ironwood_build_witness`]'s docs.
+#[wasm_bindgen]
+pub struct IronwoodWitness {
+    inner: crate::zcash::ironwood_build::IronwoodWitness,
+}
+
+#[wasm_bindgen]
+impl IronwoodWitness {
+    /// The leaf's position in the note commitment tree.
+    #[wasm_bindgen(getter)]
+    pub fn position(&self) -> u32 {
+        self.inner.position
+    }
+
+    /// The 32 sibling hashes (leaf-to-root order), flattened into a single 1024-byte array
+    /// (32 hashes × 32 bytes each).
+    #[wasm_bindgen(getter)]
+    pub fn auth_path(&self) -> Vec<u8> {
+        self.inner.auth_path.concat()
+    }
+}
+
+/// Build and validate a Merkle witness for an Ironwood/Orchard note commitment.
+///
+/// `cmx` is the note commitment being witnessed; `auth_path` must be exactly 32 sibling hashes (32
+/// bytes each), leaf-to-root order; `anchor` is the expected note-commitment-tree root. Throws if
+/// any input isn't a canonical field element, or if the witness doesn't recompute to `anchor`.
+///
+/// This crate has no chain state, so the raw sibling-hash path must be supplied by the caller
+/// (typically BitGo's backend, querying a Zcash-aware service). The returned witness is not yet
+/// installed anywhere — hook it into a spend once real-spend construction exists.
+#[wasm_bindgen]
+pub fn ironwood_build_witness(
+    cmx: &[u8],
+    position: u32,
+    auth_path: Vec<js_sys::Uint8Array>,
+    anchor: &[u8],
+) -> Result<IronwoodWitness, WasmUtxoError> {
+    use crate::zcash::ironwood_build::{build_ironwood_witness, IRONWOOD_MERKLE_DEPTH};
+
+    let cmx: [u8; 32] = cmx
+        .try_into()
+        .map_err(|_| WasmUtxoError::new(&format!("cmx must be 32 bytes, got {}", cmx.len())))?;
+    let anchor: [u8; 32] = anchor.try_into().map_err(|_| {
+        WasmUtxoError::new(&format!("anchor must be 32 bytes, got {}", anchor.len()))
+    })?;
+    if auth_path.len() != IRONWOOD_MERKLE_DEPTH {
+        return Err(WasmUtxoError::new(&format!(
+            "authPath must have exactly {} entries, got {}",
+            IRONWOOD_MERKLE_DEPTH,
+            auth_path.len()
+        )));
+    }
+    let mut path = [[0u8; 32]; IRONWOOD_MERKLE_DEPTH];
+    for (i, entry) in auth_path.iter().enumerate() {
+        let bytes = entry.to_vec();
+        path[i] = bytes.try_into().map_err(|_| {
+            WasmUtxoError::new(&format!(
+                "authPath[{i}] must be 32 bytes, got {}",
+                entry.length()
+            ))
+        })?;
+    }
+
+    Ok(IronwoodWitness {
+        inner: build_ironwood_witness(&cmx, position, &path, &anchor)?,
+    })
+}
+
 /// A parsed ZIP-316 Unified Address.
 ///
 /// Decode once with [`ZcashUnifiedAddress::parse`], then read each component through

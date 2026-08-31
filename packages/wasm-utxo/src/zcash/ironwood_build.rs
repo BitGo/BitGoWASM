@@ -31,8 +31,9 @@ use rand::{CryptoRng, RngCore};
 use orchard::builder::{Builder, BundleType};
 use orchard::bundle::BundleVersion;
 use orchard::keys::OutgoingViewingKey;
+use orchard::note::ExtractedNoteCommitment;
 use orchard::pczt::Bundle as PcztBundle;
-use orchard::tree::Anchor;
+use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath};
 use orchard::value::NoteValue;
 use orchard::{Action as OrchardAction, Address};
 
@@ -55,6 +56,21 @@ pub type AnchorBytes = [u8; ANCHOR_SIZE];
 pub type OvkBytes = [u8; OVK_SIZE];
 /// A ZIP-302 memo field.
 pub type MemoBytes = [u8; MEMO_SIZE];
+
+/// Merkle depth of the Ironwood/Orchard note commitment tree.
+pub const IRONWOOD_MERKLE_DEPTH: usize = 32;
+
+/// Raw sibling hashes for one Merkle authentication path (leaf → anchor), caller-supplied,
+/// leaf-to-root order.
+pub type WitnessAuthPath = [[u8; 32]; IRONWOOD_MERKLE_DEPTH];
+
+/// A validated Merkle witness for a note commitment, ready to be installed into a spend once
+/// real-spend construction exists (see module docs — that wiring is out of scope for now).
+#[derive(Debug, PartialEq)]
+pub struct IronwoodWitness {
+    pub position: u32,
+    pub auth_path: WitnessAuthPath,
+}
 
 /// Errors produced while constructing or combining an Ironwood shielded bundle.
 ///
@@ -96,6 +112,10 @@ pub enum IronwoodBuildError {
     BadKey(String),
     /// Local proof generation (`orchard-proving` feature) failed.
     Prove(String),
+    /// A witness `cmx` or `auth_path` entry is not a canonical Pallas field element.
+    BadWitnessPath,
+    /// The witness recomputed a root that does not match the expected anchor.
+    WitnessAnchorMismatch,
 }
 
 impl core::fmt::Display for IronwoodBuildError {
@@ -132,6 +152,15 @@ impl core::fmt::Display for IronwoodBuildError {
             ),
             Self::BadKey(e) => write!(f, "ironwood-build: invalid key: {e}"),
             Self::Prove(e) => write!(f, "ironwood-build: proof generation failed: {e}"),
+            Self::BadWitnessPath => write!(
+                f,
+                "ironwood-build: invalid witness path (cmx or an auth_path entry is not a \
+                 canonical field element)"
+            ),
+            Self::WitnessAnchorMismatch => write!(
+                f,
+                "ironwood-build: witness path does not recompute to the expected anchor"
+            ),
         }
     }
 }
@@ -224,6 +253,48 @@ pub fn construct_shield_pczt<R: RngCore + CryptoRng>(
         rng,
     )?;
     Ok(bundle)
+}
+
+/// Build and validate a Merkle witness for note commitment `cmx` at `position` with sibling
+/// hashes `auth_path`, checking it recomputes to `expected_anchor`.
+///
+/// This crate has no chain state (no note-commitment-tree, no lightwalletd connection), so the raw
+/// sibling-hash path must always be supplied by the caller. This function only builds and validates
+/// the witness structure from those caller-supplied details — it does not install the witness
+/// anywhere (see module docs).
+///
+/// Returns [`IronwoodBuildError::BadWitnessPath`] if `cmx` or any `auth_path` entry is not a
+/// canonical field element, [`IronwoodBuildError::BadAnchor`] if `expected_anchor` isn't canonical,
+/// or [`IronwoodBuildError::WitnessAnchorMismatch`] if the recomputed root doesn't match
+/// `expected_anchor` — catching a bad caller-supplied path immediately rather than failing later at
+/// the external prover.
+pub fn build_ironwood_witness(
+    cmx: &[u8; 32],
+    position: u32,
+    auth_path: &WitnessAuthPath,
+    expected_anchor: &AnchorBytes,
+) -> Result<IronwoodWitness, IronwoodBuildError> {
+    let cmx_parsed =
+        Option::<ExtractedNoteCommitment>::from(ExtractedNoteCommitment::from_bytes(cmx))
+            .ok_or(IronwoodBuildError::BadWitnessPath)?;
+    let anchor =
+        Option::from(Anchor::from_bytes(*expected_anchor)).ok_or(IronwoodBuildError::BadAnchor)?;
+
+    let mut auth_path_hashes = [MerkleHashOrchard::from_cmx(&cmx_parsed); IRONWOOD_MERKLE_DEPTH];
+    for (dst, src) in auth_path_hashes.iter_mut().zip(auth_path.iter()) {
+        *dst = Option::from(MerkleHashOrchard::from_bytes(src))
+            .ok_or(IronwoodBuildError::BadWitnessPath)?;
+    }
+
+    let path = MerklePath::from_parts(position, auth_path_hashes);
+    if path.root(cmx_parsed) != anchor {
+        return Err(IronwoodBuildError::WitnessAnchorMismatch);
+    }
+
+    Ok(IronwoodWitness {
+        position,
+        auth_path: *auth_path,
+    })
 }
 
 /// IO Finalizer / Signer: derive the binding signing key and sign the dummy spends.
@@ -537,6 +608,98 @@ mod tests {
         assert_eq!(data.flags, 0x07);
         // A pure output bundle (dummy spend has value 0): value_balance = 0 - amount.
         assert_eq!(data.value_balance, -(amount as i64));
+    }
+
+    // ---- Witness builder ----
+
+    /// An arbitrary canonical Pallas field element, keyed off `seed` — a stand-in for a leaf
+    /// commitment or sibling hash. [`build_ironwood_witness`] only cares that its inputs are
+    /// canonical field elements, not that they come from a real note-commitment tree, so a
+    /// synthesized value works just as well as one derived from a real note for these tests.
+    fn field_bytes(seed: u64) -> [u8; 32] {
+        use ff::PrimeField;
+        pasta_curves::pallas::Base::from(seed).to_repr()
+    }
+
+    /// A self-consistent `(cmx, position, auth_path, anchor)` fixture: `anchor` is computed via
+    /// `orchard`'s own `MerklePath::root`, the same primitive [`build_ironwood_witness`] wraps.
+    fn witness_fixture(position: u32) -> ([u8; 32], WitnessAuthPath, AnchorBytes) {
+        let cmx = field_bytes(0);
+        let auth_path: WitnessAuthPath = std::array::from_fn(|i| field_bytes(i as u64 + 1));
+
+        let cmx_parsed =
+            Option::<ExtractedNoteCommitment>::from(ExtractedNoteCommitment::from_bytes(&cmx))
+                .unwrap();
+        let sibling_hashes: [MerkleHashOrchard; IRONWOOD_MERKLE_DEPTH] =
+            auth_path.map(|s| Option::from(MerkleHashOrchard::from_bytes(&s)).unwrap());
+        let anchor = MerklePath::from_parts(position, sibling_hashes)
+            .root(cmx_parsed)
+            .to_bytes();
+
+        (cmx, auth_path, anchor)
+    }
+
+    #[test]
+    fn build_ironwood_witness_accepts_a_self_consistent_path() {
+        let (cmx, auth_path, anchor) = witness_fixture(5);
+        let witness = build_ironwood_witness(&cmx, 5, &auth_path, &anchor).unwrap();
+        assert_eq!(
+            witness,
+            IronwoodWitness {
+                position: 5,
+                auth_path
+            }
+        );
+    }
+
+    #[test]
+    fn build_ironwood_witness_rejects_a_corrupted_auth_path_entry() {
+        let (cmx, mut auth_path, anchor) = witness_fixture(5);
+        auth_path[0] = field_bytes(999);
+        assert!(matches!(
+            build_ironwood_witness(&cmx, 5, &auth_path, &anchor),
+            Err(IronwoodBuildError::WitnessAnchorMismatch)
+        ));
+    }
+
+    #[test]
+    fn build_ironwood_witness_rejects_the_wrong_anchor() {
+        let (cmx, auth_path, _anchor) = witness_fixture(5);
+        let wrong_anchor = Anchor::empty_tree().to_bytes();
+        assert!(matches!(
+            build_ironwood_witness(&cmx, 5, &auth_path, &wrong_anchor),
+            Err(IronwoodBuildError::WitnessAnchorMismatch)
+        ));
+    }
+
+    #[test]
+    fn build_ironwood_witness_rejects_non_canonical_cmx() {
+        let (_cmx, auth_path, anchor) = witness_fixture(5);
+        let non_canonical = [0xffu8; 32];
+        assert!(matches!(
+            build_ironwood_witness(&non_canonical, 5, &auth_path, &anchor),
+            Err(IronwoodBuildError::BadWitnessPath)
+        ));
+    }
+
+    #[test]
+    fn build_ironwood_witness_rejects_non_canonical_auth_path_entry() {
+        let (cmx, mut auth_path, anchor) = witness_fixture(5);
+        auth_path[3] = [0xffu8; 32];
+        assert!(matches!(
+            build_ironwood_witness(&cmx, 5, &auth_path, &anchor),
+            Err(IronwoodBuildError::BadWitnessPath)
+        ));
+    }
+
+    #[test]
+    fn build_ironwood_witness_rejects_non_canonical_anchor() {
+        let (cmx, auth_path, _anchor) = witness_fixture(5);
+        let non_canonical_anchor = [0xffu8; 32];
+        assert!(matches!(
+            build_ironwood_witness(&cmx, 5, &auth_path, &non_canonical_anchor),
+            Err(IronwoodBuildError::BadAnchor)
+        ));
     }
 
     /// End-to-end (build → sighash → sign dummy spend → inject proof → combine), no circuit:
