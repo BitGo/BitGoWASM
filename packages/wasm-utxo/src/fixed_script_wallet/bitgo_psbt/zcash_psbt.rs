@@ -849,6 +849,81 @@ impl ZcashBitGoPsbt {
         Ok(action_indices[0])
     }
 
+    /// Add a plain transparent output. Just `script`/`value` (`unified_address: None`) is exactly
+    /// the legacy `add_output` behavior, unchanged, on either v4 or v6.
+    ///
+    /// If `unified_address` is given, this must be a legacy v4 PSBT — the UA is stored under the
+    /// same `BITGO_ZEC_V6`-namespaced proprietary key space as the Ironwood UA storage, but that
+    /// namespace name is historical, not a v6 requirement; a v6 PSBT's shielded-side UA already
+    /// has its own path ([`Self::add_ironwood_output`]), so this one is reserved for legacy
+    /// transparent-only PSBTs. `unified_address` must be a Unified Address whose transparent
+    /// receiver is exactly `script` — mismatches are rejected rather than silently stored, the
+    /// same contract `add_ironwood_output` applies to its Orchard receiver. It is then stored
+    /// verbatim, keyed by this output's index in `unsigned_tx.output` (see
+    /// [`super::propkv::set_transparent_output_unified_address`]), so
+    /// [`Self::transparent_output_unified_address`] can later return the original UA string
+    /// rather than just the bare scriptPubKey.
+    pub fn add_transparent_output(
+        &mut self,
+        script: miniscript::bitcoin::ScriptBuf,
+        value: u64,
+        unified_address: Option<&str>,
+    ) -> Result<usize, String> {
+        let index = self.psbt.unsigned_tx.output.len();
+        let Some(ua) = unified_address else {
+            use miniscript::bitcoin::{Amount, TxOut};
+            let tx_out = TxOut {
+                value: Amount::from_sat(value),
+                script_pubkey: script,
+            };
+            return crate::psbt_ops::insert_output(
+                &mut self.psbt,
+                index,
+                tx_out,
+                miniscript::bitcoin::psbt::Output::default(),
+            );
+        };
+
+        if self.is_ironwood_v6() {
+            return Err(
+                "unified_address on a transparent output requires a legacy v4 PSBT".to_string(),
+            );
+        }
+
+        let parsed =
+            crate::zcash::unified_address::UnifiedAddress::parse(ua, self.network.to_coin_name())
+                .map_err(|e| format!("invalid unified_address: {e}"))?;
+        let transparent = parsed
+            .transparent_script()
+            .map_err(|e| format!("invalid unified_address: {e}"))?
+            .ok_or_else(|| "unified_address has no transparent receiver".to_string())?;
+        if transparent != script.as_bytes() {
+            return Err("unified_address's transparent receiver does not match script".to_string());
+        }
+
+        super::propkv::set_transparent_output_unified_address(&mut self.psbt, index, ua);
+
+        use miniscript::bitcoin::{Amount, TxOut};
+        let tx_out = TxOut {
+            value: Amount::from_sat(value),
+            script_pubkey: script,
+        };
+        crate::psbt_ops::insert_output(
+            &mut self.psbt,
+            index,
+            tx_out,
+            miniscript::bitcoin::psbt::Output::default(),
+        )?;
+        Ok(index)
+    }
+
+    /// The Unified Address stored by [`Self::add_transparent_output`] for output `index`, if the
+    /// caller supplied one — `None` if that output has no stored UA (including if it doesn't
+    /// exist, or wasn't added via `add_transparent_output` at all).
+    pub fn transparent_output_unified_address(&self, index: usize) -> Option<String> {
+        super::propkv::get_transparent_output_unified_address(&self.psbt, index)
+    }
+
     /// Deserialize the stored orchard PCZT.
     fn ironwood_pczt(&self) -> Result<orchard::pczt::Bundle, String> {
         let bytes = super::propkv::get_ironwood_pczt(&self.psbt)
@@ -2861,6 +2936,260 @@ mod ironwood_v6_tests {
             ),
             Some(ua)
         );
+    }
+
+    /// A client passes a Unified Address as the recipient on a legacy v4 PSBT;
+    /// `add_transparent_output` resolves its transparent receiver to a scriptPubkey, verifies it
+    /// against the caller-supplied script, stores the UA, and adds the ordinary transparent
+    /// output — alongside a wallet change output. `transparent_output_unified_address` returns
+    /// the exact original UA — receivers and all — after a `serialize`/`deserialize` round trip,
+    /// not merely a bare address reconstructed from the scriptPubkey.
+    #[test]
+    fn add_transparent_output_unified_address_round_trips_on_v4() {
+        let fixtures: serde_json::Value = serde_json::from_str(
+            &crate::fixed_script_wallet::test_utils::fixtures::load_fixture(
+                "zcash/unified_address.json",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        // The client only ever hands us the UA itself, not a bare transparent address.
+        let ua = fixtures["testnetWallet"]["unified"].as_str().unwrap();
+
+        let parsed = crate::zcash::unified_address::UnifiedAddress::parse(ua, "tzec").unwrap();
+        let transparent_script = parsed
+            .transparent_script()
+            .unwrap()
+            .expect("fixture UA has a transparent receiver");
+
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_roundtrip"));
+        let mut psbt = BitGoPsbt::new_zcash(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu5.branch_id(),
+            None,
+            None,
+            None,
+            None,
+        );
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x66u8; 32]),
+            0,
+            300_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+        assert!(!z.is_ironwood_v6());
+        // Recipient output: the UA's transparent receiver, resolved and verified from the UA the
+        // client passed in — not from a separately-supplied plain transparent address.
+        let recipient_output_index = z
+            .add_transparent_output(
+                miniscript::bitcoin::ScriptBuf::from_bytes(transparent_script.clone()),
+                100_000_000,
+                Some(ua),
+            )
+            .unwrap();
+        assert_eq!(
+            z.transparent_output_unified_address(recipient_output_index),
+            Some(ua.to_string())
+        );
+
+        // Change output: an ordinary wallet output, unrelated to the UA — added via the outer
+        // `BitGoPsbt` the way any wallet change output normally is.
+        let mut psbt = BitGoPsbt::Zcash(z, Network::ZcashTestnet);
+        psbt.add_wallet_output(0, 1, 199_900_000, &wallet_keys)
+            .unwrap();
+
+        let round =
+            BitGoPsbt::deserialize(&psbt.serialize().unwrap(), Network::ZcashTestnet).unwrap();
+        let BitGoPsbt::Zcash(round, _) = round else {
+            panic!("expected Zcash PSBT");
+        };
+
+        // The recipient output's scriptPubkey survives the round trip...
+        assert_eq!(
+            round.psbt.unsigned_tx.output[recipient_output_index]
+                .script_pubkey
+                .as_bytes(),
+            transparent_script.as_slice()
+        );
+        // ...and so does the exact UA string the client originally passed in.
+        assert_eq!(
+            round.transparent_output_unified_address(recipient_output_index),
+            Some(ua.to_string())
+        );
+
+        // `parse_outputs_with_wallet_keys` resolves this output's `address` to the stored UA
+        // itself — mirroring how a shielded Ironwood output's `address` prefers its stored UA
+        // over a bare address reconstructed from the raw receiver — rather than the plain
+        // transparent address a script-only resolution would produce.
+        let round_bitgo_psbt = BitGoPsbt::Zcash(round, Network::ZcashTestnet);
+        let parsed_outputs = round_bitgo_psbt
+            .parse_outputs_with_wallet_keys(&wallet_keys, &[])
+            .unwrap();
+        assert_eq!(
+            parsed_outputs[recipient_output_index].address,
+            Some(ua.to_string())
+        );
+    }
+
+    /// `add_transparent_output` rejects a `unified_address` whose transparent receiver doesn't
+    /// match `script` — a caller passing mismatched values is a bug, not something to silently
+    /// store, mirroring `add_ironwood_output`'s Orchard-side contract.
+    #[test]
+    fn add_transparent_output_rejects_mismatched_unified_address() {
+        let fixtures: serde_json::Value = serde_json::from_str(
+            &crate::fixed_script_wallet::test_utils::fixtures::load_fixture(
+                "zcash/unified_address.json",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let ua = fixtures["testnetWallet"]["unified"].as_str().unwrap();
+
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_mismatch"));
+        let mut z = ZcashBitGoPsbt::new(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu5.branch_id(),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let wrong_script = miniscript::bitcoin::ScriptBuf::from_bytes(vec![
+            0x76, 0xa9, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0xac,
+        ]);
+        let err = z
+            .add_transparent_output(wrong_script, 100_000_000, Some(ua))
+            .unwrap_err();
+        assert!(err.contains("does not match"), "unexpected error: {err}");
+        // Nothing was inserted on the rejected call.
+        assert!(z.psbt.unsigned_tx.output.is_empty());
+    }
+
+    /// `add_transparent_output` rejects a `unified_address` that fails to parse as a ZIP-316
+    /// Unified Address at all (bad Bech32m, wrong HRP, etc.) — a malformed string is a caller
+    /// bug, not something to fall back to the plain `script`/`value` behavior for.
+    #[test]
+    fn add_transparent_output_rejects_an_unparseable_unified_address() {
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_bad_ua"));
+        let mut z = ZcashBitGoPsbt::new(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu5.branch_id(),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let script = miniscript::bitcoin::ScriptBuf::from_bytes(vec![
+            0x76, 0xa9, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0xac,
+        ]);
+        let err = z
+            .add_transparent_output(script, 100_000_000, Some("not-a-valid-unified-address"))
+            .unwrap_err();
+        assert!(
+            err.contains("invalid unified_address"),
+            "unexpected error: {err}"
+        );
+        // Nothing was inserted on the rejected call.
+        assert!(z.psbt.unsigned_tx.output.is_empty());
+    }
+
+    /// `add_transparent_output` rejects a `unified_address` that has no transparent receiver at
+    /// all (Orchard-only, say) — there is nothing to verify `script` against, so this must error
+    /// rather than silently accept `script` unchecked.
+    #[test]
+    fn add_transparent_output_rejects_a_unified_address_with_no_transparent_receiver() {
+        let recipient = test_recipient();
+        let orchard_only_ua =
+            crate::zcash::unified_address::encode_orchard_receiver(&recipient, "tzec").unwrap();
+
+        let wallet_keys =
+            RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_no_transparent"));
+        let mut z = ZcashBitGoPsbt::new(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu5.branch_id(),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let script = miniscript::bitcoin::ScriptBuf::from_bytes(vec![
+            0x76, 0xa9, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0xac,
+        ]);
+        let err = z
+            .add_transparent_output(script, 100_000_000, Some(&orchard_only_ua))
+            .unwrap_err();
+        assert!(
+            err.contains("no transparent receiver"),
+            "unexpected error: {err}"
+        );
+        // Nothing was inserted on the rejected call.
+        assert!(z.psbt.unsigned_tx.output.is_empty());
+    }
+
+    /// `add_transparent_output` rejects `unified_address` outright on a v6 (Ironwood) PSBT — that
+    /// format's shielded side already has its own UA path (`add_ironwood_output`), so this one is
+    /// reserved for legacy v4 PSBTs. A bare `script`/`value` call (no `unified_address`) is
+    /// exactly the legacy Zcash form and must keep working unchanged on either format.
+    #[test]
+    fn add_transparent_output_rejects_unified_address_on_v6_psbt() {
+        let fixtures: serde_json::Value = serde_json::from_str(
+            &crate::fixed_script_wallet::test_utils::fixtures::load_fixture(
+                "zcash/unified_address.json",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let ua = fixtures["testnetWallet"]["unified"].as_str().unwrap();
+        let parsed = crate::zcash::unified_address::UnifiedAddress::parse(ua, "tzec").unwrap();
+        let transparent_script = parsed.transparent_script().unwrap().unwrap();
+
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_ua_transparent_rejected"));
+        let mut z = ZcashBitGoPsbt::new_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(z.is_ironwood_v6());
+
+        let err = z
+            .add_transparent_output(
+                miniscript::bitcoin::ScriptBuf::from_bytes(transparent_script.clone()),
+                100_000_000,
+                Some(ua),
+            )
+            .unwrap_err();
+        assert!(err.contains("v4"), "unexpected error: {err}");
+
+        // The legacy form (no unified_address) is unaffected.
+        let index = z
+            .add_transparent_output(
+                miniscript::bitcoin::ScriptBuf::from_bytes(transparent_script.clone()),
+                100_000_000,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            z.psbt.unsigned_tx.output[index].script_pubkey.as_bytes(),
+            transparent_script.as_slice()
+        );
+        assert_eq!(z.transparent_output_unified_address(index), None);
     }
 
     /// `add_ironwood_output` rejects a `unified_address` whose Orchard receiver doesn't match

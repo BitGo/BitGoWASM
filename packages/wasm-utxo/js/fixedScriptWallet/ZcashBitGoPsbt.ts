@@ -330,4 +330,34 @@ export class ZcashBitGoPsbt extends BitGoPsbt<ZcashParsedOutput> {
   override extractTransaction(maxFeeRate?: number): ZcashTransaction {
     return ZcashTransaction.fromWasm(this.wasm.extract_zcash_transaction(maxFeeRate));
   }
+
+  /**
+   * Add a plain transparent output. Just `script`/`value` (no `unifiedAddress`) is the same as
+   * the generic {@link BitGoPsbt.addOutput}, unchanged.
+   *
+   * If `unifiedAddress` is given, it must be a Unified Address whose transparent receiver is
+   * exactly `script` — mismatches throw rather than being silently stored. It is then kept
+   * verbatim, keyed by this output's index, so {@link ZcashBitGoPsbt.transparentOutputUnifiedAddress}
+   * can later return the original UA string rather than just the bare scriptPubkey.
+   *
+   * `unifiedAddress` is only supported on a legacy v4 `ZcashBitGoPsbt` — the v6 (Ironwood)
+   * shielded side has its own UA path (`ZcashIronwoodBitGoPsbt.addShieldedOutput`'s
+   * `unifiedAddress` option).
+   *
+   * @param script - The output scriptPubkey
+   * @param value - The value in zatoshi
+   * @param unifiedAddress - Optional full Unified Address `script` was resolved from
+   * @returns The index of the newly added output
+   */
+  addTransparentOutput(script: Uint8Array, value: bigint, unifiedAddress?: string): number {
+    return this.wasm.add_transparent_output(script, value, unifiedAddress);
+  }
+
+  /**
+   * The Unified Address stored by {@link ZcashBitGoPsbt.addTransparentOutput} for output `index`,
+   * if one was supplied — `undefined` otherwise.
+   */
+  transparentOutputUnifiedAddress(index: number): string | undefined {
+    return this.wasm.transparent_output_unified_address(index);
+  }
 }
