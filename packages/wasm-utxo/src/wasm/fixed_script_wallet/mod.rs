@@ -1290,10 +1290,20 @@ impl BitGoPsbt {
     /// Get the Zcash consensus branch ID from the PSBT proprietary map (returns None for non-Zcash PSBTs)
     pub fn consensus_branch_id(&self) -> Option<u32> {
         use crate::fixed_script_wallet::bitgo_psbt::{
-            propkv::get_zec_consensus_branch_id, BitGoPsbt as InnerBitGoPsbt,
+            propkv::{get_zec_consensus_branch_id, get_zec_v6_consensus_branch_id},
+            BitGoPsbt as InnerBitGoPsbt,
         };
         match &self.psbt {
-            InnerBitGoPsbt::Zcash(z, _) => get_zec_consensus_branch_id(&z.psbt),
+            // v6 (Ironwood) PSBTs carry the branch id under the `BITGO/ZEC/V6` namespace; v4/Sapling
+            // PSBTs under the legacy `BITGO` key. A v6 PSBT does not carry the legacy key at all
+            // (see `ZcashBitGoPsbt::new_v6`), so it must be read from the namespace here.
+            InnerBitGoPsbt::Zcash(z, _) => {
+                if z.is_ironwood_v6() {
+                    get_zec_v6_consensus_branch_id(&z.psbt)
+                } else {
+                    get_zec_consensus_branch_id(&z.psbt)
+                }
+            }
             _ => None,
         }
     }
