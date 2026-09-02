@@ -85,6 +85,10 @@ hex = "0.4"
 wasm-bindgen-test = "0.3"
 rstest = "0.26.1"
 pastey = "0.1"
+# Pallas field arithmetic, used only in the ironwood_build witness tests to synthesize arbitrary
+# canonical field elements (leaf/sibling hashes) without needing a real note-commitment tree.
+# Version pinned to match orchard 0.15's own dependency (see Cargo.lock).
+pasta_curves = "0.5"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # 11.2 is the first release with the `Transaction::V6` / Ironwood (`ironwood_shielded_data`)

@@ -3208,6 +3208,7 @@ dependencies = [
  "nonempty",
  "num-bigint",
  "orchard",
+ "pasta_curves",
  "pastey",
  "postcard",
  "rand",

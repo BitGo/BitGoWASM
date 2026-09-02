@@ -25,6 +25,7 @@ pub enum WasmUtxoError {
     Parse(ParseTransactionError),
     UnifiedAddress(crate::zcash::unified_address::UnifiedAddressError),
     ZcashV6(crate::zcash::v6::ZcashV6Error),
+    Ironwood(crate::zcash::ironwood_build::IronwoodBuildError),
 }
 
 impl std::error::Error for WasmUtxoError {}
@@ -36,6 +37,7 @@ impl fmt::Display for WasmUtxoError {
             WasmUtxoError::Parse(e) => write!(f, "{}", e),
             WasmUtxoError::UnifiedAddress(e) => write!(f, "{}", e),
             WasmUtxoError::ZcashV6(e) => write!(f, "{}", e),
+            WasmUtxoError::Ironwood(e) => write!(f, "{}", e),
         }
     }
 }
@@ -47,6 +49,7 @@ impl WasmErrorCode for WasmUtxoError {
             WasmUtxoError::Parse(e) => e.code(),
             WasmUtxoError::UnifiedAddress(e) => e.code(),
             WasmUtxoError::ZcashV6(e) => e.code(),
+            WasmUtxoError::Ironwood(e) => e.code(),
         }
     }
 }
@@ -96,6 +99,12 @@ impl From<crate::zcash::unified_address::UnifiedAddressError> for WasmUtxoError 
 impl From<crate::zcash::v6::ZcashV6Error> for WasmUtxoError {
     fn from(err: crate::zcash::v6::ZcashV6Error) -> Self {
         WasmUtxoError::ZcashV6(err)
+    }
+}
+
+impl From<crate::zcash::ironwood_build::IronwoodBuildError> for WasmUtxoError {
+    fn from(err: crate::zcash::ironwood_build::IronwoodBuildError) -> Self {
+        WasmUtxoError::Ironwood(err)
     }
 }
 
