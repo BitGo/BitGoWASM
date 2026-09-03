@@ -59,7 +59,7 @@
   "devDependencies": {
     "libsodium-wrappers-sumo": "0.8.2",
     "mocha": "10.6.0",
-    "tsx": "4.20.6",
+    "tsx": "4.22.4",
     "typescript": "5.5.3"
   },
   "publishConfig": {
