@@ -114,6 +114,57 @@ pub fn ironwood_build_witness(
     })
 }
 
+/// Resolve the Orchard/Ironwood receiver of a ZIP-316 unified address for `coin`'s network, as
+/// its raw 43 bytes (diversifier + `pk_d`) — there is no scriptPubKey for a shielded output, so
+/// this can't return script bytes uniformly and returns raw receiver bytes instead.
+///
+/// A UA that has no Orchard/Ironwood receiver (e.g. Sapling-only) throws rather than falling back
+/// to the transparent receiver. If `address` merely looks like a unified address for this coin's
+/// network (right Bech32m HRP) but is malformed, this also throws. `address` must be a unified
+/// address — an ordinary transparent address is rejected, since it can never carry a shielded
+/// receiver; use {@link toOutputScriptWithCoin} in `js/address.ts` for the transparent case.
+/// Resolve the transparent receiver of an `address` for `coin`'s network, as its scriptPubKey
+/// bytes. When `address` is a ZIP-316 unified address, resolves its transparent receiver rather
+/// than rejecting the UA string outright — a UA with no transparent receiver (e.g. Orchard-only)
+/// throws rather than falling back to a shielded one. An ordinary (non-UA) address falls through
+/// to the same transparent codec path as any other coin.
+///
+/// This is the zcash-aware counterpart of `toOutputScriptWithCoin` in `js/address.ts`, which
+/// dispatches here for zcash/tzec so that non-zcash coins never pay for a unified-address check.
+#[wasm_bindgen(js_name = zcashToTransparentReceiverWithCoin)]
+pub fn zcash_to_transparent_receiver_with_coin(
+    address: &str,
+    coin: &str,
+) -> std::result::Result<Vec<u8>, JsValue> {
+    crate::zcash::address::to_output_script_or_shielded_receiver_with_coin(address, coin, false)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+#[wasm_bindgen(js_name = zcashToShieldedReceiverWithCoin)]
+pub fn zcash_to_shielded_receiver_with_coin(
+    address: &str,
+    coin: &str,
+) -> std::result::Result<Vec<u8>, JsValue> {
+    crate::zcash::address::to_output_script_or_shielded_receiver_with_coin(address, coin, true)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Whether `address` is a ZIP-316 unified address for `coin`'s network carrying an
+/// Orchard/Ironwood receiver. `false` (never throws) for a malformed/wrong-network unified
+/// address, an ordinary address, or a UA with no Orchard/Ironwood receiver.
+#[wasm_bindgen(js_name = zcashHasOrchardReceiver)]
+pub fn zcash_has_orchard_receiver(address: &str, coin: &str) -> bool {
+    crate::zcash::address::has_orchard_receiver(address, coin)
+}
+
+/// Whether `address` has a usable transparent receiver for `coin`'s network: either it's a
+/// unified address carrying a transparent receiver, or it's itself a valid transparent address
+/// for `coin`. `false` (never throws) otherwise.
+#[wasm_bindgen(js_name = zcashHasTransparentReceiver)]
+pub fn zcash_has_transparent_receiver(address: &str, coin: &str) -> bool {
+    crate::zcash::address::has_transparent_receiver(address, coin)
+}
+
 /// A parsed ZIP-316 Unified Address.
 ///
 /// Decode once with [`ZcashUnifiedAddress::parse`], then read each component through
@@ -163,6 +214,24 @@ impl ZcashUnifiedAddress {
     #[wasm_bindgen(getter, js_name = transparentScript)]
     pub fn transparent_script(&self) -> Option<Vec<u8>> {
         self.transparent.clone()
+    }
+
+    /// Whether this Unified Address carries an Orchard/Ironwood receiver.
+    ///
+    /// Equivalent to `orchardReceiver !== undefined`, without cloning the receiver bytes
+    /// when the caller only needs presence.
+    #[wasm_bindgen(getter, js_name = hasOrchardReceiver)]
+    pub fn has_orchard_receiver(&self) -> bool {
+        self.orchard.is_some()
+    }
+
+    /// Whether this Unified Address carries a transparent (P2PKH/P2SH) receiver.
+    ///
+    /// Equivalent to `transparentScript !== undefined`, without cloning the script bytes
+    /// when the caller only needs presence.
+    #[wasm_bindgen(getter, js_name = hasTransparentReceiver)]
+    pub fn has_transparent_receiver(&self) -> bool {
+        self.transparent.is_some()
     }
 
     /// Whether `candidate` (another Unified Address, or a transparent Zcash address

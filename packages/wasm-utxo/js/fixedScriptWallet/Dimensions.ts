@@ -18,17 +18,6 @@ export type FromInputOptions = {
 };
 
 /**
- * Options for output dimension calculation
- */
-export type FromOutputOptions = {
-  /**
-   * Set when `address` may be a ZIP-316 Unified Address whose Orchard receiver should be sized
-   * as a shielded output. Forwarded to `toOutputScriptWithCoin`'s `canBeShieldedOutput`.
-   */
-  isShielded?: boolean;
-};
-
-/**
  * Dimensions class for estimating transaction virtual size.
  *
  * Tracks weight internally with min/max bounds to handle ECDSA signature variance.
@@ -37,7 +26,7 @@ export type FromOutputOptions = {
  * This is a thin wrapper over the WASM implementation.
  */
 export class Dimensions {
-  private constructor(private _wasm: WasmDimensions) {}
+  protected constructor(private _wasm: WasmDimensions) {}
 
   /**
    * Create empty dimensions (zero weight)
@@ -83,12 +72,10 @@ export class Dimensions {
    */
   static fromOutput(script: Uint8Array): Dimensions;
   /**
-   * Create dimensions for a single output from an address.
-   *
-   * Pass `{ isShielded: true }` when `address` may be a ZIP-316 Unified Address whose Orchard
-   * receiver should be sized as a shielded output
+   * Create dimensions for a single output from an address, decoded as an ordinary transparent
+   * address for `network`.
    */
-  static fromOutput(address: string, network: CoinName, options?: FromOutputOptions): Dimensions;
+  static fromOutput(address: string, network: CoinName): Dimensions;
   /**
    * Create dimensions for a single output from script length only
    */
@@ -100,13 +87,12 @@ export class Dimensions {
   static fromOutput(
     params: Uint8Array | string | { length: number } | { scriptType: OutputScriptType },
     network?: CoinName,
-    options?: FromOutputOptions,
   ): Dimensions {
     if (typeof params === "string") {
       if (network === undefined) {
         throw new Error("network is required when passing an address string");
       }
-      const script = toOutputScriptWithCoin(params, network, options?.isShielded);
+      const script = toOutputScriptWithCoin(params, network);
       return new Dimensions(WasmDimensions.from_output_script_length(script.length));
     }
     if (typeof params === "object" && "scriptType" in params) {

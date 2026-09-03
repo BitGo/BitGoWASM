@@ -16,6 +16,8 @@ import type { ZcashNetworkName } from "./ZcashBitGoPsbt.js";
  * const ua = ZcashUnifiedAddress.parse(uaString, "zec");
  * const ironwood = ua.orchardReceiver;      // 43 bytes, or undefined
  * const script = ua.transparentScript;      // scriptPubKey bytes, or undefined
+ * ua.hasOrchardReceiver;                    // true iff orchardReceiver is present
+ * ua.hasTransparentReceiver;                // true iff transparentScript is present
  * ua.contains(transparentAddress);          // is it one of this UA's receivers?
  * ```
  */
@@ -54,6 +56,26 @@ export class ZcashUnifiedAddress {
    */
   get transparentScript(): Uint8Array | undefined {
     return this._wasm.transparentScript;
+  }
+
+  /**
+   * Whether this Unified Address carries an Orchard/Ironwood receiver.
+   *
+   * Equivalent to `orchardReceiver !== undefined`; prefer this when only presence
+   * matters, since it avoids copying the receiver bytes.
+   */
+  get hasOrchardReceiver(): boolean {
+    return this._wasm.hasOrchardReceiver;
+  }
+
+  /**
+   * Whether this Unified Address carries a transparent (P2PKH/P2SH) receiver.
+   *
+   * Equivalent to `transparentScript !== undefined`; prefer this when only presence
+   * matters, since it avoids copying the script bytes.
+   */
+  get hasTransparentReceiver(): boolean {
+    return this._wasm.hasTransparentReceiver;
   }
 
   /**

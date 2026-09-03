@@ -362,7 +362,7 @@ fn looks_like_unified(candidate: &str, expected_hrp: &str) -> bool {
 /// HRP)? `false` for an unknown network name, same as any other non-match.
 ///
 /// For a caller that needs to route between "parse as a unified address" and "parse as a
-/// transparent address" (e.g. [`crate::address::networks::to_output_script_or_shielded_receiver_with_coin`]):
+/// transparent address" (e.g. [`crate::zcash::address::to_output_script_or_shielded_receiver_with_coin`]):
 /// this only sniffs the HRP, so it can't itself distinguish a well-formed UA from a malformed
 /// one — callers that get `true` should still handle [`UnifiedAddress::parse`] failing.
 pub fn looks_like_unified_for_network(candidate: &str, network: &str) -> bool {
