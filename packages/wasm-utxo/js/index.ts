@@ -108,6 +108,24 @@ declare module "./wasm/wasm_utxo.js" {
     tapBip32Derivation: PsbtBip32Derivation[];
   }
 
+  /** A serialized input-map record with a standard PSBT key type. */
+  interface PsbtKnownInputKeyValue {
+    type: "known";
+    key: string;
+    keyData: Uint8Array;
+    value: Uint8Array;
+  }
+
+  /** A serialized input-map record whose key type is unrecognized. */
+  interface PsbtUnknownInputKeyValue {
+    type: "unknown";
+    keyType: bigint;
+    keyData: Uint8Array;
+    value: Uint8Array;
+  }
+
+  type PsbtInputKeyValue = PsbtKnownInputKeyValue | PsbtUnknownInputKeyValue;
+
   /** Raw PSBT output data returned by getOutputs() */
   interface PsbtOutputData {
     script: Uint8Array;
@@ -172,3 +190,4 @@ export {
   type ITransactionCommon,
 } from "./transaction.js";
 export { hasPsbtMagic, type IPsbt, type IPsbtWithAddress } from "./psbt.js";
+export type { PsbtInputKeyValue } from "./wasm/wasm_utxo.js";

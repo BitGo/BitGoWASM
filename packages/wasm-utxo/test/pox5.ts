@@ -229,6 +229,7 @@ describe("PoX-5 Bitcoin Staking lockup script", function () {
       // the requested input rather than requiring every input to be complete.
       assert.throws(() => psbt.finalizeInput(0), /satisfy|preimage|finalize/i);
       psbt.addSha256Preimage(0, principalPreimage);
+
       psbt.finalizeInput(0);
 
       assert.deepStrictEqual(psbt.getPartialSignatures(0), []);

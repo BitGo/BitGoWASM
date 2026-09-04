@@ -45,6 +45,34 @@ pub struct PsbtInputData {
     pub tap_bip32_derivation: Vec<Bip32Derivation>,
 }
 
+/// A PSBT input key classified from its BIP-174 key type.
+#[derive(Debug, Clone)]
+pub enum PsbtInputKey {
+    Known(&'static str),
+    Unknown(u64),
+}
+
+/// A serialized PSBT input key-value record with a Rust-defined key classification.
+#[derive(Debug, Clone)]
+pub struct PsbtInputKeyValue {
+    pub key: PsbtInputKey,
+    pub key_data: Vec<u8>,
+    pub value: Vec<u8>,
+}
+
+impl From<crate::psbt_ops::PsbtKeyValue> for PsbtInputKeyValue {
+    fn from(key_value: crate::psbt_ops::PsbtKeyValue) -> Self {
+        let key = crate::psbt_ops::known_psbt_input_key_type(key_value.key_type)
+            .map(PsbtInputKey::Known)
+            .unwrap_or(PsbtInputKey::Unknown(key_value.key_type));
+        PsbtInputKeyValue {
+            key,
+            key_data: key_value.key_data,
+            value: key_value.value,
+        }
+    }
+}
+
 impl From<&psbt::Input> for PsbtInputData {
     fn from(input: &psbt::Input) -> Self {
         let witness_utxo = input.witness_utxo.as_ref().map(|utxo| WitnessUtxo {
@@ -150,6 +178,20 @@ impl PsbtOutputDataWithAddress {
 pub fn get_inputs_from_psbt(psbt: &Psbt) -> Result<JsValue, WasmUtxoError> {
     let inputs: Vec<PsbtInputData> = psbt.inputs.iter().map(PsbtInputData::from).collect();
     inputs.try_to_js_value()
+}
+
+/// Get every serialized key-value record for one PSBT input.
+pub fn get_input_key_values_from_psbt(
+    psbt: &Psbt,
+    input_index: usize,
+) -> Result<JsValue, WasmUtxoError> {
+    let key_values: Vec<PsbtInputKeyValue> =
+        crate::psbt_ops::get_input_key_values(psbt, input_index)
+            .map_err(|e| WasmUtxoError::new(&e))?
+            .into_iter()
+            .map(PsbtInputKeyValue::from)
+            .collect();
+    key_values.try_to_js_value()
 }
 
 /// Get all PSBT outputs as an array of PsbtOutputData
@@ -844,6 +886,12 @@ macro_rules! impl_wasm_psbt_ops {
             ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
                 self.wasm_get_inputs()
             }
+            pub fn get_input_key_values(
+                &self,
+                index: usize,
+            ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
+                self.wasm_get_input_key_values(index)
+            }
             pub fn get_outputs(
                 &self,
             ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
@@ -951,6 +999,12 @@ macro_rules! impl_wasm_psbt_ops {
                 &self,
             ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
                 self.$field.wasm_get_inputs()
+            }
+            pub fn get_input_key_values(
+                &self,
+                index: usize,
+            ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
+                self.$field.wasm_get_input_key_values(index)
             }
             pub fn get_outputs(
                 &self,

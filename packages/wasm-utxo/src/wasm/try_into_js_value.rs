@@ -519,6 +519,25 @@ impl TryIntoJsValue for crate::wasm::psbt::PsbtInputData {
     }
 }
 
+impl TryIntoJsValue for crate::wasm::psbt::PsbtInputKeyValue {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        match &self.key {
+            crate::wasm::psbt::PsbtInputKey::Known(key) => js_obj!(
+                "type" => "known".to_string(),
+                "key" => (*key).to_string(),
+                "keyData" => self.key_data,
+                "value" => self.value,
+            ),
+            crate::wasm::psbt::PsbtInputKey::Unknown(key_type) => js_obj!(
+                "type" => "unknown".to_string(),
+                "keyType" => *key_type,
+                "keyData" => self.key_data,
+                "value" => self.value,
+            ),
+        }
+    }
+}
+
 impl TryIntoJsValue for crate::wasm::psbt::PsbtOutputData {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
         js_obj!(

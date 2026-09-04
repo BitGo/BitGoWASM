@@ -1,4 +1,9 @@
-import type { PsbtInputData, PsbtOutputData, WasmBIP32 } from "./wasm/wasm_utxo.js";
+import type {
+  PsbtInputData,
+  PsbtInputKeyValue,
+  PsbtOutputData,
+  WasmBIP32,
+} from "./wasm/wasm_utxo.js";
 import { BIP32 } from "./bip32.js";
 import type { PsbtKvKey } from "./fixedScriptWallet/BitGoKeySubtype.js";
 
@@ -10,6 +15,7 @@ interface WasmPsbtBase {
   unsigned_tx_id(): string;
   serialize(): Uint8Array;
   get_inputs(): unknown;
+  get_input_key_values(index: number): unknown;
   get_outputs(): unknown;
   get_global_xpubs(): unknown;
   remove_input(index: number): void;
@@ -52,6 +58,9 @@ export abstract class PsbtBase<W extends WasmPsbtBase> {
   }
   getInputs(): PsbtInputData[] {
     return this._wasm.get_inputs() as PsbtInputData[];
+  }
+  getInputKeyValues(index: number): PsbtInputKeyValue[] {
+    return this._wasm.get_input_key_values(index) as PsbtInputKeyValue[];
   }
   getOutputs(): PsbtOutputData[] {
     return this._wasm.get_outputs() as PsbtOutputData[];
