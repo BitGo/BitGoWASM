@@ -27,8 +27,11 @@
 /// - [BIP-174: PSBT Format](https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki)
 /// - [bitcoin::psbt::raw](https://docs.rs/bitcoin/latest/bitcoin/psbt/raw/index.html)
 use crate::bitcoin::consensus::Decodable;
-use crate::bitcoin::psbt::raw::{Key, Pair};
-use crate::bitcoin::{Transaction, VarInt};
+use crate::bitcoin::Transaction;
+use crate::psbt_ops::{
+    decode_compact_size, decode_compact_size_u64, decode_psbt_key_value_map,
+    known_psbt_input_key_type, PsbtKeyValue,
+};
 use crate::zcash::transaction::decode_zcash_transaction_parts;
 
 pub use super::node::{Node, Primitive};
@@ -46,8 +49,14 @@ fn is_printable_ascii(bytes: &[u8]) -> bool {
     bytes.iter().all(|&b| (0x20..=0x7E).contains(&b))
 }
 
+fn key_type_primitive(value: u64) -> Primitive {
+    u8::try_from(value)
+        .map(Primitive::U8)
+        .unwrap_or(Primitive::U64(value))
+}
+
 /// Parse proprietary key structure (0xFC type keys)
-fn parse_proprietary_key(key_data: &[u8]) -> Result<(Vec<u8>, u8, Vec<u8>), String> {
+fn parse_proprietary_key(key_data: &[u8]) -> Result<(Vec<u8>, u64, Vec<u8>), String> {
     if key_data.is_empty() {
         return Err("Empty proprietary key data".to_string());
     }
@@ -55,10 +64,9 @@ fn parse_proprietary_key(key_data: &[u8]) -> Result<(Vec<u8>, u8, Vec<u8>), Stri
     let mut pos = 0;
 
     // Decode prefix length (varint)
-    let (prefix_len, varint_size) = decode_varint(key_data, pos)?;
+    let (prefix_len, varint_size) = decode_compact_size(&key_data[pos..])?;
     pos += varint_size;
 
-    let prefix_len = prefix_len as usize;
     if pos + prefix_len > key_data.len() {
         return Err("Not enough bytes for proprietary prefix".to_string());
     }
@@ -67,12 +75,9 @@ fn parse_proprietary_key(key_data: &[u8]) -> Result<(Vec<u8>, u8, Vec<u8>), Stri
     let prefix = key_data[pos..pos + prefix_len].to_vec();
     pos += prefix_len;
 
-    // Extract subtype (1 byte)
-    if pos >= key_data.len() {
-        return Err("Not enough bytes for proprietary subtype".to_string());
-    }
-    let subtype = key_data[pos];
-    pos += 1;
+    // Extract CompactSize subtype.
+    let (subtype, subtype_size) = decode_compact_size_u64(&key_data[pos..])?;
+    pos += subtype_size;
 
     // Remaining bytes are additional key data
     let remaining_key = key_data[pos..].to_vec();
@@ -80,25 +85,21 @@ fn parse_proprietary_key(key_data: &[u8]) -> Result<(Vec<u8>, u8, Vec<u8>), Stri
     Ok((prefix, subtype, remaining_key))
 }
 
-/// Parse a raw PSBT key into a node
-fn key_to_node(key: &Key, context: PsbtMapContext) -> Node {
+/// Parse a raw PSBT key into a node.
+fn key_to_node(key_value: &PsbtKeyValue, context: PsbtMapContext) -> Node {
     let mut key_node = Node::new("key", Primitive::None);
 
-    // First byte is the key type
-    if !key.key.is_empty() {
-        key_node.add_child(Node::new("type_id", Primitive::U8(key.type_value)));
-        key_node.add_child(Node::new(
-            "type_name",
-            Primitive::String(key_type_name(key.type_value, context)),
-        ));
-    }
+    key_node.add_child(Node::new("type_id", key_type_primitive(key_value.key_type)));
+    key_node.add_child(Node::new(
+        "type_name",
+        Primitive::String(key_type_name(key_value.key_type, context)),
+    ));
 
-    // Rest is the key data
-    if key.key.len() > 1 {
-        let key_data = &key.key[1..];
+    if !key_value.key_data.is_empty() {
+        let key_data = &key_value.key_data;
 
         // Special handling for proprietary keys (0xFC)
-        if key.type_value == 0xFC {
+        if key_value.key_type == 0xFC {
             match parse_proprietary_key(key_data) {
                 Ok((prefix, subtype, remaining_key)) => {
                     // Add prefix - show as ASCII string if printable
@@ -112,7 +113,7 @@ fn key_to_node(key: &Key, context: PsbtMapContext) -> Node {
                     }
 
                     // Add subtype
-                    key_node.add_child(Node::new("subtype", Primitive::U8(subtype)));
+                    key_node.add_child(Node::new("subtype", key_type_primitive(subtype)));
 
                     // Add remaining key data if any
                     if !remaining_key.is_empty() {
@@ -133,16 +134,16 @@ fn key_to_node(key: &Key, context: PsbtMapContext) -> Node {
     key_node
 }
 
-/// Parse a raw PSBT key-value pair into a node
-fn pair_to_node(pair: &Pair, index: usize, context: PsbtMapContext) -> Node {
+/// Parse a raw PSBT key-value pair into a node.
+fn pair_to_node(pair: &PsbtKeyValue, index: usize, context: PsbtMapContext) -> Node {
     let mut pair_node = Node::new(format!("pair_{}", index), Primitive::None);
-    pair_node.add_child(key_to_node(&pair.key, context));
+    pair_node.add_child(key_to_node(pair, context));
     pair_node.add_child(Node::new("value", Primitive::Buffer(pair.value.clone())));
     pair_node
 }
 
 /// Get human-readable name for PSBT key type based on context
-fn key_type_name(type_id: u8, context: PsbtMapContext) -> String {
+fn key_type_name(type_id: u64, context: PsbtMapContext) -> String {
     match context {
         PsbtMapContext::Global => match type_id {
             0x00 => "PSBT_GLOBAL_UNSIGNED_TX".to_string(),
@@ -152,42 +153,16 @@ fn key_type_name(type_id: u8, context: PsbtMapContext) -> String {
             0x04 => "PSBT_GLOBAL_INPUT_COUNT".to_string(),
             0x05 => "PSBT_GLOBAL_OUTPUT_COUNT".to_string(),
             0x06 => "PSBT_GLOBAL_TX_MODIFIABLE".to_string(),
-            0x07 => "PSBT_GLOBAL_VERSION".to_string(),
+            0x07 => "PSBT_GLOBAL_SP_ECDH_SHARE".to_string(),
+            0x08 => "PSBT_GLOBAL_SP_DLEQ".to_string(),
+            0x09 => "PSBT_GLOBAL_GENERIC_SIGNED_MESSAGE".to_string(),
+            0xfb => "PSBT_GLOBAL_VERSION".to_string(),
             0xFC => "PSBT_GLOBAL_PROPRIETARY".to_string(),
-            _ => format!("UNKNOWN_TYPE_0x{:02X}", type_id),
+            _ => format!("UNKNOWN_TYPE_0x{type_id:X}"),
         },
-        PsbtMapContext::Input => match type_id {
-            0x00 => "PSBT_IN_NON_WITNESS_UTXO".to_string(),
-            0x01 => "PSBT_IN_WITNESS_UTXO".to_string(),
-            0x02 => "PSBT_IN_PARTIAL_SIG".to_string(),
-            0x03 => "PSBT_IN_SIGHASH_TYPE".to_string(),
-            0x04 => "PSBT_IN_REDEEM_SCRIPT".to_string(),
-            0x05 => "PSBT_IN_WITNESS_SCRIPT".to_string(),
-            0x06 => "PSBT_IN_BIP32_DERIVATION".to_string(),
-            0x07 => "PSBT_IN_FINAL_SCRIPTSIG".to_string(),
-            0x08 => "PSBT_IN_FINAL_SCRIPTWITNESS".to_string(),
-            0x09 => "PSBT_IN_POR_COMMITMENT".to_string(),
-            0x0a => "PSBT_IN_RIPEMD160".to_string(),
-            0x0b => "PSBT_IN_SHA256".to_string(),
-            0x0c => "PSBT_IN_HASH160".to_string(),
-            0x0d => "PSBT_IN_HASH256".to_string(),
-            0x0e => "PSBT_IN_PREVIOUS_TXID".to_string(),
-            0x0f => "PSBT_IN_OUTPUT_INDEX".to_string(),
-            0x10 => "PSBT_IN_SEQUENCE".to_string(),
-            0x11 => "PSBT_IN_REQUIRED_TIME_LOCKTIME".to_string(),
-            0x12 => "PSBT_IN_REQUIRED_HEIGHT_LOCKTIME".to_string(),
-            0x13 => "PSBT_IN_TAP_KEY_SIG".to_string(),
-            0x14 => "PSBT_IN_TAP_SCRIPT_SIG".to_string(),
-            0x15 => "PSBT_IN_TAP_LEAF_SCRIPT".to_string(),
-            0x16 => "PSBT_IN_TAP_BIP32_DERIVATION".to_string(),
-            0x17 => "PSBT_IN_TAP_INTERNAL_KEY".to_string(),
-            0x18 => "PSBT_IN_TAP_MERKLE_ROOT".to_string(),
-            0x19 => "PSBT_IN_MUSIG2_PARTICIPANT_PUBKEYS".to_string(),
-            0x1a => "PSBT_IN_MUSIG2_PUB_NONCE".to_string(),
-            0x1b => "PSBT_IN_MUSIG2_PARTIAL_SIG".to_string(),
-            0xFC => "PSBT_IN_PROPRIETARY".to_string(),
-            _ => format!("UNKNOWN_TYPE_0x{:02X}", type_id),
-        },
+        PsbtMapContext::Input => known_psbt_input_key_type(type_id)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("UNKNOWN_TYPE_0x{type_id:X}")),
         PsbtMapContext::Output => match type_id {
             0x00 => "PSBT_OUT_REDEEM_SCRIPT".to_string(),
             0x01 => "PSBT_OUT_WITNESS_SCRIPT".to_string(),
@@ -197,97 +172,25 @@ fn key_type_name(type_id: u8, context: PsbtMapContext) -> String {
             0x05 => "PSBT_OUT_TAP_INTERNAL_KEY".to_string(),
             0x06 => "PSBT_OUT_TAP_TREE".to_string(),
             0x07 => "PSBT_OUT_TAP_BIP32_DERIVATION".to_string(),
+            0x08 => "PSBT_OUT_MUSIG2_PARTICIPANT_PUBKEYS".to_string(),
+            0x09 => "PSBT_OUT_SP_V0_INFO".to_string(),
+            0x0a => "PSBT_OUT_SP_V0_LABEL".to_string(),
+            0x35 => "PSBT_OUT_DNSSEC_PROOF".to_string(),
             0xFC => "PSBT_OUT_PROPRIETARY".to_string(),
-            _ => format!("UNKNOWN_TYPE_0x{:02X}", type_id),
+            _ => format!("UNKNOWN_TYPE_0x{type_id:X}"),
         },
     }
 }
 
-/// Decode a varint from bytes using bitcoin crate, returns (value, bytes_consumed)
-fn decode_varint(bytes: &[u8], pos: usize) -> Result<(u64, usize), String> {
-    if pos >= bytes.len() {
-        return Err("Not enough bytes for varint".to_string());
-    }
-
-    let mut cursor = &bytes[pos..];
-    let varint = VarInt::consensus_decode(&mut cursor)
-        .map_err(|e| format!("Failed to decode varint: {}", e))?;
-
-    // Calculate bytes consumed by comparing slice positions
-    let bytes_consumed = bytes.len() - pos - cursor.len();
-
-    Ok((varint.0, bytes_consumed))
-}
-
-/// Manually decode a key-value pair from bytes
-///
-/// Note: The bitcoin crate has `Pair::decode()` and `Key::decode()` methods, but they are
-/// marked as `pub(crate)` and not exposed in the public API. We must implement our own
-/// decoder to parse raw PSBT bytes at this low level. We do reuse the bitcoin crate's
-/// `VarInt` decoder where possible.
-fn decode_pair(bytes: &[u8], pos: usize) -> Result<(Pair, usize), String> {
-    let mut current_pos = pos;
-
-    // Decode key length (varint)
-    let (key_len, varint_size) = decode_varint(bytes, current_pos)?;
-    current_pos += varint_size;
-
-    if key_len == 0 {
-        return Err("Zero-length key (map separator)".to_string());
-    }
-
-    // Key is: type_value (1 byte) + key_data
-    if current_pos >= bytes.len() {
-        return Err("Not enough bytes for key type".to_string());
-    }
-
-    let type_value = bytes[current_pos];
-    current_pos += 1;
-
-    let key_data_len = (key_len - 1) as usize;
-    if current_pos + key_data_len > bytes.len() {
-        return Err(format!(
-            "Not enough bytes for key data: need {}, have {}",
-            key_data_len,
-            bytes.len() - current_pos
-        ));
-    }
-
-    let mut key_bytes = vec![type_value];
-    key_bytes.extend_from_slice(&bytes[current_pos..current_pos + key_data_len]);
-    current_pos += key_data_len;
-
-    let key = Key {
-        type_value,
-        key: key_bytes,
-    };
-
-    // Decode value length (varint)
-    let (value_len, varint_size) = decode_varint(bytes, current_pos)?;
-    current_pos += varint_size;
-
-    let value_len = value_len as usize;
-    if current_pos + value_len > bytes.len() {
-        return Err(format!(
-            "Not enough bytes for value: need {}, have {}",
-            value_len,
-            bytes.len() - current_pos
-        ));
-    }
-
-    let value = bytes[current_pos..current_pos + value_len].to_vec();
-    current_pos += value_len;
-
-    let pair = Pair { key, value };
-    Ok((pair, current_pos - pos))
-}
-
 /// Extract transaction input/output counts from global map
 /// Supports both Bitcoin and Zcash transaction formats
-fn extract_tx_counts(global_pairs: &[Pair], is_zcash: bool) -> Result<(usize, usize), String> {
+fn extract_tx_counts(
+    global_pairs: &[PsbtKeyValue],
+    is_zcash: bool,
+) -> Result<(usize, usize), String> {
     // Find the unsigned transaction (type 0x00)
     for pair in global_pairs {
-        if pair.key.type_value == 0x00 {
+        if pair.key_type == 0x00 {
             // Try Zcash parser first if requested
             if is_zcash {
                 if let Ok(parts) = decode_zcash_transaction_parts(&pair.value) {
@@ -313,38 +216,13 @@ fn decode_map(
     start_pos: usize,
     map_name: &str,
     context: PsbtMapContext,
-) -> Result<(Node, Vec<Pair>, usize), String> {
+) -> Result<(Node, Vec<PsbtKeyValue>, usize), String> {
     let mut map_node = Node::new(map_name, Primitive::None);
-    let mut pairs = Vec::new();
-    let mut pos = start_pos;
-
-    loop {
-        // Check if we hit the separator (0x00)
-        if pos >= bytes.len() {
-            break;
-        }
-
-        if bytes[pos] == 0x00 {
-            pos += 1; // Skip the separator
-            break;
-        }
-
-        // Try to decode a pair
-        match decode_pair(bytes, pos) {
-            Ok((pair, consumed)) => {
-                pairs.push(pair);
-                pos += consumed;
-            }
-            Err(e) => {
-                // Check if this is a zero-length key (separator)
-                if e.contains("Zero-length") {
-                    pos += 1; // Skip the 0x00
-                    break;
-                }
-                return Err(format!("Failed to decode pair at position {}: {}", pos, e));
-            }
-        }
-    }
+    let map_bytes = bytes
+        .get(start_pos..)
+        .ok_or_else(|| format!("PSBT map starts out of bounds at position {start_pos}"))?;
+    let (pairs, consumed) = decode_psbt_key_value_map(map_bytes)
+        .map_err(|e| format!("Failed to decode map at position {start_pos}: {e}"))?;
 
     // Add pair count first
     let pair_count = pairs.len();
@@ -355,7 +233,7 @@ fn decode_map(
         map_node.add_child(pair_to_node(pair, idx, context));
     }
 
-    Ok((map_node, pairs, pos))
+    Ok((map_node, pairs, start_pos + consumed))
 }
 
 /// Parse PSBT showing raw key-value structure from bytes
@@ -459,6 +337,10 @@ mod tests {
             key_type_name(0xFC, PsbtMapContext::Global),
             "PSBT_GLOBAL_PROPRIETARY"
         );
+        assert_eq!(
+            key_type_name(0xfb, PsbtMapContext::Global),
+            "PSBT_GLOBAL_VERSION"
+        );
         assert!(key_type_name(0xFF, PsbtMapContext::Global).starts_with("UNKNOWN_TYPE"));
 
         // Test input context
@@ -470,6 +352,10 @@ mod tests {
             key_type_name(0x01, PsbtMapContext::Input),
             "PSBT_IN_WITNESS_UTXO"
         );
+        assert_eq!(
+            key_type_name(0x1c, PsbtMapContext::Input),
+            "PSBT_IN_MUSIG2_PARTIAL_SIG"
+        );
 
         // Test output context
         assert_eq!(
@@ -480,17 +366,48 @@ mod tests {
             key_type_name(0x03, PsbtMapContext::Output),
             "PSBT_OUT_AMOUNT"
         );
+        assert_eq!(
+            key_type_name(0x09, PsbtMapContext::Output),
+            "PSBT_OUT_SP_V0_INFO"
+        );
     }
 
     #[test]
     fn test_key_to_node() {
-        let key = Key {
-            type_value: 0x01,
-            key: vec![0x01, 0x02, 0x03],
+        let key_value = PsbtKeyValue {
+            key_type: 0x01,
+            key_data: vec![0x02, 0x03],
+            value: vec![],
         };
-        let node = key_to_node(&key, PsbtMapContext::Global);
+        let node = key_to_node(&key_value, PsbtMapContext::Global);
         assert_eq!(node.label, "key");
         assert!(!node.children.is_empty());
+    }
+
+    #[test]
+    fn test_decode_map_with_compact_size_key_type() {
+        let bytes = [0x04, 0xfd, 0x34, 0x12, 0xaa, 0x02, 0xbb, 0xcc, 0x00];
+
+        let (node, pairs, consumed) =
+            decode_map(&bytes, 0, "input", PsbtMapContext::Input).unwrap();
+
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(pairs[0].key_type, 0x1234);
+        assert_eq!(pairs[0].key_data, vec![0xaa]);
+        assert!(matches!(
+            node.children[1].children[0].children[0].value,
+            Primitive::U64(0x1234)
+        ));
+    }
+
+    #[test]
+    fn test_parse_proprietary_key_with_compact_size_subtype() {
+        let (prefix, subtype, key_data) =
+            parse_proprietary_key(&[0x01, b'x', 0xfd, 0x34, 0x12, 0xaa]).unwrap();
+
+        assert_eq!(prefix, vec![b'x']);
+        assert_eq!(subtype, 0x1234);
+        assert_eq!(key_data, vec![0xaa]);
     }
 
     #[test]
