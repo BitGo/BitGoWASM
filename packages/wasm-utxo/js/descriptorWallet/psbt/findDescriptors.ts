@@ -85,14 +85,14 @@ function findDescriptorForDerivationIndex(
   return undefined;
 }
 
-function getDerivationIndexFromPath(path: string): number {
+function getDerivationIndexFromPath(path: string): number | undefined {
   const indexStr = path.split("/").pop();
   if (!indexStr) {
-    throw new Error(`Invalid derivation path ${path}`);
+    return undefined;
   }
-  const index = parseInt(indexStr, 10);
-  if (index.toString() !== indexStr) {
-    throw new Error(`Invalid derivation path ${path}`);
+  const index = Number(indexStr);
+  if (!Number.isSafeInteger(index) || index < 0 || index.toString() !== indexStr) {
+    return undefined;
   }
   return index;
 }
@@ -108,7 +108,13 @@ function findDescriptorForAnyDerivationPath(
   derivationPaths: string[],
   descriptorMap: DescriptorMap,
 ): DescriptorWithIndex | undefined {
-  const derivationIndexSet = new Set(derivationPaths.map((p) => getDerivationIndexFromPath(p)));
+  const derivationIndexSet = new Set<number>();
+  for (const path of derivationPaths) {
+    const index = getDerivationIndexFromPath(path);
+    if (index !== undefined) {
+      derivationIndexSet.add(index);
+    }
+  }
   for (const index of [...derivationIndexSet]) {
     const desc = findDescriptorForDerivationIndex(script, index, descriptorMap);
     if (desc) {
@@ -122,14 +128,12 @@ function findDescriptorForAnyDerivationPath(
 type WithBip32Derivation = { bip32Derivation?: { path: string }[] };
 type WithTapBip32Derivation = { tapBip32Derivation?: { path: string }[] };
 
-function getDerivationPaths(v: WithBip32Derivation | WithTapBip32Derivation): string[] | undefined {
-  if ("bip32Derivation" in v && v.bip32Derivation && v.bip32Derivation.length > 0) {
-    return v.bip32Derivation.map((v) => v.path);
-  }
-  if ("tapBip32Derivation" in v && v.tapBip32Derivation && v.tapBip32Derivation.length > 0) {
-    return v.tapBip32Derivation.map((v) => v.path).filter((v) => v !== "" && v !== "m");
-  }
-  return undefined;
+function getDerivationPaths(v: WithBip32Derivation & WithTapBip32Derivation): string[] | undefined {
+  const paths = [
+    ...(v.bip32Derivation ?? []).map((derivation) => derivation.path),
+    ...(v.tapBip32Derivation ?? []).map((derivation) => derivation.path),
+  ].filter((path) => path !== "" && path !== "m");
+  return paths.length > 0 ? paths : undefined;
 }
 
 /**

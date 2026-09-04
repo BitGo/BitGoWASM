@@ -1,4 +1,9 @@
-import type { PsbtInputData, PsbtOutputData, PsbtOutputDataWithAddress } from "./wasm/wasm_utxo.js";
+import type {
+  PsbtInputData,
+  PsbtInputKeyValue,
+  PsbtOutputData,
+  PsbtOutputDataWithAddress,
+} from "./wasm/wasm_utxo.js";
 import type { BIP32 } from "./bip32.js";
 import type { ITransactionCommon } from "./transaction.js";
 import type { PsbtKvKey } from "./fixedScriptWallet/BitGoKeySubtype.js";
@@ -6,6 +11,7 @@ import type { PsbtKvKey } from "./fixedScriptWallet/BitGoKeySubtype.js";
 /** Common interface for PSBT types */
 export interface IPsbt extends ITransactionCommon<PsbtInputData, PsbtOutputData> {
   getGlobalXpubs(): BIP32[];
+  getInputKeyValues(index: number): PsbtInputKeyValue[];
   unsignedTxId(): string;
   addInputAtIndex(
     index: number,

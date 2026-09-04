@@ -53,6 +53,52 @@ describe("descriptorWallet/psbt/findDescriptors", () => {
       assert.strictEqual(result.index, 5);
     });
 
+    it("should ignore root derivation paths from external keys", () => {
+      const descriptor = Descriptor.fromStringDetectType(derivableDescriptor);
+      const derivedScript = descriptor.atDerivationIndex(5).scriptPubkey();
+
+      const descriptorMap = toDescriptorMap([{ name: "derivable", value: derivableDescriptor }]);
+
+      const input: PsbtInput = {
+        witnessUtxo: { script: derivedScript, value: 100000n },
+        bip32Derivation: [{ path: "" }, { path: "m" }, { path: "m/0/5" }],
+      };
+
+      const result = findDescriptorForInput(input, descriptorMap);
+
+      assert.ok(result);
+      assert.strictEqual(result.index, 5);
+    });
+
+    it("should ignore unusable external derivation paths", () => {
+      const descriptor = Descriptor.fromStringDetectType(derivableDescriptor);
+      const derivedScript = descriptor.atDerivationIndex(5).scriptPubkey();
+
+      const descriptorMap = toDescriptorMap([{ name: "derivable", value: derivableDescriptor }]);
+
+      const input: PsbtInput = {
+        witnessUtxo: { script: derivedScript, value: 100000n },
+        bip32Derivation: [{ path: "m/86'/0'/0'/0/5'" }, { path: "m/0/5" }],
+      };
+
+      const result = findDescriptorForInput(input, descriptorMap);
+
+      assert.ok(result);
+      assert.strictEqual(result.index, 5);
+    });
+
+    it("should ignore root derivation paths when no wallet derivation is present", () => {
+      const descriptorMap = toDescriptorMap([{ name: "derivable", value: derivableDescriptor }]);
+      const descriptor = Descriptor.fromStringDetectType(derivableDescriptor);
+
+      const input: PsbtInput = {
+        witnessUtxo: { script: descriptor.atDerivationIndex(5).scriptPubkey(), value: 100000n },
+        bip32Derivation: [{ path: "" }, { path: "m" }],
+      };
+
+      assert.strictEqual(findDescriptorForInput(input, descriptorMap), undefined);
+    });
+
     it("should find derivable descriptor using tapBip32Derivation", () => {
       const descriptor = Descriptor.fromStringDetectType(derivableDescriptor);
       const derivedScript = descriptor.atDerivationIndex(10).scriptPubkey();
@@ -86,6 +132,23 @@ describe("descriptorWallet/psbt/findDescriptors", () => {
 
       assert.ok(result);
       assert.strictEqual(result.index, 7);
+    });
+
+    it("should ignore root taproot derivation paths from external keys", () => {
+      const descriptor = Descriptor.fromStringDetectType(derivableDescriptor);
+      const derivedScript = descriptor.atDerivationIndex(10).scriptPubkey();
+
+      const descriptorMap = toDescriptorMap([{ name: "derivable", value: derivableDescriptor }]);
+
+      const input: PsbtInput = {
+        witnessUtxo: { script: derivedScript, value: 100000n },
+        tapBip32Derivation: [{ path: "" }, { path: "m" }, { path: "m/0/10" }],
+      };
+
+      const result = findDescriptorForInput(input, descriptorMap);
+
+      assert.ok(result);
+      assert.strictEqual(result.index, 10);
     });
 
     it("should return undefined when no matching descriptor", () => {
