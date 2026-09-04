@@ -1,5 +1,12 @@
 import assert from "node:assert";
-import { Dimensions, Descriptor, ECPair, fixedScriptWallet, Psbt } from "../js/index.js";
+import {
+  Dimensions,
+  ZcashDimensions,
+  Descriptor,
+  ECPair,
+  fixedScriptWallet,
+  Psbt,
+} from "../js/index.js";
 import { formatNode } from "../js/ast/index.js";
 import { Transaction } from "../js/transaction.js";
 import {
@@ -248,8 +255,9 @@ describe("Dimensions", function () {
     // its recipient is a ZIP-316 Unified Address, not a transparent address — but rather than
     // modeling the Orchard action's real on-chain byte layout, it's run through the same
     // length-based formula as a transparent output, sized from the UA's decoded 43-byte
-    // receiver. `isShielded: true` forwards to `toOutputScriptWithCoin`'s `canBeShieldedOutput`,
-    // which is what lets a UA decode at all instead of failing as an invalid transparent address.
+    // receiver. `ZcashDimensions.fromOutput`'s `isShielded: true` routes through
+    // `zcashAddress.toShieldedReceiverWithCoin` instead of `toTransparentReceiverWithCoin`, which
+    // is what selects the UA's Orchard receiver instead of its transparent receiver.
     describe("Zcash Orchard/Ironwood shielded output", function () {
       const ORCHARD_RECEIVER_SIZE = 43;
       // A valid raw Orchard/Ironwood receiver (43 bytes), encoded as a single-receiver UA.
@@ -260,7 +268,9 @@ describe("Dimensions", function () {
       const UNIFIED_ADDRESS = ZcashUnifiedAddress.encodeOrchardReceiver(RECEIVER, "zcashTest");
 
       it("sizes a shielded output the same as a 43-byte scriptPubKey", function () {
-        const shieldedOutput = Dimensions.fromOutput(UNIFIED_ADDRESS, "tzec", { isShielded: true });
+        const shieldedOutput = ZcashDimensions.fromOutput(UNIFIED_ADDRESS, "tzec", {
+          isShielded: true,
+        });
 
         // Output weight = 4 * (8 + 1 + 43) = 208
         assert.strictEqual(shieldedOutput.getOutputWeight(), 208);
@@ -270,14 +280,20 @@ describe("Dimensions", function () {
         );
       });
 
-      it("throws for a UA without isShielded (not a valid transparent address)", function () {
-        assert.throws(() => Dimensions.fromOutput(UNIFIED_ADDRESS, "tzec"));
+      it("throws for an orchard-only UA when isShielded is unset (no transparent receiver)", function () {
+        // Without `isShielded`, `zcashAddress.toTransparentReceiverWithCoin` is used, so this UA
+        // -- which carries only an Orchard receiver -- is resolved for its (absent) transparent
+        // receiver and throws, rather than silently falling back to the Orchard receiver.
+        assert.throws(
+          () => ZcashDimensions.fromOutput(UNIFIED_ADDRESS, "tzec"),
+          /no transparent receiver/,
+        );
       });
 
       it("still decodes an ordinary transparent zcash address with isShielded: true", function () {
         // A zcash testnet p2sh address -> ordinary 23-byte scriptPubKey
         const transparentAddress = "t288NZMrzYi6oednBEnw8UZvGoqX4Z6NXys";
-        const dim = Dimensions.fromOutput(transparentAddress, "tzec", { isShielded: true });
+        const dim = ZcashDimensions.fromOutput(transparentAddress, "tzec", { isShielded: true });
 
         assert.strictEqual(
           dim.getOutputWeight(),
@@ -286,12 +302,16 @@ describe("Dimensions", function () {
       });
 
       it("does not count as segwit", function () {
-        const shieldedOutput = Dimensions.fromOutput(UNIFIED_ADDRESS, "tzec", { isShielded: true });
+        const shieldedOutput = ZcashDimensions.fromOutput(UNIFIED_ADDRESS, "tzec", {
+          isShielded: true,
+        });
         assert.strictEqual(shieldedOutput.hasSegwit, false);
       });
 
       it("combines with a transparent input the same way any other output would", function () {
-        const shieldedOutput = Dimensions.fromOutput(UNIFIED_ADDRESS, "tzec", { isShielded: true });
+        const shieldedOutput = ZcashDimensions.fromOutput(UNIFIED_ADDRESS, "tzec", {
+          isShielded: true,
+        });
         const transparentInput = Dimensions.fromInput({ chain: 0 });
         const combined = transparentInput.plus(shieldedOutput);
 
@@ -315,7 +335,9 @@ describe("Dimensions", function () {
         // default relay fee rates used elsewhere for legacy fee estimation.
         const FEE_RATE_ZAT_PER_KVB = 150_000;
 
-        const shieldedOutput = Dimensions.fromOutput(UNIFIED_ADDRESS, "tzec", { isShielded: true });
+        const shieldedOutput = ZcashDimensions.fromOutput(UNIFIED_ADDRESS, "tzec", {
+          isShielded: true,
+        });
         const legacyFee = (shieldedOutput.getOutputVSize() * FEE_RATE_ZAT_PER_KVB) / 1000;
 
         assert.ok(

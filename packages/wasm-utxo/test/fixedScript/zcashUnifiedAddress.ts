@@ -41,12 +41,26 @@ describe("ZcashUnifiedAddress", function () {
         hex(ua.transparentScript),
         `76a914${MAINNET.transparentPubkeyHashHex}88ac`,
       );
+      assert.strictEqual(ua.hasOrchardReceiver, true);
+      assert.strictEqual(ua.hasTransparentReceiver, true);
     });
 
     it("resolves the wallet vector's components (testnet)", function () {
       const ua = ZcashUnifiedAddress.parse(WALLET.unified, WALLET.network);
       assert.strictEqual(hex(ua.orchardReceiver), WALLET.ironwoodReceiverHex);
       assert.strictEqual(hex(ua.transparentScript), `76a914${WALLET.transparentPubkeyHashHex}88ac`);
+      assert.strictEqual(ua.hasOrchardReceiver, true);
+      assert.strictEqual(ua.hasTransparentReceiver, true);
+    });
+
+    it("hasOrchardReceiver is true and hasTransparentReceiver is false for an Orchard-only UA", function () {
+      const receiver = Buffer.from(MAINNET.orchardReceiverHex, "hex");
+      const orchardOnlyUa = ZcashUnifiedAddress.encodeOrchardReceiver(receiver, MAINNET.network);
+      const ua = ZcashUnifiedAddress.parse(orchardOnlyUa, MAINNET.network);
+
+      assert.strictEqual(ua.hasOrchardReceiver, true);
+      assert.strictEqual(ua.hasTransparentReceiver, false);
+      assert.strictEqual(ua.transparentScript, undefined);
     });
 
     it("rejects an address on the wrong network", function () {

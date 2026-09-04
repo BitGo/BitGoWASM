@@ -103,6 +103,28 @@ describe("ZcashBitGoPsbt.addTransparentOutput (legacy v4 unified_address)", func
     assert.strictEqual(outputs[index].address, WALLET.transparentAddress);
   });
 
+  it("round-trips two recipients: a UA-resolved transparent output and a plain t-address output", function () {
+    const psbt = buildLegacyPsbt();
+
+    const uaIndex = psbt.addTransparentOutput(TRANSPARENT_SCRIPT, 50_000_000n, WALLET.unified);
+
+    const PLAIN_TADDR = "tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ";
+    const plainScript = addressNs.toOutputScriptWithCoin(PLAIN_TADDR, "tzec");
+    const plainIndex = psbt.addTransparentOutput(plainScript, 40_000_000n);
+
+    const bytes = psbt.serialize();
+    const round = ZcashBitGoPsbt.fromBytes(bytes, "zcashTest");
+
+    const outputs = round.parseOutputsWithWalletKeys(walletKeys);
+    assert.strictEqual(outputs.length, 2);
+    // UA recipient: address comes back as the original unified address, not the bare t-address.
+    assert.strictEqual(outputs[uaIndex].address, WALLET.unified);
+    assert.deepStrictEqual(new Uint8Array(outputs[uaIndex].script), TRANSPARENT_SCRIPT);
+    // Plain t-address recipient: address comes back as the plain transparent address.
+    assert.strictEqual(outputs[plainIndex].address, PLAIN_TADDR);
+    assert.deepStrictEqual(new Uint8Array(outputs[plainIndex].script), plainScript);
+  });
+
   describe("failure scenarios", function () {
     it("rejects a unifiedAddress whose transparent receiver does not match script", function () {
       const psbt = buildLegacyPsbt();

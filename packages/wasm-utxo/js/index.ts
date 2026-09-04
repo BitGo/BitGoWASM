@@ -8,6 +8,7 @@ void wasm;
 // Most exports are namespaced to avoid polluting the top-level namespace
 // and to make imports more explicit (e.g., `import { address } from '@bitgo/wasm-utxo'`)
 export * as address from "./address.js";
+export * as zcashAddress from "./zcashAddress.js";
 export * as ast from "./ast/index.js";
 export * as bip322 from "./bip322/index.js";
 export * as inscriptions from "./inscriptions.js";
@@ -21,6 +22,7 @@ export * as ecpair from "./ecpair.js";
 export { ECPair } from "./ecpair.js";
 export { BIP32 } from "./bip32.js";
 export { Dimensions } from "./fixedScriptWallet/Dimensions.js";
+export { ZcashDimensions } from "./fixedScriptWallet/ZcashDimensions.js";
 
 export type WasmUtxoVersionInfo = { version: string; gitHash: string };
 export function getWasmUtxoVersion(): WasmUtxoVersionInfo {

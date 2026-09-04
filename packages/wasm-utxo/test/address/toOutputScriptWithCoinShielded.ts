@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { address as addressNs } from "../../js/index.js";
+import { address as addressNs, zcashAddress } from "../../js/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixturesZcash = path.resolve(__dirname, "../fixtures/zcash");
@@ -31,32 +31,16 @@ const WALLET = uaFixtures.testnetWallet;
 const ZEC = "zec";
 const TZEC = "tzec";
 
-describe("toOutputScriptWithCoin canBeShieldedOutput", function () {
-  it("returns the raw Orchard/Ironwood receiver for a unified address, when set (mainnet)", function () {
-    const script = addressNs.toOutputScriptWithCoin(MAINNET.unified, ZEC, true);
+describe("zcashAddress.toShieldedReceiverWithCoin", function () {
+  it("returns the raw Orchard/Ironwood receiver for a unified address (mainnet)", function () {
+    const script = zcashAddress.toShieldedReceiverWithCoin(MAINNET.unified, ZEC);
     assert.strictEqual(Buffer.from(script).toString("hex"), MAINNET.orchardReceiverHex);
     assert.strictEqual(script.length, 43);
   });
 
-  it("returns the raw Orchard/Ironwood receiver for a unified address, when set (testnet)", function () {
-    const script = addressNs.toOutputScriptWithCoin(WALLET.unified, TZEC, true);
+  it("returns the raw Orchard/Ironwood receiver for a unified address (testnet)", function () {
+    const script = zcashAddress.toShieldedReceiverWithCoin(WALLET.unified, TZEC);
     assert.strictEqual(Buffer.from(script).toString("hex"), WALLET.ironwoodReceiverHex);
-  });
-
-  it("still resolves a unified address's transparent script when canBeShieldedOutput is unset", function () {
-    // Without the flag, a UA is never even attempted as one — it falls through to the same
-    // transparent-only path as before this feature existed. A UA string is never itself a valid
-    // transparent address, so this must fail exactly like it always did.
-    assert.throws(() => addressNs.toOutputScriptWithCoin(MAINNET.unified, ZEC));
-    assert.throws(() => addressNs.toOutputScriptWithCoin(MAINNET.unified, ZEC, false));
-  });
-
-  it("falls through to the transparent path for an ordinary (non-UA) address, even when set", function () {
-    const script = addressNs.toOutputScriptWithCoin(WALLET.transparentAddress, TZEC, true);
-    assert.strictEqual(
-      Buffer.from(script).toString("hex"),
-      `76a914${WALLET.transparentPubkeyHashHex}88ac`,
-    );
   });
 
   it("throws for a wrong-network unified address rather than silently succeeding", function () {
@@ -67,8 +51,52 @@ describe("toOutputScriptWithCoin canBeShieldedOutput", function () {
     // failure rather than a bare `throws()`, so this pins down which path actually rejected it —
     // a bare `throws()` would still pass even if the network check were silently removed.
     assert.throws(
-      () => addressNs.toOutputScriptWithCoin(MAINNET.unified, TZEC, true),
+      () => zcashAddress.toShieldedReceiverWithCoin(MAINNET.unified, TZEC),
       /Could not decode address/,
+    );
+  });
+});
+
+describe("zcashAddress.toTransparentReceiverWithCoin", function () {
+  it("returns the unified address's transparent receiver", function () {
+    // A unified address is always attempted as one; the transparent receiver is always the
+    // authoritative one for this function -- never the shielded receiver. See
+    // `zcashAddress.toShieldedReceiverWithCoin` for resolving the shielded receiver instead.
+    const expected = `76a914${MAINNET.transparentPubkeyHashHex}88ac`;
+    assert.strictEqual(
+      Buffer.from(zcashAddress.toTransparentReceiverWithCoin(MAINNET.unified, ZEC)).toString("hex"),
+      expected,
+    );
+  });
+
+  it("falls through to the transparent path for an ordinary (non-UA) address", function () {
+    const script = zcashAddress.toTransparentReceiverWithCoin(
+      WALLET.transparentAddress ?? "",
+      TZEC,
+    );
+    assert.strictEqual(
+      Buffer.from(script).toString("hex"),
+      `76a914${WALLET.transparentPubkeyHashHex}88ac`,
+    );
+  });
+});
+
+describe("address.toOutputScriptWithCoin", function () {
+  it("does not resolve a unified address -- it is not a valid transparent address", function () {
+    // The general-purpose function never attempts unified-address resolution; a UA string is
+    // just as invalid to it as any other malformed address. See
+    // `zcashAddress.toTransparentReceiverWithCoin` for resolving a UA's transparent receiver.
+    assert.throws(
+      () => addressNs.toOutputScriptWithCoin(MAINNET.unified, ZEC),
+      /Could not decode address/,
+    );
+  });
+
+  it("decodes an ordinary (non-UA) transparent address", function () {
+    const script = addressNs.toOutputScriptWithCoin(WALLET.transparentAddress ?? "", TZEC);
+    assert.strictEqual(
+      Buffer.from(script).toString("hex"),
+      `76a914${WALLET.transparentPubkeyHashHex}88ac`,
     );
   });
 });

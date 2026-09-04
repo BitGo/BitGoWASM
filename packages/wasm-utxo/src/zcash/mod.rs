@@ -9,6 +9,7 @@
 //!
 //! Tests verify parity with `zebra-chain` crate.
 
+pub mod address;
 pub mod blake2b;
 /// orchard PCZT ↔ v6 IronwoodBundle bridge (Constructor / Signer / Extractor roles).
 pub mod ironwood_build;
