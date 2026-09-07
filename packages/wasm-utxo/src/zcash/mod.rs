@@ -18,6 +18,7 @@ pub mod ironwood_pczt;
 pub mod transaction;
 pub mod unified_address;
 pub mod v6;
+pub use transaction::{detect_zcash_transaction_version, ZcashTransactionVersion};
 
 /// Zcash network upgrade identifiers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

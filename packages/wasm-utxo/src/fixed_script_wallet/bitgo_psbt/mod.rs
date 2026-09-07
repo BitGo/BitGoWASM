@@ -23,8 +23,8 @@ pub use propkv::{
 };
 pub use sighash::validate_sighash_type;
 pub use zcash_psbt::{
-    decode_zcash_transaction_meta, ZcashBitGoPsbt, ZcashTransactionMeta,
-    ZCASH_SAPLING_VERSION_GROUP_ID,
+    decode_zcash_transaction_meta, detect_zcash_transaction_version, ZcashBitGoPsbt,
+    ZcashTransactionMeta, ZcashTransactionVersion, ZCASH_SAPLING_VERSION_GROUP_ID,
 };
 
 #[derive(Debug, strum::IntoStaticStr)]

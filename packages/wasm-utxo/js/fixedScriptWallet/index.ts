@@ -42,12 +42,13 @@ export { BitGoKeySubtype, type PsbtKvKey } from "./BitGoKeySubtype.js";
 // Zcash-specific PSBT subclass
 export {
   ZcashBitGoPsbt,
+  ZcashTransactionVersion,
+  getZcashTransactionVersion,
   type ZcashNetworkName,
   type ZcashParsedOutput,
   type CreateEmptyZcashOptions,
   IRONWOOD_VERSION_GROUP_ID,
 } from "./ZcashBitGoPsbt.js";
-
 // Zcash v6 (Ironwood / NU6.3) shielding PSBT
 export {
   ZcashIronwoodBitGoPsbt,

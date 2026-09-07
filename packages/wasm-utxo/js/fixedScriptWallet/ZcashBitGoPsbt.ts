@@ -1,5 +1,6 @@
 import {
   BitGoPsbt as WasmBitGoPsbt,
+  getZcashTransactionVersionFromPsbt,
   zcash_branch_id_for_height,
   zcash_ironwood_version_group_id,
 } from "../wasm/wasm_utxo.js";
@@ -27,6 +28,43 @@ export type ZcashParsedOutput = ParsedOutput & {
    */
   isShielded: boolean;
 };
+
+/**
+ * Zcash transaction version (v4 or v6).
+ */
+export enum ZcashTransactionVersion {
+  V4 = "v4",
+  V6 = "v6",
+}
+
+/**
+ * Detect whether the given PSBT bytes represent a Zcash v4 or v6 (Ironwood) transaction.
+ *
+ * @param psbtBytes - Serialized PSBT bytes (as Uint8Array or Buffer)
+ * @returns The Zcash transaction version as a {@link ZcashTransactionVersion} enum value (`"v4"` or `"v6"`)
+ * @throws Error if the bytes are not a valid PSBT or not a recognized Zcash transaction
+ *
+ * @example
+ * ```typescript
+ * const version = getZcashTransactionVersion(psbtBytes);
+ * if (version === ZcashTransactionVersion.V6) {
+ *   const psbt = ZcashIronwoodBitGoPsbt.fromBytes(psbtBytes, "zcashTest");
+ * } else if (version === ZcashTransactionVersion.V4) {
+ *   const psbt = ZcashBitGoPsbt.fromBytes(psbtBytes, "zcash");
+ * }
+ * ```
+ */
+export function getZcashTransactionVersion(psbtBytes: Uint8Array): ZcashTransactionVersion {
+  const versionStr = getZcashTransactionVersionFromPsbt(psbtBytes);
+  switch (versionStr) {
+    case "v4":
+      return ZcashTransactionVersion.V4;
+    case "v6":
+      return ZcashTransactionVersion.V6;
+    default:
+      throw new Error(`Unexpected Zcash transaction version: ${versionStr}`);
+  }
+}
 
 /**
  * Zcash v6 (Ironwood) version group id (0xd884b698). Its presence marks a PSBT as v6 — see
@@ -316,6 +354,23 @@ export class ZcashBitGoPsbt extends BitGoPsbt<ZcashParsedOutput> {
    */
   static branchIdForHeight(network: ZcashNetworkName, height: number): number | undefined {
     return zcash_branch_id_for_height(network, height);
+  }
+
+  /**
+   * Detect whether the given PSBT bytes represent a Zcash v4 or v6 (Ironwood) transaction.
+   *
+   * @param bytes - Serialized PSBT bytes
+   * @returns The Zcash transaction version enum
+   */
+  static getTransactionVersion(bytes: Uint8Array): ZcashTransactionVersion {
+    return getZcashTransactionVersion(bytes);
+  }
+
+  /**
+   * Alias for {@link getTransactionVersion}.
+   */
+  static getZcashTransactionVersion(bytes: Uint8Array): ZcashTransactionVersion {
+    return getZcashTransactionVersion(bytes);
   }
 
   /**

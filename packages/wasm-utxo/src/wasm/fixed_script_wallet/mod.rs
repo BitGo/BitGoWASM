@@ -352,6 +352,17 @@ impl BitGoPsbt {
         })
     }
 
+    /// Detect whether the given PSBT bytes represent a Zcash v4 or v6 (Ironwood) transaction.
+    ///
+    /// Returns `"v4"` or `"v6"`.
+    /// Throws [`WasmUtxoError`] if the bytes are not a valid PSBT or not a Zcash transaction.
+    #[wasm_bindgen(js_name = get_zcash_transaction_version)]
+    pub fn get_zcash_transaction_version(bytes: &[u8]) -> Result<String, WasmUtxoError> {
+        crate::zcash::transaction::detect_zcash_transaction_version(bytes)
+            .map(|v| v.as_str().to_string())
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
     /// Create an empty PSBT for the given network with wallet keys
     ///
     /// # Arguments

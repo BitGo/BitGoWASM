@@ -42,6 +42,17 @@ pub fn zcash_ironwood_version_group_id() -> u32 {
     crate::zcash::transaction::ZCASH_IRONWOOD_VERSION_GROUP_ID
 }
 
+/// Detect whether the given PSBT bytes represent a Zcash v4 or v6 (Ironwood) transaction.
+///
+/// Returns `"v4"` or `"v6"`.
+/// Throws [`WasmUtxoError`] if the bytes are not a valid PSBT or not a Zcash transaction.
+#[wasm_bindgen(js_name = getZcashTransactionVersionFromPsbt)]
+pub fn get_zcash_transaction_version_from_psbt(psbt_bytes: &[u8]) -> Result<String, WasmUtxoError> {
+    crate::zcash::transaction::detect_zcash_transaction_version(psbt_bytes)
+        .map(|v| v.as_str().to_string())
+        .map_err(|e| WasmUtxoError::new(&e))
+}
+
 /// A validated Merkle witness for an Ironwood/Orchard note commitment, from
 /// [`ironwood_build_witness`].
 ///

@@ -9,7 +9,8 @@ use miniscript::bitcoin::{Transaction, VarInt};
 use std::io::Read;
 
 pub use crate::zcash::transaction::{
-    decode_zcash_transaction_meta, ZcashTransactionMeta, ZCASH_SAPLING_VERSION_GROUP_ID,
+    decode_zcash_transaction_meta, detect_zcash_transaction_version, ZcashTransactionMeta,
+    ZcashTransactionVersion, ZCASH_SAPLING_VERSION_GROUP_ID,
 };
 
 /// A Zcash-compatible PSBT that can handle overwintered transactions
@@ -439,6 +440,14 @@ impl ZcashBitGoPsbt {
         network: crate::Network,
     ) -> Result<Self, super::DeserializeError> {
         Self::decode_with_zcash_tx(bytes, network, true)
+    }
+
+    /// Detect whether the given PSBT bytes represent a Zcash v4 or v6 (Ironwood) transaction.
+    pub fn get_psbt_transaction_version(
+        bytes: &[u8],
+    ) -> Result<crate::zcash::transaction::ZcashTransactionVersion, super::DeserializeError> {
+        crate::zcash::transaction::detect_zcash_transaction_version(bytes)
+            .map_err(super::DeserializeError::Network)
     }
 
     /// Convert to a standard Bitcoin PSBT (losing Zcash-specific fields)
