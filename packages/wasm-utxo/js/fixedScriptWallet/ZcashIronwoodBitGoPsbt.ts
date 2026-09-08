@@ -1,6 +1,6 @@
 import { BitGoPsbt as WasmBitGoPsbt } from "../wasm/wasm_utxo.js";
 import { type BIP32Arg, BIP32, isBIP32Arg } from "../bip32.js";
-import { type ECPairArg } from "../ecpair.js";
+import { ECPair, type ECPairArg } from "../ecpair.js";
 import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
 import {
   IRONWOOD_VERSION_GROUP_ID,
@@ -392,6 +392,40 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
     const wasmKey = BIP32.from(keyOrIndex).wasm;
     const keys = RootWalletKeys.from(keyOrRootWalletKeys as WalletKeysArg);
     return Array.from(this.wasm.sign_ironwood_v6(wasmKey, keys.wasm), Number);
+  }
+
+  /**
+   * Check whether transparent input `inputIndex` carries a valid signature by `key`, over the
+   * ZIP-244 transparent sighash — the digest v6 (Ironwood) keys actually sign (see
+   * {@link transparentSighash}). The inherited `BitGoPsbt.verifySignature` digests ZIP-243
+   * (Sapling) instead, so it would report `false` for a valid v6 signature; this override routes
+   * to the v6 sighash path instead.
+   *
+   * Mirrors the inherited signature: an xpub (BIP32Arg) resolves to a public key via the input's
+   * `bip32_derivation`; a raw key (ECPairArg) verifies with its public key directly.
+   *
+   * @param inputIndex - 0-based transparent input index
+   * @param key - the signing key: an xpub (BIP32Arg: base58 string, BIP32 instance, or WasmBIP32)
+   *   or an ECPairArg (Uint8Array, ECPair instance, or WasmECPair)
+   * @returns true if a valid signature by the key's public key exists for the input's
+   *   ZIP-244 transparent sighash
+   * @throws Error if the input index is out of range, the key cannot be parsed, or the v6
+   *   sighash cannot be computed (e.g. the Ironwood PCZT has not been added yet)
+   *
+   * @example
+   * ```typescript
+   * // Verify the user's signature over the v6 transparent sighash
+   * const hasUserSig = psbt.verifySignature(0, userXpub);
+   * ```
+   */
+  override verifySignature(inputIndex: number, key: BIP32Arg | ECPairArg): boolean {
+    if (isBIP32Arg(key)) {
+      return this.wasm.verify_ironwood_v6_signature_with_xpub(inputIndex, BIP32.from(key).wasm);
+    }
+
+    // Otherwise it's an ECPairArg (Uint8Array, ECPair, or WasmECPair)
+    const wasmECPair = ECPair.from(key).wasm;
+    return this.wasm.verify_ironwood_v6_signature_with_pub(inputIndex, wasmECPair);
   }
 
   /**

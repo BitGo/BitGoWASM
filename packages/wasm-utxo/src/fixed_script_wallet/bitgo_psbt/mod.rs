@@ -3310,6 +3310,13 @@ impl BitGoPsbt {
                 )
             }
             BitGoPsbt::Zcash(zcash_psbt, _network) => {
+                // v6 (Ironwood) transparent inputs are signed over the ZIP-244 digest, not ZIP-243.
+                // Verifying here would compute a meaningless Sapling digest and report Ok(false) for
+                // a valid v6 signature — a wrong false that downstream signature counting reads as
+                // "not signed yet" — so fail loudly instead, matching `ensure_not_ironwood_v6`.
+                if zcash_psbt.is_ironwood_v6() {
+                    return Err(zcash_psbt::V6_NOT_SUPPORTED_BY_V4_PATH.to_string());
+                }
                 // Use Zcash-specific signature verification with ZIP-243 sighash
                 let branch_id = propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt)
                     .ok_or("Missing ZecConsensusBranchId in PSBT")?;
@@ -3347,7 +3354,9 @@ impl BitGoPsbt {
     /// # Returns
     /// - `Ok(true)` if a valid signature exists for the derived public key
     /// - `Ok(false)` if no signature exists for the derived public key
-    /// - `Err(String)` if the input index is out of bounds, derivation fails, or verification fails
+    /// - `Err(String)` if the input index is out of bounds, the PSBT is a Zcash v6 (Ironwood)
+    ///   PSBT (ZIP-243 verification is meaningless there; use `verify_v6_signature_with_xpub`),
+    ///   derivation fails, or verification fails
     pub fn verify_signature_with_xpub<C: secp256k1::Verification>(
         &self,
         secp: &secp256k1::Secp256k1<C>,
@@ -3360,6 +3369,12 @@ impl BitGoPsbt {
         if input_index >= psbt.inputs.len() {
             return Err(format!("Input index {} out of bounds", input_index));
         }
+
+        // v6 (Ironwood): every transparent-input key signs over the ZIP-244 digest, not ZIP-243.
+        // Verifying here would compute a meaningless Sapling digest and report Ok(false) for a
+        // valid v6 signature — a wrong false that downstream signature counting reads as "not
+        // signed yet" — so fail loudly instead, regardless of whether the xpub matches.
+        self.ensure_not_ironwood_v6()?;
 
         let input = &psbt.inputs[input_index];
 
@@ -3439,6 +3454,62 @@ impl BitGoPsbt {
 
         // Verify signature with the public key
         self.verify_signature_with_pubkey(secp, input_index, public_key)
+    }
+
+    /// Verify if a valid signature exists for a given public key at the specified input index,
+    /// computed over the ZIP-244 v6 (Ironwood) transparent sighash — the v6 (Ironwood)
+    /// counterpart to [`Self::verify_signature_with_pub`], which digests ZIP-243 (Sapling) for
+    /// Zcash PSBTs and would report `Ok(false)` for a valid v6 signature.
+    ///
+    /// Only v6 (Ironwood) Zcash PSBTs are supported; every other PSBT type is rejected.
+    ///
+    /// # Returns
+    /// - `Ok(true)` if a valid signature exists for the public key
+    /// - `Ok(false)` if no signature exists for the public key
+    /// - `Err(VerifyV6SignatureError)` if the PSBT is not Zcash or not v6, the input index is
+    ///   out of bounds, the Ironwood PCZT is absent, or the sighash cannot be computed
+    pub fn verify_v6_signature_with_pub<C: secp256k1::Verification>(
+        &self,
+        secp: &secp256k1::Secp256k1<C>,
+        input_index: usize,
+        pubkey: &secp256k1::PublicKey,
+    ) -> Result<bool, zcash_psbt::VerifyV6SignatureError> {
+        match self {
+            BitGoPsbt::Zcash(zcash_psbt, _) => {
+                zcash_psbt.verify_v6_signature_with_pub(secp, input_index, pubkey)
+            }
+            _ => Err(zcash_psbt::VerifyV6SignatureError::NotZcash),
+        }
+    }
+
+    /// Verify if a valid signature exists for an extended public key at the specified input
+    /// index, computed over the ZIP-244 v6 (Ironwood) transparent sighash — the v6 (Ironwood)
+    /// counterpart to [`Self::verify_signature_with_xpub`], which digests ZIP-243 (Sapling) for
+    /// Zcash PSBTs and would report `Ok(false)` for a valid v6 signature.
+    ///
+    /// The public key is derived from the xpub using the derivation path found in the PSBT
+    /// input, then verified. Only v6 (Ironwood) Zcash PSBTs are supported; every other PSBT type
+    /// is rejected.
+    ///
+    /// # Returns
+    /// - `Ok(true)` if a valid signature exists for the derived public key
+    /// - `Ok(false)` if no matching derivation path exists, or no valid signature exists for the
+    ///   derived public key
+    /// - `Err(VerifyV6SignatureError)` if the PSBT is not Zcash or not v6, the input index is
+    ///   out of bounds, derivation fails, the Ironwood PCZT is absent, or the sighash cannot be
+    ///   computed
+    pub fn verify_v6_signature_with_xpub<C: secp256k1::Verification>(
+        &self,
+        secp: &secp256k1::Secp256k1<C>,
+        input_index: usize,
+        xpub: &miniscript::bitcoin::bip32::Xpub,
+    ) -> Result<bool, zcash_psbt::VerifyV6SignatureError> {
+        match self {
+            BitGoPsbt::Zcash(zcash_psbt, _) => {
+                zcash_psbt.verify_v6_signature_with_xpub(secp, input_index, xpub)
+            }
+            _ => Err(zcash_psbt::VerifyV6SignatureError::NotZcash),
+        }
     }
 
     /// Parse outputs with wallet keys to identify which outputs belong to a particular wallet.

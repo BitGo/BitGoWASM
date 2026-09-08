@@ -40,6 +40,63 @@ pub(crate) const V6_NOT_SUPPORTED_BY_V4_PATH: &str =
      (serialize_v6/deserialize_v6, v6_transparent_sighash, add_v6_transparent_signature, \
      combine_ironwood_proof) — the v4 path would produce an invalid transaction";
 
+/// Errors produced while verifying a Zcash v6 (Ironwood) transparent-input signature.
+///
+/// The variant name is surfaced to JS as `err.code` (e.g. `"VerifyV6SignatureError.NotIronwoodV6"`)
+/// via [`crate::error::WasmUtxoError`], so callers can branch on the error kind.
+///
+/// `Ok(false)` is reserved for "no signature exists for this key, or it fails cryptographic
+/// verification"; everything that makes verification *unevaluable* is a typed variant here.
+#[derive(Debug, strum::IntoStaticStr)]
+pub enum VerifyV6SignatureError {
+    /// The enum-level dispatch was handed a non-Zcash PSBT (Bitcoin/Dash/…).
+    NotZcash,
+    /// The PSBT is a Zcash PSBT but not v6 (Ironwood): the ZIP-244 transparent sighash only
+    /// exists for v6, so verification cannot be evaluated.
+    NotIronwoodV6,
+    /// The requested input index does not exist.
+    InputIndexOutOfRange { index: usize },
+    /// The xpub could not be derived down the input's `bip32_derivation` path.
+    Derivation(String),
+    /// The Ironwood PCZT (whose shielded action data the ZIP-244 sighash commits) is absent —
+    /// it was never added, or was consumed by [`ZcashBitGoPsbt::combine_ironwood_proof`].
+    MissingIronwoodPczt,
+    /// The ZIP-244 transparent sighash could not be computed (structural input problem).
+    Sighash(String),
+}
+
+impl std::fmt::Display for VerifyV6SignatureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotZcash => write!(
+                f,
+                "verify-v6-signature: requires a Zcash v6 (Ironwood) PSBT, got a non-Zcash PSBT"
+            ),
+            Self::NotIronwoodV6 => write!(
+                f,
+                "verify-v6-signature: not a v6 (Ironwood) PSBT; use verify_signature_with_pub / verify_signature_with_xpub (ZIP-243) for v4/Sapling"
+            ),
+            Self::InputIndexOutOfRange { index } => {
+                write!(f, "verify-v6-signature: input {index} out of range")
+            }
+            Self::Derivation(e) => write!(
+                f,
+                "verify-v6-signature: failed to derive the public key from the xpub: {e}"
+            ),
+            Self::MissingIronwoodPczt => write!(
+                f,
+                "verify-v6-signature: no Ironwood PCZT stored in PSBT (the ZIP-244 transparent sighash commits the shielded action data)"
+            ),
+            Self::Sighash(e) => write!(
+                f,
+                "verify-v6-signature: failed to compute the ZIP-244 transparent sighash: {e}"
+            ),
+        }
+    }
+}
+
+crate::impl_wasm_error_code!(VerifyV6SignatureError);
+
 impl ZcashBitGoPsbt {
     /// Create an empty Zcash PSBT directly without going through `BitGoPsbt`.
     pub(crate) fn new(
@@ -1379,6 +1436,121 @@ impl ZcashBitGoPsbt {
         Ok(())
     }
 
+    /// Verify if a valid signature exists for a given public key at the specified input index,
+    /// computed over the ZIP-244 v6 (Ironwood) transparent sighash — the digest the key
+    /// controlling the input actually signs (see [`Self::v6_transparent_sighash`]). The generic
+    /// `verify_signature_with_pub` path digests ZIP-243 (Sapling) instead, so it would report
+    /// `Ok(false)` for a valid v6 signature. v4/Sapling PSBTs are rejected outright.
+    ///
+    /// # Arguments
+    /// - `secp`: Secp256k1 context for signature verification
+    /// - `input_index`: The index of the input to check
+    /// - `pubkey`: The secp256k1 public key
+    ///
+    /// # Returns
+    /// - `Ok(true)` if a valid signature exists for the public key
+    /// - `Ok(false)` if no signature exists for the public key
+    /// - `Err(VerifyV6SignatureError)` if the input index is out of bounds, the PSBT is not v6,
+    ///   the Ironwood PCZT is absent, or the sighash cannot be computed
+    pub fn verify_v6_signature_with_pub<C: secp256k1::Verification>(
+        &self,
+        secp: &secp256k1::Secp256k1<C>,
+        input_index: usize,
+        pubkey: &secp256k1::PublicKey,
+    ) -> Result<bool, VerifyV6SignatureError> {
+        use miniscript::bitcoin::secp256k1::Message;
+
+        if !self.is_ironwood_v6() {
+            return Err(VerifyV6SignatureError::NotIronwoodV6);
+        }
+
+        let input = self
+            .psbt
+            .inputs
+            .get(input_index)
+            .ok_or(VerifyV6SignatureError::InputIndexOutOfRange { index: input_index })?;
+
+        // The ZIP-244 transparent sighash commits the PCZT's shielded action data. If it is
+        // absent (never added, or consumed by `combine_ironwood_proof`), the stored signature
+        // cannot be evaluated no matter what — distinguish that from "no signature".
+        if !super::propkv::has_ironwood_pczt(&self.psbt) {
+            return Err(VerifyV6SignatureError::MissingIronwoodPczt);
+        }
+
+        let public_key = miniscript::bitcoin::PublicKey::new(*pubkey);
+        let Some(ecdsa_sig) = input.partial_sigs.get(&public_key) else {
+            return Ok(false); // No signature found for this public key
+        };
+        // `v6_transparent_sighash` always digests as SIGHASH_ALL; a different type byte would be
+        // re-emitted verbatim by `finalized_transparent_tx`, exactly as `add_v6_transparent_signature`
+        // rejects at ingest — so a stored sig with a foreign type reports as not verifying
+        // (fail-closed) rather than as valid.
+        const SIGHASH_ALL: u32 = miniscript::bitcoin::sighash::EcdsaSighashType::All as u32;
+        if ecdsa_sig.sighash_type != SIGHASH_ALL {
+            return Ok(false);
+        }
+        let msg = Message::from_digest(
+            self.v6_transparent_sighash(input_index)
+                .map_err(VerifyV6SignatureError::Sighash)?,
+        );
+        match secp.verify_ecdsa(&msg, &ecdsa_sig.signature, pubkey) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Verify if a valid signature exists for an extended public key at the specified input
+    /// index, computed over the ZIP-244 v6 (Ironwood) transparent sighash — the v6 (Ironwood)
+    /// counterpart to `verify_signature_with_xpub`, which digests ZIP-243 (Sapling) for Zcash
+    /// PSBTs and would report `Ok(false)` for a valid v6 signature. v4/Sapling PSBTs are rejected
+    /// outright.
+    ///
+    /// This method derives the public key from the xpub using the derivation path found in the
+    /// PSBT input (the same `bip32_derivation`/`tap_key_origins` lookup the generic
+    /// `verify_signature_with_xpub` uses), then delegates to
+    /// [`Self::verify_v6_signature_with_pub`].
+    ///
+    /// # Arguments
+    /// - `secp`: Secp256k1 context for signature verification and key derivation
+    /// - `input_index`: The index of the input to check
+    /// - `xpub`: The extended public key to derive from and verify the signature for
+    ///
+    /// # Returns
+    /// - `Ok(true)` if a valid signature exists for the derived public key
+    /// - `Ok(false)` if no matching derivation path exists, or no valid signature exists for the
+    ///   derived public key
+    /// - `Err(VerifyV6SignatureError)` if the input index is out of bounds, the PSBT is not v6,
+    ///   derivation fails, the Ironwood PCZT is absent, or the sighash cannot be computed
+    pub fn verify_v6_signature_with_xpub<C: secp256k1::Verification>(
+        &self,
+        secp: &secp256k1::Secp256k1<C>,
+        input_index: usize,
+        xpub: &miniscript::bitcoin::bip32::Xpub,
+    ) -> Result<bool, VerifyV6SignatureError> {
+        // Checked here, not only in the delegated `verify_v6_signature_with_pub`: a non-matching
+        // xpub would otherwise exit at the derivation `None` arm below with Ok(false) before that
+        // guard runs, silently answering on a PSBT whose ZIP-244 sighash does not exist.
+        if !self.is_ironwood_v6() {
+            return Err(VerifyV6SignatureError::NotIronwoodV6);
+        }
+
+        let input = self
+            .psbt
+            .inputs
+            .get(input_index)
+            .ok_or(VerifyV6SignatureError::InputIndexOutOfRange { index: input_index })?;
+
+        // Derive the public key from the xpub using the derivation path in the PSBT input
+        let derived_pubkey =
+            match super::psbt_wallet_input::derive_pubkey_from_input(secp, xpub, input) {
+                Err(e) => return Err(VerifyV6SignatureError::Derivation(e)),
+                Ok(Some(pubkey)) => pubkey,
+                Ok(None) => return Ok(false), // No matching derivation path for this xpub
+            };
+
+        self.verify_v6_signature_with_pub(secp, input_index, &derived_pubkey)
+    }
+
     /// Build the finalized transparent transaction: clone the skeleton and fill each input's
     /// scriptSig from the collected `partial_sigs`, in the redeem script's pubkey order
     /// (`OP_0 <sig> <sig> <redeemScript>` for a 2-of-3 P2SH multisig). Zcash transparent inputs are
@@ -1742,6 +1914,7 @@ mod ironwood_v6_tests {
     use crate::bitcoin::hashes::{sha256, Hash};
     use crate::bitcoin::secp256k1::{Message, Secp256k1, SecretKey};
     use crate::bitcoin::{CompressedPublicKey, Network as BtcNetwork, PublicKey, Txid};
+    use crate::error::WasmErrorCode;
     use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::WalletInputOptions;
     use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt;
     use crate::fixed_script_wallet::script_id::ScriptId;
@@ -3903,5 +4076,217 @@ mod ironwood_v6_tests {
             details.txid,
             "PSBT-derived v6 txid == the on-chain txid"
         );
+    }
+
+    /// `verify_v6_signature_with_xpub`/`verify_v6_signature_with_pub`: the happy path (signers verify
+    /// over the ZIP-244 transparent sighash, non-signers don't) plus the guards the JS layer relies
+    /// on — a v6 PSBT with no PCZT errors rather than guessing at a digest, and the generic v4
+    /// verifier refuses a v6 PSBT outright instead of computing a meaningless ZIP-243 digest.
+    #[test]
+    fn verify_v6_signature_reports_real_signers_and_rejects_others() {
+        let seed = "v6_verify_signature";
+        let secp = Secp256k1::new();
+        let wallet_keys = root_wallet_keys(seed);
+
+        let mut z = build_shield_psbt(seed);
+
+        // Nothing collected yet: every key reports false (no error).
+        assert!(!z
+            .verify_v6_signature_with_xpub(&secp, 0, wallet_keys.user_key())
+            .unwrap());
+        assert!(!z
+            .verify_v6_signature_with_xpub(&secp, 0, wallet_keys.bitgo_key())
+            .unwrap());
+
+        // Sign user (first round — also finalizes out_ciphertext) then bitgo.
+        z.sign_ironwood_v6(&test_wallet_xpriv(seed, 0), &wallet_keys, &secp)
+            .unwrap();
+        z.sign_ironwood_v6(&test_wallet_xpriv(seed, 2), &wallet_keys, &secp)
+            .unwrap();
+        assert_eq!(z.psbt.inputs[0].partial_sigs.len(), 2);
+
+        // xpub form: the wallet's root keys derive the input's keys via bip32_derivation.
+        assert!(z
+            .verify_v6_signature_with_xpub(&secp, 0, wallet_keys.user_key())
+            .unwrap());
+        assert!(z
+            .verify_v6_signature_with_xpub(&secp, 0, wallet_keys.bitgo_key())
+            .unwrap());
+        // The backup key is not in this input's 2-of-3 redeem script (signer user, cosigner bitgo).
+        assert!(!z
+            .verify_v6_signature_with_xpub(&secp, 0, wallet_keys.backup_key())
+            .unwrap());
+        // A stranger's xpub has no matching fingerprint in the input at all.
+        let stranger = RootWalletKeys::new(get_test_wallet_keys("a-different-wallet"));
+        assert!(!z
+            .verify_v6_signature_with_xpub(&secp, 0, stranger.user_key())
+            .unwrap());
+
+        // pub form: the derived pubkeys (m/0/0/0/0) verify; unrelated ones don't.
+        let user_pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &signing_secret_keys(seed, 0, 0)[0],
+        );
+        let bitgo_pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &signing_secret_keys(seed, 0, 0)[2],
+        );
+        let backup_pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &signing_secret_keys(seed, 0, 0)[1],
+        );
+        for (pk, expected) in [(&user_pk, true), (&bitgo_pk, true), (&backup_pk, false)] {
+            assert_eq!(
+                z.verify_v6_signature_with_pub(&secp, 0, pk).unwrap(),
+                expected,
+                "pubkey verification mismatch"
+            );
+        }
+
+        // Out-of-range index errors before any sighash work — as a typed variant, not a message.
+        let err = z
+            .verify_v6_signature_with_xpub(&secp, 5, wallet_keys.user_key())
+            .unwrap_err();
+        assert_eq!(
+            err.code(),
+            "VerifyV6SignatureError.InputIndexOutOfRange",
+            "typed out-of-range error code"
+        );
+    }
+
+    /// The generic `verify_signature_with_*` family computes a ZIP-243 (Sapling) digest for Zcash
+    /// PSBTs. Fed a v6 PSBT it would produce a meaningless digest and report `Ok(false)` for a
+    /// validly-signed input — a wrong false downstream code reads as "not signed yet" — so it must
+    /// refuse a v6 PSBT outright (see `V6_NOT_SUPPORTED_BY_V4_PATH`).
+    #[test]
+    fn generic_verify_rejects_a_v6_psbt() {
+        let seed = "v6_generic_verify";
+        let secp = Secp256k1::new();
+        let wallet_keys = root_wallet_keys(seed);
+        let mut z = build_shield_psbt(seed);
+        z.sign_ironwood_v6(&test_wallet_xpriv(seed, 0), &wallet_keys, &secp)
+            .unwrap();
+
+        // The generic verifiers live on the `BitGoPsbt` enum, so re-wrap the Zcash variant.
+        let generic: BitGoPsbt = BitGoPsbt::Zcash(z, Network::ZcashTestnet);
+        let err = generic
+            .verify_signature_with_xpub(&secp, 0, wallet_keys.user_key())
+            .unwrap_err();
+        assert!(err.contains("v6 (Ironwood)"), "unexpected error: {err}");
+
+        // The refusal must hold even when the xpub does NOT match the input — the early exits for
+        // "no derivation path" must not silently answer false before the v6 check. Backup key is
+        // absent from this input's 2-of-3 script, and a stranger's xpub matches no fingerprint at
+        // all; both would have returned Ok(false) before the guard was hoisted.
+        let stranger_wallet = RootWalletKeys::new(get_test_wallet_keys("an-unrelated-wallet"));
+        for xpub in [wallet_keys.backup_key(), stranger_wallet.user_key()] {
+            let err = generic
+                .verify_signature_with_xpub(&secp, 0, xpub)
+                .unwrap_err();
+            assert!(
+                err.contains("v6 (Ironwood)"),
+                "unexpected error for non-matching xpub: {err}"
+            );
+        }
+
+        let user_pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &signing_secret_keys(seed, 0, 0)[0],
+        );
+        let err = generic
+            .verify_signature_with_pub(&secp, 0, &user_pk)
+            .unwrap_err();
+        assert!(err.contains("v6 (Ironwood)"), "unexpected error: {err}");
+    }
+
+    /// `verify_v6_signature_with_*` is only defined for v6 (Ironwood) PSBTs; on a v4/Sapling PSBT
+    /// the ZIP-244 sighash does not exist. Both forms must error — including the xpub form with a
+    /// *non-matching* xpub, whose derivation would otherwise short-circuit to Ok(false) before the
+    /// v6 check (the exact early-exit shape the generic `verify_signature_with_xpub` was hardened
+    /// against).
+    #[test]
+    fn verify_v6_signature_rejects_a_v4_psbt() {
+        let seed = "v6_verify_v4";
+        let secp = Secp256k1::new();
+        let wallet_keys = root_wallet_keys(seed);
+        let mut psbt = BitGoPsbt::new_zcash_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x66u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        let BitGoPsbt::Zcash(z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+        assert!(!z.is_ironwood_v6(), "sanity: this is a v4/Sapling PSBT");
+
+        let user_pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &signing_secret_keys(seed, 0, 0)[0],
+        );
+        for err in [
+            z.verify_v6_signature_with_pub(&secp, 0, &user_pk)
+                .unwrap_err(),
+            z.verify_v6_signature_with_xpub(&secp, 0, wallet_keys.user_key())
+                .unwrap_err(),
+            // A non-matching xpub must not exit the derivation `None` arm with Ok(false) first.
+            z.verify_v6_signature_with_xpub(&secp, 0, wallet_keys.backup_key())
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                err.code(),
+                "VerifyV6SignatureError.NotIronwoodV6",
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    /// `verify_v6_signature_with_*` cannot compute the ZIP-244 sighash once the PCZT is gone — the
+    /// shielded action data is sighash-committed — even though the collected partial signatures
+    /// survive. It errors rather than guessing at a digest, matching the doc contract on the Rust
+    /// API and the JS `verifySignature` override.
+    #[test]
+    fn verify_v6_signature_requires_the_ironwood_pczt() {
+        let seed = "v6_verify_no_pczt";
+        let secp = Secp256k1::new();
+        let wallet_keys = root_wallet_keys(seed);
+
+        // A fully-signed v6 PSBT, then drop its PCZT the way `combine_ironwood_proof` does: the
+        // transparent signatures stay in `partial_sigs`, but no v6 sighash can be computed.
+        let mut z = build_shield_psbt(seed);
+        z.sign_ironwood_v6(&test_wallet_xpriv(seed, 0), &wallet_keys, &secp)
+            .unwrap();
+        assert_eq!(z.psbt.inputs[0].partial_sigs.len(), 1);
+        assert!(z.mark_ironwood_extracted(), "a PCZT was present");
+
+        let user_pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &signing_secret_keys(seed, 0, 0)[0],
+        );
+        for err in [
+            z.verify_v6_signature_with_pub(&secp, 0, &user_pk)
+                .unwrap_err(),
+            z.verify_v6_signature_with_xpub(&secp, 0, wallet_keys.user_key())
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                err.code(),
+                "VerifyV6SignatureError.MissingIronwoodPczt",
+                "unexpected error: {err}"
+            );
+        }
     }
 }
