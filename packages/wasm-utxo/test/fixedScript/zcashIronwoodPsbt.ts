@@ -892,4 +892,181 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
       assert.deepStrictEqual(psbt.sign(bitgoKey, signFlowWalletKeys), [0]);
     });
   });
+  describe("verifySignature — ZIP-244 transparent sighash", function () {
+    // Same build as the sign() block: `verifySignature` needs a signed input, which requires the
+    // actual private keys.
+    const seed = "ironwood-verify-signature";
+    const verifyWalletKeys = getWalletKeysForSeed(seed);
+    const [userKey, , bitgoKey] = getKeyTriple(seed);
+
+    function buildSignFlowPsbt(): ZcashIronwoodBitGoPsbt {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", verifyWalletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput(
+        { txid: "33".repeat(32), vout: 0, value: 200_000_000n },
+        verifyWalletKeys,
+        { scriptId: SCRIPT_ID, signPath: { signer: "user", cosigner: "bitgo" } },
+      );
+      psbt.addWalletOutput(verifyWalletKeys, { chain: 1, index: 0, value: 99_900_000n });
+      psbt.addShieldedOutput(RECIPIENT, 100_000_000n, { anchor: new Uint8Array(32) });
+      return psbt;
+    }
+
+    /** The derived user pubkey for the input's 2-of-3 redeem script (default prefix + chain/index). */
+    function userPubkeyForInput(): Uint8Array {
+      return verifyWalletKeys.userKey().derivePath(`0/0/${SCRIPT_ID.chain}/${SCRIPT_ID.index}`)
+        .publicKey;
+    }
+
+    it("returns false before signing, true after the key signs, over the v6 sighash", function () {
+      const psbt = buildSignFlowPsbt();
+
+      assert.strictEqual(
+        psbt.verifySignature(0, verifyWalletKeys.userKey().neutered()),
+        false,
+        "no user sig yet",
+      );
+      assert.strictEqual(
+        psbt.verifySignature(0, verifyWalletKeys.bitgoKey()),
+        false,
+        "no bitgo sig yet",
+      );
+
+      psbt.sign(userKey, verifyWalletKeys);
+      assert.strictEqual(
+        psbt.verifySignature(0, verifyWalletKeys.userKey().neutered()),
+        true,
+        "user sig verifies over the ZIP-244 transparent sighash",
+      );
+      assert.strictEqual(
+        psbt.verifySignature(0, verifyWalletKeys.bitgoKey()),
+        false,
+        "bitgo has not signed yet",
+      );
+
+      psbt.sign(bitgoKey, verifyWalletKeys);
+      assert.strictEqual(
+        psbt.verifySignature(0, verifyWalletKeys.bitgoKey()),
+        true,
+        "bitgo sig verifies",
+      );
+      assert.strictEqual(
+        psbt.verifySignature(0, verifyWalletKeys.userKey().neutered()),
+        true,
+        "user sig still verifies",
+      );
+      assert.strictEqual(
+        psbt.verifySignature(0, userPubkeyForInput()),
+        true,
+        "derived pubkey form also verifies, same as the base-class API",
+      );
+    });
+
+    it("returns false for an xpub with no derivation path in the input and for an unrelated xpub", function () {
+      const psbt = buildSignFlowPsbt();
+      psbt.sign(userKey, verifyWalletKeys);
+
+      // The backup key is not in this input's 2-of-3 redeem script (signer user, cosigner bitgo)…
+      assert.strictEqual(psbt.verifySignature(0, verifyWalletKeys.backupKey()), false);
+      // …and neither is a stranger's key, which has no matching fingerprint at all.
+      const [stranger] = getKeyTriple("not-this-wallet");
+      assert.strictEqual(psbt.verifySignature(0, stranger.neutered()), false);
+    });
+
+    it("verifies with a raw public key (ECPairArg) and returns false for one that never signed", function () {
+      const psbt = buildSignFlowPsbt();
+      psbt.sign(userKey, verifyWalletKeys);
+
+      const userPubkey = userPubkeyForInput();
+      assert.strictEqual(
+        psbt.verifySignature(0, userPubkey),
+        true,
+        "raw derived pubkey matches the stored partial signature",
+      );
+
+      // The derived key's own xpub has no root fingerprint in the input's bip32_derivation map —
+      // the xpub variant takes the wallet's root key, exactly like the inherited verifySignature.
+      const derivedUserXpub = verifyWalletKeys
+        .userKey()
+        .derivePath(`0/0/${SCRIPT_ID.chain}/${SCRIPT_ID.index}`)
+        .neutered();
+      assert.strictEqual(
+        psbt.verifySignature(0, derivedUserXpub),
+        false,
+        "derived xpub (not the root) has no matching bip32_derivation fingerprint",
+      );
+
+      const backupPubkey = verifyWalletKeys.backupKey().publicKey;
+      assert.strictEqual(
+        psbt.verifySignature(0, backupPubkey),
+        false,
+        "backup root pubkey never signed this input",
+      );
+    });
+
+    it("throws a marked Error carrying a typed .code for an out-of-range input index", function () {
+      const psbt = buildSignFlowPsbt();
+      psbt.sign(userKey, verifyWalletKeys);
+      // The wasm layer routes through WasmUtxoError, so JS receives a real Error
+      // with a typed .code — not a bare string (same contract as the other domain errors).
+      assert.throws(
+        () => psbt.verifySignature(5, verifyWalletKeys.userKey()),
+        (err: unknown) => {
+          assert.ok(err instanceof Error, "should be a real Error");
+          assert.strictEqual(
+            (err as Error & { code?: string }).code,
+            "VerifyV6SignatureError.InputIndexOutOfRange",
+          );
+          return true;
+        },
+      );
+    });
+
+    it("the inherited ZIP-243 path refuses a v6 PSBT while the v6 override verifies the signature", function () {
+      const psbt = buildSignFlowPsbt();
+      psbt.sign(userKey, verifyWalletKeys);
+
+      // The generic wasm verify — what the base-class `verifySignature` dispatches to — computes a
+      // Sapling (ZIP-243) digest out of the v6 header fields and would report Ok(false) for a valid
+      // v6 signature: a wrong false that downstream signature counting reads as "not signed yet".
+      // The Rust path now fails loudly on a v6 PSBT instead of silently answering.
+      assert.throws(
+        () => psbt.wasm.verify_signature_with_xpub(0, verifyWalletKeys.userKey().wasm),
+        /v6 \(Ironwood\)/,
+      );
+      assert.strictEqual(
+        psbt.verifySignature(0, verifyWalletKeys.userKey().neutered()),
+        true,
+        "the v6 override verifies the same signature over the ZIP-244 sighash",
+      );
+    });
+
+    it("throws when the v6 sighash cannot be computed, even though a signature exists", function () {
+      // combineProof is terminal for the PCZT but leaves the collected partial signatures behind:
+      // exactly the state where the signature exists yet the ZIP-244 sighash is uncomputable, so
+      // verification must fail loudly rather than guess at a digest.
+      const psbt = buildSignFlowPsbt();
+      psbt.sign(userKey, verifyWalletKeys);
+      psbt.sign(bitgoKey, verifyWalletKeys);
+      assert.ok(
+        psbt.combineProof(new Uint8Array(4992)).length > 0,
+        "combine succeeds once user + bitgo have signed (placeholder one-action proof)",
+      );
+
+      // The wasm layer routes through WasmUtxoError, so JS receives a real Error
+      // with a typed .code — not a bare string.
+      assert.throws(
+        () => psbt.verifySignature(0, verifyWalletKeys.userKey().neutered()),
+        (err: unknown) => {
+          assert.ok(err instanceof Error, "should be a real Error");
+          assert.strictEqual(
+            (err as Error & { code?: string }).code,
+            "VerifyV6SignatureError.MissingIronwoodPczt",
+          );
+          return true;
+        },
+      );
+    });
+  });
 });

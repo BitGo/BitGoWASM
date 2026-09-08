@@ -340,6 +340,19 @@ pub fn set_ironwood_pczt(psbt: &mut miniscript::bitcoin::psbt::Psbt, bytes: Vec<
 pub fn get_ironwood_pczt(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<Vec<u8>> {
     get_zec_v6(psbt, ZecV6KeySubtype::IronwoodPczt)
 }
+/// Whether the PSBT carries an Ironwood (v6) PCZT bundle, without materializing it.
+///
+/// Use this instead of `get_ironwood_pczt(...).is_some()` when only presence matters: the getter
+/// clones the whole (large) PCZT, which would otherwise happen on every check.
+pub fn has_ironwood_pczt(psbt: &miniscript::bitcoin::psbt::Psbt) -> bool {
+    find_kv_iter(
+        &psbt.proprietary,
+        BITGO_ZEC_V6,
+        Some(ZecV6KeySubtype::IronwoodPczt as u8),
+    )
+    .next()
+    .is_some()
+}
 
 /// Remove the serialized Ironwood (v6) PCZT bundle, returning whether one was present.
 ///

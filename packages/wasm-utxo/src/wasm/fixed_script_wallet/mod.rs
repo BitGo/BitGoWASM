@@ -1476,6 +1476,40 @@ impl BitGoPsbt {
             .map_err(|e| WasmUtxoError::new(&format!("Failed to verify signature: {}", e)))
     }
 
+    /// Verify if a valid signature exists for an extended public key at the specified input
+    /// index, computed over the ZIP-244 v6 (Ironwood) transparent sighash — the v6 (Ironwood)
+    /// counterpart to `verify_signature_with_xpub`, which digests ZIP-243 (Sapling) and would
+    /// report `Ok(false)` for a valid v6 signature. Only v6 (Ironwood) Zcash PSBTs are
+    /// supported.
+    pub fn verify_ironwood_v6_signature_with_xpub(
+        &self,
+        input_index: usize,
+        xpub: &WasmBIP32,
+    ) -> Result<bool, WasmUtxoError> {
+        let xpub_inner = xpub.to_xpub()?;
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::verification_only();
+        self.psbt
+            .verify_v6_signature_with_xpub(&secp, input_index, &xpub_inner)
+            .map_err(Into::into)
+    }
+
+    /// Verify if a valid signature exists for a given ECPair key at the specified input index,
+    /// computed over the ZIP-244 v6 (Ironwood) transparent sighash — the v6 (Ironwood)
+    /// counterpart to `verify_signature_with_pub`, which digests ZIP-243 (Sapling) and would
+    /// report `Ok(false)` for a valid v6 signature. Only v6 (Ironwood) Zcash PSBTs are
+    /// supported.
+    pub fn verify_ironwood_v6_signature_with_pub(
+        &self,
+        input_index: usize,
+        ecpair: &WasmECPair,
+    ) -> Result<bool, WasmUtxoError> {
+        let public_key = ecpair.get_public_key();
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::verification_only();
+        self.psbt
+            .verify_v6_signature_with_pub(&secp, input_index, &public_key)
+            .map_err(Into::into)
+    }
+
     /// Verify if a replay protection input has a valid signature
     ///
     /// This method checks if a given input is a replay protection input and cryptographically verifies
