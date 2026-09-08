@@ -13,9 +13,6 @@ pub const ZCASH_SAPLING_VERSION_GROUP_ID: u32 = 0x892F2085;
 /// Zcash Ironwood version group ID (v6 / NU6.3 transactions)
 pub const ZCASH_IRONWOOD_VERSION_GROUP_ID: u32 = 0xD884B698;
 
-/// Transaction version header for v4 transactions (Sapling), overwintered bit set.
-pub const ZCASH_V4_VERSION_HEADER: u32 = 0x80000004;
-
 /// Transaction version header for v6 transactions (Ironwood/NU6.3), overwintered bit set.
 pub const ZCASH_V6_VERSION_HEADER: u32 = 0x80000006;
 

@@ -28,6 +28,9 @@ export type ZcashParsedOutput = ParsedOutput & {
   isShielded: boolean;
 };
 
+/** Zcash transaction versions supported by the fixed-script PSBT API. */
+export type ZcashTransactionVersion = 4 | 6;
+
 /**
  * Zcash v6 (Ironwood) version group id (0xd884b698). Its presence marks a PSBT as v6 — see
  * `ZcashIronwoodBitGoPsbt`.
@@ -182,6 +185,11 @@ export class ZcashBitGoPsbt extends BitGoPsbt<ZcashParsedOutput> {
     return psbt;
   }
 
+  /** @internal Create from a parsed WASM instance without reparsing the bytes. */
+  static fromWasm(wasm: WasmBitGoPsbt): ZcashBitGoPsbt {
+    return new ZcashBitGoPsbt(wasm);
+  }
+
   /**
    * Reconstruct a Zcash PSBT from a network-format transaction (unsigned, half-signed, or fully-signed).
    *
@@ -292,6 +300,16 @@ export class ZcashBitGoPsbt extends BitGoPsbt<ZcashParsedOutput> {
    */
   get versionGroupId(): number {
     return this.wasm.version_group_id();
+  }
+
+  /**
+   * Get the Zcash transaction version represented by this PSBT.
+   *
+   * The version group ID is the discriminator because the v4 and v6 PSBT encodings do not expose
+   * the same unsigned transaction bytes to a standard PSBT parser.
+   */
+  getVersion(): ZcashTransactionVersion {
+    return this.versionGroupId === IRONWOOD_VERSION_GROUP_ID ? 6 : 4;
   }
 
   /**

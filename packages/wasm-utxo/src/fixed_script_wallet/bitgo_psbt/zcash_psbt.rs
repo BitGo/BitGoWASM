@@ -271,13 +271,13 @@ impl ZcashBitGoPsbt {
         // `psbt\xff` magic, so a failed parse here is not conclusive — fall through to the v4 path
         // and let it report the real error.
         //
-        // Delegate to `deserialize_v6` rather than constructing the struct inline: it validates the
-        // declared version group id, the consensus branch id and the PCZT. Trusting them would let a
-        // PSBT that carries ZecV6Params but a non-Ironwood version group id through with
-        // `is_ironwood_v6() == false`, which then routes `serialize()` back down the v4 path.
+        // Delegate to the pre-shield v6 decoder rather than constructing the struct inline. A PSBT
+        // can be serialized between building its transparent skeleton and adding the PCZT, so the
+        // generic entry point must accept both states. The decoder still validates the declared
+        // version group id and consensus branch id.
         if let Ok(psbt) = Psbt::deserialize(bytes) {
             if super::propkv::get_zec_v6_params(&psbt).is_some() {
-                return Self::deserialize_v6(bytes, network);
+                return Self::deserialize_v6_pre_shield(bytes, network);
             }
         }
 
@@ -344,17 +344,19 @@ impl ZcashBitGoPsbt {
                 expiry_height = parts.expiry_height;
                 sapling_fields = parts.sapling_fields;
 
-                // Serialize the modified transaction
-                let mut tx_bytes = Vec::new();
-                parts
-                    .transaction
-                    .consensus_encode(&mut tx_bytes)
-                    .map_err(|e| {
-                        super::DeserializeError::Network(format!(
-                            "Failed to encode transaction: {}",
-                            e
-                        ))
-                    })?;
+                // Serialize the modified transaction without the segwit marker/flag. The
+                // transaction is embedded in a PSBT global map and must use the legacy unsigned
+                // transaction encoding, including for an empty transaction.
+                let tx_bytes = crate::zcash::transaction::encode_zcash_transaction_parts(
+                    &crate::zcash::transaction::ZcashTransactionParts {
+                        transaction: parts.transaction,
+                        is_overwintered: false,
+                        version_group_id: None,
+                        expiry_height: None,
+                        sapling_fields: Vec::new(),
+                    },
+                )
+                .map_err(super::DeserializeError::Network)?;
 
                 // Write key
                 VarInt(key_data.len() as u64)
@@ -1585,6 +1587,11 @@ impl ZcashBitGoPsbt {
                 "v6 PSBT is missing its Ironwood PCZT".to_string(),
             ));
         }
+        if !require_pczt && super::propkv::is_ironwood_extracted(&psbt) {
+            return Err(super::DeserializeError::Network(
+                "v6 PSBT is missing its Ironwood PCZT after extraction".to_string(),
+            ));
+        }
         Ok(ZcashBitGoPsbt {
             psbt,
             network,
@@ -1634,6 +1641,27 @@ mod tests {
         assert_eq!(parts.transaction.output.len(), 0);
         // Should be empty for this simple test tx
         assert!(parts.sapling_fields.is_empty());
+    }
+
+    #[test]
+    fn test_round_trip_empty_zcash_psbt() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use crate::fixed_script_wallet::RootWalletKeys;
+        use crate::networks::Network;
+
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("empty-zcash-round-trip"));
+        let psbt = ZcashBitGoPsbt::new(
+            Network::Zcash,
+            &wallet_keys,
+            0xc2d6d0b4,
+            Some(4),
+            Some(0),
+            Some(ZCASH_SAPLING_VERSION_GROUP_ID),
+            Some(0),
+        );
+        let bytes = psbt.serialize().unwrap();
+
+        ZcashBitGoPsbt::deserialize(&bytes, Network::Zcash).unwrap();
     }
 
     #[test]
