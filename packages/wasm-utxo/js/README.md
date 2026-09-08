@@ -33,6 +33,32 @@ This directory implements two complementary patterns to provide cleaner, more ty
    - Re-exports shared types and classes for top-level access
    - Augments WASM types with additional TypeScript declarations
 
+### Error Handling
+
+The WASM boundary exposes failures as branded JavaScript `Error` objects. New Rust/WASM APIs
+should return `Result<T, WasmUtxoError>` and use a domain-specific error enum for distinct failure
+modes; do not return `Result<T, String>` or wrap new failures with `WasmUtxoError::new(...)`.
+
+`WasmUtxoError.code` is the stable machine-readable value. The error message is for diagnostics and
+must not be parsed by callers. Use `isWasmUtxoError()` when code needs to distinguish a wasm-utxo
+failure from an unrelated exception:
+
+```typescript
+try {
+  psbt.verifyIronwoodV6SignatureWithPub(inputIndex, key);
+} catch (error: unknown) {
+  if (isWasmUtxoError(error) && error.code === "V6SignatureError.MissingSighashContext") {
+    // Handle a PSBT that cannot be verified in its current state.
+  }
+  throw error;
+}
+```
+
+Use `Ok(false)` for a validly evaluated negative result, such as an absent or cryptographically
+invalid signature. Return a structured error when verification cannot be evaluated because the
+input, PSBT metadata, derivation, or sighash context is invalid. This keeps the public API
+branchable without coupling callers to human-readable text.
+
 ### Pattern 1: Namespace Wrapper Pattern
 
 Used for static utility functions (e.g., `address.ts`, `utxolibCompat.ts`).
