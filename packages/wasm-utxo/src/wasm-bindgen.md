@@ -16,7 +16,7 @@ Create empty structs with `#[wasm_bindgen]` to serve as namespaces, then impleme
 // wasm/address.rs
 
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsValue;
+use crate::error::WasmUtxoError;
 use crate::address::networks::{
     to_output_script_with_coin, from_output_script_with_coin_and_format,
 };
@@ -29,10 +29,8 @@ impl AddressNamespace {
     pub fn to_output_script_with_coin(
         address: &str,
         coin: &str,
-    ) -> Result<Vec<u8>, JsValue> {
-        to_output_script_with_coin(address, coin)
-            .map(|script| script.to_bytes())
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+    ) -> Result<Vec<u8>, WasmUtxoError> {
+        Ok(to_output_script_with_coin(address, coin)?.to_bytes())
     }
 
     pub fn from_output_script_with_coin(
@@ -70,7 +68,7 @@ pub use fixed_script_wallet::FixedScriptWalletNamespace;
 
 6. **No `js_name` Attributes**: Do NOT use `#[wasm_bindgen(js_name = "...")]` to rename methods - keep Rust names pure and let TypeScript wrappers handle JS naming conventions
 
-7. **Error Handling**: Return `Result<T, JsValue>` types - `wasm-bindgen` automatically converts these to JavaScript exceptions
+7. **Error Handling**: Return `Result<T, WasmUtxoError>` types. `wasm-bindgen` converts the typed error into a JavaScript exception, preserving the stable `err.code` and human-readable message. New public APIs must not return `Result<T, String>` or manually convert errors to `JsValue`.
 
 8. **Separation**: WASM binding layer delegates to core implementation in domain modules (e.g., `src/address/`, `src/fixed_script_wallet/`)
 
@@ -126,15 +124,15 @@ This layered approach gives us:
 
 Common Rust ↔ JavaScript type mappings:
 
-| Rust               | JavaScript/TypeScript | Notes                          |
-| ------------------ | --------------------- | ------------------------------ |
-| `&str`, `String`   | `string`              | Strings are copied             |
-| `&[u8]`, `Vec<u8>` | `Uint8Array`          | Efficient binary data          |
-| `u32`, `i32`, etc. | `number`              | JavaScript numbers are f64     |
-| `bool`             | `boolean`             |                                |
-| `Option<T>`        | `T \| undefined`      | Becomes optional parameter     |
-| `Result<T, E>`     | `T` (throws on Err)   | Errors become exceptions       |
-| Custom structs     | `any` (usually)       | Reason for TypeScript wrappers |
+| Rust               | JavaScript/TypeScript | Notes                                                              |
+| ------------------ | --------------------- | ------------------------------------------------------------------ |
+| `&str`, `String`   | `string`              | Strings are copied                                                 |
+| `&[u8]`, `Vec<u8>` | `Uint8Array`          | Efficient binary data                                              |
+| `u32`, `i32`, etc. | `number`              | JavaScript numbers are f64                                         |
+| `bool`             | `boolean`             |                                                                    |
+| `Option<T>`        | `T \| undefined`      | Becomes optional parameter                                         |
+| `Result<T, E>`     | `T` (throws on Err)   | `WasmUtxoError` becomes a branded exception with stable `err.code` |
+| Custom structs     | `any` (usually)       | Reason for TypeScript wrappers                                     |
 
 ## Best Practices
 
@@ -148,7 +146,7 @@ Common Rust ↔ JavaScript type mappings:
 
 5. **Thin binding layer** - WASM methods should delegate to core implementation, only handling type conversions
 
-6. **Return `Result<T, JsValue>` types** - Let `wasm-bindgen` handle error conversion to JavaScript exceptions
+6. **Return typed error results** - Return `Result<T, WasmUtxoError>` so `wasm-bindgen` exposes a branded JavaScript exception with a stable `err.code`; do not flatten new errors into strings or `JsValue`
 
 7. **Avoid complex types in signatures** - Stick to primitives and byte arrays when possible; use `JsValue` for complex types
 

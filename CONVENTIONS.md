@@ -435,8 +435,57 @@ This keeps the TypeScript side clean (no serialization helpers) while handling t
 
 ---
 
+## 10. Use structured errors across WASM boundaries
+
+**What:** New public wasm-utxo APIs must return `Result<T, WasmUtxoError>` from the WASM binding layer. Use a domain-specific error enum for operations with multiple failure modes, then add it as a typed `WasmUtxoError` variant.
+
+Leaf error enums should derive `strum::IntoStaticStr`, implement `Display` and `std::error::Error`, and invoke `crate::impl_wasm_error_code!`. The resulting stable code is exposed to JavaScript as `err.code` while the display text remains human-readable.
+
+**Why:** `WasmUtxoError` is converted into a branded JavaScript `Error` with a stable, branchable code. Returning `String`, `JsValue`, or a new `WasmUtxoError::StringError` from a new public API discards the failure category and forces callers to parse message text.
+
+**Good:**
+
+```rust
+#[derive(Debug, strum::IntoStaticStr)]
+pub enum SignatureVerificationError {
+    InputIndexOutOfBounds { index: usize },
+    MissingSighashContext,
+}
+
+impl std::fmt::Display for SignatureVerificationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InputIndexOutOfBounds { index } => write!(f, "input index {index} out of bounds"),
+            Self::MissingSighashContext => write!(f, "signature sighash context is missing"),
+        }
+    }
+}
+
+impl std::error::Error for SignatureVerificationError {}
+crate::impl_wasm_error_code!(SignatureVerificationError);
+
+// Add `SignatureVerification(SignatureVerificationError)` and its `From` impl
+// to `WasmUtxoError`, then propagate it from the `src/wasm/` wrapper.
+```
+
+**Bad:**
+
+```rust
+// Loses the error category and creates only WasmUtxoError.StringError in JS.
+pub fn verify_signature(...) -> Result<bool, String>;
+
+// Do not make JavaScript callers parse error messages.
+WasmUtxoError::new(&format!("verification failed: {error}"))
+```
+
+Keep the result contract explicit: `Ok(false)` means verification was evaluated and the signature is absent or invalid; `Err(WasmUtxoError)` means the operation could not be evaluated because the input, context, or computation was invalid. Existing string-returning APIs are legacy compatibility surfaces and should not be extended by new public methods.
+
+**See:** `packages/wasm-utxo/src/error.rs`, `packages/wasm-utxo/src/wasm/try_into_js_value.rs`, `packages/wasm-utxo/src/zcash/v6.rs`, `packages/wasm-utxo/src/zcash/ironwood_build.rs`
+
+---
+
 ## Summary
 
-These 9 conventions define how BitGoWasm packages structure their APIs. They're architectural patterns enforced in code reviews — not general software practices or build requirements.
+These 10 conventions define how BitGoWasm packages structure their APIs. They're architectural patterns enforced in code reviews — not general software practices or build requirements.
 
 When in doubt, look at wasm-solana and wasm-utxo — they're the reference implementations. Following these patterns from the start prevents review churn and keeps all packages consistent.
