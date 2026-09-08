@@ -187,6 +187,11 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
     return psbt;
   }
 
+  /** @internal Create from a parsed WASM instance without reparsing the bytes. */
+  static override fromWasm(wasm: WasmBitGoPsbt): ZcashIronwoodBitGoPsbt {
+    return new ZcashIronwoodBitGoPsbt(wasm);
+  }
+
   /**
    * Add the shielded output (Constructor role). Stores the orchard PCZT in the PSBT.
    *

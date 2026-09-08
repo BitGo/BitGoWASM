@@ -44,10 +44,11 @@ export {
   ZcashBitGoPsbt,
   type ZcashNetworkName,
   type ZcashParsedOutput,
+  type ZcashTransactionVersion,
   type CreateEmptyZcashOptions,
   IRONWOOD_VERSION_GROUP_ID,
 } from "./ZcashBitGoPsbt.js";
-
+export { ZcashPsbt, type ZcashPsbtInstance } from "./ZcashPsbt.js";
 // Zcash v6 (Ironwood / NU6.3) shielding PSBT
 export {
   ZcashIronwoodBitGoPsbt,

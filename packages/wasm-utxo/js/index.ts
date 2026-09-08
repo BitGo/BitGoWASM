@@ -23,6 +23,16 @@ export { ECPair } from "./ecpair.js";
 export { BIP32 } from "./bip32.js";
 export { Dimensions } from "./fixedScriptWallet/Dimensions.js";
 export { ZcashDimensions } from "./fixedScriptWallet/ZcashDimensions.js";
+export {
+  ZcashBitGoPsbt,
+  ZcashPsbt,
+  ZcashIronwoodBitGoPsbt,
+  type ZcashPsbtInstance,
+  type ZcashTransactionVersion,
+  ZcashUnifiedAddress,
+  ZcashV6Transaction,
+  ZcashIronwoodWitness,
+} from "./fixedScriptWallet/index.js";
 
 export type WasmUtxoVersionInfo = { version: string; gitHash: string };
 export function getWasmUtxoVersion(): WasmUtxoVersionInfo {
