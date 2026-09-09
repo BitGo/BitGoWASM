@@ -7,10 +7,12 @@ mod mps {
             redpallas::{RedPallasPoint, RedPallasPointBytes},
             ser::Serializable,
             traits::{GroupElem, Round, ScalarReduce},
+            utils::{serde_point, serde_vec_point},
             Bip32Public,
         },
         curve25519_dalek::EdwardsPoint,
         derive::{HardDeriveOutputEd25519, HardDerivePartyEd25519, MpcDeriveInitEd25519},
+        group::{Group, GroupEncoding},
         keygen::{
             KeyRefreshData, KeygenMsg1, KeygenMsg2, KeygenParty, Keyshare, R0 as DkgR0,
             R1 as DkgR1, R2 as DkgR2,
@@ -46,6 +48,146 @@ mod mps {
         ProtocolError,
     }
 
+    /// Legacy Keyshare without party_public_shares (pre-vrf).
+    #[derive(Serialize, Deserialize)]
+    pub(crate) struct KeyshareNoVrf<G>
+    where
+        G: Group + GroupEncoding,
+    {
+        pub(crate) threshold: u8,
+        pub(crate) total_parties: u8,
+        pub(crate) party_id: u8,
+        pub(crate) d_i: G::Scalar,
+        #[serde(with = "serde_point")]
+        pub(crate) public_key: G,
+        // NO party_public_shares
+        pub(crate) key_id: [u8; 32],
+        pub(crate) extra_data: Option<Vec<u8>>,
+        pub(crate) root_chain_code: [u8; 32],
+    }
+
+    /// Legacy Keyshare with final_session_id but without party_public_shares.
+    /// This format predates the final VRF-enabled Keyshare shape.
+    #[derive(Serialize, Deserialize)]
+    pub(crate) struct KeyshareNoVrfWithSid<G>
+    where
+        G: Group + GroupEncoding,
+    {
+        pub(crate) threshold: u8,
+        pub(crate) total_parties: u8,
+        pub(crate) party_id: u8,
+        pub(crate) d_i: G::Scalar,
+        #[serde(with = "serde_point")]
+        pub(crate) public_key: G,
+        // NO party_public_shares
+        pub(crate) key_id: [u8; 32],
+        pub(crate) extra_data: Option<Vec<u8>>,
+        pub(crate) root_chain_code: [u8; 32],
+        pub(crate) final_session_id: [u8; 32],
+    }
+
+    /// Full Keyshare shape with all fields public. Binary-compatible with
+    /// Keyshare<G>. Used as intermediate to construct Keyshare<G> (which has
+    /// pub(crate) fields d_i and party_id that we can't set from outside).
+    #[derive(Serialize, Deserialize)]
+    pub(crate) struct KeyshareCompat<G>
+    where
+        G: Group + GroupEncoding,
+    {
+        pub(crate) threshold: u8,
+        pub(crate) total_parties: u8,
+        pub(crate) party_id: u8,
+        pub(crate) d_i: G::Scalar,
+        #[serde(with = "serde_point")]
+        pub(crate) public_key: G,
+        #[serde(with = "serde_vec_point")]
+        pub(crate) party_public_shares: Vec<G>,
+        pub(crate) key_id: [u8; 32],
+        pub(crate) extra_data: Option<Vec<u8>>,
+        pub(crate) root_chain_code: [u8; 32],
+    }
+
+    /// Decode a persisted Keyshare with 3-tier fallback for old wire formats.
+    /// All tiers use bincode::config::standard() (bincode-next).
+    ///
+    /// 1. Current: Keyshare<G> with party_public_shares (final format)
+    /// 2. KeyshareNoVrfWithSid<G>: final_session_id, no party_public_shares
+    /// 3. KeyshareNoVrf<G>: neither field
+    ///
+    /// On fallback, party_public_shares is filled with vec![]
+    /// (DSG never reads it; VRF eval fails cleanly with InvalidKeyshare).
+    /// Legacy final_session_id is parsed for compatibility and discarded because
+    /// the current compiled Keyshare<G> has no such field.
+    pub(crate) fn decode_keyshare<G>(share: &[u8]) -> Result<Keyshare<G>, MpsError>
+    where
+        G: Group + GroupEncoding,
+        G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
+    {
+        // Tier 1: Current/final format
+        if let Ok((keyshare, _)) =
+            bincode::serde::decode_from_slice::<Keyshare<G>, _>(share, bincode::config::standard())
+        {
+            return Ok(keyshare);
+        }
+
+        // Tier 2: Base + final_session_id, without VRF shares
+        let compat = try_decode_no_vrf_with_sid::<G>(share)
+            // Tier 3: Base only, without VRF shares or final_session_id
+            .or_else(|| try_decode_no_vrf::<G>(share))
+            .ok_or(MpsError::DeserializationError)?;
+
+        // Re-encode as KeyshareCompat, then decode as Keyshare<G>
+        // (necessary because Keyshare<G>::d_i and party_id are pub(crate))
+        let new_bytes = bincode::serde::encode_to_vec(&compat, bincode::config::standard())
+            .map_err(|_| MpsError::SerializationError)?;
+
+        bincode::serde::decode_from_slice(&new_bytes, bincode::config::standard())
+            .map(|(v, _)| v)
+            .map_err(|_| MpsError::DeserializationError)
+    }
+
+    fn try_decode_no_vrf_with_sid<G>(share: &[u8]) -> Option<KeyshareCompat<G>>
+    where
+        G: Group + GroupEncoding,
+        G::Scalar: Serializable,
+    {
+        bincode::serde::decode_from_slice::<KeyshareNoVrfWithSid<G>, _>(
+            share,
+            bincode::config::standard(),
+        )
+        .ok()
+        .map(|(legacy, _)| KeyshareCompat {
+            threshold: legacy.threshold,
+            total_parties: legacy.total_parties,
+            party_id: legacy.party_id,
+            d_i: legacy.d_i,
+            public_key: legacy.public_key,
+            party_public_shares: vec![],
+            key_id: legacy.key_id,
+            extra_data: legacy.extra_data,
+            root_chain_code: legacy.root_chain_code,
+        })
+    }
+
+    fn try_decode_no_vrf<G>(share: &[u8]) -> Option<KeyshareCompat<G>>
+    where
+        G: Group + GroupEncoding,
+        G::Scalar: Serializable,
+    {
+        bincode::serde::decode_from_slice::<KeyshareNoVrf<G>, _>(share, bincode::config::standard())
+            .ok()
+            .map(|(legacy, _)| KeyshareCompat {
+                threshold: legacy.threshold,
+                total_parties: legacy.total_parties,
+                party_id: legacy.party_id,
+                d_i: legacy.d_i,
+                public_key: legacy.public_key,
+                party_public_shares: vec![],
+                key_id: legacy.key_id,
+                extra_data: legacy.extra_data,
+                root_chain_code: legacy.root_chain_code,
+            })
+    }
     /// Internal DKG state used for round 1.
     #[derive(Serialize, Deserialize)]
     struct DkgStateR1<G>
@@ -991,10 +1133,7 @@ mod mps {
         message: &[u8],
     ) -> Result<MsgState, MpsError> {
         // Deserialize share
-        let keyshare: Keyshare<EdwardsPoint> =
-            bincode::serde::decode_from_slice(share, bincode::config::standard())
-                .map(|(v, _)| v)
-                .map_err(|_| MpsError::DeserializationError)?;
+        let keyshare: Keyshare<EdwardsPoint> = decode_keyshare::<EdwardsPoint>(share)?;
 
         // Create signer party
         let p0 = SignerParty::<DsgR0, EdwardsPoint>::new_with_format::<_, Bip32Public>(
@@ -1195,6 +1334,7 @@ mod tests {
 
     use super::*;
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use multi_party_schnorr::curve25519_dalek::EdwardsPoint;
     use rand::{self, Rng};
 
     /// Test full DGK protocol.
@@ -1514,6 +1654,124 @@ mod tests {
             .verify(
                 msg,
                 &Signature::from_bytes(dsg_p2_sig.as_slice().try_into().unwrap()),
+            )
+            .unwrap();
+    }
+
+    /// Test decode_keyshare fallback for the two legacy Keyshare shapes.
+    #[test]
+    fn test_decode_keyshare_legacy_fallback() {
+        let mut prv_keys = Vec::new();
+        let mut pub_keys = Vec::new();
+        let mut seeds = Vec::new();
+        for i in 0..3 {
+            let sk = crypto_box::SecretKey::generate(&mut rand::thread_rng());
+            pub_keys.push((i, sk.public_key()));
+            prv_keys.push(sk);
+            seeds.push(rand::thread_rng().gen());
+        }
+        let other_indices = [[1usize, 2], [0, 2], [0, 1]];
+        let r0: Vec<_> = (0..3)
+            .map(|i| {
+                mps::ed25519_dkg_round0_process(
+                    i as u8,
+                    &prv_keys[i].to_bytes(),
+                    &[
+                        pub_keys[other_indices[i][0]].1.to_bytes().to_vec(),
+                        pub_keys[other_indices[i][1]].1.to_bytes().to_vec(),
+                    ],
+                    &seeds[i],
+                )
+                .unwrap()
+            })
+            .collect();
+        let r1: Vec<_> = (0..3)
+            .map(|i| {
+                mps::ed25519_dkg_round1_process(
+                    &[
+                        r0[other_indices[i][0]].msg.clone(),
+                        r0[other_indices[i][1]].msg.clone(),
+                    ],
+                    &r0[i].state,
+                )
+                .unwrap()
+            })
+            .collect();
+        let shares: Vec<_> = (0..3)
+            .map(|i| {
+                mps::ed25519_dkg_round2_process(
+                    &[
+                        r1[other_indices[i][0]].msg.clone(),
+                        r1[other_indices[i][1]].msg.clone(),
+                    ],
+                    &r1[i].state,
+                )
+                .unwrap()
+            })
+            .collect();
+
+        let current_bytes = &shares[0].share;
+        let current = bincode::serde::decode_from_slice::<mps::KeyshareCompat<EdwardsPoint>, _>(
+            current_bytes,
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .unwrap();
+
+        // Legacy format 1: base + final_session_id, no VRF shares.
+        let with_sid = mps::KeyshareNoVrfWithSid {
+            threshold: current.threshold,
+            total_parties: current.total_parties,
+            party_id: current.party_id,
+            d_i: current.d_i,
+            public_key: current.public_key,
+            key_id: current.key_id,
+            extra_data: current.extra_data.clone(),
+            root_chain_code: current.root_chain_code,
+            final_session_id: [7u8; 32],
+        };
+        let with_sid_bytes =
+            bincode::serde::encode_to_vec(&with_sid, bincode::config::standard()).unwrap();
+        let migrated_with_sid = mps::decode_keyshare::<EdwardsPoint>(&with_sid_bytes).unwrap();
+        assert_eq!(
+            migrated_with_sid.public_key.compress().to_bytes(),
+            shares[0].pk
+        );
+        assert_eq!(migrated_with_sid.party_public_shares(), &[]);
+
+        // Legacy format 0: base only, no VRF shares and no session ID.
+        let old = mps::KeyshareNoVrf {
+            threshold: current.threshold,
+            total_parties: current.total_parties,
+            party_id: current.party_id,
+            d_i: current.d_i,
+            public_key: current.public_key,
+            key_id: current.key_id,
+            extra_data: current.extra_data,
+            root_chain_code: current.root_chain_code,
+        };
+        let old_bytes = bincode::serde::encode_to_vec(&old, bincode::config::standard()).unwrap();
+        let migrated_old = mps::decode_keyshare::<EdwardsPoint>(&old_bytes).unwrap();
+        assert_eq!(migrated_old.public_key.compress().to_bytes(), shares[0].pk);
+        assert_eq!(migrated_old.party_public_shares(), &[]);
+
+        // Verify the base-only migrated share still completes DSG.
+        let msg = b"test message for legacy keyshare DSG";
+        let dsg_p0_0 = mps::ed25519_dsg_round0_process(&old_bytes, "m".to_string(), msg).unwrap();
+        let dsg_p2_0 =
+            mps::ed25519_dsg_round0_process(&shares[2].share, "m".to_string(), msg).unwrap();
+        let dsg_p0_1 = mps::ed25519_dsg_round1_process(&dsg_p2_0.msg, &dsg_p0_0.state).unwrap();
+        let dsg_p2_1 = mps::ed25519_dsg_round1_process(&dsg_p0_0.msg, &dsg_p2_0.state).unwrap();
+        let dsg_p0_2 = mps::ed25519_dsg_round2_process(&dsg_p2_1.msg, &dsg_p0_1.state).unwrap();
+        let dsg_p2_2 = mps::ed25519_dsg_round2_process(&dsg_p0_1.msg, &dsg_p2_1.state).unwrap();
+        let dsg_p0_sig = mps::ed25519_dsg_round3_process(&dsg_p2_2.msg, &dsg_p0_2.state).unwrap();
+        let dsg_p2_sig = mps::ed25519_dsg_round3_process(&dsg_p0_2.msg, &dsg_p2_2.state).unwrap();
+        assert_eq!(dsg_p0_sig, dsg_p2_sig);
+        VerifyingKey::from_bytes(&shares[0].pk)
+            .unwrap()
+            .verify(
+                msg,
+                &Signature::from_bytes(dsg_p0_sig.as_slice().try_into().unwrap()),
             )
             .unwrap();
     }
