@@ -834,8 +834,9 @@ checksum = "3d97bbf43eb4f088f8ca469930cde17fa036207c9a5e02ccc5107c4e8b17c964"
 
 [[package]]
 name = "multi-party-schnorr"
-version = "1.3.0-pre.7"
-source = "git+https://github.com/silence-laboratories/multi-party-schnorr?rev=09185d1e4e78d096f2ab3e64d877fb0c88099688#09185d1e4e78d096f2ab3e64d877fb0c88099688"
+version = "1.3.0-pre.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "316c632e9bde2552499a949309437c28614a4a46ced1135dddc1211559b174b9"
 dependencies = [
  "blake2b_simd",
  "bytemuck",
@@ -1282,9 +1283,9 @@ dependencies = [
 
 [[package]]
 name = "sl-mpc-vrf"
-version = "0.1.0-pre.2"
+version = "0.1.0-pre.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78aa6ea9cad657a879d3cc8d11e1df100c5c53b764902ed7139fbae32425b72e"
+checksum = "34d050756bcb8653d2cda2a083a8d23e75814ecd1ff7c225b64a97856e2348cb"
 dependencies = [
  "crypto-bigint",
  "curve25519-dalek",
