@@ -65,6 +65,7 @@ export { ZcashV6Transaction } from "./ZcashV6Transaction.js";
 
 // Zcash v6 (Ironwood / NU6.3) Merkle witness
 export { ZcashIronwoodWitness } from "./ZcashIronwoodWitness.js";
+export type { ShardTreeNode } from "./ZcashIronwoodWitness.js";
 
 import type { ScriptType } from "./scriptType.js";
 
