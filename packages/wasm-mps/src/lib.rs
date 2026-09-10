@@ -682,15 +682,6 @@ mod mps {
         pub party: VrfDkgParty<VrfDkgR2>,
     }
 
-    /// Duplicate a single broadcast payload into a per-recipient message pool
-    /// addressed to every other party in a 3-party quorum.
-    fn broadcast_to_hashmap(party_id: u8, msg: Vec<u8>) -> HashMap<u8, Vec<u8>> {
-        (0..3)
-            .filter(|&pid| pid != party_id)
-            .map(|pid| (pid, msg.clone()))
-            .collect()
-    }
-
     /// Process round 0 of VRF DKG (Ristretto, used to back hard derivation).
     /// party_id: Party identifier / index.
     /// seed: PRNG seed for entropy.
@@ -765,20 +756,33 @@ mod mps {
             .process(vec![i0_msg1, i1_msg1, state.msg])
             .map_err(|_| MpsError::ProtocolError)?;
 
+        let own_msg2 = msg2
+            .iter()
+            .find(|m| m.to_party == party_id)
+            .cloned()
+            .ok_or(MpsError::ProtocolError)?;
+
         let new_state = VrfDkgStateR2 {
             party_id,
-            msg: msg2.clone(),
+            msg: own_msg2,
             party: p2,
         };
 
-        let msg = add_prefix(
-            "mps-ed25519-vrf-dkg-round2-message$",
-            &bincode::serde::encode_to_vec(&msg2, bincode::config::standard())
-                .map_err(|_| MpsError::SerializationError)?,
-        );
+        let msg: HashMap<u8, Vec<u8>> = msg2
+            .iter()
+            .filter(|m| m.to_party != party_id)
+            .map(|m| {
+                let bytes = add_prefix(
+                    "mps-ed25519-vrf-dkg-round2-message$",
+                    &bincode::serde::encode_to_vec(m, bincode::config::standard())
+                        .map_err(|_| MpsError::SerializationError)?,
+                );
+                Ok((m.to_party, bytes))
+            })
+            .collect::<Result<_, MpsError>>()?;
 
         Ok(MsgStateMap {
-            msg: broadcast_to_hashmap(party_id, msg),
+            msg,
             state: add_prefix(
                 "mps-ed25519-vrf-dkg-round2-state$",
                 &bincode::serde::encode_to_vec(&new_state, bincode::config::standard())
