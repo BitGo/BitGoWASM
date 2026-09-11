@@ -256,10 +256,11 @@ pub const BITGO_ZEC_V6: &[u8] = b"BITGO/ZEC/V6";
 /// This mirrors the v4 `ZecConsensusBranchId` (0x00 under the legacy `BITGO` prefix), but v4 is
 /// untouched: the two 0x00 branch-id keys are unambiguous because their prefixes differ.
 ///
-/// Note that a v6 PSBT still carries the legacy `BITGO`/`ZecConsensusBranchId` key as well, because
-/// [`ZcashBitGoPsbt::new`] writes it for every Zcash PSBT. The v6 code paths read only the key in
-/// this namespace; the legacy one is redundant but harmless, and keeping it means the shared
-/// `new` constructor needs no v6 special case.
+/// A v6 PSBT carries its branch id under *this* namespace only: `ZcashBitGoPsbt::new_v6` writes
+/// it here (and never writes the legacy `BITGO` key), so v6 does not consume a slot in the shared
+/// single-byte `BITGO` subtype space. Readers that want the v6 branch id (including the wasm
+/// `consensus_branch_id()` getter) must use [`get_zec_v6_consensus_branch_id`], since
+/// [`get_zec_consensus_branch_id`] only matches the legacy prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ZecV6KeySubtype {
