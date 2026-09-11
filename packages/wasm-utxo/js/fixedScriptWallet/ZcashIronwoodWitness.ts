@@ -1,7 +1,18 @@
 import {
   IronwoodWitness as WasmIronwoodWitness,
   ironwood_build_witness,
+  ironwood_build_witness_from_shard,
 } from "../wasm/wasm_utxo.js";
+
+/**
+ * A node of a pruned Orchard note-commitment (sub)tree, for {@link ZcashIronwoodWitness.buildFromShard}'s
+ * `shard`/`cap` inputs. Mirrors a real pruned tree store's shape (e.g. a `shardtree::ShardTree`):
+ * most leaves are never individually retained, only enough annotated hashes to reproduce a witness.
+ */
+export type ShardTreeNode =
+  | { type: "Nil" }
+  | { type: "Leaf"; hash: Uint8Array }
+  | { type: "Parent"; hash?: Uint8Array; left: ShardTreeNode; right: ShardTreeNode };
 
 /**
  * A validated Merkle witness for an Ironwood/Orchard note commitment.
@@ -29,6 +40,32 @@ export class ZcashIronwoodWitness {
     anchor: Uint8Array,
   ): ZcashIronwoodWitness {
     return new ZcashIronwoodWitness(ironwood_build_witness(cmx, position, authPath, anchor));
+  }
+
+  /**
+   * Build and validate a Merkle witness from a pruned shard + cap, instead of a
+   * caller-precomputed 32-entry path.
+   *
+   * `shardHeight` chooses which level the shard's root sits at (it spans up to `2^shardHeight`
+   * leaves); `shard` is the pruned subtree containing `position`, rooted at that level; `cap` is
+   * the pruned tree above every shard, down to (and including) shard-root nodes. `leafCount` is
+   * the total number of leaves committed to the tree as of `anchor` — positions beyond it are
+   * treated as canonically empty.
+   * @throws Under the same conditions as {@link build}, plus if `shard`/`cap` don't have enough
+   *   detail to witness `position` as of `leafCount`
+   */
+  static buildFromShard(
+    position: number,
+    shardHeight: number,
+    leafCount: bigint,
+    cmx: Uint8Array,
+    shard: ShardTreeNode,
+    cap: ShardTreeNode,
+    anchor: Uint8Array,
+  ): ZcashIronwoodWitness {
+    return new ZcashIronwoodWitness(
+      ironwood_build_witness_from_shard(position, shardHeight, leafCount, cmx, shard, cap, anchor),
+    );
   }
 
   /** The leaf's position in the note commitment tree. */

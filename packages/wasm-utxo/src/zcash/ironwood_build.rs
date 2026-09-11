@@ -37,6 +37,10 @@ use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath};
 use orchard::value::NoteValue;
 use orchard::{Action as OrchardAction, Address};
 
+use incrementalmerkletree::{Address as MerkleAddress, Hashable, Level, Position};
+use shardtree::{LocatedPrunableTree, Node, PrunableTree, RetentionFlags, Tree};
+use std::sync::Arc;
+
 use super::v6::{IronwoodAction, IronwoodBundle};
 
 /// Length of a raw Orchard/Ironwood receiver (`Address`) in bytes.
@@ -70,6 +74,57 @@ pub type WitnessAuthPath = [[u8; 32]; IRONWOOD_MERKLE_DEPTH];
 pub struct IronwoodWitness {
     pub position: u32,
     pub auth_path: WitnessAuthPath,
+}
+
+/// Height (in levels) of a caller-supplied shard: its root sits at this level, so it spans up to
+/// `2^shard_height` leaves. `0` means `shard` is just the target leaf itself and all 32 auth-path
+/// entries come from `cap`.
+pub type ShardHeight = u8;
+
+/// A node of a pruned Orchard note-commitment (sub)tree, mirroring `shardtree::PrunableTree`:
+/// caller-supplied shard/cap data for [`build_ironwood_witness_from_shard`] is expressed in this
+/// shape rather than as a dense leaf array, so it matches what a real pruned tree store (e.g.
+/// `wasm-privacy-coin`'s `ShardTree`) actually holds — most of a shard's leaves are never
+/// individually retained, only enough annotated hashes to reproduce any witness.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum ShardTreeNode {
+    /// No information available for this (sub)tree.
+    Nil,
+    /// A single known hash: either a real leaf commitment, or the precomputed root of an entirely
+    /// pruned subtree (a `Leaf` can appear at any level, not just level 0).
+    Leaf {
+        #[serde(with = "serde_bytes")]
+        hash: [u8; 32],
+    },
+    /// Two children, optionally annotated with this node's own precomputed root — the annotation
+    /// lets a caller omit detail below a pruned branch while still supplying enough to compute
+    /// sibling roots elsewhere in the tree.
+    Parent {
+        #[serde(with = "serde_bytes", default)]
+        hash: Option<[u8; 32]>,
+        left: Box<ShardTreeNode>,
+        right: Box<ShardTreeNode>,
+    },
+}
+
+/// Caller-supplied shard/cap data for `build_ironwood_witness_from_shard`.
+pub struct ShardWitnessInput<'a> {
+    /// The leaf's position in the whole note-commitment tree.
+    pub position: u32,
+    pub shard_height: ShardHeight,
+    /// Total number of leaves committed to the tree as of `expected_anchor` — the truncation
+    /// boundary beyond which unpopulated positions are treated as canonically empty rather than
+    /// as missing data (the note-commitment tree only ever grows, so this is well-defined for any
+    /// anchor the caller has actually observed).
+    pub leaf_count: u64,
+    /// The commitment being witnessed — the leaf at `position`.
+    pub cmx: &'a [u8; 32],
+    /// The pruned shard subtree containing `position`, rooted at level `shard_height`.
+    pub shard: &'a ShardTreeNode,
+    /// The pruned "cap": the tree above every shard, down to (and including) shard-root nodes.
+    /// Only the nodes on the path from `position`'s shard up to the overall root need be present.
+    pub cap: &'a ShardTreeNode,
 }
 
 /// Errors produced while constructing or combining an Ironwood shielded bundle.
@@ -116,6 +171,15 @@ pub enum IronwoodBuildError {
     BadWitnessPath,
     /// The witness recomputed a root that does not match the expected anchor.
     WitnessAnchorMismatch,
+    /// `shard_height` exceeds `IRONWOOD_MERKLE_DEPTH` (32).
+    ShardHeightOutOfRange,
+    /// `shard` does not have enough detail to witness `position` as of `leaf_count` (e.g. a `Nil`
+    /// or pruned `Leaf` node lies on the path to it), or `position`'s shard-local index is not
+    /// within `leaf_count`.
+    ShardWitnessUnavailable,
+    /// `cap` does not have enough detail to compute a sibling root above the shard (e.g. a `Nil`
+    /// or pruned `Leaf` node covers a range that a witness sibling needs to be split out of).
+    CapNodeMissing,
 }
 
 impl core::fmt::Display for IronwoodBuildError {
@@ -160,6 +224,18 @@ impl core::fmt::Display for IronwoodBuildError {
             Self::WitnessAnchorMismatch => write!(
                 f,
                 "ironwood-build: witness path does not recompute to the expected anchor"
+            ),
+            Self::ShardHeightOutOfRange => write!(
+                f,
+                "ironwood-build: shard_height exceeds the tree depth ({IRONWOOD_MERKLE_DEPTH})"
+            ),
+            Self::ShardWitnessUnavailable => write!(
+                f,
+                "ironwood-build: shard does not have enough detail to witness the target position"
+            ),
+            Self::CapNodeMissing => write!(
+                f,
+                "ironwood-build: cap does not have enough detail to compute a sibling root"
             ),
         }
     }
@@ -295,6 +371,130 @@ pub fn build_ironwood_witness(
         position,
         auth_path: *auth_path,
     })
+}
+
+/// Build and validate an Ironwood witness from a pruned shard + cap, instead of a
+/// caller-precomputed full 32-entry path. Uses `shardtree`'s own pruning-aware
+/// `LocatedPrunableTree::witness`/`PrunableTree::root_hash` to do the Merkle folding — the same
+/// algorithm a real note-commitment-tree store (e.g. `wasm-privacy-coin`'s `ShardTree`) uses to
+/// answer witness queries — then delegates all canonical-encoding and anchor checks to
+/// `build_ironwood_witness`; no validation is duplicated.
+pub fn build_ironwood_witness_from_shard(
+    input: &ShardWitnessInput,
+    expected_anchor: &AnchorBytes,
+) -> Result<IronwoodWitness, IronwoodBuildError> {
+    if input.shard_height as usize > IRONWOOD_MERKLE_DEPTH {
+        return Err(IronwoodBuildError::ShardHeightOutOfRange);
+    }
+    let depth = Level::from(IRONWOOD_MERKLE_DEPTH as u8);
+    let position = Position::from(input.position as u64);
+    let truncate_at = Position::from(input.leaf_count);
+
+    let shard_addr = MerkleAddress::from_parts(
+        Level::from(input.shard_height),
+        (input.position as u64) >> input.shard_height,
+    );
+
+    // shard_height == 0 means `shard_addr` is the target leaf itself: there is no sub-tree to
+    // witness within it (all 32 auth-path entries come from `cap`), and
+    // `LocatedPrunableTree::witness` isn't defined for a level-0 root address.
+    let mut path: Vec<MerkleHashOrchard> = if input.shard_height == 0 {
+        Vec::new()
+    } else {
+        let shard_tree = to_prunable_tree(input.shard)?;
+        LocatedPrunableTree::from_parts(shard_addr, shard_tree)
+            .map_err(|_| IronwoodBuildError::ShardWitnessUnavailable)?
+            .witness(position, truncate_at)
+            .map_err(|_| IronwoodBuildError::ShardWitnessUnavailable)?
+    };
+
+    let cap_root_addr = MerkleAddress::from_parts(depth, 0);
+    let cap_tree = to_prunable_tree(input.cap)?;
+    let located_cap = LocatedPrunableTree::from_parts(cap_root_addr, cap_tree)
+        .map_err(|_| IronwoodBuildError::CapNodeMissing)?;
+    let mut cur_addr = shard_addr;
+    while cur_addr.level() < depth {
+        let sibling = cap_root_hash(
+            located_cap.root(),
+            cap_root_addr,
+            cur_addr.sibling(),
+            truncate_at,
+        )?;
+        path.push(sibling);
+        cur_addr = cur_addr.parent();
+    }
+
+    let full_path: Vec<[u8; 32]> = path.iter().map(MerkleHashOrchard::to_bytes).collect();
+    let full_path: WitnessAuthPath = full_path.try_into().expect(
+        "shard witness + cap walk together always produce exactly IRONWOOD_MERKLE_DEPTH entries",
+    );
+
+    build_ironwood_witness(input.cmx, input.position, &full_path, expected_anchor)
+}
+
+/// Convert a caller-supplied [`ShardTreeNode`] into a real `shardtree::PrunableTree`.
+///
+/// Leaves are tagged `RetentionFlags::MARKED`: `LocatedPrunableTree::witness` only trusts a
+/// sibling leaf that is marked (that flag exists so a *persisted, evolving* store knows which
+/// leaves it must keep for future witnessing). We have no such store or pruning schedule — every
+/// leaf the caller bothered to supply here is, by construction, needed for this one witness — so
+/// marking them all is the correct (and only) way to make that check pass.
+fn to_prunable_tree(
+    node: &ShardTreeNode,
+) -> Result<PrunableTree<MerkleHashOrchard>, IronwoodBuildError> {
+    Ok(match node {
+        ShardTreeNode::Nil => Tree::empty(),
+        ShardTreeNode::Leaf { hash } => Tree::leaf((parse_hash(hash)?, RetentionFlags::MARKED)),
+        ShardTreeNode::Parent { hash, left, right } => {
+            let ann = hash.as_ref().map(parse_hash).transpose()?.map(Arc::new);
+            Tree::parent(ann, to_prunable_tree(left)?, to_prunable_tree(right)?)
+        }
+    })
+}
+
+fn parse_hash(bytes: &[u8; 32]) -> Result<MerkleHashOrchard, IronwoodBuildError> {
+    Option::from(MerkleHashOrchard::from_bytes(bytes)).ok_or(IronwoodBuildError::BadWitnessPath)
+}
+
+/// Compute the root hash of the node at `target_addr` within `tree` (rooted at `tree_addr`,
+/// `tree_addr` containing `target_addr`), by navigating down to it and then delegating to
+/// `PrunableTree::root_hash` — which itself recurses further as needed and returns cached
+/// annotated hashes for pruned branches.
+///
+/// Applies the same "beyond `truncate_at` ⇒ canonically empty" shortcut `root_hash` uses
+/// internally, but keyed on `target_addr` (not `tree_addr`) and *before* requiring an exact
+/// address match: a `Nil` far to the right of all real data can appear at any ancestor level (real
+/// trees don't pad every level down to the target's own level with empty `Parent` nodes), and
+/// that's still a legitimate "definitely empty" answer, not missing data — checking against
+/// `tree_addr` instead would only catch this once traversal happened to reach `target_addr`
+/// exactly, which a `Nil`/`Leaf` dead end higher up prevents.
+fn cap_root_hash(
+    tree: &PrunableTree<MerkleHashOrchard>,
+    tree_addr: MerkleAddress,
+    target_addr: MerkleAddress,
+    truncate_at: Position,
+) -> Result<MerkleHashOrchard, IronwoodBuildError> {
+    if truncate_at <= target_addr.position_range_start() {
+        return Ok(MerkleHashOrchard::empty_root(target_addr.level()));
+    }
+    if tree_addr == target_addr {
+        return tree
+            .root_hash(tree_addr, truncate_at)
+            .map_err(|_| IronwoodBuildError::CapNodeMissing);
+    }
+    match &**tree {
+        Node::Parent { left, right, .. } => {
+            let (l_addr, r_addr) = tree_addr
+                .children()
+                .expect("a Parent node's address always has children");
+            if l_addr.contains(&target_addr) {
+                cap_root_hash(left, l_addr, target_addr, truncate_at)
+            } else {
+                cap_root_hash(right, r_addr, target_addr, truncate_at)
+            }
+        }
+        _ => Err(IronwoodBuildError::CapNodeMissing),
+    }
 }
 
 /// IO Finalizer / Signer: derive the binding signing key and sign the dummy spends.
@@ -698,6 +898,443 @@ mod tests {
         let non_canonical_anchor = [0xffu8; 32];
         assert!(matches!(
             build_ironwood_witness(&cmx, 5, &auth_path, &non_canonical_anchor),
+            Err(IronwoodBuildError::BadAnchor)
+        ));
+    }
+
+    // ---- Shard witness builder ----
+
+    /// Build a dense `ShardTreeNode` of `height` levels from `leaves` (real leaf hashes,
+    /// left-to-right): any position at or beyond `leaves.len()` is `Nil` — genuinely
+    /// not-yet-committed, not a canonical empty-leaf placeholder — matching how a real pruned
+    /// store represents "nothing here yet" and relying on `truncate_at` (not tree contents) to
+    /// tell `witness`/`root_hash` that's expected.
+    fn dense_shard(height: u8, leaves: &[[u8; 32]]) -> ShardTreeNode {
+        fn go(height: u8, start: usize, leaves: &[[u8; 32]]) -> ShardTreeNode {
+            if start >= leaves.len() {
+                return ShardTreeNode::Nil;
+            }
+            if height == 0 {
+                return ShardTreeNode::Leaf {
+                    hash: leaves[start],
+                };
+            }
+            let half = 1usize << (height - 1);
+            ShardTreeNode::Parent {
+                hash: None,
+                left: Box::new(go(height - 1, start, leaves)),
+                right: Box::new(go(height - 1, start + half, leaves)),
+            }
+        }
+        go(height, 0, leaves)
+    }
+
+    /// A cap spanning levels `shard_height..IRONWOOD_MERKLE_DEPTH` with exactly one known node —
+    /// `known_hash`, the precomputed root of the shard at `known_shard_index` — and `Nil`
+    /// elsewhere, exercising a *pruned* branch (no full detail, just an annotated hash) rather
+    /// than dense structure all the way down.
+    fn cap_with_one_known_shard(
+        shard_height: u8,
+        known_shard_index: u64,
+        known_hash: [u8; 32],
+    ) -> ShardTreeNode {
+        fn go(
+            level: u8,
+            index: u64,
+            shard_height: u8,
+            known_shard_index: u64,
+            known_hash: [u8; 32],
+        ) -> ShardTreeNode {
+            if level == shard_height {
+                return if index == known_shard_index {
+                    ShardTreeNode::Leaf { hash: known_hash }
+                } else {
+                    ShardTreeNode::Nil
+                };
+            }
+            let span = 1u64 << (level - shard_height);
+            let start = index * span;
+            if known_shard_index < start || known_shard_index >= start + span {
+                return ShardTreeNode::Nil;
+            }
+            ShardTreeNode::Parent {
+                hash: None,
+                left: Box::new(go(
+                    level - 1,
+                    index * 2,
+                    shard_height,
+                    known_shard_index,
+                    known_hash,
+                )),
+                right: Box::new(go(
+                    level - 1,
+                    index * 2 + 1,
+                    shard_height,
+                    known_shard_index,
+                    known_hash,
+                )),
+            }
+        }
+        go(
+            IRONWOOD_MERKLE_DEPTH as u8,
+            0,
+            shard_height,
+            known_shard_index,
+            known_hash,
+        )
+    }
+
+    /// Fold a dense, contiguous `leaves` prefix (a `2^height`-leaf shard) bottom-up — independent
+    /// of `build_ironwood_witness_from_shard`'s own `shardtree`-backed folding — returning `(this
+    /// shard's own root hash, the height sibling hashes on the path to local_position)`.
+    fn fold_shard(
+        height: u8,
+        leaves: &[[u8; 32]],
+        mut local_position: usize,
+    ) -> (MerkleHashOrchard, Vec<MerkleHashOrchard>) {
+        let mut level: Vec<MerkleHashOrchard> = leaves
+            .iter()
+            .map(|b| Option::from(MerkleHashOrchard::from_bytes(b)).unwrap())
+            .collect();
+        let mut path = Vec::with_capacity(height as usize);
+        for l in 0..height {
+            let lvl = Level::from(l);
+            let sibling_idx = local_position ^ 1;
+            path.push(
+                level
+                    .get(sibling_idx)
+                    .copied()
+                    .unwrap_or_else(|| MerkleHashOrchard::empty_root(lvl)),
+            );
+            let mut next = Vec::with_capacity(level.len().div_ceil(2));
+            for pair in level.chunks(2) {
+                let right = pair
+                    .get(1)
+                    .copied()
+                    .unwrap_or_else(|| MerkleHashOrchard::empty_root(lvl));
+                next.push(MerkleHashOrchard::combine(lvl, &pair[0], &right));
+            }
+            level = next;
+            local_position >>= 1;
+        }
+        (level[0], path)
+    }
+
+    /// Root a full 32-entry auth path against `cmx`/`position`, via the same primitive
+    /// `build_ironwood_witness` wraps — independent of `build_ironwood_witness_from_shard`.
+    fn root_full_path(
+        position: u32,
+        cmx: [u8; 32],
+        full_path: Vec<MerkleHashOrchard>,
+    ) -> AnchorBytes {
+        let cmx_parsed =
+            Option::<ExtractedNoteCommitment>::from(ExtractedNoteCommitment::from_bytes(&cmx))
+                .unwrap();
+        let sibling_hashes: [MerkleHashOrchard; IRONWOOD_MERKLE_DEPTH] =
+            full_path.try_into().unwrap();
+        MerklePath::from_parts(position, sibling_hashes)
+            .root(cmx_parsed)
+            .to_bytes()
+    }
+
+    /// A self-consistent fixture: a single shard (index 0) holding `populated` real leaves (out of
+    /// `2^shard_height`), nothing else in the tree — so `cap` is entirely `Nil` and `leaf_count`
+    /// (the truncation boundary) equals `populated`.
+    fn single_shard_fixture(
+        shard_height: u8,
+        populated: usize,
+        position: u32,
+    ) -> (ShardTreeNode, ShardTreeNode, u64, [u8; 32], AnchorBytes) {
+        let leaves: Vec<[u8; 32]> = (0..populated)
+            .map(|i| field_bytes(i as u64 + 100))
+            .collect();
+        let (_, bottom) = fold_shard(shard_height, &leaves, position as usize);
+
+        let mut full_path = bottom;
+        for l in shard_height..(IRONWOOD_MERKLE_DEPTH as u8) {
+            full_path.push(MerkleHashOrchard::empty_root(Level::from(l)));
+        }
+
+        let cmx = leaves[position as usize];
+        let anchor = root_full_path(position, cmx, full_path);
+        let shard = dense_shard(shard_height, &leaves);
+        (shard, ShardTreeNode::Nil, populated as u64, cmx, anchor)
+    }
+
+    /// A self-consistent fixture with *two* shards: shard 0 is fully populated (its root hash is
+    /// known only as a pruned `Leaf` annotation in `cap`, not full detail), shard 1 holds
+    /// `position_in_shard1 + 1` real leaves and contains the target position. Exercises the cap
+    /// traversal / pruned-annotation path `single_shard_fixture` (empty cap) never touches.
+    fn two_shard_fixture(
+        shard_height: u8,
+        position_in_shard1: u32,
+    ) -> (ShardTreeNode, ShardTreeNode, u64, [u8; 32], AnchorBytes) {
+        let shard_capacity = 1usize << shard_height;
+        let shard0_leaves: Vec<[u8; 32]> = (0..shard_capacity)
+            .map(|i| field_bytes(i as u64 + 100))
+            .collect();
+        let (shard0_root, _) = fold_shard(shard_height, &shard0_leaves, 0);
+
+        let populated1 = position_in_shard1 as usize + 1;
+        let shard1_leaves: Vec<[u8; 32]> = (0..populated1)
+            .map(|i| field_bytes(i as u64 + 5000))
+            .collect();
+        let (_, bottom) = fold_shard(shard_height, &shard1_leaves, position_in_shard1 as usize);
+
+        let mut full_path = bottom;
+        full_path.push(shard0_root); // shard 1's sibling at the shard-root level is shard 0.
+        for l in (shard_height + 1)..(IRONWOOD_MERKLE_DEPTH as u8) {
+            full_path.push(MerkleHashOrchard::empty_root(Level::from(l)));
+        }
+
+        let global_position = shard_capacity as u32 + position_in_shard1;
+        let cmx = shard1_leaves[position_in_shard1 as usize];
+        let anchor = root_full_path(global_position, cmx, full_path);
+
+        let shard = dense_shard(shard_height, &shard1_leaves);
+        let cap = cap_with_one_known_shard(shard_height, 0, shard0_root.to_bytes());
+        let leaf_count = (shard_capacity + populated1) as u64;
+        (shard, cap, leaf_count, cmx, anchor)
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_full_shard_interior_position() {
+        let (shard, cap, leaf_count, cmx, anchor) = single_shard_fixture(4, 16, 7);
+        let witness = build_ironwood_witness_from_shard(
+            &ShardWitnessInput {
+                position: 7,
+                shard_height: 4,
+                leaf_count,
+                cmx: &cmx,
+                shard: &shard,
+                cap: &cap,
+            },
+            &anchor,
+        )
+        .unwrap();
+        assert_eq!(witness.position, 7);
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_edge_positions() {
+        for position in [0u32, 15u32] {
+            let (shard, cap, leaf_count, cmx, anchor) = single_shard_fixture(4, 16, position);
+            build_ironwood_witness_from_shard(
+                &ShardWitnessInput {
+                    position,
+                    shard_height: 4,
+                    leaf_count,
+                    cmx: &cmx,
+                    shard: &shard,
+                    cap: &cap,
+                },
+                &anchor,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_partial_shard_tip() {
+        // 10 of 16 possible leaves; target the last populated leaf, so some low-level siblings
+        // fall in the empty tail (index 9's sibling, 8, is real) while others don't (index 9 at
+        // the next level up pairs with an as-yet-uncommitted, `Nil` slot).
+        let (shard, cap, leaf_count, cmx, anchor) = single_shard_fixture(4, 10, 9);
+        build_ironwood_witness_from_shard(
+            &ShardWitnessInput {
+                position: 9,
+                shard_height: 4,
+                leaf_count,
+                cmx: &cmx,
+                shard: &shard,
+                cap: &cap,
+            },
+            &anchor,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_height_zero_degenerates_to_full_path() {
+        let (_shard, cap, leaf_count, cmx, anchor) = single_shard_fixture(0, 1, 0);
+        // shard_height == 0: `cap` alone must carry the full 32-entry path (`shard` is unused).
+        let unused_shard = ShardTreeNode::Nil;
+        let via_shard = build_ironwood_witness_from_shard(
+            &ShardWitnessInput {
+                position: 0,
+                shard_height: 0,
+                leaf_count,
+                cmx: &cmx,
+                shard: &unused_shard,
+                cap: &cap,
+            },
+            &anchor,
+        )
+        .unwrap();
+        assert_eq!(via_shard.position, 0);
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_two_shards_with_pruned_cap_annotation() {
+        // shard 1 (containing the target) is witnessed against a cap that only knows shard 0's
+        // precomputed root — not its full contents — exercising the pruned-annotation path in
+        // `cap_root_hash`/`PrunableTree::root_hash`.
+        let (shard, cap, leaf_count, cmx, anchor) = two_shard_fixture(4, 3);
+        let witness = build_ironwood_witness_from_shard(
+            &ShardWitnessInput {
+                position: 16 + 3, // shard 1, local position 3
+                shard_height: 4,
+                leaf_count,
+                cmx: &cmx,
+                shard: &shard,
+                cap: &cap,
+            },
+            &anchor,
+        )
+        .unwrap();
+        assert_eq!(witness.position, 19);
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_rejects_shard_height_out_of_range() {
+        assert!(matches!(
+            build_ironwood_witness_from_shard(
+                &ShardWitnessInput {
+                    position: 0,
+                    shard_height: 33,
+                    leaf_count: 0,
+                    cmx: &[0u8; 32],
+                    shard: &ShardTreeNode::Nil,
+                    cap: &ShardTreeNode::Nil,
+                },
+                &[0u8; 32],
+            ),
+            Err(IronwoodBuildError::ShardHeightOutOfRange)
+        ));
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_rejects_insufficient_shard_detail() {
+        // `leaf_count` claims position 9 is populated, but `shard` is entirely `Nil`.
+        let (_shard, cap, leaf_count, cmx, anchor) = single_shard_fixture(4, 10, 9);
+        assert!(matches!(
+            build_ironwood_witness_from_shard(
+                &ShardWitnessInput {
+                    position: 9,
+                    shard_height: 4,
+                    leaf_count,
+                    cmx: &cmx,
+                    shard: &ShardTreeNode::Nil,
+                    cap: &cap,
+                },
+                &anchor,
+            ),
+            Err(IronwoodBuildError::ShardWitnessUnavailable)
+        ));
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_rejects_missing_cap_node() {
+        // Two-shard fixture, but `cap` is replaced with `Nil` — shard 0's root is no longer
+        // available, and `leaf_count` says it's real data (not "beyond truncate_at"), so the
+        // sibling lookup must fail rather than silently treating it as empty.
+        let (shard, _cap, leaf_count, cmx, anchor) = two_shard_fixture(4, 3);
+        assert!(matches!(
+            build_ironwood_witness_from_shard(
+                &ShardWitnessInput {
+                    position: 19,
+                    shard_height: 4,
+                    leaf_count,
+                    cmx: &cmx,
+                    shard: &shard,
+                    cap: &ShardTreeNode::Nil,
+                },
+                &anchor,
+            ),
+            Err(IronwoodBuildError::CapNodeMissing)
+        ));
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_rejects_non_canonical_shard_hash() {
+        let (_shard, cap, leaf_count, cmx, anchor) = single_shard_fixture(4, 16, 7);
+        let bad_shard = ShardTreeNode::Leaf { hash: [0xffu8; 32] };
+        assert!(matches!(
+            build_ironwood_witness_from_shard(
+                &ShardWitnessInput {
+                    position: 7,
+                    shard_height: 4,
+                    leaf_count,
+                    cmx: &cmx,
+                    shard: &bad_shard,
+                    cap: &cap,
+                },
+                &anchor,
+            ),
+            Err(IronwoodBuildError::BadWitnessPath)
+        ));
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_rejects_non_canonical_cap_annotation() {
+        let (shard, _cap, leaf_count, cmx, anchor) = two_shard_fixture(4, 3);
+        let bad_cap = ShardTreeNode::Parent {
+            hash: Some([0xffu8; 32]),
+            left: Box::new(ShardTreeNode::Nil),
+            right: Box::new(ShardTreeNode::Nil),
+        };
+        assert!(matches!(
+            build_ironwood_witness_from_shard(
+                &ShardWitnessInput {
+                    position: 19,
+                    shard_height: 4,
+                    leaf_count,
+                    cmx: &cmx,
+                    shard: &shard,
+                    cap: &bad_cap,
+                },
+                &anchor,
+            ),
+            Err(IronwoodBuildError::BadWitnessPath)
+        ));
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_rejects_wrong_anchor() {
+        let (shard, cap, leaf_count, cmx, _anchor) = single_shard_fixture(4, 16, 7);
+        let wrong_anchor = Anchor::empty_tree().to_bytes();
+        assert!(matches!(
+            build_ironwood_witness_from_shard(
+                &ShardWitnessInput {
+                    position: 7,
+                    shard_height: 4,
+                    leaf_count,
+                    cmx: &cmx,
+                    shard: &shard,
+                    cap: &cap,
+                },
+                &wrong_anchor,
+            ),
+            Err(IronwoodBuildError::WitnessAnchorMismatch)
+        ));
+    }
+
+    #[test]
+    fn build_ironwood_witness_from_shard_rejects_non_canonical_anchor() {
+        let (shard, cap, leaf_count, cmx, _anchor) = single_shard_fixture(4, 16, 7);
+        let non_canonical_anchor = [0xffu8; 32];
+        assert!(matches!(
+            build_ironwood_witness_from_shard(
+                &ShardWitnessInput {
+                    position: 7,
+                    shard_height: 4,
+                    leaf_count,
+                    cmx: &cmx,
+                    shard: &shard,
+                    cap: &cap,
+                },
+                &non_canonical_anchor,
+            ),
             Err(IronwoodBuildError::BadAnchor)
         ));
     }

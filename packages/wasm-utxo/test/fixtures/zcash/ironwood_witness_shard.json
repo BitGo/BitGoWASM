@@ -1,0 +1,251 @@
+{
+  "anchor": "6abb9bc6e95c2735e35d4b5692cb169a347ca8d57e11c239f046eeae2f71c504",
+  "cap": {
+    "hash": null,
+    "left": {
+      "hash": null,
+      "left": {
+        "hash": null,
+        "left": {
+          "hash": null,
+          "left": {
+            "hash": null,
+            "left": {
+              "hash": null,
+              "left": {
+                "hash": null,
+                "left": {
+                  "hash": null,
+                  "left": {
+                    "hash": null,
+                    "left": {
+                      "hash": null,
+                      "left": {
+                        "hash": null,
+                        "left": {
+                          "hash": null,
+                          "left": {
+                            "hash": null,
+                            "left": {
+                              "hash": null,
+                              "left": {
+                                "hash": null,
+                                "left": {
+                                  "hash": null,
+                                  "left": {
+                                    "hash": null,
+                                    "left": {
+                                      "hash": null,
+                                      "left": {
+                                        "hash": null,
+                                        "left": {
+                                          "hash": null,
+                                          "left": {
+                                            "hash": null,
+                                            "left": {
+                                              "hash": null,
+                                              "left": {
+                                                "hash": null,
+                                                "left": {
+                                                  "hash": null,
+                                                  "left": {
+                                                    "hash": null,
+                                                    "left": {
+                                                      "hash": null,
+                                                      "left": {
+                                                        "hash": null,
+                                                        "left": {
+                                                          "hash": null,
+                                                          "left": {
+                                                            "hash": "87255289d7c7a9808aa99be1bb86f436c7fbcf7c5cd4914a4fe5f14e9b1c6b20",
+                                                            "type": "Leaf"
+                                                          },
+                                                          "right": {
+                                                            "type": "Nil"
+                                                          },
+                                                          "type": "Parent"
+                                                        },
+                                                        "right": {
+                                                          "type": "Nil"
+                                                        },
+                                                        "type": "Parent"
+                                                      },
+                                                      "right": {
+                                                        "type": "Nil"
+                                                      },
+                                                      "type": "Parent"
+                                                    },
+                                                    "right": {
+                                                      "type": "Nil"
+                                                    },
+                                                    "type": "Parent"
+                                                  },
+                                                  "right": {
+                                                    "type": "Nil"
+                                                  },
+                                                  "type": "Parent"
+                                                },
+                                                "right": {
+                                                  "type": "Nil"
+                                                },
+                                                "type": "Parent"
+                                              },
+                                              "right": {
+                                                "type": "Nil"
+                                              },
+                                              "type": "Parent"
+                                            },
+                                            "right": {
+                                              "type": "Nil"
+                                            },
+                                            "type": "Parent"
+                                          },
+                                          "right": {
+                                            "type": "Nil"
+                                          },
+                                          "type": "Parent"
+                                        },
+                                        "right": {
+                                          "type": "Nil"
+                                        },
+                                        "type": "Parent"
+                                      },
+                                      "right": {
+                                        "type": "Nil"
+                                      },
+                                      "type": "Parent"
+                                    },
+                                    "right": {
+                                      "type": "Nil"
+                                    },
+                                    "type": "Parent"
+                                  },
+                                  "right": {
+                                    "type": "Nil"
+                                  },
+                                  "type": "Parent"
+                                },
+                                "right": {
+                                  "type": "Nil"
+                                },
+                                "type": "Parent"
+                              },
+                              "right": {
+                                "type": "Nil"
+                              },
+                              "type": "Parent"
+                            },
+                            "right": {
+                              "type": "Nil"
+                            },
+                            "type": "Parent"
+                          },
+                          "right": {
+                            "type": "Nil"
+                          },
+                          "type": "Parent"
+                        },
+                        "right": {
+                          "type": "Nil"
+                        },
+                        "type": "Parent"
+                      },
+                      "right": {
+                        "type": "Nil"
+                      },
+                      "type": "Parent"
+                    },
+                    "right": {
+                      "type": "Nil"
+                    },
+                    "type": "Parent"
+                  },
+                  "right": {
+                    "type": "Nil"
+                  },
+                  "type": "Parent"
+                },
+                "right": {
+                  "type": "Nil"
+                },
+                "type": "Parent"
+              },
+              "right": {
+                "type": "Nil"
+              },
+              "type": "Parent"
+            },
+            "right": {
+              "type": "Nil"
+            },
+            "type": "Parent"
+          },
+          "right": {
+            "type": "Nil"
+          },
+          "type": "Parent"
+        },
+        "right": {
+          "type": "Nil"
+        },
+        "type": "Parent"
+      },
+      "right": {
+        "type": "Nil"
+      },
+      "type": "Parent"
+    },
+    "right": {
+      "type": "Nil"
+    },
+    "type": "Parent"
+  },
+  "cmx": "8b13000000000000000000000000000000000000000000000000000000000000",
+  "comment": "Two-shard (shard_height=4) fixture for ZcashIronwoodWitness.buildFromShard: shard 0 is fully populated (16 leaves) but known to `cap` only as a pruned Leaf annotation (its own root hash, not full detail); shard 1 holds 4 real leaves and contains the target position (global position 19, local position 3). anchor is rooted via orchard's own MerklePath::root, the same primitive build_ironwood_witness wraps. wrongAnchor is Anchor::empty_tree().",
+  "leafCount": "20",
+  "position": 19,
+  "shard": {
+    "hash": null,
+    "left": {
+      "hash": null,
+      "left": {
+        "hash": null,
+        "left": {
+          "hash": null,
+          "left": {
+            "hash": "8813000000000000000000000000000000000000000000000000000000000000",
+            "type": "Leaf"
+          },
+          "right": {
+            "hash": "8913000000000000000000000000000000000000000000000000000000000000",
+            "type": "Leaf"
+          },
+          "type": "Parent"
+        },
+        "right": {
+          "hash": null,
+          "left": {
+            "hash": "8a13000000000000000000000000000000000000000000000000000000000000",
+            "type": "Leaf"
+          },
+          "right": {
+            "hash": "8b13000000000000000000000000000000000000000000000000000000000000",
+            "type": "Leaf"
+          },
+          "type": "Parent"
+        },
+        "type": "Parent"
+      },
+      "right": {
+        "type": "Nil"
+      },
+      "type": "Parent"
+    },
+    "right": {
+      "type": "Nil"
+    },
+    "type": "Parent"
+  },
+  "shardHeight": 4,
+  "wrongAnchor": "ae2935f1dfd8a24aed7c70df7de3a668eb7a49b1319880dde2bbd9031ae5d82f"
+}
