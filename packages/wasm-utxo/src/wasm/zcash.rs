@@ -114,6 +114,59 @@ pub fn ironwood_build_witness(
     })
 }
 
+/// Build and validate an Ironwood witness from a pruned shard + cap, instead of a
+/// caller-precomputed 32-entry path (see `ironwood_build_witness`).
+///
+/// `shardHeight` chooses which level the shard's root sits at (it spans up to `2^shardHeight`
+/// leaves); `shard` is the pruned subtree containing `position`, rooted at that level; `cap` is the
+/// pruned tree above every shard, down to (and including) shard-root nodes. `leafCount` is the
+/// total number of leaves committed to the tree as of `anchor` — positions beyond it are treated
+/// as canonically empty. `shard`/`cap` are plain JS objects (not JSON strings) shaped like:
+/// `{ type: "Nil" } | { type: "Leaf", hash: Uint8Array } | { type: "Parent", hash?: Uint8Array,
+/// left: ShardTreeNode, right: ShardTreeNode }`.
+///
+/// Throws under the same conditions as `ironwood_build_witness`, plus if `shard`/`cap` don't have
+/// enough detail to witness `position` as of `leafCount`.
+#[wasm_bindgen]
+pub fn ironwood_build_witness_from_shard(
+    position: u32,
+    shard_height: u8,
+    leaf_count: u64,
+    cmx: &[u8],
+    shard: JsValue,
+    cap: JsValue,
+    anchor: &[u8],
+) -> Result<IronwoodWitness, WasmUtxoError> {
+    use crate::zcash::ironwood_build::{
+        build_ironwood_witness_from_shard, ShardTreeNode, ShardWitnessInput,
+    };
+
+    let cmx: [u8; 32] = cmx
+        .try_into()
+        .map_err(|_| WasmUtxoError::new(&format!("cmx must be 32 bytes, got {}", cmx.len())))?;
+    let anchor: [u8; 32] = anchor.try_into().map_err(|_| {
+        WasmUtxoError::new(&format!("anchor must be 32 bytes, got {}", anchor.len()))
+    })?;
+    let shard: ShardTreeNode = serde_wasm_bindgen::from_value(shard)
+        .map_err(|e| WasmUtxoError::new(&format!("shard: {e}")))?;
+    let cap: ShardTreeNode = serde_wasm_bindgen::from_value(cap)
+        .map_err(|e| WasmUtxoError::new(&format!("cap: {e}")))?;
+
+    Ok(IronwoodWitness {
+        inner: build_ironwood_witness_from_shard(
+            &ShardWitnessInput {
+                position,
+                shard_height,
+                leaf_count,
+                cmx: &cmx,
+                shard: &shard,
+                cap: &cap,
+            },
+            &anchor,
+        )?,
+    })
+}
+
 /// Resolve the Orchard/Ironwood receiver of a ZIP-316 unified address for `coin`'s network, as
 /// its raw 43 bytes (diversifier + `pk_d`) — there is no scriptPubKey for a shielded output, so
 /// this can't return script bytes uniformly and returns raw receiver bytes instead.

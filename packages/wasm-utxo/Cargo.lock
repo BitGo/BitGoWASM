@@ -2542,6 +2542,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2656,6 +2677,18 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest 0.11.0-pre.9",
+]
+
+[[package]]
+name = "shardtree"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "359e552886ae54d1642091645980d83f7db465fd9b5b0248e3680713c1773388"
+dependencies = [
+ "bitflags",
+ "either",
+ "incrementalmerkletree",
+ "tracing",
 ]
 
 [[package]]
@@ -3202,6 +3235,7 @@ dependencies = [
  "ff",
  "getrandom 0.2.16",
  "hex",
+ "incrementalmerkletree",
  "js-sys",
  "miniscript",
  "musig2",
@@ -3215,7 +3249,10 @@ dependencies = [
  "rstest",
  "secp256k1",
  "serde",
+ "serde-wasm-bindgen",
+ "serde_bytes",
  "serde_json",
+ "shardtree",
  "strum",
  "wasm-bindgen",
  "wasm-bindgen-test",
