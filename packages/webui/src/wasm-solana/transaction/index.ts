@@ -47,6 +47,9 @@ async function copyToClipboard(text: string, button: HTMLElement): Promise<void>
  * Format instruction type for display
  */
 function formatInstructionType(type: string): string {
+  if (type === "RecoverNestedAssociatedTokenAccount") {
+    return "Recover Nested ATA (transfer all tokens and lamports, then close)";
+  }
   // Add spaces before capital letters for readability
   return type.replace(/([A-Z])/g, " $1").trim();
 }
@@ -69,6 +72,7 @@ function getTypeColor(type: string): string {
     SetComputeUnitLimit: "var(--lavender)",
     SetPriorityFee: "var(--lavender)",
     CreateAssociatedTokenAccount: "var(--teal)",
+    RecoverNestedAssociatedTokenAccount: "var(--red)",
     CloseAssociatedTokenAccount: "var(--red)",
     Unknown: "var(--muted)",
   };

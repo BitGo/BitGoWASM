@@ -237,6 +237,21 @@ impl TryIntoJsValue for CreateAtaParams {
     }
 }
 
+impl TryIntoJsValue for RecoverNestedAtaParams {
+    fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
+        js_obj!(
+            "type" => "RecoverNestedAssociatedTokenAccount",
+            "nestedAtaAddress" => self.nested_ata_address,
+            "nestedMintAddress" => self.nested_mint_address,
+            "destinationAtaAddress" => self.destination_ata_address,
+            "ownerAtaAddress" => self.owner_ata_address,
+            "ownerMintAddress" => self.owner_mint_address,
+            "walletAddress" => self.wallet_address,
+            "tokenProgramId" => self.token_program_id
+        )
+    }
+}
+
 impl TryIntoJsValue for CloseAtaParams {
     fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
         js_obj!(
@@ -344,6 +359,7 @@ impl TryIntoJsValue for ParsedInstruction {
             ParsedInstruction::SetPriorityFee(p) => p.try_to_js_value(),
             ParsedInstruction::TokenTransfer(p) => p.try_to_js_value(),
             ParsedInstruction::CreateAssociatedTokenAccount(p) => p.try_to_js_value(),
+            ParsedInstruction::RecoverNestedAssociatedTokenAccount(p) => p.try_to_js_value(),
             ParsedInstruction::CloseAssociatedTokenAccount(p) => p.try_to_js_value(),
             ParsedInstruction::Memo(p) => p.try_to_js_value(),
             ParsedInstruction::StakePoolDepositSol(p) => p.try_to_js_value(),
