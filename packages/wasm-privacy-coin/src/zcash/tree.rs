@@ -268,10 +268,7 @@ fn latest_checkpoint(tree: &ShieldedShardTree) -> Result<Option<(u32, Option<u64
                     TreeState::Empty => None,
                     TreeState::AtPosition(pos) => Some(u64::from(pos)),
                 };
-                if latest
-                    .as_ref()
-                    .map_or(true, |(latest_id, _)| id > latest_id)
-                {
+                if latest.as_ref().is_none_or(|(latest_id, _)| id > latest_id) {
                     latest = Some((*id, position));
                 }
                 Ok(())
@@ -369,15 +366,16 @@ fn clone_shard_tree(
     if checkpoint_count > 0 {
         source
             .for_each_checkpoint(checkpoint_count, |id, checkpoint| {
-                store
-                    .add_checkpoint(
-                        *id,
-                        Checkpoint::from_parts(
-                            checkpoint.tree_state(),
-                            checkpoint.marks_removed().clone(),
-                        ),
-                    )
-                    .map_err(|e| format!("add_checkpoint error: {:?}", e))?;
+                match store.add_checkpoint(
+                    *id,
+                    Checkpoint::from_parts(
+                        checkpoint.tree_state(),
+                        checkpoint.marks_removed().clone(),
+                    ),
+                ) {
+                    Ok(()) => (),
+                    Err(never) => match never {},
+                }
                 Ok(())
             })
             .map_err(|e| format!("for_each_checkpoint error: {:?}", e))?;
