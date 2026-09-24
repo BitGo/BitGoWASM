@@ -34,7 +34,7 @@ orchard-proving = ["orchard/circuit"]
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 strum = { version = "0.27", features = ["derive"] }
-miniscript = { git = "https://github.com/BitGo/rust-miniscript", tag = "miniscript-13.0.0-bitgo.5" }
+miniscript = { git = "https://github.com/BitGo/rust-miniscript", rev = "d4f80008dc31f6a8512ccce260709808cc34d483" }
 bech32 = "0.11"
 # BLAKE2b with personalization for Zcash ZIP-243/ZIP-244/ZIP-316 hashing.
 # Already present transitively via the miniscript fork; pinned here as a direct dependency.
@@ -76,6 +76,10 @@ ff = "0.13"
 
 # Pinned to avoid RUSTSEC-2026-0204 (invalid pointer dereference in fmt::Pointer)
 crossbeam-epoch = ">=0.9.20"
+
+[patch."https://github.com/BitGo/rust-bitcoin.git"]
+# Pin miniscript's transitive Bitcoin fork to its reviewed revision.
+bitcoin = { git = "https://github.com/BitGo/rust-bitcoin.git", rev = "0a50a7f6ab43738330bd6c0ef1320d9041437544" }
 
 [dev-dependencies]
 base64 = "0.22.1"

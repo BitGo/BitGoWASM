@@ -12,9 +12,13 @@ skip = [
     { crate = "thiserror-impl@1.0.69" },
 ]
 
-# Allow git sources (needed for miniscript)
+# Allow only the reviewed crypto-critical Git sources.
 [sources]
-allow-git = ["https://github.com/BitGo/rust-miniscript"]
+unknown-git = "deny"
+allow-git = [
+    "https://github.com/BitGo/rust-miniscript",
+    "https://github.com/BitGo/rust-bitcoin.git",
+]
 
 # Allow common licenses used in the Rust ecosystem
 [licenses]
