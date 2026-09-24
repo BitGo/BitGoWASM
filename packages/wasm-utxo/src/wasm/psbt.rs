@@ -1389,7 +1389,6 @@ mod tests {
 mod legacy_prevout_tests {
     use super::validate_legacy_prevouts;
     use crate::error::LegacyPrevoutValidationError as Error;
-    use miniscript::bitcoin::hashes::Hash;
     use miniscript::bitcoin::locktime::absolute::LockTime;
     use miniscript::bitcoin::transaction::Version;
     use miniscript::bitcoin::{
