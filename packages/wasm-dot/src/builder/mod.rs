@@ -41,4 +41,3 @@ pub fn build_transaction(
 
 // Re-use the central decode_metadata from transaction.rs
 use crate::transaction::decode_metadata;
-
