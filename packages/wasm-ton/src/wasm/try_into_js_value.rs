@@ -117,8 +117,7 @@ pub use js_obj;
 // ============================================================================
 
 use crate::parser::{
-    EffectiveAmountKind, JettonTransferFields, ParsedSendAction, ParsedTransaction,
-    TransactionType,
+    EffectiveAmountKind, JettonTransferFields, ParsedSendAction, ParsedTransaction, TransactionType,
 };
 
 impl TryIntoJsValue for EffectiveAmountKind {
@@ -317,15 +316,29 @@ mod tests {
             let value = send_action(mode).try_to_js_value().unwrap();
             assert_eq!(property(&value, "mode").as_f64(), Some(mode as f64));
             let amount: JsValue = js_sys::BigInt::from(7u64).into();
-            assert!(js_sys::Object::is(&property(&value, "nominalAmount"), &amount));
+            assert!(js_sys::Object::is(
+                &property(&value, "nominalAmount"),
+                &amount
+            ));
             assert_eq!(
-                property(&value, "effectiveAmountKind").as_string().as_deref(),
+                property(&value, "effectiveAmountKind")
+                    .as_string()
+                    .as_deref(),
                 Some("AllRemainingBalance")
             );
             assert_eq!(property(&value, "payFeesSeparately").as_bool(), Some(false));
-            assert_eq!(property(&value, "ignoreActionErrors").as_bool(), Some(false));
-            assert_eq!(property(&value, "bounceOnActionFail").as_bool(), Some(false));
-            assert_eq!(property(&value, "carriesInboundValue").as_bool(), Some(false));
+            assert_eq!(
+                property(&value, "ignoreActionErrors").as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                property(&value, "bounceOnActionFail").as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                property(&value, "carriesInboundValue").as_bool(),
+                Some(false)
+            );
             assert_eq!(property(&value, "carriesAllBalance").as_bool(), Some(true));
             assert_eq!(
                 property(&value, "destroyAccountIfZero").as_bool(),

@@ -546,7 +546,10 @@ mod parser_tests {
         let mode_3_action = &parsed_mode_3.send_actions[0];
         assert_eq!(parsed_mode_3.transaction_type, TransactionType::Transfer);
         assert!(mode_3_action.nominal_amount > 0);
-        assert_eq!(mode_3_action.effective_amount_kind, EffectiveAmountKind::Exact);
+        assert_eq!(
+            mode_3_action.effective_amount_kind,
+            EffectiveAmountKind::Exact
+        );
         assert!(mode_3_action.pay_fees_separately);
         assert!(mode_3_action.ignore_action_errors);
         assert!(!mode_3_action.carries_all_balance);
@@ -569,8 +572,7 @@ mod parser_tests {
 
     #[test]
     fn test_send_mode_flags_and_internal_bounce_are_distinct() {
-        let without_ignore_errors =
-            parse_from_transaction(&transaction_with_send_mode(0)).unwrap();
+        let without_ignore_errors = parse_from_transaction(&transaction_with_send_mode(0)).unwrap();
         let with_ignore_errors = parse_from_transaction(&transaction_with_send_mode(2)).unwrap();
         assert!(!without_ignore_errors.send_actions[0].ignore_action_errors);
         assert!(with_ignore_errors.send_actions[0].ignore_action_errors);
