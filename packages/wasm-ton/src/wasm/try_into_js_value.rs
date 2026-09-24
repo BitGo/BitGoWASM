@@ -280,6 +280,102 @@ impl TryIntoJsValue for ParsedSendAction {
     }
 }
 
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn send_action(mode: u8) -> ParsedSendAction {
+        ParsedSendAction {
+            mode,
+            nominal_amount: 7,
+            effective_amount_kind: EffectiveAmountKind::AllRemainingBalance,
+            pay_fees_separately: mode & 1 != 0,
+            ignore_action_errors: mode & 2 != 0,
+            bounce_on_action_fail: mode & 16 != 0,
+            carries_inbound_value: false,
+            carries_all_balance: true,
+            destroy_account_if_zero: mode & 32 != 0,
+            destination: "destination".to_string(),
+            destination_bounceable: "destination".to_string(),
+            bounce: true,
+            body_opcode: None,
+            state_init: false,
+            memo: None,
+            jetton_transfer: None,
+            withdraw_amount: None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn send_mode_semantics_survive_javascript_conversion() {
+        for (mode, destroy_account_if_zero) in [(128, false), (160, true)] {
+            let value = send_action(mode).try_to_js_value().unwrap();
+
+            assert_eq!(
+                js_sys::Reflect::get(&value, &JsValue::from_str("mode"))
+                    .unwrap()
+                    .as_f64(),
+                Some(mode as f64)
+            );
+            let actual_amount =
+                js_sys::Reflect::get(&value, &JsValue::from_str("nominalAmount")).unwrap();
+            let expected_amount: JsValue = js_sys::BigInt::from(7u64).into();
+            assert!(js_sys::Object::is(&actual_amount, &expected_amount));
+            assert_eq!(
+                js_sys::Reflect::get(&value, &JsValue::from_str("effectiveAmountKind"))
+                    .unwrap()
+                    .as_string()
+                    .as_deref(),
+                Some("AllRemainingBalance")
+            );
+            assert_eq!(
+                js_sys::Reflect::get(&value, &JsValue::from_str("payFeesSeparately"))
+                    .unwrap()
+                    .as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                js_sys::Reflect::get(&value, &JsValue::from_str("ignoreActionErrors"))
+                    .unwrap()
+                    .as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                js_sys::Reflect::get(&value, &JsValue::from_str("bounceOnActionFail"))
+                    .unwrap()
+                    .as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                js_sys::Reflect::get(&value, &JsValue::from_str("carriesInboundValue"))
+                    .unwrap()
+                    .as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                js_sys::Reflect::get(&value, &JsValue::from_str("carriesAllBalance"))
+                    .unwrap()
+                    .as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                js_sys::Reflect::get(&value, &JsValue::from_str("destroyAccountIfZero"))
+                    .unwrap()
+                    .as_bool(),
+                Some(destroy_account_if_zero)
+            );
+            assert_eq!(
+                js_sys::Reflect::get(&value, &JsValue::from_str("bounce"))
+                    .unwrap()
+                    .as_bool(),
+                Some(true)
+            );
+            assert!(!js_sys::Reflect::has(&value, &JsValue::from_str("amount")).unwrap());
+        }
+    }
+}
+
 impl TryIntoJsValue for ParsedTransaction {
     fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
         js_obj!(
