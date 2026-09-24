@@ -73,6 +73,22 @@ postcard = { version = "1.0", default-features = false, features = ["use-std"] }
 # `ff::PrimeField::to_repr` for the one PCZT witness field (`alpha`, a Pallas scalar) that orchard
 # exposes only as a curve scalar. Already in-tree via orchard/pasta_curves.
 ff = "0.13"
+# incrementalmerkletree::{Address, Level, Position} — needed to address into a caller-supplied
+# shard/cap pair in build_ironwood_witness_from_shard. orchard's public API does not re-export
+# these, so this must be a direct dependency.
+incrementalmerkletree = "0.8"
+# `LocatedPrunableTree::witness`/`PrunableTree::root_hash` do the real, pruning-aware Merkle
+# folding for build_ironwood_witness_from_shard, so the shard/cap wire shape and witnessing math
+# match what a real note-commitment-tree store (see wasm-privacy-coin's `ShardTree` usage) actually
+# produces, instead of requiring the caller to send a shard's full dense leaf set. Version pinned
+# to match wasm-privacy-coin's existing pin, for the same incrementalmerkletree 0.8.2 resolution.
+shardtree = "=0.6.2"
+# Pass shard/cap trees from JS as plain objects (Convention #9), not JSON strings.
+serde-wasm-bindgen = "0.6"
+# `#[serde(with = "serde_bytes")]` on ShardTreeNode's hash fields, so they (de)serialize as
+# Uint8Array on the JS side instead of a JS Array of numbers (serde_wasm_bindgen's default for
+# Vec<u8>).
+serde_bytes = "0.11"
 
 # Pinned to avoid RUSTSEC-2026-0204 (invalid pointer dereference in fmt::Pointer)
 crossbeam-epoch = ">=0.9.20"
