@@ -212,9 +212,7 @@ describe("buildFromIntent", function () {
       const generatedStakeAddress = result.generatedKeypairs[0].address;
       const parsed = parseTransaction(Transaction.fromBytes(result.transaction.toBytes()));
       const split = parsed.instructionsData.find((i: any) => i.type === "StakingSplit");
-      const deactivate = parsed.instructionsData.find(
-        (i: any) => i.type === "StakingDeactivate",
-      );
+      const deactivate = parsed.instructionsData.find((i: any) => i.type === "StakingDeactivate");
 
       assert(split, "Should have StakingSplit instruction");
       assert.equal((split as any).stakingAddress, stakingAddress);
