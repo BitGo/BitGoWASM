@@ -38,25 +38,29 @@ interface ParsedSendActionFields {
   withdrawAmount?: bigint;
 }
 
-/** A send action with its TON send-mode value semantics decoded. */
-type EffectiveAmountSemantics =
-  | {
-      effectiveAmountKind: "Exact";
-      carriesInboundValue: false;
-      carriesAllBalance: false;
-    }
-  | {
-      effectiveAmountKind: "CarryInboundValue";
-      carriesInboundValue: true;
-      carriesAllBalance: false;
-    }
-  | {
-      effectiveAmountKind: "AllRemainingBalance";
-      carriesInboundValue: false;
-      carriesAllBalance: true;
-    };
+interface ExactAmountSemantics {
+  effectiveAmountKind: "Exact";
+  carriesInboundValue: false;
+  carriesAllBalance: false;
+}
 
-export type ParsedSendAction = ParsedSendActionFields & EffectiveAmountSemantics;
+interface CarryInboundValueSemantics {
+  effectiveAmountKind: "CarryInboundValue";
+  carriesInboundValue: true;
+  carriesAllBalance: false;
+}
+
+interface AllRemainingBalanceSemantics {
+  effectiveAmountKind: "AllRemainingBalance";
+  carriesInboundValue: false;
+  carriesAllBalance: true;
+}
+
+/** A send action with its TON send-mode value semantics decoded. */
+export type ParsedSendAction =
+  | (ParsedSendActionFields & ExactAmountSemantics)
+  | (ParsedSendActionFields & CarryInboundValueSemantics)
+  | (ParsedSendActionFields & AllRemainingBalanceSemantics);
 
 /** A fully parsed TON transaction */
 export interface ParsedTransaction {
