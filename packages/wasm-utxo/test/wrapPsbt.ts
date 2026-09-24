@@ -10,6 +10,7 @@
  */
 
 import assert from "node:assert";
+import * as utxolib from "@bitgo/utxo-lib";
 import { BIP32Interface } from "@bitgo/utxo-lib";
 import { getKey } from "@bitgo/utxo-lib/dist/src/testutil";
 
@@ -36,6 +37,49 @@ const c = getKey("c");
 const external = getKey("external");
 
 describe("WrapPsbt new methods", function () {
+  describe("legacy prevout authentication", function () {
+    assert(a.privateKey);
+    const ecpair = ECPair.fromPrivateKey(a.privateKey);
+    const bip32 = BIP32.fromBase58(a.toBase58());
+    const legacyDescriptor = Descriptor.fromString(
+      `pkh(${a.publicKey.toString("hex")})`,
+      "definite",
+    );
+    const legacyScript = Buffer.from(legacyDescriptor.scriptPubkey());
+
+    const signers: { name: string; sign(psbt: Psbt): unknown }[] = [
+      { name: "signWithXprv", sign: (psbt) => psbt.signWithXprv(a.toBase58()) },
+      { name: "signWithPrv", sign: (psbt) => psbt.signWithPrv(a.privateKey!) },
+      { name: "signAll", sign: (psbt) => psbt.signAll(bip32.wasm) },
+      { name: "signAllWithEcpair", sign: (psbt) => psbt.signAllWithEcpair(ecpair.wasm) },
+    ];
+
+    function legacyWitnessOnlyPsbt(): Psbt {
+      const source = new utxolib.Psbt({ network: utxolib.networks.bitcoin });
+      source.addInput({
+        hash: "01".repeat(32),
+        index: 0,
+        witnessUtxo: { script: legacyScript, value: 100_000 },
+        bip32Derivation: [
+          {
+            pubkey: a.publicKey,
+            masterFingerprint: Buffer.from(a.fingerprint),
+            path: "m",
+          },
+        ],
+      });
+      source.addOutput({ script: legacyScript, value: 90_000 });
+      return Psbt.deserialize(source.toBuffer());
+    }
+
+    for (const { name, sign } of signers) {
+      it(`rejects witness-only P2PKH input before ${name} adds a signature`, function () {
+        const psbt = legacyWitnessOnlyPsbt();
+        assert.throws(() => sign(psbt), /requires non_witness_utxo/);
+        assert.strictEqual(psbt.hasPartialSignatures(0), false);
+      });
+    }
+  });
   describe("metadata methods", function () {
     it("inputCount returns correct count", function () {
       const psbt = new Psbt();

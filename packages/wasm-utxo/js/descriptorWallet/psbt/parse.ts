@@ -81,6 +81,8 @@ export function parse(
   descriptorMap: DescriptorMap,
   coin: CoinName,
 ): ParsedDescriptorTransaction {
+  psbt.validateLegacyPrevouts();
+
   const rawInputs = psbt.getInputs() as PsbtInput[];
   const rawOutputs = psbt.getOutputs() as PsbtOutputData[];
 

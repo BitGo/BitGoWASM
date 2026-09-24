@@ -127,6 +127,11 @@ export class Psbt extends PsbtBase<WasmPsbt> implements IPsbt {
 
   // -- Validation --
 
+  /** Reject non-value-committing inputs without authenticated full prevouts. */
+  validateLegacyPrevouts(): void {
+    this._wasm.validate_legacy_prevouts();
+  }
+
   validateSignatureAtInput(inputIndex: number, pubkey: Uint8Array): boolean {
     return this._wasm.validate_signature_at_input(inputIndex, pubkey);
   }

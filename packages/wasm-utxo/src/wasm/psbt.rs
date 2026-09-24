@@ -233,6 +233,80 @@ pub fn get_outputs_with_address_from_psbt(
     outputs.try_to_js_value()
 }
 
+fn is_value_committing_input(input: &psbt::Input, output_script: &Script) -> bool {
+    if output_script.is_p2wpkh() || output_script.is_p2wsh() || output_script.is_p2tr() {
+        return true;
+    }
+
+    input.redeem_script.as_ref().is_some_and(|redeem_script| {
+        if !output_script.is_p2sh() || !(redeem_script.is_p2wpkh() || redeem_script.is_p2wsh()) {
+            return false;
+        }
+        redeem_script.to_p2sh().as_script() == output_script
+    })
+}
+
+/// Validate non-value-committing prevouts before fee review or key use.
+///
+/// The generic PSBT API has no network/sighash policy, so every non-witness
+/// script requires an authenticated full previous transaction. Native and
+/// correctly nested SegWit plus Taproot inputs retain witness-only support.
+fn validate_legacy_prevouts(psbt: &Psbt) -> Result<(), crate::error::LegacyPrevoutValidationError> {
+    use crate::error::LegacyPrevoutValidationError as Error;
+
+    if psbt.inputs.len() != psbt.unsigned_tx.input.len() {
+        return Err(Error::InputCountMismatch {
+            psbt_inputs: psbt.inputs.len(),
+            transaction_inputs: psbt.unsigned_tx.input.len(),
+        });
+    }
+
+    for (input_index, (tx_input, input)) in psbt
+        .unsigned_tx
+        .input
+        .iter()
+        .zip(psbt.inputs.iter())
+        .enumerate()
+    {
+        let non_witness_output = if let Some(previous_transaction) = &input.non_witness_utxo {
+            if previous_transaction.compute_txid() != tx_input.previous_output.txid {
+                return Err(Error::PreviousTransactionTxidMismatch { input_index });
+            }
+            let output = previous_transaction
+                .output
+                .get(tx_input.previous_output.vout as usize)
+                .ok_or(Error::PreviousOutputIndexOutOfBounds {
+                    input_index,
+                    vout: tx_input.previous_output.vout,
+                })?;
+            if input
+                .witness_utxo
+                .as_ref()
+                .is_some_and(|witness_output| witness_output != output)
+            {
+                return Err(Error::WitnessUtxoMismatch { input_index });
+            }
+            Some(output)
+        } else {
+            None
+        };
+
+        let output = non_witness_output.or(input.witness_utxo.as_ref());
+        let Some(output) = output else {
+            continue;
+        };
+
+        if is_value_committing_input(input, &output.script_pubkey) {
+            continue;
+        }
+        if input.non_witness_utxo.is_none() {
+            return Err(Error::MissingNonWitnessUtxo { input_index });
+        }
+    }
+
+    Ok(())
+}
+
 #[wasm_bindgen]
 pub struct WrapPsbt(Psbt);
 
@@ -349,6 +423,12 @@ impl WrapPsbt {
             .expect("insert at len should never fail")
     }
 
+    /// Reject unauthenticated legacy prevouts before fee review or signing.
+    pub fn validate_legacy_prevouts(&self) -> Result<(), WasmUtxoError> {
+        validate_legacy_prevouts(&self.0)?;
+        Ok(())
+    }
+
     /// Get the unsigned transaction bytes
     ///
     /// # Returns
@@ -423,6 +503,7 @@ impl WrapPsbt {
     }
 
     pub fn sign_with_xprv(&mut self, xprv: String) -> Result<JsValue, WasmUtxoError> {
+        self.validate_legacy_prevouts()?;
         let key = bip32::Xpriv::from_str(&xprv).map_err(|_| WasmUtxoError::new("Invalid xprv"))?;
         self.0
             .sign(&key, &Secp256k1::new())
@@ -431,6 +512,7 @@ impl WrapPsbt {
     }
 
     pub fn sign_with_prv(&mut self, prv: Vec<u8>) -> Result<JsValue, WasmUtxoError> {
+        self.validate_legacy_prevouts()?;
         let privkey = PrivateKey::from_slice(&prv, miniscript::bitcoin::network::Network::Bitcoin)
             .map_err(|_| WasmUtxoError::new("Invalid private key"))?;
         let secp = Secp256k1::new();
@@ -451,6 +533,7 @@ impl WrapPsbt {
     /// # Returns
     /// A SigningKeysMap converted to JsValue (object mapping input indices to signing keys)
     pub fn sign_all(&mut self, key: &WasmBIP32) -> Result<JsValue, WasmUtxoError> {
+        self.validate_legacy_prevouts()?;
         let xpriv = key.to_xpriv()?;
         self.0
             .sign(&xpriv, &Secp256k1::new())
@@ -469,6 +552,7 @@ impl WrapPsbt {
     /// # Returns
     /// A SigningKeysMap converted to JsValue (object mapping input indices to signing keys)
     pub fn sign_all_with_ecpair(&mut self, key: &WasmECPair) -> Result<JsValue, WasmUtxoError> {
+        self.validate_legacy_prevouts()?;
         let privkey = key.get_private_key()?;
         let secp = Secp256k1::new();
         let private_key = PrivateKey::new(privkey, miniscript::bitcoin::network::Network::Bitcoin);
@@ -587,6 +671,7 @@ impl WrapPsbt {
     }
 
     pub fn finalize_mut(&mut self) -> Result<(), WasmUtxoError> {
+        self.validate_legacy_prevouts()?;
         self.0
             .finalize_mut(&Secp256k1::verification_only())
             .map_err(WasmUtxoError::from_errors)
@@ -594,6 +679,7 @@ impl WrapPsbt {
 
     /// Finalize one Miniscript input, preserving any other incomplete inputs.
     pub fn finalize_input(&mut self, input_index: usize) -> Result<(), WasmUtxoError> {
+        self.validate_legacy_prevouts()?;
         self.0
             .finalize_inp_mut(&Secp256k1::verification_only(), input_index)
             .map_err(|error| WasmUtxoError::new(&error.to_string()))
@@ -635,6 +721,7 @@ impl WrapPsbt {
     pub fn extract_transaction(
         &self,
     ) -> Result<crate::wasm::transaction::WasmTransaction, WasmUtxoError> {
+        self.validate_legacy_prevouts()?;
         let tx =
             self.0.clone().extract_tx().map_err(|e| {
                 WasmUtxoError::new(&format!("Failed to extract transaction: {}", e))
@@ -1295,5 +1382,210 @@ mod tests {
             Network::ALL.len() == 25,
             "test_all_networks! macro is out of sync with Network::ALL"
         );
+    }
+}
+
+#[cfg(test)]
+mod legacy_prevout_tests {
+    use super::validate_legacy_prevouts;
+    use crate::error::LegacyPrevoutValidationError as Error;
+    use miniscript::bitcoin::hashes::Hash;
+    use miniscript::bitcoin::locktime::absolute::LockTime;
+    use miniscript::bitcoin::transaction::Version;
+    use miniscript::bitcoin::{
+        psbt, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    };
+    use miniscript::bitcoin::Psbt;
+    use std::str::FromStr;
+
+    fn output(script_pubkey: ScriptBuf, value: u64) -> TxOut {
+        TxOut {
+            value: Amount::from_sat(value),
+            script_pubkey,
+        }
+    }
+
+    fn transaction(output: TxOut) -> Transaction {
+        Transaction {
+            version: Version(2),
+            lock_time: LockTime::ZERO,
+            input: vec![],
+            output: vec![output],
+        }
+    }
+
+    fn psbt(
+        outpoint: OutPoint,
+        witness_utxo: Option<TxOut>,
+        non_witness_utxo: Option<Transaction>,
+        redeem_script: Option<ScriptBuf>,
+    ) -> Psbt {
+        let mut psbt = Psbt::from_unsigned_tx(Transaction {
+            version: Version(2),
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: outpoint,
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence(0xFFFFFFFE),
+                witness: Witness::default(),
+            }],
+            output: vec![],
+        })
+        .expect("unsigned transaction should form a PSBT");
+        psbt.inputs[0] = psbt::Input {
+            witness_utxo,
+            non_witness_utxo,
+            redeem_script,
+            ..Default::default()
+        };
+        psbt
+    }
+
+    fn p2pkh_script() -> ScriptBuf {
+        ScriptBuf::from_bytes(
+            [vec![0x76, 0xa9, 0x14], vec![0; 20], vec![0x88, 0xac]].concat(),
+        )
+    }
+
+    fn p2sh_script() -> ScriptBuf {
+        ScriptBuf::from_bytes([vec![0xa9, 0x14], vec![0; 20], vec![0x87]].concat())
+    }
+
+    fn witness_program(version: u8, size: usize) -> ScriptBuf {
+        let mut script = vec![version, size as u8];
+        script.resize(script.len() + size, 0);
+        ScriptBuf::from_bytes(script)
+    }
+
+    fn unreferenced_txid() -> Txid {
+        Txid::from_str("0101010101010101010101010101010101010101010101010101010101010101")
+            .expect("txid should parse")
+    }
+
+    #[test]
+    fn rejects_witness_only_p2pkh_and_legacy_p2sh_inputs() {
+        for script in [p2pkh_script(), p2sh_script()] {
+            let psbt = psbt(
+                OutPoint::new(unreferenced_txid(), 0),
+                Some(output(script, 50_000)),
+                None,
+                None,
+            );
+            assert!(matches!(
+                validate_legacy_prevouts(&psbt),
+                Err(Error::MissingNonWitnessUtxo { input_index: 0 })
+            ));
+        }
+    }
+
+    #[test]
+    fn accepts_native_and_correctly_nested_witness_only_inputs() {
+        let mut cases = vec![
+            (witness_program(0, 20), None),
+            (witness_program(0, 32), None),
+            (witness_program(0x51, 32), None),
+        ];
+        for witness_script in [witness_program(0, 20), witness_program(0, 32)] {
+            let output_script = witness_script.to_p2sh();
+            cases.push((output_script, Some(witness_script)));
+        }
+
+        for (script, redeem_script) in cases {
+            let psbt = psbt(
+                OutPoint::new(unreferenced_txid(), 0),
+                Some(output(script, 50_000)),
+                None,
+                redeem_script,
+            );
+            assert!(validate_legacy_prevouts(&psbt).is_ok());
+        }
+    }
+
+    #[test]
+    fn rejects_a_redeem_script_that_does_not_match_the_p2sh_output() {
+        let redeem_script = witness_program(0, 20);
+        let actual_redeem_script = witness_program(0, 32);
+        let psbt = psbt(
+            OutPoint::new(unreferenced_txid(), 0),
+            Some(output(actual_redeem_script.to_p2sh(), 50_000)),
+            None,
+            Some(redeem_script),
+        );
+
+        assert!(matches!(
+            validate_legacy_prevouts(&psbt),
+            Err(Error::MissingNonWitnessUtxo { input_index: 0 })
+        ));
+    }
+
+    #[test]
+    fn accepts_matching_full_previous_transaction() {
+        let previous_output = output(p2pkh_script(), 50_000);
+        let previous_transaction = transaction(previous_output.clone());
+        let psbt = psbt(
+            OutPoint::new(previous_transaction.compute_txid(), 0),
+            Some(previous_output),
+            Some(previous_transaction),
+            None,
+        );
+
+        assert!(validate_legacy_prevouts(&psbt).is_ok());
+    }
+
+    #[test]
+    fn rejects_previous_transaction_txid_and_vout_mismatches() {
+        let previous_transaction = transaction(output(p2pkh_script(), 50_000));
+        let wrong_txid_psbt = psbt(
+            OutPoint::new(unreferenced_txid(), 0),
+            None,
+            Some(previous_transaction.clone()),
+            None,
+        );
+        assert!(matches!(
+            validate_legacy_prevouts(&wrong_txid_psbt),
+            Err(Error::PreviousTransactionTxidMismatch { input_index: 0 })
+        ));
+
+        let wrong_vout_psbt = psbt(
+            OutPoint::new(previous_transaction.compute_txid(), 1),
+            None,
+            Some(previous_transaction),
+            None,
+        );
+        assert!(matches!(
+            validate_legacy_prevouts(&wrong_vout_psbt),
+            Err(Error::PreviousOutputIndexOutOfBounds {
+                input_index: 0,
+                vout: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_witness_amount_and_script_mismatches() {
+        let previous_output = output(p2pkh_script(), 50_000);
+        let previous_transaction = transaction(previous_output.clone());
+        let wrong_amount_psbt = psbt(
+            OutPoint::new(previous_transaction.compute_txid(), 0),
+            Some(output(p2pkh_script(), 49_999)),
+            Some(previous_transaction.clone()),
+            None,
+        );
+        assert!(matches!(
+            validate_legacy_prevouts(&wrong_amount_psbt),
+            Err(Error::WitnessUtxoMismatch { input_index: 0 })
+        ));
+
+        let previous_transaction = transaction(previous_output);
+        let wrong_script_psbt = psbt(
+            OutPoint::new(previous_transaction.compute_txid(), 0),
+            Some(output(p2sh_script(), 50_000)),
+            Some(previous_transaction),
+            None,
+        );
+        assert!(matches!(
+            validate_legacy_prevouts(&wrong_script_psbt),
+            Err(Error::WitnessUtxoMismatch { input_index: 0 })
+        ));
     }
 }

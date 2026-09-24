@@ -21,8 +21,63 @@ macro_rules! impl_wasm_error_code {
 }
 
 #[derive(Debug, strum::IntoStaticStr)]
+pub enum LegacyPrevoutValidationError {
+    InputCountMismatch {
+        psbt_inputs: usize,
+        transaction_inputs: usize,
+    },
+    PreviousTransactionTxidMismatch {
+        input_index: usize,
+    },
+    PreviousOutputIndexOutOfBounds {
+        input_index: usize,
+        vout: u32,
+    },
+    WitnessUtxoMismatch {
+        input_index: usize,
+    },
+    MissingNonWitnessUtxo {
+        input_index: usize,
+    },
+}
+
+impl fmt::Display for LegacyPrevoutValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InputCountMismatch {
+                psbt_inputs,
+                transaction_inputs,
+            } => write!(
+                f,
+                "PSBT input count {psbt_inputs} does not match unsigned transaction input count {transaction_inputs}"
+            ),
+            Self::PreviousTransactionTxidMismatch { input_index } => write!(
+                f,
+                "Input {input_index} non_witness_utxo txid does not match the referenced txid"
+            ),
+            Self::PreviousOutputIndexOutOfBounds { input_index, vout } => write!(
+                f,
+                "Input {input_index} non_witness_utxo has no output at index {vout}"
+            ),
+            Self::WitnessUtxoMismatch { input_index } => write!(
+                f,
+                "Input {input_index} witness_utxo does not match its non_witness_utxo output"
+            ),
+            Self::MissingNonWitnessUtxo { input_index } => write!(
+                f,
+                "Input {input_index} spends a legacy output and requires non_witness_utxo"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LegacyPrevoutValidationError {}
+crate::impl_wasm_error_code!(LegacyPrevoutValidationError);
+
+#[derive(Debug, strum::IntoStaticStr)]
 pub enum WasmUtxoError {
     StringError(String),
+    LegacyPrevoutValidation(LegacyPrevoutValidationError),
     Parse(ParseTransactionError),
     UnifiedAddress(crate::zcash::unified_address::UnifiedAddressError),
     ZcashV6(crate::zcash::v6::ZcashV6Error),
@@ -36,6 +91,7 @@ impl fmt::Display for WasmUtxoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             WasmUtxoError::StringError(s) => write!(f, "{}", s),
+            WasmUtxoError::LegacyPrevoutValidation(e) => write!(f, "{}", e),
             WasmUtxoError::Parse(e) => write!(f, "{}", e),
             WasmUtxoError::UnifiedAddress(e) => write!(f, "{}", e),
             WasmUtxoError::ZcashV6(e) => write!(f, "{}", e),
@@ -49,6 +105,7 @@ impl WasmErrorCode for WasmUtxoError {
     fn code(&self) -> String {
         match self {
             WasmUtxoError::StringError(_) => "WasmUtxoError.StringError".to_string(),
+            WasmUtxoError::LegacyPrevoutValidation(e) => e.code(),
             WasmUtxoError::Parse(e) => e.code(),
             WasmUtxoError::UnifiedAddress(e) => e.code(),
             WasmUtxoError::ZcashV6(e) => e.code(),
@@ -85,6 +142,12 @@ impl From<miniscript::descriptor::NonDefiniteKeyError> for WasmUtxoError {
 impl From<crate::address::AddressError> for WasmUtxoError {
     fn from(err: crate::address::AddressError) -> Self {
         WasmUtxoError::StringError(err.to_string())
+    }
+}
+
+impl From<LegacyPrevoutValidationError> for WasmUtxoError {
+    fn from(err: LegacyPrevoutValidationError) -> Self {
+        WasmUtxoError::LegacyPrevoutValidation(err)
     }
 }
 
@@ -145,6 +208,17 @@ mod tests {
     fn string_error_code() {
         let e = WasmUtxoError::new("oops");
         assert_eq!(e.code(), "WasmUtxoError.StringError");
+    }
+
+    #[test]
+    fn legacy_prevout_validation_error_code() {
+        let error = WasmUtxoError::from(LegacyPrevoutValidationError::MissingNonWitnessUtxo {
+            input_index: 2,
+        });
+        assert_eq!(
+            error.code(),
+            "LegacyPrevoutValidationError.MissingNonWitnessUtxo"
+        );
     }
 
     #[test]

@@ -10,6 +10,30 @@ describe("descriptorWallet/psbt/parse", () => {
     "wpkh(xpub6D4BDPcP2GT577Vvch3R8wDkScZWzQzMMUm3PWbmWvVJrZwQY4VUNgqFJPMM3No2dFDFGTsxxpG5uJh7n7epu4trkrX7x7DogT5Uv6fcLW5/0/*)";
 
   describe("parse", () => {
+    it("should reject fee calculation from a witness-only legacy input", () => {
+      const legacyDescriptor = Descriptor.fromStringDetectType(
+        "pkh(02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5)",
+      );
+      const script = legacyDescriptor.scriptPubkey();
+      const psbt = new Psbt(2, 0);
+      psbt.addInput(
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        0,
+        100000n,
+        script,
+      );
+      psbt.addOutput(script, 90000n);
+      const descriptorMap = toDescriptorMap([
+        {
+          name: "legacy",
+          value:
+            "pkh(02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5)",
+        },
+      ]);
+
+      assert.throws(() => parse(psbt, descriptorMap, "btc"), /requires non_witness_utxo/);
+    });
+
     it("should parse a simple PSBT with one input and one output", () => {
       const descriptor = Descriptor.fromStringDetectType(wpkhDescriptor);
       const script = descriptor.scriptPubkey();
