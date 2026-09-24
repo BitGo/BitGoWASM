@@ -193,6 +193,27 @@ describe("buildFromIntent", function () {
     });
   });
 
+  describe("unstake intent", function () {
+    it("should reject negative primary amounts instead of deactivating the full stake", function () {
+      for (const amount of [-1n, -1, "-1"]) {
+        const intent = {
+          intentType: "unstake",
+          stakingAddress: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH",
+          amount: { value: amount },
+          remainingStakingAmount: { value: 1000000n },
+        };
+
+        assert.throws(
+          () =>
+            buildFromIntent(intent as any, {
+              feePayer,
+              nonce: { type: "blockhash", value: blockhash },
+            }),
+        );
+      }
+    });
+  });
+
   describe("claim intent", function () {
     it("should build a claim (withdraw) transaction", function () {
       const intent = {
