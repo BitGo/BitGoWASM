@@ -227,8 +227,8 @@ pub fn generate_and_set_deterministic_nonce(
     use crate::bitcoin::sighash::{Prevouts, SighashCache};
     use crate::bitcoin::taproot::TapNodeHash;
 
-    let sighash_type = get_tap_sighash_type(&ctx.psbt.inputs[ctx.input_index])
-        .map_err(|e| e.to_string())?;
+    let sighash_type =
+        get_tap_sighash_type(&ctx.psbt.inputs[ctx.input_index]).map_err(|e| e.to_string())?;
 
     // Derive the key for this input
     let tap_key_origins = &ctx.psbt.inputs[ctx.input_index].tap_key_origins;

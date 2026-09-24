@@ -1876,10 +1876,7 @@ mod tests {
         let result = {
             let mut context = Musig2Context::new(bitgo_psbt.psbt_mut(), input_index)
                 .expect("Failed to create MuSig2 context");
-            context.generate_nonce_first_round(
-                psbt_stages.wallet_keys.user_key(),
-                [1u8; 32],
-            )
+            context.generate_nonce_first_round(psbt_stages.wallet_keys.user_key(), [1u8; 32])
         };
         assert!(matches!(
             result,
