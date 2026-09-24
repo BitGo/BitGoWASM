@@ -121,9 +121,10 @@ public final class ShieldedMerkleTree implements AutoCloseable {
    * @param blockHeight   block height (u32 range)
    * @param commitments   shielded note commitment values (cmx) for this block
    * @param owned         per-commitment ownership flags; {@code null} or shorter list → remaining are false
-   * @param expectedRoot  root to verify against; {@code null} to skip
+   * @param expectedRoot  32-byte root to verify against; {@code null} to skip
    * @return computed root after appending
-   * @throws WasmException with code {@code ROOT_MISMATCH} if verification fails
+   * @throws WasmException with code {@code ROOT_MISMATCH} if verification fails; a failed
+   *         verified append leaves the tree unchanged
    */
   public ShieldedRoot appendCommitments(
       long blockHeight, List<ShieldedCommitment> commitments, List<Boolean> owned,
