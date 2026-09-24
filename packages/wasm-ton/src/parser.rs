@@ -287,10 +287,17 @@ fn parse_jetton_transfer_body(
         response_dst.to_base64_url_flags(false, false)
     };
 
-    // custom_payload: Maybe ^Cell — skip if present
-    let has_custom_payload: bool = parser.unpack(()).unwrap_or(false);
+    // custom_payload: Maybe ^Cell. This parser cannot represent its semantics.
+    let has_custom_payload: bool = parser
+        .unpack(())
+        .map_err(|e| WasmTonError::new(&format!("jetton: failed to read custom_payload: {e}")))?;
     if has_custom_payload {
-        let _: Cell = parser.parse_as::<_, tlb_ton::Ref>(()).unwrap_or_default();
+        let _: Cell = parser.parse_as::<_, tlb_ton::Ref>(()).map_err(|e| {
+            WasmTonError::new(&format!("jetton: failed to read custom_payload cell: {e}"))
+        })?;
+        return Err(WasmTonError::new(
+            "unsupported opaque Jetton custom_payload",
+        ));
     }
 
     // forward_ton_amount: VarUInteger 16
@@ -299,8 +306,8 @@ fn parse_jetton_transfer_body(
     })?;
     let forward_ton_amount = biguint_to_u64(&forward_big);
 
-    // forward_payload: Either Cell ^Cell — extract text memo if present
-    let memo = parse_forward_payload_memo(parser, body);
+    // forward_payload: Either Cell ^Cell — accept only empty or UTF-8 text comments.
+    let memo = parse_forward_payload_memo(parser, body)?;
 
     Ok((
         JettonTransferFields {
@@ -314,51 +321,97 @@ fn parse_jetton_transfer_body(
     ))
 }
 
-/// Extract a text memo from `forward_payload:(Either Cell ^Cell)`.
+/// Payload forms this parser can safely identify without decoding contract semantics.
+enum ForwardPayload {
+    Empty,
+    Text(String),
+    BinaryComment,
+    Opaque,
+}
+
+/// Extract a memo from `forward_payload:(Either Cell ^Cell)`.
 ///
-/// Handles both inline (bit=0) and ref (bit=1) forward_payload storage.
-/// Returns `None` on any parse error or if the payload is not a text comment.
+/// Only empty payloads and text comments have a lossless representation in the
+/// public parser result. Binary comments and other payloads must not be hidden.
 fn parse_forward_payload_memo(
     parser: &mut tlb_ton::de::CellParser<'_>,
-    _body: &Cell,
-) -> Option<String> {
-    // Read the Either bit: 0 = inline, 1 = ref
-    let is_ref: bool = parser.unpack(()).ok()?;
+    body: &Cell,
+) -> Result<Option<String>, WasmTonError> {
+    // Read the Either bit: 0 = inline, 1 = ref.
+    let is_ref: bool = parser
+        .unpack(())
+        .map_err(|e| WasmTonError::new(&format!("jetton: failed to read forward_payload: {e}")))?;
 
-    if is_ref {
-        // Payload is in the next ref cell — read the ref and parse from there
-        let ref_cell: Cell = parser.parse_as::<_, tlb_ton::Ref>(()).ok()?;
-        read_text_comment(&mut ref_cell.parser())
+    let payload = if is_ref {
+        if body.references.len() != 1 {
+            ForwardPayload::Opaque
+        } else {
+            let ref_cell: Cell = parser.parse_as::<_, tlb_ton::Ref>(()).map_err(|e| {
+                WasmTonError::new(&format!("jetton: failed to read forward_payload cell: {e}"))
+            })?;
+            classify_forward_payload(&mut ref_cell.parser(), !ref_cell.references.is_empty())
+        }
     } else {
-        // Payload is inline in the remaining bits
-        read_text_comment(parser)
+        classify_forward_payload(parser, !body.references.is_empty())
+    };
+
+    // The forward payload is the final field. Do not ignore signed trailing bits.
+    if parser.bits_left() != 0 {
+        return Err(WasmTonError::new(
+            "unsupported opaque Jetton forward_payload",
+        ));
+    }
+
+    match payload {
+        ForwardPayload::Empty => Ok(None),
+        ForwardPayload::Text(text) => Ok(Some(text)),
+        ForwardPayload::BinaryComment | ForwardPayload::Opaque => Err(WasmTonError::new(
+            "unsupported opaque Jetton forward_payload",
+        )),
     }
 }
 
-/// Read a TEP-74 text comment: `0x00000000` prefix followed by UTF-8 bytes.
-/// Returns `None` if the data doesn't start with the comment prefix or is not valid text.
-fn read_text_comment(parser: &mut tlb_ton::de::CellParser<'_>) -> Option<String> {
-    const COMMENT_PREFIX: u32 = 0x0000_0000;
-    if parser.bits_left() < 32 {
-        return None;
+/// Classify a payload cell's bits without lossy decoding or ignoring references.
+fn classify_forward_payload(
+    parser: &mut tlb_ton::de::CellParser<'_>,
+    has_references: bool,
+) -> ForwardPayload {
+    if has_references {
+        return ForwardPayload::Opaque;
     }
-    let prefix: u32 = parser.unpack(()).ok()?;
-    if prefix != COMMENT_PREFIX {
-        return None;
+
+    let bits_left = parser.bits_left();
+    if bits_left == 0 {
+        return ForwardPayload::Empty;
     }
+    if bits_left < 32 || !bits_left.is_multiple_of(8) {
+        return ForwardPayload::Opaque;
+    }
+
+    let prefix: u32 = match parser.unpack(()) {
+        Ok(prefix) => prefix,
+        Err(_) => return ForwardPayload::Opaque,
+    };
+    if prefix != 0 {
+        return ForwardPayload::Opaque;
+    }
+
     let remaining = parser.bits_left() / 8;
     let mut bytes = Vec::with_capacity(remaining);
     for _ in 0..remaining {
         match parser.unpack::<u8>(()) {
-            Ok(b) => bytes.push(b),
-            Err(_) => break,
+            Ok(byte) => bytes.push(byte),
+            Err(_) => return ForwardPayload::Opaque,
         }
     }
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
+
+    if bytes.first() == Some(&0xff) {
+        return ForwardPayload::BinaryComment;
+    }
+
+    match String::from_utf8(bytes) {
+        Ok(text) => ForwardPayload::Text(text),
+        Err(_) => ForwardPayload::Opaque,
     }
 }
 
@@ -421,8 +474,9 @@ mod parser_tests {
     use crate::transaction::Transaction;
     use base64::{engine::general_purpose::STANDARD, Engine};
     use tlb_ton::de::CellDeserialize;
+    use tlb_ton::ser::{CellSerialize, CellSerializeExt};
     use tlb_ton::Cell;
-    use ton_contracts::jetton::JettonTransfer;
+    use ton_contracts::jetton::{ForwardPayload, ForwardPayloadComment, JettonTransfer};
     use ton_contracts::wallet::v4r2::WalletV4R2Op;
 
     /// signedTokenSendTransaction.tx from sdk-coin-ton fixtures.
@@ -495,5 +549,160 @@ mod parser_tests {
             action.jetton_transfer.as_ref().unwrap().amount,
             1_000_000_000
         );
+    }
+
+    fn test_jetton_transfer(
+        custom_payload: Option<Cell>,
+        forward_payload: ForwardPayload<Cell>,
+    ) -> JettonTransfer<Cell> {
+        JettonTransfer {
+            query_id: 1,
+            amount: BigUint::from(10u8),
+            dst: MsgAddress::NULL,
+            response_dst: MsgAddress::NULL,
+            custom_payload,
+            forward_ton_amount: BigUint::ZERO,
+            forward_payload,
+        }
+    }
+
+    fn test_jetton_body(
+        custom_payload: Option<Cell>,
+        forward_payload: ForwardPayload<Cell>,
+    ) -> Cell {
+        test_jetton_transfer(custom_payload, forward_payload)
+            .to_cell(())
+            .unwrap()
+    }
+
+    fn payload_cell(bytes: &[u8]) -> Cell {
+        use tlb_ton::bits::ser::BitWriterExt;
+
+        let mut builder = Cell::builder();
+        for byte in bytes {
+            builder.pack(*byte, ()).unwrap();
+        }
+        builder.into_cell()
+    }
+
+    fn inline_forward_payload_cell(bytes: &[u8]) -> Cell {
+        use tlb_ton::bits::ser::BitWriterExt;
+
+        let mut builder = Cell::builder();
+        builder.pack(false, ()).unwrap();
+        for byte in bytes {
+            builder.pack(*byte, ()).unwrap();
+        }
+        builder.into_cell()
+    }
+
+    #[test]
+    fn test_empty_jetton_forward_payload_is_supported() {
+        let body = test_jetton_body(None, ForwardPayload::Data(Cell::default()));
+
+        let parsed = parse_message_body(&body).unwrap();
+        assert_eq!(parsed.memo, None);
+    }
+
+    #[test]
+    fn test_jetton_forward_payload_text_comment_is_supported() {
+        let body = test_jetton_body(
+            None,
+            ForwardPayload::Comment(ForwardPayloadComment::Text("reviewed".to_string())),
+        );
+
+        let parsed = parse_message_body(&body).unwrap();
+        assert_eq!(parsed.memo.as_deref(), Some("reviewed"));
+    }
+
+    #[test]
+    fn test_inline_jetton_text_comment_is_supported() {
+        let body = inline_forward_payload_cell(&[0, 0, 0, 0, b'o', b'k']);
+        let mut parser = body.parser();
+
+        assert_eq!(
+            parse_forward_payload_memo(&mut parser, &body)
+                .unwrap()
+                .as_deref(),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn test_inline_opaque_jetton_forward_payload_is_rejected() {
+        let body = inline_forward_payload_cell(&[0xde, 0xad, 0xbe, 0xef]);
+        let mut parser = body.parser();
+
+        let error = parse_forward_payload_memo(&mut parser, &body).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unsupported opaque Jetton forward_payload"
+        );
+    }
+
+    #[test]
+    fn test_referenced_opaque_jetton_forward_payload_is_rejected() {
+        let body = test_jetton_body(None, ForwardPayload::Data(payload_cell(&[0xaa; 127])));
+        assert_eq!(body.references.len(), 1);
+
+        let error = parse_message_body(&body).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unsupported opaque Jetton forward_payload"
+        );
+    }
+
+    #[test]
+    fn test_binary_jetton_comment_is_rejected() {
+        let body = test_jetton_body(
+            None,
+            ForwardPayload::Data(payload_cell(&[0, 0, 0, 0, 0xff, 0x41])),
+        );
+
+        let error = parse_message_body(&body).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unsupported opaque Jetton forward_payload"
+        );
+    }
+
+    #[test]
+    fn test_referenced_jetton_comment_with_trailing_body_bits_is_rejected() {
+        use tlb_ton::bits::ser::BitWriterExt;
+
+        let transfer = test_jetton_transfer(
+            None,
+            ForwardPayload::Comment(ForwardPayloadComment::Text("a".repeat(123))),
+        );
+        let mut builder = Cell::builder();
+        transfer.store(&mut builder, ()).unwrap();
+        builder.pack(true, ()).unwrap();
+        let body = builder.into_cell();
+        assert_eq!(body.references.len(), 1);
+
+        let error = parse_message_body(&body).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unsupported opaque Jetton forward_payload"
+        );
+    }
+
+    #[test]
+    fn test_present_jetton_custom_payload_is_rejected() {
+        let body = test_jetton_body(Some(Cell::default()), ForwardPayload::Data(Cell::default()));
+
+        let error = parse_message_body(&body).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unsupported opaque Jetton custom_payload"
+        );
+    }
+
+    #[test]
+    fn test_malformed_jetton_forward_payload_is_rejected() {
+        let body = Cell::default();
+        let mut parser = body.parser();
+
+        assert!(parse_forward_payload_memo(&mut parser, &body).is_err());
     }
 }
