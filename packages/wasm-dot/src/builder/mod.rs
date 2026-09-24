@@ -31,13 +31,19 @@ pub fn build_transaction(
     // Calculate era from validity
     let era = compute_era(&context.validity);
 
-    // Create transaction directly from components (no extrinsic encoding needed).
+    // Create the transaction with its material attached to this call data.
     // to_bytes() on unsigned transactions returns signable_payload(), which is the
     // signing payload format: call_data | era | nonce | tip | extensions | additional_signed.
-    let mut tx = Transaction::new(call_data, era, context.nonce, context.tip as u128);
-    tx.set_context(context.material, context.validity, &context.reference_block)?;
-
-    Ok(tx)
+    Transaction::new_with_context(
+        call_data,
+        era,
+        context.nonce,
+        context.tip as u128,
+        context.material,
+        metadata,
+        context.validity,
+        &context.reference_block,
+    )
 }
 
 // Re-use the central decode_metadata from transaction.rs

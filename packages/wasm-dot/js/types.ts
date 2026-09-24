@@ -49,20 +49,6 @@ export interface Validity {
   maxDuration: number;
 }
 
-/**
- * Context for parsing transactions
- */
-export interface ParseContext {
-  /** Chain material metadata */
-  material: Material;
-  /** Sender address (optional, helps with decoding) */
-  sender?: string;
-  /** Reference block hash (not in extrinsic bytes, pass-through for consumers) */
-  referenceBlock?: string;
-  /** Block number when transaction becomes valid (not in extrinsic bytes, pass-through for consumers) */
-  blockNumber?: number;
-}
-
 // =============================================================================
 // Build Context (how to build the transaction)
 // =============================================================================
