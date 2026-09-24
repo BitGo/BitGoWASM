@@ -20,7 +20,9 @@ use crate::bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint};
 use crate::bitcoin::secp256k1::PublicKey as Secp256k1PublicKey;
 use crate::bitcoin::{ScriptBuf, TapLeafHash, XOnlyPublicKey};
 use crate::error::WasmUtxoError;
-use crate::fixed_script_wallet::wallet_keys::{to_pub_triple, PubTriple, RootWalletKeys};
+use crate::fixed_script_wallet::wallet_keys::{
+    require_distinct_pubkeys, to_pub_triple, PubTriple, RootWalletKeys,
+};
 use crate::Network;
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -48,17 +50,18 @@ impl WalletScripts {
         script_type: OutputScriptType,
         script_support: &OutputScriptSupport,
     ) -> Result<WalletScripts, WasmUtxoError> {
+        require_distinct_pubkeys(keys)?;
         match script_type {
             OutputScriptType::P2sh => {
                 script_support.assert_legacy()?;
-                let script = build_multisig_script_2_of_3(keys);
+                let script = build_multisig_script_2_of_3(keys)?;
                 Ok(WalletScripts::P2sh(ScriptP2sh {
                     redeem_script: script,
                 }))
             }
             OutputScriptType::P2shP2wsh => {
                 script_support.assert_segwit()?;
-                let script = build_multisig_script_2_of_3(keys);
+                let script = build_multisig_script_2_of_3(keys)?;
                 Ok(WalletScripts::P2shP2wsh(ScriptP2shP2wsh {
                     redeem_script: script.clone().to_p2wsh(),
                     witness_script: script,
@@ -66,22 +69,22 @@ impl WalletScripts {
             }
             OutputScriptType::P2wsh => {
                 script_support.assert_segwit()?;
-                let script = build_multisig_script_2_of_3(keys);
+                let script = build_multisig_script_2_of_3(keys)?;
                 Ok(WalletScripts::P2wsh(ScriptP2wsh {
                     witness_script: script,
                 }))
             }
             OutputScriptType::P2trLegacy => {
                 script_support.assert_taproot()?;
-                Ok(WalletScripts::P2trLegacy(ScriptP2tr::new(keys, false)))
+                Ok(WalletScripts::P2trLegacy(ScriptP2tr::new(keys, false)?))
             }
             OutputScriptType::P2trMusig2 => {
                 script_support.assert_taproot()?;
-                Ok(WalletScripts::P2trMusig2(ScriptP2tr::new(keys, true)))
+                Ok(WalletScripts::P2trMusig2(ScriptP2tr::new(keys, true)?))
             }
             OutputScriptType::P2mr => {
                 script_support.assert_p2mr()?;
-                Ok(WalletScripts::P2mr(ScriptP2mr::new(keys)))
+                Ok(WalletScripts::P2mr(ScriptP2mr::new(keys)?))
             }
         }
     }
@@ -526,6 +529,39 @@ mod tests {
         assert!(WalletScripts::from_wallet_keys(&keys, P2wsh, p, &btc_support).is_ok());
         assert!(WalletScripts::from_wallet_keys(&keys, P2trLegacy, p, &btc_support).is_ok());
         assert!(WalletScripts::from_wallet_keys(&keys, P2trMusig2, p, &btc_support).is_ok());
+    }
+
+    #[test]
+    fn duplicate_derived_roles_are_rejected_for_every_script_family() {
+        use crate::error::WasmUtxoError;
+        use crate::fixed_script_wallet::WalletKeyError;
+
+        let wallet_keys = get_test_wallet_keys("duplicate-derived-roles");
+        let derived = wallet_keys
+            .derive_path(&chain_index_path(0, 0))
+            .unwrap();
+        let distinct = to_pub_triple(&derived);
+        let support = Network::Bitcoin.output_script_support();
+
+        for &script_type in OutputScriptType::all() {
+            for (first, second) in [(0, 1), (0, 2), (1, 2)] {
+                let mut duplicate = distinct;
+                duplicate[second] = duplicate[first];
+                assert!(matches!(
+                    WalletScripts::new(&duplicate, script_type, &support),
+                    Err(WasmUtxoError::WalletKey(
+                        WalletKeyError::DuplicateDerivedKeys { .. }
+                    ))
+                ));
+            }
+
+            assert!(matches!(
+                WalletScripts::new(&[distinct[0]; 3], script_type, &support),
+                Err(WasmUtxoError::WalletKey(
+                    WalletKeyError::DuplicateDerivedKeys { .. }
+                ))
+            ));
+        }
     }
 
     #[test]

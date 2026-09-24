@@ -3,7 +3,8 @@ use miniscript::bitcoin::taproot::{TaprootBuilder, TaprootSpendInfo};
 use crate::bitcoin::blockdata::opcodes::all::{OP_CHECKSIG, OP_CHECKSIGVERIFY};
 use crate::bitcoin::blockdata::script::Builder;
 use crate::bitcoin::{CompressedPublicKey, ScriptBuf};
-use crate::fixed_script_wallet::wallet_keys::PubTriple;
+use crate::error::WasmUtxoError;
+use crate::fixed_script_wallet::wallet_keys::{require_distinct_pubkeys, PubTriple};
 use crate::p2mr::{
     build_p2mr_script_pubkey, build_p2mr_tree, ScriptTreeNode, TAPSCRIPT_LEAF_VERSION,
 };
@@ -93,7 +94,10 @@ fn build_taproot_builder(keys: &PubTriple, is_musig2: bool) -> TaprootBuilder {
     builder
 }
 
-fn build_p2tr_spend_info(keys: &PubTriple, p2tr_musig2: bool) -> TaprootSpendInfo {
+fn build_p2tr_spend_info(
+    keys: &PubTriple,
+    p2tr_musig2: bool,
+) -> Result<TaprootSpendInfo, WasmUtxoError> {
     use super::bitgo_musig::key_agg_bitgo_p2tr_legacy;
     use super::bitgo_musig::key_agg_p2tr_musig2;
     use crate::bitcoin::secp256k1::Secp256k1;
@@ -103,24 +107,26 @@ fn build_p2tr_spend_info(keys: &PubTriple, p2tr_musig2: bool) -> TaprootSpendInf
     let [user, _backup, bitgo] = *keys;
 
     let agg_key_bytes = if p2tr_musig2 {
-        key_agg_p2tr_musig2(&[user, bitgo]).expect("valid aggregation")
+        key_agg_p2tr_musig2(&[user, bitgo])?
     } else {
-        key_agg_bitgo_p2tr_legacy(&[user, bitgo]).expect("valid aggregation")
+        key_agg_bitgo_p2tr_legacy(&[user, bitgo])?
     };
-    let internal_key = XOnlyPublicKey::from_slice(&agg_key_bytes).expect("valid xonly key");
+    let internal_key = XOnlyPublicKey::from_slice(&agg_key_bytes)
+        .map_err(|e| WasmUtxoError::new(&format!("Invalid aggregated x-only key: {}", e)))?;
 
     build_taproot_builder(keys, p2tr_musig2)
         .finalize(&secp, internal_key)
-        .expect("valid taptree")
+        .map_err(|e| WasmUtxoError::new(&format!("Failed to finalize Taproot tree: {}", e)))
 }
 
 /// Build a TapTree for PSBT output from wallet keys
 pub fn build_tap_tree_for_output(
     pub_triple: &PubTriple,
     is_musig2: bool,
-) -> miniscript::bitcoin::taproot::TapTree {
+) -> Result<miniscript::bitcoin::taproot::TapTree, WasmUtxoError> {
+    require_distinct_pubkeys(pub_triple)?;
     miniscript::bitcoin::taproot::TapTree::try_from(build_taproot_builder(pub_triple, is_musig2))
-        .expect("valid tap tree")
+        .map_err(|e| WasmUtxoError::new(&format!("Invalid Taproot tree: {}", e)))
 }
 
 /// Create tap key origins for outputs with multiple leaf hashes per key.
@@ -131,7 +137,7 @@ pub fn create_tap_bip32_derivation_for_output(
     index: u32,
     pub_triple: &PubTriple,
     is_musig2: bool,
-) -> std::collections::BTreeMap<
+) -> Result<std::collections::BTreeMap<
     miniscript::bitcoin::XOnlyPublicKey,
     (
         Vec<miniscript::bitcoin::taproot::TapLeafHash>,
@@ -140,7 +146,8 @@ pub fn create_tap_bip32_derivation_for_output(
             miniscript::bitcoin::bip32::DerivationPath,
         ),
     ),
-> {
+>, WasmUtxoError> {
+    require_distinct_pubkeys(pub_triple)?;
     use crate::fixed_script_wallet::derivation_path;
     use miniscript::bitcoin::secp256k1::{PublicKey, Secp256k1};
     use miniscript::bitcoin::taproot::{LeafVersion, TapLeafHash};
@@ -183,7 +190,7 @@ pub fn create_tap_bip32_derivation_for_output(
         map.insert(x_only, (key_leaf_hashes, (xpub.fingerprint(), path)));
     }
 
-    map
+    Ok(map)
 }
 
 #[derive(Debug)]
@@ -192,9 +199,13 @@ pub struct ScriptP2tr {
 }
 
 impl ScriptP2tr {
-    pub fn new(keys: &PubTriple, p2tr_musig2: bool) -> ScriptP2tr {
-        let spend_info = build_p2tr_spend_info(keys, p2tr_musig2);
-        ScriptP2tr { spend_info }
+    pub fn new(
+        keys: &PubTriple,
+        p2tr_musig2: bool,
+    ) -> Result<ScriptP2tr, WasmUtxoError> {
+        require_distinct_pubkeys(keys)?;
+        let spend_info = build_p2tr_spend_info(keys, p2tr_musig2)?;
+        Ok(ScriptP2tr { spend_info })
     }
 
     pub fn output_script(&self) -> ScriptBuf {
@@ -256,13 +267,14 @@ pub struct ScriptP2mr {
 
 impl ScriptP2mr {
     /// Build a P2MR wallet script from a public key triple.
-    pub fn new(keys: &PubTriple) -> ScriptP2mr {
+    pub fn new(keys: &PubTriple) -> Result<ScriptP2mr, WasmUtxoError> {
+        require_distinct_pubkeys(keys)?;
         let tree = build_p2mr_script_tree(keys);
         let info = build_p2mr_tree(&tree);
-        ScriptP2mr {
+        Ok(ScriptP2mr {
             merkle_root: info.merkle_root,
             leaves: info.leaves,
-        }
+        })
     }
 
     /// Return the 34-byte P2MR scriptPubKey: `OP_2 OP_PUSHBYTES_32 <merkle_root>`.
@@ -369,7 +381,7 @@ mod tests {
         for (i, fixture) in p2mr_fixtures().iter().enumerate() {
             let triple =
                 pub_triple_from_hex(fixture.pubkeys[0], fixture.pubkeys[1], fixture.pubkeys[2]);
-            let script = ScriptP2mr::new(&triple);
+            let script = ScriptP2mr::new(&triple).unwrap();
 
             // Verify merkle root
             assert_eq!(
@@ -482,7 +494,7 @@ mod tests {
             "028714039c6866c27eb6885ffbb4085964a603140e5a39b0fa29b1d9839212f9a2",
             "03203ab799ce28e2cca044f594c69275050af4bb0854ad730a8f74622342300e64",
         );
-        let script = ScriptP2mr::new(&triple);
+        let script = ScriptP2mr::new(&triple).unwrap();
         let spk_bytes = script.output_script().to_bytes();
         assert_eq!(
             spk_bytes[0], 0x52,
@@ -491,7 +503,7 @@ mod tests {
         assert_eq!(spk_bytes.len(), 34, "P2MR scriptPubKey must be 34 bytes");
 
         // Compare: P2TR for same keys would start with 0x51
-        let p2tr = ScriptP2tr::new(&triple, false);
+        let p2tr = ScriptP2tr::new(&triple, false).unwrap();
         assert_eq!(
             p2tr.output_script().to_bytes()[0],
             0x51,
@@ -527,7 +539,7 @@ mod tests {
                 pubkeys.try_into().expect("Failed to convert to array");
 
             // Generate scripts using the from_p2tr method
-            let spend_info = ScriptP2tr::new(&pub_triple, use_musig2);
+            let spend_info = ScriptP2tr::new(&pub_triple, use_musig2).unwrap();
 
             let internal_key = spend_info.spend_info.internal_key().serialize();
             assert_eq!(
@@ -553,6 +565,27 @@ mod tests {
     #[test]
     fn test_p2tr_output_scripts_from_fixture() {
         test_p2tr_output_scripts_helper("p2tr", false);
+    }
+
+    #[test]
+    fn test_p2tr_aggregation_errors_are_propagated() {
+        use super::super::bitgo_musig::BitGoMusigError;
+
+        let triple = pub_triple_from_hex(
+            "02d20a62701c54f6eb3abb9f964b0e29ff90ffa3b4e3fcb73e7c67d4950fa6e3c7",
+            "028714039c6866c27eb6885ffbb4085964a603140e5a39b0fa29b1d9839212f9a2",
+            "03203ab799ce28e2cca044f594c69275050af4bb0854ad730a8f74622342300e64",
+        );
+        let duplicate_user_bitgo = [triple[0], triple[1], triple[0]];
+
+        for musig2 in [false, true] {
+            assert!(matches!(
+                build_p2tr_spend_info(&duplicate_user_bitgo, musig2),
+                Err(WasmUtxoError::BitGoMusig(
+                    BitGoMusigError::InvalidPubkeyCount(_)
+                ))
+            ));
+        }
     }
 
     #[test]

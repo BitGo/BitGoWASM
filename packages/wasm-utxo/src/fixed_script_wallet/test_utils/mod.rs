@@ -38,7 +38,7 @@ pub fn get_test_wallet_keys(seed: &str) -> XpubTriple {
 pub fn create_external_output(seed: &str) -> PsbtOutput {
     let xpubs = get_test_wallet_keys(seed);
     let _scripts = WalletScripts::from_wallet_keys(
-        &RootWalletKeys::new(xpubs),
+        &RootWalletKeys::new(xpubs).expect("test wallet xpubs are distinct"),
         OutputScriptType::P2wsh,
         &chain_index_path(
             Chain::new(OutputScriptType::P2wsh, Scope::External).value(),

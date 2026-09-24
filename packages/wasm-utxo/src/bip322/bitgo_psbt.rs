@@ -494,28 +494,31 @@ fn build_output_script_from_pubkeys(
 ) -> Result<ScriptBuf, String> {
     match script_type {
         "p2sh" => {
-            let redeem_script = build_multisig_script_2_of_3(pubkeys);
+            let redeem_script = build_multisig_script_2_of_3(pubkeys)
+                .map_err(|error| error.to_string())?;
             Ok(redeem_script.to_p2sh())
         }
         "p2shP2wsh" => {
-            let witness_script = build_multisig_script_2_of_3(pubkeys);
+            let witness_script = build_multisig_script_2_of_3(pubkeys)
+                .map_err(|error| error.to_string())?;
             let redeem_script = witness_script.to_p2wsh();
             Ok(redeem_script.to_p2sh())
         }
         "p2wsh" => {
-            let witness_script = build_multisig_script_2_of_3(pubkeys);
+            let witness_script = build_multisig_script_2_of_3(pubkeys)
+                .map_err(|error| error.to_string())?;
             Ok(witness_script.to_p2wsh())
         }
         "p2tr" => {
-            let script_p2tr = ScriptP2tr::new(pubkeys, false);
+            let script_p2tr = ScriptP2tr::new(pubkeys, false).map_err(|error| error.to_string())?;
             Ok(script_p2tr.output_script())
         }
         "p2trMusig2" => {
-            let script_p2tr = ScriptP2tr::new(pubkeys, true);
+            let script_p2tr = ScriptP2tr::new(pubkeys, true).map_err(|error| error.to_string())?;
             Ok(script_p2tr.output_script())
         }
         "p2mr" => {
-            let script_p2mr = ScriptP2mr::new(pubkeys);
+            let script_p2mr = ScriptP2mr::new(pubkeys).map_err(|error| error.to_string())?;
             Ok(script_p2mr.output_script())
         }
         _ => Err(format!(

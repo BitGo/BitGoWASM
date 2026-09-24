@@ -11,6 +11,63 @@ pub type XpubTriple = [Xpub; 3];
 
 pub type PubTriple = [CompressedPublicKey; 3];
 
+#[derive(Debug, strum::IntoStaticStr)]
+pub enum WalletKeyError {
+    DuplicateRootKeys { first: &'static str, second: &'static str },
+    DuplicateDerivedKeys { first: &'static str, second: &'static str },
+}
+
+impl std::fmt::Display for WalletKeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateRootKeys { first, second } => write!(
+                f,
+                "Wallet role xpubs must be distinct: {first} and {second} are identical"
+            ),
+            Self::DuplicateDerivedKeys { first, second } => write!(
+                f,
+                "Wallet role public keys must be distinct: {first} and {second} are identical"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WalletKeyError {}
+crate::impl_wasm_error_code!(WalletKeyError);
+
+const ROLE_NAMES: [&str; 3] = ["user", "backup", "BitGo"];
+
+fn duplicate_pair<T: PartialEq>(keys: &[T; 3]) -> Option<(usize, usize)> {
+    for first in 0..keys.len() {
+        for second in first + 1..keys.len() {
+            if keys[first] == keys[second] {
+                return Some((first, second));
+            }
+        }
+    }
+    None
+}
+
+fn require_distinct_root_xpubs(xpubs: &XpubTriple) -> Result<(), WalletKeyError> {
+    if let Some((first, second)) = duplicate_pair(xpubs) {
+        return Err(WalletKeyError::DuplicateRootKeys {
+            first: ROLE_NAMES[first],
+            second: ROLE_NAMES[second],
+        });
+    }
+    Ok(())
+}
+
+pub fn require_distinct_pubkeys(keys: &PubTriple) -> Result<(), WalletKeyError> {
+    if let Some((first, second)) = duplicate_pair(keys) {
+        return Err(WalletKeyError::DuplicateDerivedKeys {
+            first: ROLE_NAMES[first],
+            second: ROLE_NAMES[second],
+        });
+    }
+    Ok(())
+}
+
 pub fn to_pub_triple(xpubs: &XpubTriple) -> PubTriple {
     xpubs
         .iter()
@@ -44,7 +101,8 @@ impl RootWalletKeys {
     pub fn new_with_derivation_prefixes(
         xpubs: XpubTriple,
         derivation_prefixes: [DerivationPath; 3],
-    ) -> Self {
+    ) -> Result<Self, WasmUtxoError> {
+        require_distinct_root_xpubs(&xpubs)?;
         let secp = Secp256k1::new();
 
         // Pre-derive keys to prefix level (e.g., m/0/0)
@@ -53,19 +111,19 @@ impl RootWalletKeys {
             .zip(derivation_prefixes.iter())
             .map(|(xpub, prefix)| {
                 xpub.derive_pub(&secp, prefix)
-                    .expect("valid prefix derivation")
+                    .map_err(|e| WasmUtxoError::new(&format!("Error deriving xpub: {}", e)))
             })
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>, _>>()?
             .try_into()
-            .expect("3 keys");
+            .map_err(|_| WasmUtxoError::new("Expected exactly 3 derived xpubs"))?;
 
-        Self {
+        Ok(Self {
             xpubs,
             derivation_prefixes,
             prefix_derived,
             derivation_cache: RefCell::new(HashMap::new()),
             secp,
-        }
+        })
     }
 
     pub fn user_key(&self) -> &Xpub {
@@ -80,7 +138,7 @@ impl RootWalletKeys {
         &self.xpubs[2]
     }
 
-    pub fn new(xpubs: XpubTriple) -> Self {
+    pub fn new(xpubs: XpubTriple) -> Result<Self, WasmUtxoError> {
         Self::new_with_derivation_prefixes(
             xpubs,
             [
@@ -186,6 +244,55 @@ pub mod tests {
         let xprvs = get_test_wallet_xprvs(seed);
         let secp = crate::bitcoin::key::Secp256k1::new();
         RootWalletKeys::new(xprvs.map(|x| Xpub::from_priv(&secp, &x)))
+            .expect("test wallet xpubs are distinct")
+    }
+
+    #[test]
+    fn duplicate_root_roles_are_rejected_with_default_and_custom_prefixes() {
+        use super::WalletKeyError;
+        use crate::bitcoin::bip32::DerivationPath;
+        use crate::error::WasmUtxoError;
+        use std::str::FromStr;
+
+        let xprvs = get_test_wallet_xprvs("duplicate-root-roles");
+        let secp = crate::bitcoin::secp256k1::Secp256k1::new();
+        let xpubs = xprvs.map(|x| Xpub::from_priv(&secp, &x));
+
+        for (first, second) in [(0, 1), (0, 2), (1, 2)] {
+            let mut duplicate = xpubs;
+            duplicate[second] = duplicate[first];
+            let error = RootWalletKeys::new(duplicate).unwrap_err();
+            assert!(matches!(
+                error,
+                WasmUtxoError::WalletKey(WalletKeyError::DuplicateRootKeys { .. })
+            ));
+        }
+
+        let error = RootWalletKeys::new([xpubs[0]; 3]).unwrap_err();
+        assert!(matches!(
+            error,
+            WasmUtxoError::WalletKey(WalletKeyError::DuplicateRootKeys { .. })
+        ));
+
+        let prefixes = [
+            DerivationPath::from_str("m/0/0").unwrap(),
+            DerivationPath::from_str("m/1/0").unwrap(),
+            DerivationPath::from_str("m/2/0").unwrap(),
+        ];
+        let error = RootWalletKeys::new_with_derivation_prefixes(
+            [xpubs[0], xpubs[0], xpubs[2]],
+            prefixes.clone(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            WasmUtxoError::WalletKey(WalletKeyError::DuplicateRootKeys { .. })
+        ));
+
+        let distinct = RootWalletKeys::new_with_derivation_prefixes(xpubs, prefixes).unwrap();
+        assert!(distinct
+            .derive_path(&crate::fixed_script_wallet::wallet_scripts::chain_index_path(0, 0))
+            .is_ok());
     }
 
     #[test]

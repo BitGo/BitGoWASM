@@ -803,7 +803,8 @@ mod ironwood_v6_tests {
         crate::fixed_script_wallet::bitgo_psbt::ZcashBitGoPsbt,
         [SecretKeyTriple; 1],
     ) {
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed))
+            .expect("test wallet xpubs are distinct");
         let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
             NetEnum::ZcashTestnet,
             &wallet_keys,

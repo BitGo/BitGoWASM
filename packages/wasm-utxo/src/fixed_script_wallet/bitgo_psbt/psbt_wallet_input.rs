@@ -1141,7 +1141,7 @@ pub mod test_helpers {
             .collect::<Vec<_>>()
             .try_into()
             .expect("Failed to convert to XpubTriple");
-        RootWalletKeys::new(triple)
+        RootWalletKeys::new(triple).expect("test wallet xpubs are distinct")
     }
 
     crate::test_psbt_fixtures!(test_validate_psbt_wallet_inputs, network, format, {
@@ -1250,7 +1250,7 @@ mod infer_tests {
     #[test]
     fn tier1_witness_script_2_of_3_no_derivations_is_p2wsh() {
         let triple = test_pub_triple();
-        let multisig = build_multisig_script_2_of_3(&triple);
+        let multisig = build_multisig_script_2_of_3(&triple).unwrap();
         let input = p2wsh_input(multisig);
 
         let result = infer_input_script_type(&input, dummy_prevout()).expect("should classify");
@@ -1260,7 +1260,7 @@ mod infer_tests {
     #[test]
     fn tier1_witness_script_plus_redeem_script_is_p2shp2wsh() {
         let triple = test_pub_triple();
-        let multisig = build_multisig_script_2_of_3(&triple);
+        let multisig = build_multisig_script_2_of_3(&triple).unwrap();
         // P2shP2wsh: witness_script = multisig, redeem_script = P2WSH wrapper,
         // output = P2SH of the P2WSH wrapper.
         let redeem_script = multisig.to_p2wsh();
@@ -1300,7 +1300,7 @@ mod infer_tests {
     #[test]
     fn tier1_redeem_script_2_of_3_no_derivations_is_p2sh() {
         let triple = test_pub_triple();
-        let multisig = build_multisig_script_2_of_3(&triple);
+        let multisig = build_multisig_script_2_of_3(&triple).unwrap();
         let output_script = multisig.to_p2sh();
         let input = psbt::Input {
             redeem_script: Some(multisig),
@@ -1318,7 +1318,7 @@ mod infer_tests {
     #[test]
     fn bare_input_with_only_witness_utxo_errors() {
         let triple = test_pub_triple();
-        let output_script = build_multisig_script_2_of_3(&triple).to_p2wsh();
+        let output_script = build_multisig_script_2_of_3(&triple).unwrap().to_p2wsh();
         let input = input_with_output(output_script);
 
         let result = infer_input_script_type(&input, dummy_prevout());
@@ -1329,7 +1329,7 @@ mod infer_tests {
     fn witness_script_shape_cross_check_failure_errors() {
         // witness_script parses as 2-of-3, but output is P2SH (not P2WSH).
         let triple = test_pub_triple();
-        let multisig = build_multisig_script_2_of_3(&triple);
+        let multisig = build_multisig_script_2_of_3(&triple).unwrap();
         let p2sh_output = multisig.to_p2sh();
         let input = psbt::Input {
             witness_script: Some(multisig),

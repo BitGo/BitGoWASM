@@ -42,14 +42,7 @@ impl WasmRootWalletKeys {
         bitgo: &WasmBIP32,
     ) -> Result<WasmRootWalletKeys, WasmUtxoError> {
         let xpubs = [user.to_xpub()?, backup.to_xpub()?, bitgo.to_xpub()?];
-        let inner = RootWalletKeys::new_with_derivation_prefixes(
-            xpubs,
-            [
-                DerivationPath::from_str("m/0/0").unwrap(),
-                DerivationPath::from_str("m/0/0").unwrap(),
-                DerivationPath::from_str("m/0/0").unwrap(),
-            ],
-        );
+        let inner = RootWalletKeys::new(xpubs)?;
         Ok(WasmRootWalletKeys { inner })
     }
 
@@ -93,7 +86,7 @@ impl WasmRootWalletKeys {
             .try_into()
             .map_err(|_| WasmUtxoError::new("Failed to convert derivation paths"))?;
 
-        let inner = RootWalletKeys::new_with_derivation_prefixes(xpubs, derivation_paths);
+        let inner = RootWalletKeys::new_with_derivation_prefixes(xpubs, derivation_paths)?;
         Ok(WasmRootWalletKeys { inner })
     }
 
