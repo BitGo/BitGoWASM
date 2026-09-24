@@ -16,12 +16,23 @@ export interface JettonTransferFields {
   forwardTonAmount: bigint;
 }
 
-/** A single send action from the transaction */
-export interface ParsedSendAction {
+export const EffectiveAmountKinds = [
+  "Exact",
+  "CarryInboundValue",
+  "AllRemainingBalance",
+] as const;
+export type EffectiveAmountKind = (typeof EffectiveAmountKinds)[number];
+
+interface ParsedSendActionFields {
   mode: number;
+  /** Grams encoded in the message; the send mode can change the outgoing value. */
+  nominalAmount: bigint;
+  payFeesSeparately: boolean;
+  ignoreActionErrors: boolean;
+  bounceOnActionFail: boolean;
+  destroyAccountIfZero: boolean;
   destination: string;
   destinationBounceable: string;
-  amount: bigint;
   bounce: boolean;
   stateInit: boolean;
   bodyOpcode?: number;
@@ -30,6 +41,26 @@ export interface ParsedSendAction {
   /** Withdraw amount from the message body (SingleNominator/Whales withdrawal types). */
   withdrawAmount?: bigint;
 }
+
+/** A send action with its TON send-mode value semantics decoded. */
+export type ParsedSendAction = ParsedSendActionFields &
+  (
+    | {
+        effectiveAmountKind: "Exact";
+        carriesInboundValue: false;
+        carriesAllBalance: false;
+      }
+    | {
+        effectiveAmountKind: "CarryInboundValue";
+        carriesInboundValue: true;
+        carriesAllBalance: false;
+      }
+    | {
+        effectiveAmountKind: "AllRemainingBalance";
+        carriesInboundValue: false;
+        carriesAllBalance: true;
+      }
+  );
 
 /** A fully parsed TON transaction */
 export interface ParsedTransaction {

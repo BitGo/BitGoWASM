@@ -58,13 +58,39 @@ pub struct JettonTransferFields {
     pub forward_ton_amount: u64,
 }
 
-/// A single send action parsed from the transaction
+/// How the send mode determines the outgoing message value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectiveAmountKind {
+    Exact,
+    CarryInboundValue,
+    AllRemainingBalance,
+}
+
+impl EffectiveAmountKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Exact => "Exact",
+            Self::CarryInboundValue => "CarryInboundValue",
+            Self::AllRemainingBalance => "AllRemainingBalance",
+        }
+    }
+}
+
+/// A single send action parsed from the transaction.
 #[derive(Debug, Clone)]
 pub struct ParsedSendAction {
     pub mode: u8,
+    /// Grams encoded in the message; the send mode can change the outgoing value.
+    pub nominal_amount: u64,
+    pub effective_amount_kind: EffectiveAmountKind,
+    pub pay_fees_separately: bool,
+    pub ignore_action_errors: bool,
+    pub bounce_on_action_fail: bool,
+    pub carries_inbound_value: bool,
+    pub carries_all_balance: bool,
+    pub destroy_account_if_zero: bool,
     pub destination: String,
     pub destination_bounceable: String,
-    pub amount: u64,
     pub bounce: bool,
     pub body_opcode: Option<u32>,
     pub state_init: bool,
@@ -123,6 +149,58 @@ pub fn parse_from_transaction(tx: &Transaction) -> Result<ParsedTransaction, Was
     })
 }
 
+const SEND_MODE_PAY_FEES_SEPARATELY: u8 = 1;
+const SEND_MODE_IGNORE_ACTION_ERRORS: u8 = 2;
+const SEND_MODE_BOUNCE_ON_ACTION_FAIL: u8 = 16;
+const SEND_MODE_DESTROY_ACCOUNT_IF_ZERO: u8 = 32;
+const SEND_MODE_CARRY_INBOUND_VALUE: u8 = 64;
+const SEND_MODE_CARRY_ALL_BALANCE: u8 = 128;
+const SUPPORTED_SEND_MODE_FLAGS: u8 = 0b1111_0011;
+
+#[derive(Debug, Clone, Copy)]
+struct DecodedSendMode {
+    effective_amount_kind: EffectiveAmountKind,
+    pay_fees_separately: bool,
+    ignore_action_errors: bool,
+    bounce_on_action_fail: bool,
+    carries_inbound_value: bool,
+    carries_all_balance: bool,
+    destroy_account_if_zero: bool,
+}
+
+fn decode_send_mode(mode: u8) -> Result<DecodedSendMode, WasmTonError> {
+    let unsupported_flags = mode & !SUPPORTED_SEND_MODE_FLAGS;
+    if unsupported_flags != 0 {
+        return Err(WasmTonError::new(&format!(
+            "unsupported send mode flags: 0x{unsupported_flags:02x}"
+        )));
+    }
+
+    let carries_inbound_value = mode & SEND_MODE_CARRY_INBOUND_VALUE != 0;
+    let carries_all_balance = mode & SEND_MODE_CARRY_ALL_BALANCE != 0;
+    if carries_inbound_value && carries_all_balance {
+        return Err(WasmTonError::new(
+            "send mode cannot carry inbound value and all balance",
+        ));
+    }
+
+    Ok(DecodedSendMode {
+        effective_amount_kind: if carries_all_balance {
+            EffectiveAmountKind::AllRemainingBalance
+        } else if carries_inbound_value {
+            EffectiveAmountKind::CarryInboundValue
+        } else {
+            EffectiveAmountKind::Exact
+        },
+        pay_fees_separately: mode & SEND_MODE_PAY_FEES_SEPARATELY != 0,
+        ignore_action_errors: mode & SEND_MODE_IGNORE_ACTION_ERRORS != 0,
+        bounce_on_action_fail: mode & SEND_MODE_BOUNCE_ON_ACTION_FAIL != 0,
+        carries_inbound_value,
+        carries_all_balance,
+        destroy_account_if_zero: mode & SEND_MODE_DESTROY_ACCOUNT_IF_ZERO != 0,
+    })
+}
+
 fn parse_sign_body_actions(
     sign_body: &WalletV4R2SignBody,
 ) -> Result<Vec<ParsedSendAction>, WasmTonError> {
@@ -130,6 +208,7 @@ fn parse_sign_body_actions(
         WalletV4R2Op::Send(actions) => {
             let mut parsed = Vec::new();
             for action in actions {
+                let decoded_mode = decode_send_mode(action.mode)?;
                 let msg = &action.message;
 
                 let (destination_addr, amount, bounce) = match &msg.info {
@@ -154,13 +233,20 @@ fn parse_sign_body_actions(
 
                 parsed.push(ParsedSendAction {
                     mode: action.mode,
+                    nominal_amount: amount,
+                    effective_amount_kind: decoded_mode.effective_amount_kind,
+                    pay_fees_separately: decoded_mode.pay_fees_separately,
+                    ignore_action_errors: decoded_mode.ignore_action_errors,
+                    bounce_on_action_fail: decoded_mode.bounce_on_action_fail,
+                    carries_inbound_value: decoded_mode.carries_inbound_value,
+                    carries_all_balance: decoded_mode.carries_all_balance,
+                    destroy_account_if_zero: decoded_mode.destroy_account_if_zero,
                     destination: if bounce {
                         bounceable_str.clone()
                     } else {
                         non_bounceable_str
                     },
                     destination_bounceable: bounceable_str,
-                    amount,
                     bounce,
                     body_opcode: body.opcode,
                     state_init,
@@ -363,7 +449,12 @@ fn read_text_comment(parser: &mut tlb_ton::de::CellParser<'_>) -> Option<String>
 }
 
 fn determine_transaction_type(actions: &[ParsedSendAction]) -> TransactionType {
-    if actions.is_empty() {
+    if actions.is_empty()
+        || actions.iter().any(|action| {
+            action.effective_amount_kind != EffectiveAmountKind::Exact
+                || action.destroy_account_if_zero
+        })
+    {
         return TransactionType::Unknown;
     }
 
@@ -421,13 +512,115 @@ mod parser_tests {
     use crate::transaction::Transaction;
     use base64::{engine::general_purpose::STANDARD, Engine};
     use tlb_ton::de::CellDeserialize;
-    use tlb_ton::Cell;
+    use tlb_ton::ser::CellSerializeExt;
+    use tlb_ton::{BagOfCells, BagOfCellsArgs, Cell};
     use ton_contracts::jetton::JettonTransfer;
     use ton_contracts::wallet::v4r2::WalletV4R2Op;
 
     /// signedTokenSendTransaction.tx from sdk-coin-ton fixtures.
     /// forward_payload is stored as a ref cell (Either bit=1) with memo "jetton testing".
     const TOKEN_TX: &str = "te6cckECGgEABB0AAuGIAVSGb+UGjjP3lvt+zFA8wouI3McEd6CKbO2TwcZ3OfLKGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACmpoxdJlgLSAAAAAAADgEXAgE0AhYBFP8A9KQT9LzyyAsDAgEgBBECAUgFCALm0AHQ0wMhcbCSXwTgItdJwSCSXwTgAtMfIYIQcGx1Z70ighBkc3RyvbCSXwXgA/pAMCD6RAHIygfL/8nQ7UTQgQFA1yH0BDBcgQEI9ApvoTGzkl8H4AXTP8glghBwbHVnupI4MOMNA4IQZHN0crqSXwbjDQYHAHgB+gD0BDD4J28iMFAKoSG+8uBQghBwbHVngx6xcIAYUATLBSbPFlj6Ahn0AMtpF8sfUmDLPyDJgED7AAYAilAEgQEI9Fkw7UTQgQFA1yDIAc8W9ADJ7VQBcrCOI4IQZHN0coMesXCAGFAFywVQA88WI/oCE8tqyx/LP8mAQPsAkl8D4gIBIAkQAgEgCg8CAVgLDAA9sp37UTQgQFA1yH0BDACyMoHy//J0AGBAQj0Cm+hMYAIBIA0OABmtznaiaEAga5Drhf/AABmvHfaiaEAQa5DrhY/AABG4yX7UTQ1wsfgAWb0kK29qJoQICga5D6AhhHDUCAhHpJN9KZEM5pA+n/mDeBKAG3gQFImHFZ8xhAT48oMI1xgg0x/TH9MfAvgju/Jk7UTQ0x/TH9P/9ATRUUO68qFRUbryogX5AVQQZPkQ8qP4ACSkyMsfUkDLH1Iwy/9SEPQAye1U+A8B0wchwACfbFGTINdKltMH1AL7AOgw4CHAAeMAIcAC4wABwAORMOMNA6TIyx8Syx/L/xITFBUAbtIH+gDU1CL5AAXIygcVy//J0Hd0gBjIywXLAiLPFlAF+gIUy2sSzMzJc/sAyEAUgQEI9FHypwIAcIEBCNcY+gDTP8hUIEeBAQj0UfKnghBub3RlcHSAGMjLBcsCUAbPFlAE+gIUy2oSyx/LP8lz+wACAGyBAQjXGPoA0z8wUiSBAQj0WfKnghBkc3RycHSAGMjLBcsCUAXPFlAD+gITy2rLHxLLP8lz+wAACvQAye1UAFEAAAAAKamjF9NTAQHUHhbX00VGZ3d2r8hbJxuz7PaxmuCOJ6kgckppQAFmQgABT9LR3Iqffskp0J9gWYO8Azlnb33BCMj8FqIUIGxGOZpiWgAAAAAAAAAAAAAAAAABGAGuD4p+pQAAAAAAAAAAQ7msoAgA/BGdBi/R01erquxJOvPgGKclBawUs3MAi0/IdctKQz8AKpDN/KDRxn7y32/ZigeYUXEbmOCO9BFNnbJ4OM7nPllGHoSBGQAkAAAAAGpldHRvbiB0ZXN0aW5nwHtw7A==";
+
+    /// Simple send BOC used to exercise imported send modes.
+    const SIMPLE_SEND_BOC: &str = "te6cckEBAgEAqQAB4YgBJAxo7vqHF++LJ4bC/kJ8A1uVRskrKlrKJZ8rIB0tF+gCadlSX+hPo2mmhZyi0p3zTVUYVRkcmrCm97cSUFSa2vzvCArM3APg+ww92r3IcklNjnzfKOgysJVQXiCvj9SAaU1NGLsotvRwAAAAMAAcAQBmQgAaRefBOjTi/hwqDjv+7I6nGj9WEAe3ls/rFuBEQvggr5zEtAAAAAAAAAAAAAAAAAAAdfZO7w==";
+
+    fn transaction_with_send_mode(mode: u8) -> Transaction {
+        let mut tx = Transaction::from_base64(SIMPLE_SEND_BOC).unwrap();
+        match &mut tx.message.body.body.op {
+            WalletV4R2Op::Send(actions) => actions[0].mode = mode,
+            _ => panic!("expected Send op"),
+        }
+        let cell = tx.message.to_cell(()).unwrap();
+        let boc = BagOfCells::from_root(cell)
+            .serialize(BagOfCellsArgs {
+                has_idx: false,
+                has_crc32c: true,
+            })
+            .unwrap();
+        Transaction::from_bytes(&boc).unwrap()
+    }
+
+    #[test]
+    fn test_imported_send_modes_preserve_effective_amount_semantics() {
+        let parsed_mode_3 = parse_from_transaction(&transaction_with_send_mode(3)).unwrap();
+        let mode_3_action = &parsed_mode_3.send_actions[0];
+        assert_eq!(parsed_mode_3.transaction_type, TransactionType::Transfer);
+        assert!(mode_3_action.nominal_amount > 0);
+        assert_eq!(mode_3_action.effective_amount_kind, EffectiveAmountKind::Exact);
+        assert!(mode_3_action.pay_fees_separately);
+        assert!(mode_3_action.ignore_action_errors);
+        assert!(!mode_3_action.carries_all_balance);
+        assert!(!mode_3_action.destroy_account_if_zero);
+
+        for (mode, destroys_account) in [(128, false), (160, true)] {
+            let parsed = parse_from_transaction(&transaction_with_send_mode(mode)).unwrap();
+            let action = &parsed.send_actions[0];
+            assert_eq!(parsed.transaction_type, TransactionType::Unknown);
+            assert_eq!(action.mode, mode);
+            assert_eq!(action.nominal_amount, mode_3_action.nominal_amount);
+            assert_eq!(
+                action.effective_amount_kind,
+                EffectiveAmountKind::AllRemainingBalance
+            );
+            assert!(action.carries_all_balance);
+            assert_eq!(action.destroy_account_if_zero, destroys_account);
+        }
+    }
+
+    #[test]
+    fn test_send_mode_flags_and_internal_bounce_are_distinct() {
+        let without_ignore_errors =
+            parse_from_transaction(&transaction_with_send_mode(0)).unwrap();
+        let with_ignore_errors = parse_from_transaction(&transaction_with_send_mode(2)).unwrap();
+        assert!(!without_ignore_errors.send_actions[0].ignore_action_errors);
+        assert!(with_ignore_errors.send_actions[0].ignore_action_errors);
+
+        let normal = parse_from_transaction(&transaction_with_send_mode(3)).unwrap();
+        let bounce_on_action_fail =
+            parse_from_transaction(&transaction_with_send_mode(19)).unwrap();
+        assert!(bounce_on_action_fail.send_actions[0].bounce_on_action_fail);
+        assert_eq!(
+            bounce_on_action_fail.send_actions[0].bounce,
+            normal.send_actions[0].bounce
+        );
+
+        let carries_inbound = parse_from_transaction(&transaction_with_send_mode(64)).unwrap();
+        assert_eq!(
+            carries_inbound.send_actions[0].effective_amount_kind,
+            EffectiveAmountKind::CarryInboundValue
+        );
+        assert!(carries_inbound.send_actions[0].carries_inbound_value);
+    }
+
+    #[test]
+    fn test_rejects_unsupported_and_conflicting_send_modes() {
+        for (mode, error) in [(4, "unsupported send mode flags"), (192, "cannot carry")] {
+            let tx = transaction_with_send_mode(mode);
+            let err = parse_from_transaction(&tx).unwrap_err();
+            assert!(err.to_string().contains(error));
+        }
+    }
+
+    #[test]
+    fn test_send_all_classification_is_independent_of_action_order() {
+        let regular = parse_from_transaction(&transaction_with_send_mode(3))
+            .unwrap()
+            .send_actions[0]
+            .clone();
+        let send_all = parse_from_transaction(&transaction_with_send_mode(128))
+            .unwrap()
+            .send_actions[0]
+            .clone();
+
+        assert_eq!(
+            determine_transaction_type(&[regular.clone(), send_all.clone()]),
+            TransactionType::Unknown
+        );
+        assert_eq!(
+            determine_transaction_type(&[send_all, regular]),
+            TransactionType::Unknown
+        );
+    }
 
     /// Demonstrates a bug in `tlbits` 0.7.3 `Remainder` adapter that prevents
     /// `JettonTransfer::<Cell>::parse` from working on messages with text comments.
