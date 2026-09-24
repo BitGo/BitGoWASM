@@ -1665,7 +1665,7 @@ impl BitGoPsbt {
     /// - An xpriv (WasmBIP32) for wallet inputs - derives the key and signs
     ///
     /// This method automatically detects and handles different input types:
-    /// - For regular inputs: uses standard PSBT signing
+    /// - For regular inputs: uses isolated single-input PSBT signing
     /// - For MuSig2 inputs: uses the FirstRound state stored by generate_musig2_nonces()
     /// - For replay protection inputs: returns error (use sign_with_privkey instead)
     ///
@@ -1722,42 +1722,12 @@ impl BitGoPsbt {
 
             Ok(())
         } else {
-            // This is a regular input - use standard signing
-            // Sign the PSBT - this will attempt to sign all inputs but we only care about the result
-            // The miniscript sign method returns (SigningKeysMap, SigningErrors) on error
-            let result = self.psbt.sign(&xpriv, &secp);
-
-            // Check if this specific input was signed successfully
-            match result {
-                Ok(signing_keys) => {
-                    // Check if our input_index was in the successfully signed keys
-                    if signing_keys.contains_key(&input_index) {
-                        Ok(())
-                    } else {
-                        Err(WasmUtxoError::new(&format!(
-                            "Input {} was not signed (no key found or already signed)",
-                            input_index
-                        )))
-                    }
-                }
-                Err((partial_success, errors)) => {
-                    // Check if there's an error for our specific input
-                    if let Some(error) = errors.get(&input_index) {
-                        Err(WasmUtxoError::new(&format!(
-                            "Failed to sign input {}: {:?}",
-                            input_index, error
-                        )))
-                    } else if partial_success.contains_key(&input_index) {
-                        // Input was signed successfully despite other errors
-                        Ok(())
-                    } else {
-                        Err(WasmUtxoError::new(&format!(
-                            "Input {} was not signed",
-                            input_index
-                        )))
-                    }
-                }
-            }
+            // Isolate regular-input signing so only the requested input mutates.
+            self.psbt
+                .sign_single_input_with_xpriv(input_index, &xpriv)
+                .map_err(|e| {
+                    WasmUtxoError::new(&format!("Failed to sign input {}: {}", input_index, e))
+                })
         }
     }
 
@@ -1768,7 +1738,7 @@ impl BitGoPsbt {
     ///
     /// This method automatically detects and handles different input types:
     /// - For replay protection inputs: signs with legacy P2SH sighash
-    /// - For regular inputs: uses standard PSBT signing
+    /// - For regular inputs: uses isolated single-input PSBT signing
     /// - For MuSig2 inputs: returns error (requires FirstRound, use sign_with_xpriv instead)
     ///
     /// # Arguments
@@ -1786,9 +1756,10 @@ impl BitGoPsbt {
         // Extract private key from WasmECPair
         let privkey = ecpair.get_private_key()?;
 
-        // Call the Rust implementation
+        // The indexed helper signs replay-protection inputs directly and isolates
+        // regular-input signing on a clone before copying back the target signatures.
         self.psbt
-            .sign_with_privkey(input_index, &privkey)
+            .sign_single_input_with_privkey(input_index, &privkey)
             .map_err(|e| WasmUtxoError::new(&format!("Failed to sign input: {}", e)))
     }
 

@@ -7,6 +7,7 @@
 
 import assert from "node:assert";
 import { BIP32 } from "../../js/bip32.js";
+import { ECPair } from "../../js/ecpair.js";
 import { BitGoPsbt, RootWalletKeys } from "../../js/fixedScriptWallet/index.js";
 import type { BIP32Interface } from "../../js/bip32.js";
 import type { IWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
@@ -14,11 +15,11 @@ import type { NetworkName } from "../../js/fixedScriptWallet/BitGoPsbt.js";
 
 type Triple<T> = [T, T, T];
 
-function createTestWalletKeys(): { keys: RootWalletKeys; xprivs: Triple<BIP32> } {
+function createTestWalletKeys(firstSeed = 1): { keys: RootWalletKeys; xprivs: Triple<BIP32> } {
   const seeds = [
-    Buffer.alloc(32, 0x01), // user
-    Buffer.alloc(32, 0x02), // backup
-    Buffer.alloc(32, 0x03), // bitgo
+    Buffer.alloc(32, firstSeed), // user
+    Buffer.alloc(32, firstSeed + 1), // backup
+    Buffer.alloc(32, firstSeed + 2), // bitgo
   ];
 
   const xprivs = seeds.map((seed) => BIP32.fromSeed(seed)) as Triple<BIP32>;
@@ -42,6 +43,7 @@ function createPsbtWithInputs(
   chain: number,
   walletKeys: RootWalletKeys,
   signPath?: SignPath,
+  inputOptions: { scriptIndexes?: number[]; walletKeysByInput?: RootWalletKeys[] } = {},
 ): BitGoPsbt {
   const network: NetworkName = "bitcoin";
 
@@ -56,7 +58,7 @@ function createPsbtWithInputs(
     const txid = txidBytes.toString("hex");
 
     const walletOptions: { scriptId: { chain: number; index: number }; signPath?: SignPath } = {
-      scriptId: { chain, index: i },
+      scriptId: { chain, index: inputOptions.scriptIndexes?.[i] ?? i },
     };
 
     // p2tr and p2trMusig2 require signPath
@@ -71,7 +73,7 @@ function createPsbtWithInputs(
         value: BigInt(100000),
         sequence: 0xfffffffe,
       },
-      walletKeys,
+      inputOptions.walletKeysByInput?.[i] ?? walletKeys,
       walletOptions,
     );
   }
@@ -129,6 +131,60 @@ describe("Single-input signing", function () {
     const testKeys = createTestWalletKeys();
     walletKeys = testKeys.keys;
     xprivs = testKeys.xprivs;
+  });
+
+  describe("legacy indexed WASM exports", function () {
+    it("should keep legacy xpriv signing within the selected input", function () {
+      const psbt = createPsbtWithInputs(3, 0, walletKeys);
+
+      psbt.wasm.sign_with_xpriv(1, xprivs[0].wasm);
+
+      assert.strictEqual(psbt.verifySignature(1, xprivs[0].neutered()), true);
+      assert.strictEqual(hasSignaturesOnOtherInputs(psbt, 3, 1, xprivs), false);
+    });
+
+    it("should keep legacy raw-key signing within the selected input", function () {
+      const psbt = createPsbtWithInputs(3, 0, walletKeys, undefined, {
+        scriptIndexes: [0, 0, 0],
+      });
+      const privateKey = xprivs[0].derivePath("0/0/0/0").privateKey;
+      assert.ok(privateKey);
+      const ecpair = ECPair.fromPrivateKey(privateKey);
+
+      psbt.wasm.sign_with_privkey(1, ecpair.wasm);
+
+      assert.strictEqual(psbt.verifySignature(1, xprivs[0].neutered()), true);
+      assert.strictEqual(hasSignaturesOnOtherInputs(psbt, 3, 1, xprivs), false);
+    });
+
+    it("should leave the PSBT unchanged when the selected xpriv input cannot sign", function () {
+      const otherWalletKeys = createTestWalletKeys(4).keys;
+      const psbt = createPsbtWithInputs(3, 0, walletKeys, undefined, {
+        scriptIndexes: [0, 0, 0],
+        walletKeysByInput: [walletKeys, otherWalletKeys, walletKeys],
+      });
+      const before = Buffer.from(psbt.toBytes());
+
+      assert.throws(() => psbt.wasm.sign_with_xpriv(1, xprivs[0].wasm));
+
+      assert.deepStrictEqual(Buffer.from(psbt.toBytes()), before);
+    });
+
+    it("should leave the PSBT unchanged when the selected raw-key input cannot sign", function () {
+      const otherWalletKeys = createTestWalletKeys(4).keys;
+      const psbt = createPsbtWithInputs(3, 0, walletKeys, undefined, {
+        scriptIndexes: [0, 0, 0],
+        walletKeysByInput: [walletKeys, otherWalletKeys, walletKeys],
+      });
+      const privateKey = xprivs[0].derivePath("0/0/0/0").privateKey;
+      assert.ok(privateKey);
+      const ecpair = ECPair.fromPrivateKey(privateKey);
+      const before = Buffer.from(psbt.toBytes());
+
+      assert.throws(() => psbt.wasm.sign_with_privkey(1, ecpair.wasm));
+
+      assert.deepStrictEqual(Buffer.from(psbt.toBytes()), before);
+    });
   });
 
   describe("p2sh (ECDSA)", function () {
