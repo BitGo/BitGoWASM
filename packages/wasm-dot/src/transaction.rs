@@ -918,7 +918,6 @@ mod tests {
 
     #[test]
     fn test_set_context_cannot_attach_material_after_call_data_creation() {
-        let mut tx = Transaction::new(vec![1, 2], Era::Immortal, 0, 0);
         let material = Material {
             genesis_hash: "0x00".to_string(),
             chain_name: "Westend".to_string(),
@@ -927,6 +926,7 @@ mod tests {
             tx_version: 1,
             metadata: "0x00".to_string(),
         };
+        let mut tx = Transaction::new(vec![1, 2], Era::Immortal, material.spec_version, 0);
 
         let error = tx
             .set_context(
