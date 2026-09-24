@@ -341,29 +341,56 @@ fn decode_token_instruction(ctx: InstructionContext) -> ParsedInstruction {
 // =============================================================================
 
 fn decode_ata_instruction(ctx: InstructionContext) -> ParsedInstruction {
-    // ATA program: Create instruction has no data (discriminator 0 or empty)
-    // Accounts: [0] payer, [1] ata, [2] owner, [3] mint, [4] system, [5] token program
-    // Note: We return the token program (index 5) as programId, not the ATA program,
-    // because BitGoJS uses programId to indicate which token program owns the ATA.
-    if ctx.accounts.len() >= 6 {
-        ParsedInstruction::CreateAssociatedTokenAccount(CreateAtaParams {
-            payer_address: ctx.accounts[0].clone(),
-            ata_address: ctx.accounts[1].clone(),
-            owner_address: ctx.accounts[2].clone(),
-            mint_address: ctx.accounts[3].clone(),
-            program_id: ctx.accounts[5].clone(), // Token program, not ATA program
-        })
-    } else if ctx.accounts.len() >= 4 {
-        // Fallback for transactions without token program in accounts (older format)
-        ParsedInstruction::CreateAssociatedTokenAccount(CreateAtaParams {
-            payer_address: ctx.accounts[0].clone(),
-            ata_address: ctx.accounts[1].clone(),
-            owner_address: ctx.accounts[2].clone(),
-            mint_address: ctx.accounts[3].clone(),
-            program_id: TOKEN_PROGRAM_ID.to_string(), // Default to standard token program
-        })
+    use borsh::BorshDeserialize;
+    use spl_associated_token_account::instruction::AssociatedTokenAccountInstruction;
+
+    // Legacy Create instructions have an empty payload; the serialized enum
+    // discriminators are used by Create, CreateIdempotent, and RecoverNested.
+    let instruction = if ctx.data.is_empty() {
+        AssociatedTokenAccountInstruction::Create
     } else {
-        make_unknown(ctx)
+        let Ok(instruction) = AssociatedTokenAccountInstruction::try_from_slice(ctx.data) else {
+            return make_unknown(ctx);
+        };
+        instruction
+    };
+
+    match instruction {
+        AssociatedTokenAccountInstruction::Create
+        | AssociatedTokenAccountInstruction::CreateIdempotent => {
+            // Accounts: [0] payer, [1] ATA, [2] owner, [3] mint,
+            // [4] system program, [5] token program.
+            // `programId` is the token program that owns the ATA, not the ATA program.
+            if ctx.accounts.len() == 6 {
+                ParsedInstruction::CreateAssociatedTokenAccount(CreateAtaParams {
+                    payer_address: ctx.accounts[0].clone(),
+                    ata_address: ctx.accounts[1].clone(),
+                    owner_address: ctx.accounts[2].clone(),
+                    mint_address: ctx.accounts[3].clone(),
+                    program_id: ctx.accounts[5].clone(),
+                })
+            } else {
+                make_unknown(ctx)
+            }
+        }
+        AssociatedTokenAccountInstruction::RecoverNested => {
+            // Accounts: [0] nested ATA, [1] nested mint, [2] destination ATA,
+            // [3] owner ATA, [4] owner mint, [5] wallet, [6] token program.
+            // This recovers the nested account's tokens and lamports, then closes it.
+            if ctx.accounts.len() == 7 {
+                ParsedInstruction::RecoverNestedAssociatedTokenAccount(RecoverNestedAtaParams {
+                    nested_ata_address: ctx.accounts[0].clone(),
+                    nested_mint_address: ctx.accounts[1].clone(),
+                    destination_ata_address: ctx.accounts[2].clone(),
+                    owner_ata_address: ctx.accounts[3].clone(),
+                    owner_mint_address: ctx.accounts[4].clone(),
+                    wallet_address: ctx.accounts[5].clone(),
+                    token_program_id: ctx.accounts[6].clone(),
+                })
+            } else {
+                make_unknown(ctx)
+            }
+        }
     }
 }
 
@@ -465,4 +492,105 @@ fn make_unknown(ctx: InstructionContext) -> ParsedInstruction {
             .collect(),
         data: ctx.data.to_vec(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn accounts(count: usize) -> Vec<String> {
+        (0..count).map(|index| format!("account-{index}")).collect()
+    }
+
+    fn decode_ata(data: &[u8], account_count: usize) -> ParsedInstruction {
+        let accounts = accounts(account_count);
+        decode_ata_instruction(InstructionContext {
+            program_id: ATA_PROGRAM_ID,
+            accounts: &accounts,
+            data,
+        })
+    }
+
+    fn assert_unknown(data: &[u8], account_count: usize) {
+        let accounts = accounts(account_count);
+        match decode_ata_instruction(InstructionContext {
+            program_id: ATA_PROGRAM_ID,
+            accounts: &accounts,
+            data,
+        }) {
+            ParsedInstruction::Unknown(params) => {
+                assert_eq!(params.program_id, ATA_PROGRAM_ID);
+                assert_eq!(params.data.as_slice(), data);
+                assert_eq!(
+                    params
+                        .accounts
+                        .iter()
+                        .map(|account| account.pubkey.as_str())
+                        .collect::<Vec<_>>(),
+                    accounts.iter().map(String::as_str).collect::<Vec<_>>()
+                );
+            }
+            other => panic!("Expected Unknown instruction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ata_create_accepts_legacy_empty_and_create_discriminator() {
+        for data in [&[][..], &[0][..]] {
+            match decode_ata(data, 6) {
+                ParsedInstruction::CreateAssociatedTokenAccount(params) => {
+                    assert_eq!(params.payer_address, "account-0");
+                    assert_eq!(params.ata_address, "account-1");
+                    assert_eq!(params.owner_address, "account-2");
+                    assert_eq!(params.mint_address, "account-3");
+                    assert_eq!(params.program_id, "account-5");
+                }
+                other => panic!("Expected CreateAssociatedTokenAccount, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn ata_create_idempotent_uses_creation_schema() {
+        match decode_ata(&[1], 6) {
+            ParsedInstruction::CreateAssociatedTokenAccount(params) => {
+                assert_eq!(params.payer_address, "account-0");
+                assert_eq!(params.ata_address, "account-1");
+                assert_eq!(params.owner_address, "account-2");
+                assert_eq!(params.mint_address, "account-3");
+                assert_eq!(params.program_id, "account-5");
+            }
+            other => panic!("Expected CreateAssociatedTokenAccount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ata_recover_nested_preserves_all_seven_roles() {
+        match decode_ata(&[2], 7) {
+            ParsedInstruction::RecoverNestedAssociatedTokenAccount(params) => {
+                assert_eq!(params.nested_ata_address, "account-0");
+                assert_eq!(params.nested_mint_address, "account-1");
+                assert_eq!(params.destination_ata_address, "account-2");
+                assert_eq!(params.owner_ata_address, "account-3");
+                assert_eq!(params.owner_mint_address, "account-4");
+                assert_eq!(params.wallet_address, "account-5");
+                assert_eq!(params.token_program_id, "account-6");
+            }
+            other => panic!("Expected RecoverNestedAssociatedTokenAccount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ata_invalid_and_trailing_data_remain_unknown() {
+        for data in [&[3][..], &[2, 0][..]] {
+            assert_unknown(data, 7);
+        }
+    }
+
+    #[test]
+    fn ata_variant_account_count_mismatches_remain_unknown() {
+        for (data, account_count) in [(&[][..], 5), (&[0][..], 7), (&[1][..], 5), (&[2][..], 6)] {
+            assert_unknown(data, account_count);
+        }
+    }
 }
