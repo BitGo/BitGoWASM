@@ -333,6 +333,59 @@ fn verify_expected_root(root: &[u8], expected_root: Option<&[u8]>) -> Result<(),
     Ok(())
 }
 
+/// Copy the in-memory tree without converting hashes to persistence strings.
+fn clone_shard_tree(
+    tree: &ShieldedShardTree,
+    max_checkpoints: usize,
+) -> Result<ShieldedShardTree, String> {
+    let source = tree.store();
+    let mut store: MemoryShardStore<MerkleHashOrchard, u32> = MemoryShardStore::empty();
+
+    let shard_roots = source
+        .get_shard_roots()
+        .map_err(|e| format!("get_shard_roots error: {:?}", e))?;
+    for addr in shard_roots {
+        if let Some(shard) = source
+            .get_shard(addr)
+            .map_err(|e| format!("get_shard error: {:?}", e))?
+        {
+            store
+                .put_shard(shard)
+                .map_err(|e| format!("put_shard error: {:?}", e))?;
+        }
+    }
+
+    store
+        .put_cap(
+            source
+                .get_cap()
+                .map_err(|e| format!("get_cap error: {:?}", e))?,
+        )
+        .map_err(|e| format!("put_cap error: {:?}", e))?;
+
+    let checkpoint_count = source
+        .checkpoint_count()
+        .map_err(|e| format!("checkpoint_count error: {:?}", e))?;
+    if checkpoint_count > 0 {
+        source
+            .for_each_checkpoint(checkpoint_count, |id, checkpoint| {
+                store
+                    .add_checkpoint(
+                        *id,
+                        Checkpoint::from_parts(
+                            checkpoint.tree_state(),
+                            checkpoint.marks_removed().clone(),
+                        ),
+                    )
+                    .map_err(|e| format!("add_checkpoint error: {:?}", e))?;
+                Ok(())
+            })
+            .map_err(|e| format!("for_each_checkpoint error: {:?}", e))?;
+    }
+
+    Ok(ShardTree::new(store, max_checkpoints))
+}
+
 fn read_compact_size(data: &[u8]) -> Result<(u64, usize), String> {
     if data.is_empty() {
         return Err("unexpected EOF reading compact size".to_string());
@@ -567,16 +620,10 @@ impl OwnedTree {
         Ok(())
     }
 
-    /// Copy the live tree through its persistence representation for staging.
+    /// Copy the live tree for staging before applying a block.
     fn staged_copy(&self) -> Result<Self, String> {
-        let state = extract_state(
-            &self.tree,
-            self.tip_height,
-            self.leaf_count,
-            self.max_checkpoints,
-        )?;
         Ok(Self {
-            tree: restore_state(&state)?,
+            tree: clone_shard_tree(&self.tree, self.max_checkpoints)?,
             tip_height: self.tip_height,
             leaf_count: self.leaf_count,
             max_checkpoints: self.max_checkpoints,
