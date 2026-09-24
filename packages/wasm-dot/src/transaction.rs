@@ -838,26 +838,32 @@ fn skip_type_bytes(bytes: &[u8], ty_id: u32, metadata: &Metadata) -> Result<usiz
 
 /// Decode era from bytes
 fn decode_era_bytes(bytes: &[u8]) -> Result<(Era, usize), WasmDotError> {
+    use parity_scale_codec::Decode;
+
     if bytes.is_empty() {
         return Err(WasmDotError::ScaleDecodeError(
             "Empty era encoding".to_string(),
         ));
     }
 
-    if bytes[0] == 0x00 {
-        Ok((Era::Immortal, 1))
-    } else {
-        if bytes.len() < 2 {
-            return Err(WasmDotError::ScaleDecodeError(
-                "Truncated mortal era".to_string(),
-            ));
-        }
-        let encoded = u16::from_le_bytes([bytes[0], bytes[1]]);
-        let period = 2u32 << (encoded as u32 & 0xf);
-        let quantize_factor = (period / 4).max(1);
-        let phase = ((encoded >> 4) as u32) * quantize_factor;
-        Ok((Era::Mortal { period, phase }, 2))
+    if bytes[0] != 0x00 && bytes.len() < 2 {
+        return Err(WasmDotError::ScaleDecodeError(
+            "Truncated mortal era".to_string(),
+        ));
     }
+
+    let mut input = bytes;
+    let era = SubxtEra::decode(&mut input)?;
+    let consumed = bytes.len() - input.len();
+    let era = match era {
+        SubxtEra::Immortal => Era::Immortal,
+        SubxtEra::Mortal { period, phase } => Era::Mortal {
+            period: period as u32,
+            phase: phase as u32,
+        },
+    };
+
+    Ok((era, consumed))
 }
 
 #[cfg(test)]
@@ -871,13 +877,25 @@ mod tests {
         let (decoded, _) = decode_era_bytes(&immortal_bytes).unwrap();
         assert!(decoded.is_immortal());
 
-        let mortal = Era::Mortal {
-            period: 64,
-            phase: 0,
-        };
-        let mortal_bytes = encode_era(&mortal);
-        let (decoded, _) = decode_era_bytes(&mortal_bytes).unwrap();
-        assert!(!decoded.is_immortal());
+        for mortal in [
+            Era::Mortal {
+                period: 64,
+                phase: 0,
+            },
+            Era::Mortal {
+                period: 4_096,
+                phase: 1_000,
+            },
+            Era::Mortal {
+                period: 65_536,
+                phase: 992,
+            },
+        ] {
+            let mortal_bytes = encode_era(&mortal);
+            let (decoded, consumed) = decode_era_bytes(&mortal_bytes).unwrap();
+            assert_eq!(decoded, mortal);
+            assert_eq!(consumed, mortal_bytes.len());
+        }
     }
 
     #[test]
