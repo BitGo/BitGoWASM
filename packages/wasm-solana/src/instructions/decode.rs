@@ -510,7 +510,7 @@ mod tests {
                 assert_eq!(params.from_address, authority.to_string());
                 assert_eq!(params.amount, amount);
             }
-            other => panic!("Expected StakingSplit, got {other:?}"),
+            _ => panic!("Expected StakingSplit"),
         }
     }
 
@@ -544,7 +544,7 @@ mod tests {
                 assert_eq!(params.staking_address, stake.to_string());
                 assert_eq!(params.from_address, authority.to_string());
             }
-            other => panic!("Expected StakingDeactivate, got {other:?}"),
+            _ => panic!("Expected StakingDeactivate"),
         }
     }
 
