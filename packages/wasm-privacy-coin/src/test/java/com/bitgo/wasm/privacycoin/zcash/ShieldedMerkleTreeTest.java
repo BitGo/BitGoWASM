@@ -226,6 +226,21 @@ class ShieldedMerkleTreeTest {
     }
   }
 
+  @Test
+  void appendCommitments_staleEmptyBatchWithCurrentRoot_preservesState() {
+    try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
+      ShieldedRoot currentRoot = tree.appendCommitments(2L, List.of(CMX), List.of(), null);
+      TreeState before = tree.save();
+      MerkleTreeInfo beforeInfo = tree.getInfo();
+
+      WasmException ex = assertThrows(WasmException.class, () ->
+          tree.appendCommitments(1L, List.of(), List.of(), currentRoot));
+
+      assertEquals("CHECKPOINT_REJECTED", ex.getErrorCode());
+      assertStateUnchanged(tree, before, beforeInfo);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // appendCommitments — with commitments
   // -------------------------------------------------------------------------

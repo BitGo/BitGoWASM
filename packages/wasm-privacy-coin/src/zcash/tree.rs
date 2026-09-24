@@ -481,9 +481,16 @@ impl OwnedTree {
         owned: Vec<bool>,
     ) -> Result<Vec<u8>, String> {
         if commitments.is_empty() {
-            self.tree
+            let checkpointed = self
+                .tree
                 .checkpoint(block_height)
                 .map_err(|e| format!("checkpoint error: {}", e))?;
+            if !checkpointed {
+                return Err(format!(
+                    "CHECKPOINT_REJECTED: checkpoint at block height {} was not added",
+                    block_height
+                ));
+            }
             self.tip_height = Some(block_height);
             if self.leaf_count == 0 {
                 let empty_root = MerkleHashOrchard::empty_root(Level::from(DEPTH));
@@ -761,6 +768,24 @@ mod tests {
 
         assert!(error.starts_with("INVALID_EXPECTED_ROOT:"));
         assert_eq!(tree.save().unwrap(), before);
+    }
+
+    #[test]
+    fn stale_empty_checkpoint_rejection_preserves_state() {
+        let mut tree = empty_tree();
+        let current_root = tree
+            .append_commitments(2, vec![cmx(1)], vec![], None)
+            .unwrap();
+        let before = tree.save().unwrap();
+        let before_info = tree.get_info().unwrap();
+
+        let error = tree
+            .append_commitments(1, vec![], vec![], Some(&current_root))
+            .unwrap_err();
+
+        assert!(error.starts_with("CHECKPOINT_REJECTED:"));
+        assert_eq!(tree.save().unwrap(), before);
+        assert_eq!(tree.get_info().unwrap(), before_info);
     }
 
     // -------------------------------------------------------------------------
