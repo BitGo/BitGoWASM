@@ -16,11 +16,7 @@ export interface JettonTransferFields {
   forwardTonAmount: bigint;
 }
 
-export const EffectiveAmountKinds = [
-  "Exact",
-  "CarryInboundValue",
-  "AllRemainingBalance",
-] as const;
+export const EffectiveAmountKinds = ["Exact", "CarryInboundValue", "AllRemainingBalance"] as const;
 export type EffectiveAmountKind = (typeof EffectiveAmountKinds)[number];
 
 interface ParsedSendActionFields {
