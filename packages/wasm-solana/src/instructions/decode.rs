@@ -568,8 +568,16 @@ mod tests {
 
         for (program_id, instruction_accounts, data) in [
             (STAKE_PROGRAM_ID, accounts.as_slice(), malformed_data),
-            (STAKE_PROGRAM_ID, &accounts[..2], instruction.data.as_slice()),
-            (SYSTEM_PROGRAM_ID, accounts.as_slice(), instruction.data.as_slice()),
+            (
+                STAKE_PROGRAM_ID,
+                &accounts[..2],
+                instruction.data.as_slice(),
+            ),
+            (
+                SYSTEM_PROGRAM_ID,
+                accounts.as_slice(),
+                instruction.data.as_slice(),
+            ),
         ] {
             let decoded = decode_instruction(InstructionContext {
                 program_id,
