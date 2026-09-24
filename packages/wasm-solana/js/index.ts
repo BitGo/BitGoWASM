@@ -83,6 +83,7 @@ export type {
   StakeInitializeParams,
   StakingActivateParams,
   StakingDeactivateParams,
+  StakingSplitParams,
   StakingWithdrawParams,
   StakingDelegateParams,
   StakingAuthorizeParams,

@@ -137,6 +137,18 @@ impl TryIntoJsValue for StakingDeactivateParams {
     }
 }
 
+impl TryIntoJsValue for StakingSplitParams {
+    fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
+        js_obj!(
+            "type" => "StakingSplit",
+            "stakingAddress" => self.staking_address,
+            "destinationStakingAddress" => self.destination_staking_address,
+            "fromAddress" => self.from_address,
+            "amount" => self.amount
+        )
+    }
+}
+
 impl TryIntoJsValue for StakingWithdrawParams {
     fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
         js_obj!(
@@ -336,6 +348,7 @@ impl TryIntoJsValue for ParsedInstruction {
             ParsedInstruction::NonceInitialize(p) => p.try_to_js_value(),
             ParsedInstruction::StakingActivate(p) => p.try_to_js_value(),
             ParsedInstruction::StakingDeactivate(p) => p.try_to_js_value(),
+            ParsedInstruction::StakingSplit(p) => p.try_to_js_value(),
             ParsedInstruction::StakingWithdraw(p) => p.try_to_js_value(),
             ParsedInstruction::StakingDelegate(p) => p.try_to_js_value(),
             ParsedInstruction::StakingAuthorize(p) => p.try_to_js_value(),

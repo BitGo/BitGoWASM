@@ -202,12 +202,14 @@ fn decode_stake_instruction(ctx: InstructionContext) -> ParsedInstruction {
                 make_unknown(ctx)
             }
         }
-        StakeInstruction::Split(_lamports) => {
-            // Accounts: [0] source stake, [1] dest stake, [2] authority
+        StakeInstruction::Split(lamports) => {
+            // Accounts: [0] source stake, [1] destination stake, [2] authority
             if ctx.accounts.len() >= 3 {
-                ParsedInstruction::StakingDeactivate(StakingDeactivateParams {
+                ParsedInstruction::StakingSplit(StakingSplitParams {
                     staking_address: ctx.accounts[0].clone(),
+                    destination_staking_address: ctx.accounts[1].clone(),
                     from_address: ctx.accounts[2].clone(),
+                    amount: lamports,
                 })
             } else {
                 make_unknown(ctx)
@@ -465,4 +467,119 @@ fn make_unknown(ctx: InstructionContext) -> ParsedInstruction {
             .collect(),
         data: ctx.data.to_vec(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::instruction::{AccountMeta, Instruction};
+    use solana_sdk::pubkey::Pubkey;
+    use solana_stake_interface::instruction::StakeInstruction;
+
+    #[test]
+    fn split_preserves_amount_and_account_roles() {
+        let source = Pubkey::new_unique();
+        let destination = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let amount = 987_654_321;
+        let instruction = Instruction::new_with_bincode(
+            solana_stake_interface::program::ID,
+            &StakeInstruction::Split(amount),
+            vec![
+                AccountMeta::new(source, false),
+                AccountMeta::new(destination, true),
+                AccountMeta::new_readonly(authority, true),
+            ],
+        );
+        let accounts: Vec<String> = instruction
+            .accounts
+            .iter()
+            .map(|account| account.pubkey.to_string())
+            .collect();
+
+        let decoded = decode_instruction(InstructionContext {
+            program_id: STAKE_PROGRAM_ID,
+            accounts: &accounts,
+            data: &instruction.data,
+        });
+
+        match decoded {
+            ParsedInstruction::StakingSplit(params) => {
+                assert_eq!(params.staking_address, source.to_string());
+                assert_eq!(params.destination_staking_address, destination.to_string());
+                assert_eq!(params.from_address, authority.to_string());
+                assert_eq!(params.amount, amount);
+            }
+            other => panic!("Expected StakingSplit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deactivate_remains_distinct_from_split() {
+        let stake = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let instruction = Instruction::new_with_bincode(
+            solana_stake_interface::program::ID,
+            &StakeInstruction::Deactivate,
+            vec![
+                AccountMeta::new(stake, false),
+                AccountMeta::new_readonly(solana_sdk::sysvar::clock::ID, false),
+                AccountMeta::new_readonly(authority, true),
+            ],
+        );
+        let accounts: Vec<String> = instruction
+            .accounts
+            .iter()
+            .map(|account| account.pubkey.to_string())
+            .collect();
+
+        let decoded = decode_instruction(InstructionContext {
+            program_id: STAKE_PROGRAM_ID,
+            accounts: &accounts,
+            data: &instruction.data,
+        });
+
+        match decoded {
+            ParsedInstruction::StakingDeactivate(params) => {
+                assert_eq!(params.staking_address, stake.to_string());
+                assert_eq!(params.from_address, authority.to_string());
+            }
+            other => panic!("Expected StakingDeactivate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn invalid_split_inputs_fail_closed() {
+        let instruction = Instruction::new_with_bincode(
+            solana_stake_interface::program::ID,
+            &StakeInstruction::Split(42),
+            vec![
+                AccountMeta::new(Pubkey::new_unique(), false),
+                AccountMeta::new(Pubkey::new_unique(), true),
+                AccountMeta::new_readonly(Pubkey::new_unique(), true),
+            ],
+        );
+        let accounts: Vec<String> = instruction
+            .accounts
+            .iter()
+            .map(|account| account.pubkey.to_string())
+            .collect();
+        let malformed_data = &instruction.data[..instruction.data.len() - 1];
+
+        for (program_id, instruction_accounts, data) in [
+            (STAKE_PROGRAM_ID, accounts.as_slice(), malformed_data),
+            (STAKE_PROGRAM_ID, &accounts[..2], instruction.data.as_slice()),
+            (SYSTEM_PROGRAM_ID, accounts.as_slice(), instruction.data.as_slice()),
+        ] {
+            let decoded = decode_instruction(InstructionContext {
+                program_id,
+                accounts: instruction_accounts,
+                data,
+            });
+            assert!(
+                matches!(decoded, ParsedInstruction::Unknown(_)),
+                "invalid Split input must remain Unknown"
+            );
+        }
+    }
 }
