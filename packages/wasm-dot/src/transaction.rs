@@ -175,10 +175,7 @@ impl Transaction {
     /// # Arguments
     /// * `bytes` - Raw extrinsic bytes
     /// * `context` - Optional parsing context with chain material
-    pub fn from_bytes(
-        bytes: &[u8],
-        context: Option<ParseContext>,
-    ) -> Result<Self, WasmDotError> {
+    pub fn from_bytes(bytes: &[u8], context: Option<ParseContext>) -> Result<Self, WasmDotError> {
         if bytes.is_empty() {
             return Err(WasmDotError::InvalidTransaction(
                 "Empty transaction".to_string(),
@@ -914,7 +911,9 @@ mod tests {
 
         let error = Transaction::from_bytes(&[0x00], Some(context)).unwrap_err();
 
-        assert!(matches!(error, WasmDotError::InvalidInput(message) if message.contains("Failed to decode metadata")));
+        assert!(
+            matches!(error, WasmDotError::InvalidInput(message) if message.contains("Failed to decode metadata"))
+        );
     }
 
     #[test]
