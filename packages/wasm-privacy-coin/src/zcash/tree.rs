@@ -253,6 +253,137 @@ fn get_checkpoint_root_bytes(tree: &ShieldedShardTree) -> Result<Vec<u8>, String
     Ok(root.to_bytes().to_vec())
 }
 
+/// Return the highest retained checkpoint and its leaf position.
+fn latest_checkpoint(tree: &ShieldedShardTree) -> Result<Option<(u32, Option<u64>)>, String> {
+    let store = tree.store();
+    let checkpoint_count = store
+        .checkpoint_count()
+        .map_err(|e| format!("checkpoint_count error: {:?}", e))?;
+    let mut latest: Option<(u32, Option<u64>)> = None;
+
+    if checkpoint_count > 0 {
+        store
+            .for_each_checkpoint(checkpoint_count, |id, checkpoint| {
+                let position = match checkpoint.tree_state() {
+                    TreeState::Empty => None,
+                    TreeState::AtPosition(pos) => Some(u64::from(pos)),
+                };
+                if latest.as_ref().is_none_or(|(latest_id, _)| id > latest_id) {
+                    latest = Some((*id, position));
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("for_each_checkpoint error: {:?}", e))?;
+    }
+
+    Ok(latest)
+}
+
+/// Reject snapshots whose metadata disagrees with their checkpoint frontier.
+fn validate_state_coherence(
+    tree: &ShieldedShardTree,
+    tip_height: Option<u32>,
+    leaf_count: u64,
+) -> Result<(), String> {
+    let latest = latest_checkpoint(tree)?;
+    let checkpoint_height = latest.map(|(height, _)| height);
+    if tip_height != checkpoint_height {
+        return Err(format!(
+            "INVALID_STATE: tip height {:?} does not match maximum checkpoint {:?}",
+            tip_height, checkpoint_height
+        ));
+    }
+
+    let expected_position = leaf_count.checked_sub(1);
+    let checkpoint_position = latest.and_then(|(_, position)| position);
+    if checkpoint_position != expected_position {
+        return Err(format!(
+            "INVALID_STATE: leaf count {} does not match latest checkpoint position {:?}",
+            leaf_count, checkpoint_position
+        ));
+    }
+
+    let frontier_position = tree
+        .max_leaf_position(None)
+        .map_err(|e| format!("max_leaf_position error: {:?}", e))?
+        .map(u64::from);
+    if frontier_position != checkpoint_position {
+        return Err(format!(
+            "INVALID_STATE: shard frontier position {:?} does not match latest checkpoint position {:?}",
+            frontier_position, checkpoint_position
+        ));
+    }
+
+    Ok(())
+}
+
+fn verify_expected_root(root: &[u8], expected_root: Option<&[u8]>) -> Result<(), String> {
+    if let Some(expected) = expected_root {
+        if !expected.is_empty() && root != expected {
+            return Err(format!(
+                "ROOT_MISMATCH: computed {} but expected {}",
+                hex::encode(root),
+                hex::encode(expected)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Copy the in-memory tree without converting hashes to persistence strings.
+fn clone_shard_tree(
+    tree: &ShieldedShardTree,
+    max_checkpoints: usize,
+) -> Result<ShieldedShardTree, String> {
+    let source = tree.store();
+    let mut store: MemoryShardStore<MerkleHashOrchard, u32> = MemoryShardStore::empty();
+
+    let shard_roots = source
+        .get_shard_roots()
+        .map_err(|e| format!("get_shard_roots error: {:?}", e))?;
+    for addr in shard_roots {
+        if let Some(shard) = source
+            .get_shard(addr)
+            .map_err(|e| format!("get_shard error: {:?}", e))?
+        {
+            store
+                .put_shard(shard)
+                .map_err(|e| format!("put_shard error: {:?}", e))?;
+        }
+    }
+
+    store
+        .put_cap(
+            source
+                .get_cap()
+                .map_err(|e| format!("get_cap error: {:?}", e))?,
+        )
+        .map_err(|e| format!("put_cap error: {:?}", e))?;
+
+    let checkpoint_count = source
+        .checkpoint_count()
+        .map_err(|e| format!("checkpoint_count error: {:?}", e))?;
+    if checkpoint_count > 0 {
+        source
+            .for_each_checkpoint(checkpoint_count, |id, checkpoint| {
+                match store.add_checkpoint(
+                    *id,
+                    Checkpoint::from_parts(
+                        checkpoint.tree_state(),
+                        checkpoint.marks_removed().clone(),
+                    ),
+                ) {
+                    Ok(()) => (),
+                    Err(never) => match never {},
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("for_each_checkpoint error: {:?}", e))?;
+    }
+
+    Ok(ShardTree::new(store, max_checkpoints))
+}
+
 fn read_compact_size(data: &[u8]) -> Result<(u64, usize), String> {
     if data.is_empty() {
         return Err("unexpected EOF reading compact size".to_string());
@@ -334,6 +465,7 @@ impl OwnedTree {
         let persisted: PersistedShardTreeState =
             serde_json::from_str(json).map_err(|e| format!("JSON parse error: {}", e))?;
         let tree = restore_state(&persisted)?;
+        validate_state_coherence(&tree, persisted.tip_height, persisted.leaf_count)?;
         Ok(Self {
             tree,
             tip_height: persisted.tip_height,
@@ -415,12 +547,18 @@ impl OwnedTree {
         )
         .map_err(|e| format!("insert_frontier_nodes error: {}", e))?;
 
-        Ok(Self {
+        let owned_tree = Self {
             tree,
             tip_height: Some(block_height),
             leaf_count,
             max_checkpoints,
-        })
+        };
+        validate_state_coherence(
+            &owned_tree.tree,
+            owned_tree.tip_height,
+            owned_tree.leaf_count,
+        )?;
+        Ok(owned_tree)
     }
 
     /// Serialize the tree state to bytes (UTF-8 JSON of `PersistedShardTreeState`).
@@ -436,6 +574,7 @@ impl OwnedTree {
 
     /// Append raw 32-byte commitments, checkpoint at `block_height`, verify root.
     ///
+    /// Each append is staged on a temporary tree so every error leaves this tree unchanged.
     /// Returns the 32-byte root after appending.
     pub fn append_commitments(
         &mut self,
@@ -444,19 +583,9 @@ impl OwnedTree {
         owned: Vec<bool>,
         expected_root: Option<&[u8]>,
     ) -> Result<Vec<u8>, String> {
-        if commitments.is_empty() {
-            self.tree
-                .checkpoint(block_height)
-                .map_err(|e| format!("checkpoint error: {}", e))?;
-            self.tip_height = Some(block_height);
-            if self.leaf_count == 0 {
-                let empty_root = MerkleHashOrchard::empty_root(Level::from(DEPTH));
-                return Ok(empty_root.to_bytes().to_vec());
-            }
-            return get_checkpoint_root_bytes(&self.tree);
-        }
+        self.require_increasing_height(block_height)?;
 
-        if !owned.is_empty() && owned.len() != commitments.len() {
+        if !commitments.is_empty() && !owned.is_empty() && owned.len() != commitments.len() {
             return Err(format!(
                 "owned length {} does not match commitments length {}",
                 owned.len(),
@@ -464,13 +593,77 @@ impl OwnedTree {
             ));
         }
 
-        // Validate ALL commitments before mutating any tree state.
-        // This prevents a partial-append scenario where some leaves are inserted and then
-        // an invalid commitment causes an error, leaving the tree in an inconsistent state
-        // with orphaned leaf nodes that cannot be rolled back without a checkpoint.
-        let hashes: Result<Vec<MerkleHashOrchard>, String> =
-            commitments.iter().map(|c| parse_hash_bytes(c)).collect();
-        let hashes = hashes?;
+        // Validate every input before copying or mutating the tree.
+        let hashes: Vec<MerkleHashOrchard> = commitments
+            .iter()
+            .map(|commitment| parse_hash_bytes(commitment))
+            .collect::<Result<_, _>>()?;
+
+        let mut staged = self.staged_copy()?;
+        let root =
+            staged.append_validated_commitments(block_height, hashes, owned, expected_root)?;
+        *self = staged;
+        Ok(root)
+    }
+
+    fn require_increasing_height(&self, block_height: u32) -> Result<(), String> {
+        if let Some((current, _)) = latest_checkpoint(&self.tree)? {
+            if block_height <= current {
+                return Err(format!(
+                    "BLOCK_HEIGHT_OUT_OF_ORDER: requested {}, current {}",
+                    block_height, current
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Copy the live tree for staging before applying a block.
+    fn staged_copy(&self) -> Result<Self, String> {
+        Ok(Self {
+            tree: clone_shard_tree(&self.tree, self.max_checkpoints)?,
+            tip_height: self.tip_height,
+            leaf_count: self.leaf_count,
+            max_checkpoints: self.max_checkpoints,
+        })
+    }
+
+    fn append_validated_commitments(
+        &mut self,
+        block_height: u32,
+        hashes: Vec<MerkleHashOrchard>,
+        owned: Vec<bool>,
+        expected_root: Option<&[u8]>,
+    ) -> Result<Vec<u8>, String> {
+        if hashes.is_empty() {
+            let checkpointed = self
+                .tree
+                .checkpoint(block_height)
+                .map_err(|e| format!("checkpoint error: {}", e))?;
+            if !checkpointed {
+                return Err(format!(
+                    "BLOCK_HEIGHT_OUT_OF_ORDER: checkpoint {} was rejected",
+                    block_height
+                ));
+            }
+            self.tip_height = latest_checkpoint(&self.tree)?.map(|(height, _)| height);
+            if self.tip_height != Some(block_height) {
+                return Err(format!(
+                    "INVALID_STATE: checkpoint {} was not retained",
+                    block_height
+                ));
+            }
+
+            let root = if self.leaf_count == 0 {
+                MerkleHashOrchard::empty_root(Level::from(DEPTH))
+                    .to_bytes()
+                    .to_vec()
+            } else {
+                get_checkpoint_root_bytes(&self.tree)?
+            };
+            verify_expected_root(&root, expected_root)?;
+            return Ok(root);
+        }
 
         let last_idx = hashes.len() - 1;
         for (i, hash) in hashes.into_iter().enumerate() {
@@ -492,23 +685,22 @@ impl OwnedTree {
             self.tree
                 .append(hash, retention)
                 .map_err(|e| format!("append error: {}", e))?;
-            self.leaf_count += 1;
+            self.leaf_count = self
+                .leaf_count
+                .checked_add(1)
+                .ok_or_else(|| "leaf count overflow".to_string())?;
         }
 
-        self.tip_height = Some(block_height);
+        self.tip_height = latest_checkpoint(&self.tree)?.map(|(height, _)| height);
+        if self.tip_height != Some(block_height) {
+            return Err(format!(
+                "INVALID_STATE: checkpoint {} was not retained",
+                block_height
+            ));
+        }
 
         let root = get_checkpoint_root_bytes(&self.tree)?;
-
-        if let Some(expected) = expected_root {
-            if !expected.is_empty() && root != expected {
-                return Err(format!(
-                    "ROOT_MISMATCH: computed {} but expected {}",
-                    hex::encode(&root),
-                    hex::encode(expected)
-                ));
-            }
-        }
-
+        verify_expected_root(&root, expected_root)?;
         Ok(root)
     }
 
@@ -646,6 +838,129 @@ mod tests {
         let result =
             tree.append_commitments(1, vec![cmx(1), cmx(2)], vec![true, false, true], None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn non_increasing_empty_blocks_are_rejected_without_state_changes() {
+        let mut tree = empty_tree();
+        tree.append_commitments(100, vec![], vec![], None).unwrap();
+        let before = tree.save().unwrap();
+
+        for height in [99, 100] {
+            let error = tree
+                .append_commitments(height, vec![], vec![], None)
+                .unwrap_err();
+            assert!(error.starts_with("BLOCK_HEIGHT_OUT_OF_ORDER:"));
+            assert_eq!(tree.save().unwrap(), before);
+            assert_eq!(tree.get_info().unwrap(), (Some(100), 0, 1));
+        }
+    }
+
+    #[test]
+    fn non_increasing_commitment_batches_are_rejected_atomically() {
+        let mut tree = empty_tree();
+        tree.append_commitments(100, vec![], vec![], None).unwrap();
+        let before = tree.save().unwrap();
+
+        for count in [1usize, 2, 4] {
+            let commitments = (1..=count).map(|i| cmx(i as u8)).collect();
+            let error = tree
+                .append_commitments(99, commitments, vec![], None)
+                .unwrap_err();
+            assert!(error.starts_with("BLOCK_HEIGHT_OUT_OF_ORDER:"));
+            assert_eq!(tree.save().unwrap(), before);
+            assert_eq!(tree.get_info().unwrap(), (Some(100), 0, 1));
+        }
+    }
+
+    #[test]
+    fn failed_retries_do_not_accumulate_leaves_and_later_append_matches_reference() {
+        let mut tree = empty_tree();
+        tree.append_commitments(100, vec![], vec![], None).unwrap();
+        let before = tree.save().unwrap();
+        let mut reference = OwnedTree::from_state(&before).unwrap();
+
+        for _ in 0..2 {
+            assert!(tree
+                .append_commitments(99, vec![cmx(1), cmx(2)], vec![], None)
+                .is_err());
+            assert_eq!(tree.save().unwrap(), before);
+        }
+
+        let actual_root = tree
+            .append_commitments(101, vec![cmx(2)], vec![], None)
+            .unwrap();
+        let reference_root = reference
+            .append_commitments(101, vec![cmx(2)], vec![], None)
+            .unwrap();
+        assert_eq!(actual_root, reference_root);
+        assert_eq!(tree.save().unwrap(), reference.save().unwrap());
+    }
+
+    #[test]
+    fn expected_root_mismatch_leaves_tree_unchanged() {
+        let mut tree = empty_tree();
+        tree.append_commitments(100, vec![], vec![], None).unwrap();
+        let before = tree.save().unwrap();
+
+        let error = tree
+            .append_commitments(101, vec![cmx(1), cmx(2)], vec![], Some(&[0; 32]))
+            .unwrap_err();
+        assert!(error.starts_with("ROOT_MISMATCH:"));
+        assert_eq!(tree.save().unwrap(), before);
+        assert_eq!(tree.get_info().unwrap(), (Some(100), 0, 1));
+    }
+
+    #[test]
+    fn from_state_rejects_tip_that_disagrees_with_checkpoint() {
+        let mut tree = empty_tree();
+        tree.append_commitments(100, vec![], vec![], None).unwrap();
+        let mut persisted: PersistedShardTreeState =
+            serde_json::from_slice(&tree.save().unwrap()).unwrap();
+        persisted.tip_height = Some(99);
+        let invalid_state = serde_json::to_vec(&persisted).unwrap();
+
+        let error = OwnedTree::from_state(&invalid_state).err().unwrap();
+        assert!(error.starts_with("INVALID_STATE: tip height"));
+    }
+
+    #[test]
+    fn from_state_rejects_leaf_count_that_disagrees_with_frontier() {
+        let mut tree = empty_tree();
+        tree.append_commitments(100, vec![cmx(1)], vec![], None)
+            .unwrap();
+        let mut persisted: PersistedShardTreeState =
+            serde_json::from_slice(&tree.save().unwrap()).unwrap();
+        persisted.leaf_count = 2;
+        let invalid_state = serde_json::to_vec(&persisted).unwrap();
+
+        let error = OwnedTree::from_state(&invalid_state).err().unwrap();
+        assert!(error.starts_with("INVALID_STATE: leaf count"));
+    }
+
+    #[test]
+    fn from_state_rejects_uncheckpointed_frontier_leaf() {
+        let mut tree = empty_tree();
+        tree.append_commitments(100, vec![cmx(1)], vec![], None)
+            .unwrap();
+        tree.tree
+            .append(parse_hash_bytes(&cmx(2)).unwrap(), Retention::Ephemeral)
+            .unwrap();
+
+        let persisted = extract_state(
+            &tree.tree,
+            tree.tip_height,
+            tree.leaf_count,
+            tree.max_checkpoints,
+        )
+        .unwrap();
+        assert_eq!(persisted.tip_height, Some(100));
+        assert_eq!(persisted.leaf_count, 1);
+        assert_eq!(persisted.checkpoints[0].position, Some(0));
+        let invalid_state = serde_json::to_vec(&persisted).unwrap();
+
+        let error = OwnedTree::from_state(&invalid_state).err().unwrap();
+        assert!(error.starts_with("INVALID_STATE: shard frontier position"));
     }
 
     // -------------------------------------------------------------------------
