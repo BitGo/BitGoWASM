@@ -1277,14 +1277,18 @@ impl BitGoPsbt {
                 // We reuse taproot PSBT fields (tap_tree, tap_key_origins) since
                 // all tested PSBT parsers accept them on witness v2 outputs.
                 // No tap_internal_key (P2MR has no internal key or tweak).
-                psbt_output.tap_tree = Some(build_tap_tree_for_output(&pub_triple, false));
+                psbt_output.tap_tree = Some(
+                    build_tap_tree_for_output(&pub_triple, false)
+                        .map_err(|error| error.to_string())?,
+                );
                 psbt_output.tap_key_origins = create_tap_bip32_derivation_for_output(
                     wallet_keys,
                     chain,
                     derivation_index,
                     &pub_triple,
                     false,
-                );
+                )
+                .map_err(|error| error.to_string())?;
             }
             WalletScripts::P2trLegacy(script) | WalletScripts::P2trMusig2(script) => {
                 let is_musig2 = matches!(scripts, WalletScripts::P2trMusig2(_));
@@ -1292,7 +1296,10 @@ impl BitGoPsbt {
                 let internal_key = script.spend_info.internal_key();
                 psbt_output.tap_internal_key = Some(internal_key);
 
-                psbt_output.tap_tree = Some(build_tap_tree_for_output(&pub_triple, is_musig2));
+                psbt_output.tap_tree = Some(
+                    build_tap_tree_for_output(&pub_triple, is_musig2)
+                        .map_err(|error| error.to_string())?,
+                );
 
                 psbt_output.tap_key_origins = create_tap_bip32_derivation_for_output(
                     wallet_keys,
@@ -1300,7 +1307,8 @@ impl BitGoPsbt {
                     derivation_index,
                     &pub_triple,
                     is_musig2,
-                );
+                )
+                .map_err(|error| error.to_string())?;
             }
         }
 
@@ -3673,7 +3681,7 @@ pub fn to_wallet_keys(
 
     for perm in &XPUB_TRIPLE_PERMUTATIONS {
         let permuted = [xpubs[perm[0]], xpubs[perm[1]], xpubs[perm[2]]];
-        let wallet_keys = RootWalletKeys::new(permuted);
+        let wallet_keys = RootWalletKeys::new(permuted).map_err(|error| error.to_string())?;
 
         let all_match = wallet_inputs.iter().all(|(tx_input, psbt_input)| {
             let output_script = psbt_wallet_input::get_output_script_and_value(
@@ -3770,7 +3778,8 @@ mod tests {
         use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
         use crate::zcash::NetworkUpgrade;
 
-        let keys = RootWalletKeys::new(get_test_wallet_keys("test_zcash_at_height"));
+        let keys = RootWalletKeys::new(get_test_wallet_keys("test_zcash_at_height"))
+            .expect("test wallet xpubs are distinct");
 
         // Test with Nu5 activation height (mainnet)
         let nu5_height = NetworkUpgrade::Nu5.mainnet_activation_height();
@@ -3822,7 +3831,8 @@ mod tests {
         use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
         use crate::zcash::NetworkUpgrade;
 
-        let keys = RootWalletKeys::new(get_test_wallet_keys("test_zcash_at_height"));
+        let keys = RootWalletKeys::new(get_test_wallet_keys("test_zcash_at_height"))
+            .expect("test wallet xpubs are distinct");
 
         // Test with Nu5 activation height (testnet)
         let nu5_height = NetworkUpgrade::Nu5.testnet_activation_height();
@@ -5341,7 +5351,8 @@ mod tests {
         use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
         let other_wallet_keys = crate::fixed_script_wallet::RootWalletKeys::new(
             get_test_wallet_keys("too many secrets"),
-        );
+        )
+        .expect("test wallet xpubs are distinct");
 
         // Load the original PSBT and parse inputs/outputs using existing methods
         let original_psbt = fixture
@@ -5724,7 +5735,8 @@ mod tests {
         use std::str::FromStr;
 
         let wallet_keys =
-            crate::fixed_script_wallet::RootWalletKeys::new(get_test_wallet_keys("doge_1e19"));
+            crate::fixed_script_wallet::RootWalletKeys::new(get_test_wallet_keys("doge_1e19"))
+                .expect("test wallet xpubs are distinct");
 
         let mut psbt = BitGoPsbt::new(Network::Dogecoin, &wallet_keys, Some(2), Some(0));
 
@@ -5810,7 +5822,7 @@ mod tests {
         use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
 
         let xpubs = get_test_wallet_keys("test_global_xpubs");
-        let wallet_keys = RootWalletKeys::new(xpubs);
+        let wallet_keys = RootWalletKeys::new(xpubs).expect("test wallet xpubs are distinct");
         let psbt = BitGoPsbt::new(Network::Bitcoin, &wallet_keys, Some(2), Some(0));
 
         let global = psbt.get_global_xpubs().expect("should have global xpubs");
@@ -5828,7 +5840,7 @@ mod tests {
         use miniscript::bitcoin::hashes::Hash;
 
         let xpubs = get_test_wallet_keys("test_to_wallet_keys");
-        let wallet_keys = RootWalletKeys::new(xpubs);
+        let wallet_keys = RootWalletKeys::new(xpubs).expect("test wallet xpubs are distinct");
         let mut psbt = BitGoPsbt::new(Network::Bitcoin, &wallet_keys, Some(2), Some(0));
 
         let txid = Txid::all_zeros();
@@ -5855,7 +5867,7 @@ mod tests {
         use miniscript::bitcoin::hashes::Hash;
 
         let xpubs = get_test_wallet_keys("test_to_wallet_keys_shuffled");
-        let wallet_keys = RootWalletKeys::new(xpubs);
+        let wallet_keys = RootWalletKeys::new(xpubs).expect("test wallet xpubs are distinct");
         let mut psbt = BitGoPsbt::new(Network::Bitcoin, &wallet_keys, Some(2), Some(0));
 
         let txid = Txid::all_zeros();
@@ -5908,7 +5920,8 @@ mod tests {
         let seed = "zcash_block_aligned";
         let secp = Secp256k1::new();
 
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed))
+            .expect("test wallet xpubs are distinct");
 
         let sapling_height = NetworkUpgrade::Sapling.testnet_activation_height();
         let mut psbt = BitGoPsbt::new_zcash_at_height(

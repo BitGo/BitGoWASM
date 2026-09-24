@@ -1821,7 +1821,8 @@ mod tests {
         use crate::fixed_script_wallet::RootWalletKeys;
         use crate::networks::Network;
 
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("empty-zcash-round-trip"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("empty-zcash-round-trip"))
+            .expect("test wallet xpubs are distinct");
         let psbt = ZcashBitGoPsbt::new(
             Network::Zcash,
             &wallet_keys,
@@ -1958,7 +1959,8 @@ mod ironwood_v6_tests {
     #[test]
     fn build_sign_combine_produces_valid_v6_tx() {
         let seed = "ironwood_v6_psbt";
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed))
+            .expect("test wallet xpubs are distinct");
         let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
 
         // Build: one 2-of-3 P2SH transparent input (2 ZEC), a transparent change output, and a
@@ -2072,7 +2074,8 @@ mod ironwood_v6_tests {
         use orchard::{Action as OrchardAction, Proof};
 
         let seed = "ironwood_v6_local_proof";
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed))
+            .expect("test wallet xpubs are distinct");
         let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
 
         let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
@@ -2185,7 +2188,8 @@ mod ironwood_v6_tests {
     #[test]
     fn keyless_server_build_client_sets_out_ciphertext_via_ecdh_then_signs_and_combines() {
         let seed = "ironwood_v6_ovk_psbt";
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed))
+            .expect("test wallet xpubs are distinct");
         let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
 
         // ---- Server: build a keyless PSBT (one transparent input, one Ironwood output). ----
@@ -2353,7 +2357,8 @@ mod ironwood_v6_tests {
 
     /// A minimal v6 PSBT with one 2-of-3 P2SH input, a change output, and a shielded output.
     fn build_shield_psbt(seed: &str) -> ZcashBitGoPsbt {
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed))
+            .expect("test wallet xpubs are distinct");
         let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -2393,6 +2398,7 @@ mod ironwood_v6_tests {
     /// `bitgo_key()`'s raw pubkey matches what's actually in this PSBT's `bip32_derivation` entries.
     fn root_wallet_keys(seed: &str) -> RootWalletKeys {
         RootWalletKeys::new(get_test_wallet_keys(seed))
+            .expect("test wallet xpubs are distinct")
     }
 
     /// `sign_ironwood_v6`: the user signs first (setting `out_ciphertext` via its ECDH-derived
@@ -2702,7 +2708,8 @@ mod ironwood_v6_tests {
     #[test]
     fn sign_ironwood_v6_rejects_a_non_v6_psbt() {
         let seed = "ironwood_v6_sign_api_v4";
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed))
+            .expect("test wallet xpubs are distinct");
         let mut z = ZcashBitGoPsbt::new(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -2725,7 +2732,8 @@ mod ironwood_v6_tests {
     /// branch id that only fails at broadcast.
     #[test]
     fn new_v6_at_height_rejects_pre_nu6_3_height() {
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_height"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_height"))
+            .expect("test wallet xpubs are distinct");
         let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
         let err = ZcashBitGoPsbt::new_v6_at_height(
             Network::ZcashTestnet,
@@ -2834,7 +2842,8 @@ mod ironwood_v6_tests {
     /// `ironwood_shielded_outputs_info` reports an empty Vec, neither erroring.
     #[test]
     fn unsigned_v6_txid_and_shielded_output_info_handle_no_shielded_output_ever_added() {
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_never_shielded"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_never_shielded"))
+            .expect("test wallet xpubs are distinct");
         let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -3015,7 +3024,8 @@ mod ironwood_v6_tests {
     /// fields rather than anything sighash/signature-dependent.
     #[test]
     fn ironwood_shielded_output_info_reflects_added_output() {
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_output_info"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_output_info"))
+            .expect("test wallet xpubs are distinct");
         let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -3083,7 +3093,8 @@ mod ironwood_v6_tests {
     /// `recipient`, which alone cannot reconstruct a multi-receiver UA.
     #[test]
     fn add_ironwood_output_unified_address_round_trips() {
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_ua_roundtrip"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_ua_roundtrip"))
+            .expect("test wallet xpubs are distinct");
         let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -3163,7 +3174,8 @@ mod ironwood_v6_tests {
             .unwrap()
             .expect("fixture UA has a transparent receiver");
 
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_roundtrip"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_roundtrip"))
+            .expect("test wallet xpubs are distinct");
         let mut psbt = BitGoPsbt::new_zcash(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -3254,7 +3266,8 @@ mod ironwood_v6_tests {
         .unwrap();
         let ua = fixtures["testnetWallet"]["unified"].as_str().unwrap();
 
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_mismatch"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_mismatch"))
+            .expect("test wallet xpubs are distinct");
         let mut z = ZcashBitGoPsbt::new(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -3281,7 +3294,8 @@ mod ironwood_v6_tests {
     /// bug, not something to fall back to the plain `script`/`value` behavior for.
     #[test]
     fn add_transparent_output_rejects_an_unparseable_unified_address() {
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_bad_ua"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_bad_ua"))
+            .expect("test wallet xpubs are distinct");
         let mut z = ZcashBitGoPsbt::new(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -3316,7 +3330,8 @@ mod ironwood_v6_tests {
             crate::zcash::unified_address::encode_orchard_receiver(&recipient, "tzec").unwrap();
 
         let wallet_keys =
-            RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_no_transparent"));
+            RootWalletKeys::new(get_test_wallet_keys("v4_ua_transparent_no_transparent"))
+                .expect("test wallet xpubs are distinct");
         let mut z = ZcashBitGoPsbt::new(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -3358,7 +3373,8 @@ mod ironwood_v6_tests {
         let parsed = crate::zcash::unified_address::UnifiedAddress::parse(ua, "tzec").unwrap();
         let transparent_script = parsed.transparent_script().unwrap().unwrap();
 
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_ua_transparent_rejected"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_ua_transparent_rejected"))
+            .expect("test wallet xpubs are distinct");
         let mut z = ZcashBitGoPsbt::new_v6_at_height(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -3502,7 +3518,8 @@ mod ironwood_v6_tests {
     /// `add_ironwood_output` is just its one-recipient special case.
     #[test]
     fn add_ironwood_outputs_supports_multiple_recipients() {
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_multi_recipient"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_multi_recipient"))
+            .expect("test wallet xpubs are distinct");
         let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -3769,7 +3786,8 @@ mod ironwood_v6_tests {
     /// serialize-per-command round trip does.
     #[test]
     fn new_v6_bare_supports_the_cli_build_flow_end_to_end() {
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_bare_cli_flow"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_bare_cli_flow"))
+            .expect("test wallet xpubs are distinct");
 
         let consensus_branch_id = crate::zcash::branch_id_for_height(
             NetworkUpgrade::Nu6_3.testnet_activation_height(),
@@ -4014,7 +4032,8 @@ mod ironwood_v6_tests {
         // Reconstruct the fixture's state inside a v6 PSBT: transparent skeleton (scriptSigs
         // stripped), the spent output hydrated as witness_utxo (this is the extraction under test),
         // and the shielded action data as a stored PCZT.
-        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("shield1zec_psbt"));
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("shield1zec_psbt"))
+            .expect("test wallet xpubs are distinct");
         let mut z = ZcashBitGoPsbt::new_v6(
             Network::ZcashTestnet,
             &wallet_keys,
@@ -4117,7 +4136,8 @@ mod ironwood_v6_tests {
             .verify_v6_signature_with_xpub(&secp, 0, wallet_keys.backup_key())
             .unwrap());
         // A stranger's xpub has no matching fingerprint in the input at all.
-        let stranger = RootWalletKeys::new(get_test_wallet_keys("a-different-wallet"));
+        let stranger = RootWalletKeys::new(get_test_wallet_keys("a-different-wallet"))
+            .expect("test wallet xpubs are distinct");
         assert!(!z
             .verify_v6_signature_with_xpub(&secp, 0, stranger.user_key())
             .unwrap());
@@ -4178,7 +4198,8 @@ mod ironwood_v6_tests {
         // "no derivation path" must not silently answer false before the v6 check. Backup key is
         // absent from this input's 2-of-3 script, and a stranger's xpub matches no fingerprint at
         // all; both would have returned Ok(false) before the guard was hoisted.
-        let stranger_wallet = RootWalletKeys::new(get_test_wallet_keys("an-unrelated-wallet"));
+        let stranger_wallet = RootWalletKeys::new(get_test_wallet_keys("an-unrelated-wallet"))
+            .expect("test wallet xpubs are distinct");
         for xpub in [wallet_keys.backup_key(), stranger_wallet.user_key()] {
             let err = generic
                 .verify_signature_with_xpub(&secp, 0, xpub)
