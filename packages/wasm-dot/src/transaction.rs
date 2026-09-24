@@ -148,6 +148,27 @@ impl Transaction {
         }
     }
 
+    /// Create a new transaction already bound to its runtime material.
+    pub(crate) fn new_with_context(
+        call_data: Vec<u8>,
+        era: Era,
+        nonce: u32,
+        tip: u128,
+        material: Material,
+        validity: Validity,
+        reference_block: &str,
+    ) -> Result<Self, WasmDotError> {
+        let reference_block = parse_hex_hash(reference_block)?;
+        let mut tx = Self::new(call_data, era, nonce, tip);
+        tx.context = Some(TransactionContext {
+            material,
+            validity,
+            reference_block,
+            metadata: None,
+        });
+        Ok(tx)
+    }
+
     /// Create a transaction from raw bytes
     ///
     /// # Arguments
@@ -405,10 +426,10 @@ impl Transaction {
         self.context.as_ref().map(|context| &context.material)
     }
 
-    /// Set signing context without rebinding established runtime material.
+    /// Update signing context without rebinding established runtime material.
     ///
-    /// The first call can attach material to a newly built transaction. Later
-    /// calls may update validity and reference block only when material matches.
+    /// Material must already be attached and must match exactly. Only validity
+    /// and reference block can change.
     pub fn set_context(
         &mut self,
         material: Material,
@@ -416,22 +437,18 @@ impl Transaction {
         reference_block: &str,
     ) -> Result<(), WasmDotError> {
         let block_hash = parse_hex_hash(reference_block)?;
-        if let Some(context) = self.context.as_mut() {
-            if context.material != material {
-                return Err(WasmDotError::InvalidTransaction(
-                    "Runtime material cannot be changed after call data is established".to_string(),
-                ));
-            }
-            context.validity = validity;
-            context.reference_block = block_hash;
-        } else {
-            self.context = Some(TransactionContext {
-                material,
-                validity,
-                reference_block: block_hash,
-                metadata: None,
-            });
+        let context = self.context.as_mut().ok_or_else(|| {
+            WasmDotError::MissingContext(
+                "Runtime material must be attached when call data is created".to_string(),
+            )
+        })?;
+        if context.material != material {
+            return Err(WasmDotError::InvalidTransaction(
+                "Runtime material cannot be changed after call data is established".to_string(),
+            ));
         }
+        context.validity = validity;
+        context.reference_block = block_hash;
         Ok(())
     }
 
@@ -866,5 +883,29 @@ mod tests {
         let mortal_bytes = encode_era(&mortal);
         let (decoded, _) = decode_era_bytes(&mortal_bytes).unwrap();
         assert!(!decoded.is_immortal());
+    }
+
+    #[test]
+    fn test_set_context_cannot_attach_material_after_call_data_creation() {
+        let mut tx = Transaction::new(vec![1, 2], Era::Immortal, 0, 0);
+        let material = Material {
+            genesis_hash: "0x00".to_string(),
+            chain_name: "Westend".to_string(),
+            spec_name: "westend".to_string(),
+            spec_version: 1,
+            tx_version: 1,
+            metadata: "0x00".to_string(),
+        };
+
+        let error = tx
+            .set_context(
+                material,
+                Validity::default(),
+                &format!("0x{}", "00".repeat(32)),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, WasmDotError::MissingContext(_)));
+        assert!(tx.material().is_none());
     }
 }

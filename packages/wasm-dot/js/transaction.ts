@@ -131,10 +131,8 @@ export class DotTransaction {
   }
 
   /**
-   * Set signing validity and reference block.
-   *
-   * Material may be supplied once for a transaction created without context;
-   * a transaction with stored material rejects any different material.
+   * Update signing validity and reference block while preserving the
+   * material already bound to this transaction. Different material is rejected.
    */
   setContext(material: Material, validity: Validity, referenceBlock: string): void {
     const materialJs = new MaterialJs(
