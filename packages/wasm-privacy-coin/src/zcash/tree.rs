@@ -307,10 +307,10 @@ fn validate_state_coherence(
         .max_leaf_position(None)
         .map_err(|e| format!("max_leaf_position error: {:?}", e))?
         .map(u64::from);
-    if frontier_position != expected_position {
+    if frontier_position != checkpoint_position {
         return Err(format!(
-            "INVALID_STATE: leaf count {} does not match shard frontier position {:?}",
-            leaf_count, frontier_position
+            "INVALID_STATE: shard frontier position {:?} does not match latest checkpoint position {:?}",
+            frontier_position, checkpoint_position
         ));
     }
 
@@ -936,6 +936,31 @@ mod tests {
 
         let error = OwnedTree::from_state(&invalid_state).err().unwrap();
         assert!(error.starts_with("INVALID_STATE: leaf count"));
+    }
+
+    #[test]
+    fn from_state_rejects_uncheckpointed_frontier_leaf() {
+        let mut tree = empty_tree();
+        tree.append_commitments(100, vec![cmx(1)], vec![], None)
+            .unwrap();
+        tree.tree
+            .append(parse_hash_bytes(&cmx(2)).unwrap(), Retention::Ephemeral)
+            .unwrap();
+
+        let persisted = extract_state(
+            &tree.tree,
+            tree.tip_height,
+            tree.leaf_count,
+            tree.max_checkpoints,
+        )
+        .unwrap();
+        assert_eq!(persisted.tip_height, Some(100));
+        assert_eq!(persisted.leaf_count, 1);
+        assert_eq!(persisted.checkpoints[0].position, Some(0));
+        let invalid_state = serde_json::to_vec(&persisted).unwrap();
+
+        let error = OwnedTree::from_state(&invalid_state).err().unwrap();
+        assert!(error.starts_with("INVALID_STATE: shard frontier position"));
     }
 
     // -------------------------------------------------------------------------
