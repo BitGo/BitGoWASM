@@ -68,7 +68,7 @@ pub struct Transaction {
 #[derive(Debug, Clone)]
 pub struct TransactionContext {
     pub material: Material,
-    pub validity: Validity,
+    first_valid: u32,
     pub reference_block: [u8; 32],
     /// Decoded metadata (cached for performance)
     metadata: Option<Metadata>,
@@ -103,6 +103,7 @@ impl TransactionContext {
     /// Returns the params type expected by `tx::create_partial_signed`.
     fn to_extrinsic_params(
         &self,
+        era: &Era,
         nonce: u32,
         tip: u128,
     ) -> <<PolkadotConfig as Config>::ExtrinsicParams as ExtrinsicParams<PolkadotConfig>>::Params
@@ -111,20 +112,17 @@ impl TransactionContext {
             .nonce(nonce as u64)
             .tip(tip);
 
-        // Set mortality - default is immortal if max_duration is 0
-        if self.validity.max_duration == 0 {
-            // Immortal - just build with defaults (no mortal call)
-            builder.build()
-        } else {
-            // Mortal transaction
-            // mortal_unchecked(from_block_number, from_block_hash, for_n_blocks)
-            builder
+        // The transaction's normalized era is the source of truth for signing.
+        // Keep its period aligned with the first-valid block and reference hash.
+        match era {
+            Era::Immortal => builder.build(),
+            Era::Mortal { period, .. } => builder
                 .mortal_unchecked(
-                    self.validity.first_valid as u64,
+                    self.first_valid as u64,
                     H256::from(self.reference_block),
-                    self.validity.max_duration as u64,
+                    *period as u64,
                 )
-                .build()
+                .build(),
         }
     }
 }
@@ -170,7 +168,7 @@ impl Transaction {
 
         let tx_context = context.map(|ctx| TransactionContext {
             material: ctx.material,
-            validity: Validity::default(),
+            first_valid: 0,
             reference_block: [0u8; 32], // Unknown from bytes alone
             metadata: None,
         });
@@ -196,7 +194,7 @@ impl Transaction {
             // Use subxt-core to create signed extrinsic if we have context
             if let Some(ref ctx) = self.context {
                 let client_state = ctx.to_client_state()?;
-                let params = ctx.to_extrinsic_params(self.nonce, self.tip);
+                let params = ctx.to_extrinsic_params(&self.era, self.nonce, self.tip);
 
                 // Create payload from pre-encoded call data
                 let call = PreEncodedPayload(self.call_data.clone());
@@ -317,7 +315,7 @@ impl Transaction {
             .ok_or_else(|| WasmDotError::MissingContext("No context set for transaction".into()))?;
 
         let client_state = context.to_client_state()?;
-        let params = context.to_extrinsic_params(self.nonce, self.tip);
+        let params = context.to_extrinsic_params(&self.era, self.nonce, self.tip);
 
         // Create payload from pre-encoded call data
         let call = PreEncodedPayload(self.call_data.clone());
@@ -407,10 +405,16 @@ impl Transaction {
         validity: Validity,
         reference_block: &str,
     ) -> Result<(), WasmDotError> {
+        if compute_era(&validity)? != self.era {
+            return Err(WasmDotError::InvalidTransaction(
+                "validity does not match transaction era".to_string(),
+            ));
+        }
+
         let block_hash = parse_hex_hash(reference_block)?;
         self.context = Some(TransactionContext {
             material,
-            validity,
+            first_valid: validity.first_valid,
             reference_block: block_hash,
             metadata: None,
         });
@@ -465,17 +469,43 @@ fn parse_hex_hash(hex_str: &str) -> Result<[u8; 32], WasmDotError> {
     Ok(result)
 }
 
+/// Normalize a validity window into the single era used for inspection and signing.
+pub(crate) fn compute_era(validity: &Validity) -> Result<Era, WasmDotError> {
+    if validity.max_duration == 0 {
+        return Ok(Era::Immortal);
+    }
+
+    if !(4..=65_536).contains(&validity.max_duration) {
+        return Err(WasmDotError::InvalidTransaction("invalid era".to_string()));
+    }
+
+    let period = validity
+        .max_duration
+        .checked_next_power_of_two()
+        .ok_or_else(|| WasmDotError::InvalidTransaction("invalid era".to_string()))?;
+    let SubxtEra::Mortal { period, phase } =
+        SubxtEra::mortal(period as u64, validity.first_valid as u64)
+    else {
+        return Err(WasmDotError::InvalidTransaction("invalid era".to_string()));
+    };
+
+    Ok(Era::Mortal {
+        period: period as u32,
+        phase: phase as u32,
+    })
+}
+
 /// Encode era using subxt-core's Era type
 pub(crate) fn encode_era(era: &Era) -> Vec<u8> {
     use parity_scale_codec::Encode;
 
     match era {
         Era::Immortal => SubxtEra::Immortal.encode(),
-        Era::Mortal { period, phase } => {
-            let period = (*period).next_power_of_two().clamp(4, 65536) as u64;
-            let phase = (*phase as u64) % period;
-            SubxtEra::Mortal { period, phase }.encode()
+        Era::Mortal { period, phase } => SubxtEra::Mortal {
+            period: *period as u64,
+            phase: *phase as u64,
         }
+        .encode(),
     }
 }
 
@@ -848,5 +878,46 @@ mod tests {
         let mortal_bytes = encode_era(&mortal);
         let (decoded, _) = decode_era_bytes(&mortal_bytes).unwrap();
         assert!(!decoded.is_immortal());
+    }
+
+    #[test]
+    fn test_compute_era_accepts_supported_boundaries() {
+        assert_eq!(
+            compute_era(&Validity {
+                first_valid: 1000,
+                max_duration: 0,
+            })
+            .unwrap(),
+            Era::Immortal
+        );
+
+        for (max_duration, period, phase) in [
+            (4, 4, 0),
+            (5, 8, 0),
+            (2_400, 4_096, 1_000),
+            (65_536, 65_536, 992),
+        ] {
+            assert_eq!(
+                compute_era(&Validity {
+                    first_valid: 1000,
+                    max_duration,
+                })
+                .unwrap(),
+                Era::Mortal { period, phase },
+                "max_duration={max_duration}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_compute_era_rejects_unsupported_durations_without_panicking() {
+        for max_duration in [1, 2, 3, 65_537, 1 << 31, (1 << 31) + 1, u32::MAX] {
+            let error = compute_era(&Validity {
+                first_valid: 1000,
+                max_duration,
+            })
+            .unwrap_err();
+            assert_eq!(error.to_string(), "Invalid transaction: invalid era");
+        }
     }
 }
