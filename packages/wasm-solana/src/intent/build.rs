@@ -312,18 +312,14 @@ fn build_stake(
     let intent: StakeIntent = serde_json::from_value(intent_json.clone())
         .map_err(|e| WasmSolanaError::new(&format!("Failed to parse stake intent: {}", e)))?;
 
-    let jito_config = if intent.staking_type == Some(StakingType::Jito) {
-        Some(
-            intent
-                .stake_pool_config
-                .as_ref()
-                .ok_or_else(|| {
-                    WasmSolanaError::new("stakePoolConfig is required for JITO staking")
-                })?,
-        )
-    } else {
-        None
-    };
+    let jito_config =
+        if intent.staking_type == Some(StakingType::Jito) {
+            Some(intent.stake_pool_config.as_ref().ok_or_else(|| {
+                WasmSolanaError::new("stakePoolConfig is required for JITO staking")
+            })?)
+        } else {
+            None
+        };
 
     let fee_payer: Pubkey = params
         .fee_payer
