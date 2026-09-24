@@ -228,20 +228,14 @@ describe("buildFromIntent", function () {
         { feePayer, nonce: { type: "blockhash", value: blockhash } },
       );
       const parsed = parseTransaction(result.transaction);
-      const deposit = parsed.instructionsData.find(
-        (i: any) => i.type === "StakePoolDepositSol",
-      );
+      const deposit = parsed.instructionsData.find((i: any) => i.type === "StakePoolDepositSol");
 
       assert.equal(
         result.generatedKeypairs.length,
         0,
         "Jito deposit should not generate a stake keypair",
       );
-      assert.equal(
-        result.transaction.instructions.length,
-        1,
-        "Should emit only the pool deposit",
-      );
+      assert.equal(result.transaction.instructions.length, 1, "Should emit only the pool deposit");
       assert.equal(result.transaction.instructions[0].programId, stakePoolProgramId);
       assert(deposit, "Should emit StakePoolDepositSol");
       assert.equal((deposit as any).lamports, 1000000000n);
