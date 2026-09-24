@@ -678,16 +678,6 @@ fn build_jito_unstake(
     let ata_program: Pubkey = SPL_ATA_PROGRAM_ID.parse().unwrap();
     let clock_sysvar: Pubkey = solana_sdk::sysvar::clock::ID;
 
-    // Generate destination stake account
-    let unstake_keypair = Keypair::new();
-    let unstake_address = unstake_keypair.address();
-    let unstake_pubkey: Pubkey = unstake_address.parse().unwrap();
-
-    // Generate transfer authority
-    let transfer_authority_keypair = Keypair::new();
-    let transfer_authority_address = transfer_authority_keypair.address();
-    let transfer_authority_pubkey: Pubkey = transfer_authority_address.parse().unwrap();
-
     // Parse config addresses (with derivation for missing fields)
     let stake_pool: Pubkey = config
         .stake_pool_address
@@ -745,6 +735,15 @@ fn build_jito_unstake(
         .ok_or_else(|| WasmSolanaError::new("Missing managerFeeAccount"))?
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid managerFeeAccount"))?;
+
+    // Generate keys only after all Jito configuration fields are validated.
+    let unstake_keypair = Keypair::new();
+    let unstake_address = unstake_keypair.address();
+    let unstake_pubkey: Pubkey = unstake_address.parse().unwrap();
+
+    let transfer_authority_keypair = Keypair::new();
+    let transfer_authority_address = transfer_authority_keypair.address();
+    let transfer_authority_pubkey: Pubkey = transfer_authority_address.parse().unwrap();
 
     // 1. Approve: allow transfer_authority to spend pool tokens from user's ATA
     //    SPL Token Approve instruction (index 4): [4u8] + amount as u64 LE
