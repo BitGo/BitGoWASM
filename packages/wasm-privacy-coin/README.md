@@ -171,7 +171,11 @@ Implements `AutoCloseable`. Always use in try-with-resources.
 
 **`blockHeight`** must be in the range `[0, 4_294_967_295]` (Rust `u32`). Passing a
 negative value or a value above `0xFFFFFFFFL` throws `IllegalArgumentException`
-immediately in Java, before any WASM call.
+immediately in Java, before any WASM call. Each append must also use a height strictly
+greater than the highest retained checkpoint; equal or lower heights fail with
+`BLOCK_HEIGHT_OUT_OF_ORDER`. Appends are atomic: any error, including root verification
+failure, leaves the tree unchanged. Use `truncateToCheckpoint` for reorgs rather than
+appending an older height.
 
 ---
 
@@ -362,17 +366,18 @@ the payload; only the `Response` envelope uses proto).
 
 ## Error codes
 
-| Code                   | Meaning                                                                       |
-| ---------------------- | ----------------------------------------------------------------------------- |
-| `ROOT_MISMATCH`        | Computed Merkle root differs from the provided `expectedRoot`                 |
-| `CHECKPOINT_NOT_FOUND` | No checkpoint exists for the requested block height                           |
-| `INVALID_FRONTIER`     | Frontier bytes could not be parsed                                            |
-| `INVALID_STATE`        | State bytes could not be deserialized                                         |
-| `NO_TREE`              | WASM export called before `from_frontier` / `from_state` initialized the tree |
-| `DECODE_ERROR`         | Incoming proto request could not be decoded                                   |
-| `SAVE_ERROR`           | Tree serialization failed                                                     |
-| `GET_INFO_ERROR`       | `get_info` failed internally                                                  |
-| `WASM_ERROR`           | Catch-all for errors without a structured code                                |
+| Code                       | Meaning                                                                       |
+| -------------------------- | ----------------------------------------------------------------------------- |
+| `ROOT_MISMATCH`            | Computed Merkle root differs from the provided `expectedRoot`                 |
+| `BLOCK_HEIGHT_OUT_OF_ORDER`| Append height is not greater than the highest retained checkpoint             |
+| `CHECKPOINT_NOT_FOUND`     | No checkpoint exists for the requested block height                           |
+| `INVALID_FRONTIER`         | Frontier bytes could not be parsed                                            |
+| `INVALID_STATE`            | State bytes could not be deserialized or metadata does not match the tree     |
+| `NO_TREE`                  | WASM export called before `from_frontier` / `from_state` initialized the tree |
+| `DECODE_ERROR`             | Incoming proto request could not be decoded                                   |
+| `SAVE_ERROR`               | Tree serialization failed                                                     |
+| `GET_INFO_ERROR`           | `get_info` failed internally                                                  |
+| `WASM_ERROR`               | Catch-all for errors without a structured code                                |
 
 ---
 
