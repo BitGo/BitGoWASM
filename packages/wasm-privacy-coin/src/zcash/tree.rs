@@ -268,7 +268,10 @@ fn latest_checkpoint(tree: &ShieldedShardTree) -> Result<Option<(u32, Option<u64
                     TreeState::Empty => None,
                     TreeState::AtPosition(pos) => Some(u64::from(pos)),
                 };
-                if latest.as_ref().map_or(true, |(latest_id, _)| id > latest_id) {
+                if latest
+                    .as_ref()
+                    .map_or(true, |(latest_id, _)| id > latest_id)
+                {
                     latest = Some((*id, position));
                 }
                 Ok(())
@@ -304,7 +307,7 @@ fn validate_state_coherence(
     }
 
     let frontier_position = tree
-        .max_leaf_position(Some(0))
+        .max_leaf_position(None)
         .map_err(|e| format!("max_leaf_position error: {:?}", e))?
         .map(u64::from);
     if frontier_position != expected_position {
@@ -546,12 +549,8 @@ impl OwnedTree {
             .collect::<Result<_, _>>()?;
 
         let mut staged = self.staged_copy()?;
-        let root = staged.append_validated_commitments(
-            block_height,
-            hashes,
-            owned,
-            expected_root,
-        )?;
+        let root =
+            staged.append_validated_commitments(block_height, hashes, owned, expected_root)?;
         *self = staged;
         Ok(root)
     }
@@ -883,7 +882,8 @@ mod tests {
     #[test]
     fn from_state_rejects_leaf_count_that_disagrees_with_frontier() {
         let mut tree = empty_tree();
-        tree.append_commitments(100, vec![cmx(1)], vec![], None).unwrap();
+        tree.append_commitments(100, vec![cmx(1)], vec![], None)
+            .unwrap();
         let mut persisted: PersistedShardTreeState =
             serde_json::from_slice(&tree.save().unwrap()).unwrap();
         persisted.leaf_count = 2;
