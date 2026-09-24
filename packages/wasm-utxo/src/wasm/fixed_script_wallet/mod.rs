@@ -1588,6 +1588,11 @@ impl BitGoPsbt {
         xpriv: &WasmBIP32,
         session_id_bytes: Option<Vec<u8>>,
     ) -> Result<(), WasmUtxoError> {
+        crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::validate_musig2_sighash_types(
+            self.psbt.psbt(),
+        )
+        .map_err(|e| WasmUtxoError::new(&format!("Invalid MuSig2 sighash type: {}", e)))?;
+
         // Extract Xpriv from WasmBIP32
         let xpriv = xpriv.to_xpriv()?;
 
@@ -1681,24 +1686,32 @@ impl BitGoPsbt {
         input_index: usize,
         xpriv: &WasmBIP32,
     ) -> Result<(), WasmUtxoError> {
-        // Extract Xpriv from WasmBIP32
-        let xpriv = xpriv.to_xpriv()?;
+        let is_musig2 = {
+            let psbt = self.psbt.psbt();
+            if input_index >= psbt.inputs.len() {
+                return Err(WasmUtxoError::new(&format!(
+                    "Input index {} out of bounds (total inputs: {})",
+                    input_index,
+                    psbt.inputs.len()
+                )));
+            }
+            crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::Musig2Input::is_musig2_input(
+                &psbt.inputs[input_index],
+            )
+        };
 
-        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
-
-        // Check if this is a MuSig2 input
-        let psbt = self.psbt.psbt();
-        if input_index >= psbt.inputs.len() {
-            return Err(WasmUtxoError::new(&format!(
-                "Input index {} out of bounds (total inputs: {})",
-                input_index,
-                psbt.inputs.len()
-            )));
+        if is_musig2 {
+            crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::get_tap_sighash_type(
+                &self.psbt.psbt().inputs[input_index],
+            )
+            .map_err(|e| WasmUtxoError::new(&format!("Invalid MuSig2 sighash type: {}", e)))?;
         }
 
-        if crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::Musig2Input::is_musig2_input(
-            &psbt.inputs[input_index],
-        ) {
+        // Extract Xpriv from WasmBIP32 after validating a MuSig2 input.
+        let xpriv = xpriv.to_xpriv()?;
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+
+        if is_musig2 {
             // This is a MuSig2 input - use FirstRound signing
             let xpub = miniscript::bitcoin::bip32::Xpub::from_priv(&secp, &xpriv);
             let xpub_str = xpub.to_string();
@@ -2029,9 +2042,6 @@ impl BitGoPsbt {
         input_index: usize,
         xpriv: &WasmBIP32,
     ) -> Result<(), WasmUtxoError> {
-        let xpriv = xpriv.to_xpriv()?;
-        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
-
         let psbt = self.psbt.psbt();
         if input_index >= psbt.inputs.len() {
             return Err(WasmUtxoError::new(&format!(
@@ -2050,6 +2060,13 @@ impl BitGoPsbt {
             )));
         }
 
+        crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::get_tap_sighash_type(
+            &psbt.inputs[input_index],
+        )
+        .map_err(|e| WasmUtxoError::new(&format!("Invalid MuSig2 sighash type: {}", e)))?;
+
+        let xpriv = xpriv.to_xpriv()?;
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
         let xpub = miniscript::bitcoin::bip32::Xpub::from_priv(&secp, &xpriv);
         let xpub_str = xpub.to_string();
 
@@ -2087,6 +2104,11 @@ impl BitGoPsbt {
     /// - `Ok(JsValue)` with an array of input indices that were signed
     /// - `Err(WasmUtxoError)` if signing fails
     pub fn sign_all_musig2_inputs(&mut self, xpriv: &WasmBIP32) -> Result<JsValue, WasmUtxoError> {
+        crate::fixed_script_wallet::bitgo_psbt::p2tr_musig2_input::validate_musig2_sighash_types(
+            self.psbt.psbt(),
+        )
+        .map_err(|e| WasmUtxoError::new(&format!("Invalid MuSig2 sighash type: {}", e)))?;
+
         let xpriv = xpriv.to_xpriv()?;
         let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
         let xpub = miniscript::bitcoin::bip32::Xpub::from_priv(&secp, &xpriv);

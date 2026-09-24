@@ -73,6 +73,8 @@ pub fn generate_and_set_user_nonce(
     use crate::bitcoin::bip32::Xpub;
     use crate::bitcoin::sighash::{Prevouts, SighashCache};
 
+    let sighash_type = get_tap_sighash_type(&ctx.psbt.inputs[ctx.input_index])?;
+
     // Derive the signer's key for this input
     let tap_key_origins = &ctx.psbt.inputs[ctx.input_index].tap_key_origins;
     let derived_xpriv = derive_xpriv_for_input_tap(xpriv, tap_key_origins)
@@ -80,9 +82,6 @@ pub fn generate_and_set_user_nonce(
     let secp = secp256k1::Secp256k1::new();
     let derived_xpub = Xpub::from_priv(&secp, &derived_xpriv);
     let signer_pub_key = derived_xpub.to_pub();
-
-    // Get sighash type from PSBT input
-    let sighash_type = get_tap_sighash_type(&ctx.psbt.inputs[ctx.input_index]);
 
     // Compute sighash
     let prevouts = collect_prevouts(ctx.psbt)?;
@@ -148,6 +147,8 @@ pub fn sign_and_set_partial_signature(
     use crate::bitcoin::taproot::TapNodeHash;
     use musig2::AggNonce;
 
+    let sighash_type = get_tap_sighash_type(&ctx.psbt.inputs[ctx.input_index])?;
+
     // Derive the signer's key for this input
     let tap_key_origins = &ctx.psbt.inputs[ctx.input_index].tap_key_origins;
     let derived_xpriv = derive_xpriv_for_input_tap(xpriv, tap_key_origins)
@@ -155,9 +156,6 @@ pub fn sign_and_set_partial_signature(
     let secp = secp256k1::Secp256k1::new();
     let derived_xpub = Xpub::from_priv(&secp, &derived_xpriv);
     let signer_pub_key = derived_xpub.to_pub();
-
-    // Get sighash type from PSBT input
-    let sighash_type = get_tap_sighash_type(&ctx.psbt.inputs[ctx.input_index]);
 
     // Compute sighash
     let prevouts = collect_prevouts(ctx.psbt)?;
@@ -229,6 +227,9 @@ pub fn generate_and_set_deterministic_nonce(
     use crate::bitcoin::sighash::{Prevouts, SighashCache};
     use crate::bitcoin::taproot::TapNodeHash;
 
+    let sighash_type =
+        get_tap_sighash_type(&ctx.psbt.inputs[ctx.input_index]).map_err(|e| e.to_string())?;
+
     // Derive the key for this input
     let tap_key_origins = &ctx.psbt.inputs[ctx.input_index].tap_key_origins;
     let derived_xpriv = derive_xpriv_for_input_tap(xpriv, tap_key_origins)
@@ -244,9 +245,6 @@ pub fn generate_and_set_deterministic_nonce(
     let tap_merkle_root = ctx.psbt.inputs[ctx.input_index]
         .tap_merkle_root
         .unwrap_or_else(|| TapNodeHash::from_byte_array([0u8; 32]));
-
-    // Get sighash type from PSBT input
-    let sighash_type = get_tap_sighash_type(&ctx.psbt.inputs[ctx.input_index]);
 
     // Compute sighash
     let prevouts = collect_prevouts(ctx.psbt).map_err(|e| e.to_string())?;
