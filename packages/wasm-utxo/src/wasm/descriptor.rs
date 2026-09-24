@@ -3,9 +3,12 @@ use crate::wasm::try_from_js_value::get_field;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use miniscript::bitcoin::secp256k1::{Secp256k1, Signing};
 use miniscript::bitcoin::ScriptBuf;
-use miniscript::descriptor::KeyMap;
+use miniscript::descriptor::{KeyMap, ShInner, WshInner};
 use miniscript::miniscript::analyzable::ExtParams;
-use miniscript::{DefiniteDescriptorKey, Descriptor, DescriptorPublicKey};
+use miniscript::{
+    DefiniteDescriptorKey, Descriptor, DescriptorPublicKey, Miniscript,
+    MiniscriptKey, ScriptContext, Terminal,
+};
 use std::fmt;
 use std::str::FromStr;
 use wasm_bindgen::prelude::*;
@@ -18,6 +21,53 @@ pub(crate) enum WrapDescriptorEnum {
 
 #[wasm_bindgen]
 pub struct WrapDescriptor(pub(crate) WrapDescriptorEnum);
+
+fn descriptor_ext_params(descriptor: &str) -> ExtParams {
+    let params = ExtParams::sane();
+    if descriptor.starts_with("tr(") {
+        params.drop()
+    } else {
+        params
+    }
+}
+
+fn miniscript_contains_drop<Pk: MiniscriptKey, Ctx: ScriptContext>(
+    miniscript: &Miniscript<Pk, Ctx>,
+) -> bool {
+    miniscript
+        .iter()
+        .any(|node| matches!(node.node, Terminal::Drop(_) | Terminal::PayloadDrop(_)))
+}
+
+fn descriptor_contains_drop<Pk: MiniscriptKey>(descriptor: &Descriptor<Pk>) -> bool {
+    match descriptor {
+        Descriptor::Bare(bare) => miniscript_contains_drop(bare.as_inner()),
+        Descriptor::Sh(sh) => match sh.as_inner() {
+            ShInner::Wsh(wsh) => match wsh.as_inner() {
+                WshInner::Ms(miniscript) => miniscript_contains_drop(miniscript),
+                WshInner::SortedMulti(_) => false,
+            },
+            ShInner::Ms(miniscript) => miniscript_contains_drop(miniscript),
+            ShInner::Wpkh(_) | ShInner::SortedMulti(_) => false,
+        },
+        Descriptor::Wsh(wsh) => match wsh.as_inner() {
+            WshInner::Ms(miniscript) => miniscript_contains_drop(miniscript),
+            WshInner::SortedMulti(_) => false,
+        },
+        Descriptor::Pkh(_) | Descriptor::Wpkh(_) | Descriptor::Tr(_) => false,
+    }
+}
+
+fn check_descriptor_drop_context<Pk: MiniscriptKey>(
+    descriptor: &Descriptor<Pk>,
+) -> Result<(), WasmUtxoError> {
+    if !matches!(descriptor, Descriptor::Tr(_)) && descriptor_contains_drop(descriptor) {
+        return Err(WasmUtxoError::new(
+            "Drop fragments are only supported in taproot descriptors",
+        ));
+    }
+    Ok(())
+}
 
 #[wasm_bindgen]
 impl WrapDescriptor {
@@ -113,16 +163,16 @@ impl WrapDescriptor {
         secp: &Secp256k1<C>,
         descriptor: &str,
     ) -> Result<WrapDescriptor, WasmUtxoError> {
-        let (desc, keys) =
-            Descriptor::parse_descriptor_ext(secp, descriptor, &ExtParams::sane().drop())?;
+        let params = descriptor_ext_params(descriptor);
+        let (desc, keys) = Descriptor::parse_descriptor_ext(secp, descriptor, &params)?;
+        check_descriptor_drop_context(&desc)?;
         Ok(WrapDescriptor(WrapDescriptorEnum::Derivable(desc, keys)))
     }
 
     fn from_string_definite(descriptor: &str) -> Result<WrapDescriptor, WasmUtxoError> {
-        let desc = Descriptor::<DefiniteDescriptorKey>::from_str_ext(
-            descriptor,
-            &ExtParams::sane().drop(),
-        )?;
+        let params = descriptor_ext_params(descriptor);
+        let desc = Descriptor::<DefiniteDescriptorKey>::from_str_ext(descriptor, &params)?;
+        check_descriptor_drop_context(&desc)?;
         Ok(WrapDescriptor(WrapDescriptorEnum::Definite(desc)))
     }
 
@@ -155,8 +205,9 @@ impl WrapDescriptor {
             "derivable" => WrapDescriptor::from_string_derivable(&Secp256k1::new(), descriptor),
             "definite" => WrapDescriptor::from_string_definite(descriptor),
             "string" => {
-                let desc =
-                    Descriptor::<String>::from_str_ext(descriptor, &ExtParams::sane().drop())?;
+                let params = descriptor_ext_params(descriptor);
+                let desc = Descriptor::<String>::from_str_ext(descriptor, &params)?;
+                check_descriptor_drop_context(&desc)?;
                 Ok(WrapDescriptor(WrapDescriptorEnum::String(desc)))
             }
             _ => Err(WasmUtxoError::new("Invalid descriptor type")),
@@ -166,13 +217,14 @@ impl WrapDescriptor {
     /// Parse a descriptor string with custom ExtParams for taproot leaf validation.
     ///
     /// This allows control over which miniscript analysis checks are applied to
-    /// taproot leaves. The `drop` flag is always enabled; other flags default to false.
+    /// taproot leaves. Drop fragments are enabled only for `tr()` descriptors;
+    /// other flags default to false.
     ///
     /// # Arguments
     /// * `descriptor` - A string containing the descriptor to parse
     /// * `pk_type` - The type of public key ("definite" only for now)
     /// * `ext_params_config` - JavaScript object with optional boolean flags:
-    ///   - `drop`: Allow drop operations (r: wrapper) — always enabled
+    ///   - `drop`: Allow drop operations (r: wrapper) — enabled only for `tr()` descriptors
     ///   - `topUnsafe`: Allow scripts without signatures on all paths
     ///   - `resourceLimitations`: Allow scripts exceeding resource limits
     ///   - `timelockMixing`: Allow CSV + CLTV mixing
@@ -182,7 +234,7 @@ impl WrapDescriptor {
     ///
     /// # Example
     /// ```javascript
-    /// // r:older() is always allowed; add extra flags as needed
+    /// // r:older() is allowed in taproot leaves; add extra flags as needed
     /// Descriptor.fromStringExt(desc, "definite", { malleability: true })
     /// ```
     #[wasm_bindgen(js_name = fromStringExt, skip_typescript)]
@@ -195,7 +247,7 @@ impl WrapDescriptor {
             Ok(get_field::<Option<bool>>(&ext_params_config, key)?.unwrap_or(false))
         };
 
-        let mut params = ExtParams::sane().drop();
+        let mut params = descriptor_ext_params(descriptor);
         if flag("topUnsafe")? {
             params = params.top_unsafe();
         }
@@ -218,6 +270,7 @@ impl WrapDescriptor {
         match pk_type {
             "definite" => {
                 let desc = Descriptor::<DefiniteDescriptorKey>::from_str_ext(descriptor, &params)?;
+                check_descriptor_drop_context(&desc)?;
                 Ok(WrapDescriptor(WrapDescriptorEnum::Definite(desc)))
             }
             _ => Err(WasmUtxoError::new(
@@ -252,9 +305,10 @@ impl WrapDescriptor {
     #[wasm_bindgen(js_name = fromStringDetectType, skip_typescript)]
     pub fn from_string_detect_type(descriptor: &str) -> Result<WrapDescriptor, WasmUtxoError> {
         let secp = Secp256k1::new();
-        let (descriptor, _key_map) =
-            Descriptor::parse_descriptor_ext(&secp, descriptor, &ExtParams::sane().drop())
-                .map_err(|_| WasmUtxoError::new("Invalid descriptor"))?;
+        let params = descriptor_ext_params(descriptor);
+        let (descriptor, _key_map) = Descriptor::parse_descriptor_ext(&secp, descriptor, &params)
+            .map_err(|_| WasmUtxoError::new("Invalid descriptor"))?;
+        check_descriptor_drop_context(&descriptor)?;
         if descriptor.has_wildcard() {
             WrapDescriptor::from_string_derivable(&secp, &descriptor.to_string())
         } else {
@@ -309,5 +363,37 @@ mod tests {
             desc.to_asm_string().unwrap(),
             format!("OP_PUSHBYTES_33 {key} OP_CHECKSIG")
         );
+    }
+
+    #[test]
+    fn rejects_520_and_521_byte_payload_drops_in_wsh_descriptors() {
+        let key = "02ae7c3c0ebc315a33151a1985ebb1fdcae72b3b91c38e3193c40ebabfffe9c343";
+        for payload_size in [520, 521] {
+            let descriptor = format!(
+                "wsh(and_v(payload_drop({}),pk({key})))",
+                "00".repeat(payload_size)
+            );
+            assert!(matches!(
+                WrapDescriptor::from_string(&descriptor, "definite"),
+                Err(error) if error.to_string() == "Drop fragments are only supported in taproot descriptors"
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_drop_wrapper_in_legacy_descriptor() {
+        let key = "02ae7c3c0ebc315a33151a1985ebb1fdcae72b3b91c38e3193c40ebabfffe9c343";
+        let descriptor = format!("sh(and_v(r:after(1024),pk({key})))");
+        assert!(WrapDescriptor::from_string(&descriptor, "definite").is_err());
+    }
+
+    #[test]
+    fn accepts_521_byte_payload_drop_in_taproot_descriptor() {
+        let key = "c9c2312ca406dcb8eed50b829b5292f5fb3e846db0a556af61cc53834ce75421";
+        let descriptor = format!(
+            "tr({key},{{c:and_v(payload_drop({}),pk_k({key})),pk({key})}})",
+            "00".repeat(521)
+        );
+        assert!(WrapDescriptor::from_string(&descriptor, "definite").is_ok());
     }
 }

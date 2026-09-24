@@ -3,7 +3,7 @@ use crate::wasm::try_from_js_value::get_field;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use miniscript::bitcoin::{PublicKey, XOnlyPublicKey};
 use miniscript::miniscript::analyzable::ExtParams;
-use miniscript::{bitcoin, Legacy, Miniscript, Segwitv0, Tap};
+use miniscript::{bitcoin, Legacy, Miniscript, MiniscriptKey, ScriptContext, Segwitv0, Tap, Terminal};
 use std::fmt;
 use std::str::FromStr;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -59,12 +59,16 @@ impl WrapMiniscript {
             "tap" => Ok(WrapMiniscript::from(
                 Miniscript::<XOnlyPublicKey, Tap>::from_str(script).map_err(WasmUtxoError::from)?,
             )),
-            "segwitv0" => Ok(WrapMiniscript::from(
-                Miniscript::<PublicKey, Segwitv0>::from_str(script).map_err(WasmUtxoError::from)?,
-            )),
-            "legacy" => Ok(WrapMiniscript::from(
-                Miniscript::<PublicKey, Legacy>::from_str(script).map_err(WasmUtxoError::from)?,
-            )),
+            "segwitv0" => {
+                let miniscript = Miniscript::<PublicKey, Segwitv0>::from_str(script)
+                    .map_err(WasmUtxoError::from)?;
+                Ok(WrapMiniscript::from(check_drop_context(miniscript, false)?))
+            }
+            "legacy" => {
+                let miniscript =
+                    Miniscript::<PublicKey, Legacy>::from_str(script).map_err(WasmUtxoError::from)?;
+                Ok(WrapMiniscript::from(check_drop_context(miniscript, false)?))
+            }
             _ => Err(WasmUtxoError::new("Invalid context type")),
         }
     }
@@ -79,12 +83,16 @@ impl WrapMiniscript {
             "tap" => Ok(WrapMiniscript::from(
                 Miniscript::<XOnlyPublicKey, Tap>::decode(script).map_err(WasmUtxoError::from)?,
             )),
-            "segwitv0" => Ok(WrapMiniscript::from(
-                Miniscript::<PublicKey, Segwitv0>::decode(script).map_err(WasmUtxoError::from)?,
-            )),
-            "legacy" => Ok(WrapMiniscript::from(
-                Miniscript::<PublicKey, Legacy>::decode(script).map_err(WasmUtxoError::from)?,
-            )),
+            "segwitv0" => {
+                let miniscript = Miniscript::<PublicKey, Segwitv0>::decode(script)
+                    .map_err(WasmUtxoError::from)?;
+                Ok(WrapMiniscript::from(check_drop_context(miniscript, false)?))
+            }
+            "legacy" => {
+                let miniscript =
+                    Miniscript::<PublicKey, Legacy>::decode(script).map_err(WasmUtxoError::from)?;
+                Ok(WrapMiniscript::from(check_drop_context(miniscript, false)?))
+            }
             _ => Err(WasmUtxoError::new("Invalid context type")),
         }
     }
@@ -95,20 +103,23 @@ impl WrapMiniscript {
         context_type: &str,
         ext_params_config: JsValue,
     ) -> Result<WrapMiniscript, WasmUtxoError> {
-        let params = build_ext_params(&ext_params_config)?;
+        let allow_drop = context_type == "tap";
+        let params = build_ext_params(&ext_params_config, allow_drop)?;
         match context_type {
             "tap" => Ok(WrapMiniscript::from(
                 Miniscript::<XOnlyPublicKey, Tap>::from_str_ext(script, &params)
                     .map_err(WasmUtxoError::from)?,
             )),
-            "segwitv0" => Ok(WrapMiniscript::from(
-                Miniscript::<PublicKey, Segwitv0>::from_str_ext(script, &params)
-                    .map_err(WasmUtxoError::from)?,
-            )),
-            "legacy" => Ok(WrapMiniscript::from(
-                Miniscript::<PublicKey, Legacy>::from_str_ext(script, &params)
-                    .map_err(WasmUtxoError::from)?,
-            )),
+            "segwitv0" => {
+                let miniscript = Miniscript::<PublicKey, Segwitv0>::from_str_ext(script, &params)
+                    .map_err(WasmUtxoError::from)?;
+                Ok(WrapMiniscript::from(check_drop_context(miniscript, false)?))
+            }
+            "legacy" => {
+                let miniscript = Miniscript::<PublicKey, Legacy>::from_str_ext(script, &params)
+                    .map_err(WasmUtxoError::from)?;
+                Ok(WrapMiniscript::from(check_drop_context(miniscript, false)?))
+            }
             _ => Err(WasmUtxoError::new("Invalid context type")),
         }
     }
@@ -119,27 +130,47 @@ impl WrapMiniscript {
         context_type: &str,
         ext_params_config: JsValue,
     ) -> Result<WrapMiniscript, WasmUtxoError> {
-        let params = build_ext_params(&ext_params_config)?;
+        let allow_drop = context_type == "tap";
+        let params = build_ext_params(&ext_params_config, allow_drop)?;
         let script = bitcoin::Script::from_bytes(script);
         match context_type {
             "tap" => Ok(WrapMiniscript::from(
                 Miniscript::<XOnlyPublicKey, Tap>::decode_with_ext(script, &params)
                     .map_err(WasmUtxoError::from)?,
             )),
-            "segwitv0" => Ok(WrapMiniscript::from(
-                Miniscript::<PublicKey, Segwitv0>::decode_with_ext(script, &params)
-                    .map_err(WasmUtxoError::from)?,
-            )),
-            "legacy" => Ok(WrapMiniscript::from(
-                Miniscript::<PublicKey, Legacy>::decode_with_ext(script, &params)
-                    .map_err(WasmUtxoError::from)?,
-            )),
+            "segwitv0" => {
+                let miniscript = Miniscript::<PublicKey, Segwitv0>::decode_with_ext(script, &params)
+                    .map_err(WasmUtxoError::from)?;
+                Ok(WrapMiniscript::from(check_drop_context(miniscript, false)?))
+            }
+            "legacy" => {
+                let miniscript = Miniscript::<PublicKey, Legacy>::decode_with_ext(script, &params)
+                    .map_err(WasmUtxoError::from)?;
+                Ok(WrapMiniscript::from(check_drop_context(miniscript, false)?))
+            }
             _ => Err(WasmUtxoError::new("Invalid context type")),
         }
     }
 }
 
-fn build_ext_params(config: &JsValue) -> Result<ExtParams, WasmUtxoError> {
+// The pinned fork's contains_drop() misses PayloadDrop, so validate both variants here.
+fn check_drop_context<Pk: MiniscriptKey, Ctx: ScriptContext>(
+    miniscript: Miniscript<Pk, Ctx>,
+    allow_drop: bool,
+) -> Result<Miniscript<Pk, Ctx>, WasmUtxoError> {
+    if !allow_drop
+        && miniscript
+            .iter()
+            .any(|node| matches!(node.node, Terminal::Drop(_) | Terminal::PayloadDrop(_)))
+    {
+        return Err(WasmUtxoError::new(
+            "Drop fragments are only supported in taproot context",
+        ));
+    }
+    Ok(miniscript)
+}
+
+fn build_ext_params(config: &JsValue, allow_drop: bool) -> Result<ExtParams, WasmUtxoError> {
     let flag = |key| -> Result<bool, WasmUtxoError> {
         if config.is_undefined() || config.is_null() {
             return Ok(false);
@@ -147,7 +178,10 @@ fn build_ext_params(config: &JsValue) -> Result<ExtParams, WasmUtxoError> {
         Ok(get_field::<Option<bool>>(config, key)?.unwrap_or(false))
     };
 
-    let mut params = ExtParams::sane().drop();
+    let mut params = ExtParams::sane();
+    if allow_drop {
+        params = params.drop();
+    }
     if flag("topUnsafe")? {
         params = params.top_unsafe();
     }
@@ -190,5 +224,53 @@ impl From<Miniscript<PublicKey, Legacy>> for WrapMiniscript {
 impl fmt::Display for WrapMiniscript {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         unwrap_apply!(&self.0, |ms| write!(f, "{}", ms))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ECDSA_KEY: &str = "02ae7c3c0ebc315a33151a1985ebb1fdcae72b3b91c38e3193c40ebabfffe9c343";
+    const DROP_CONTEXT_ERROR: &str = "Drop fragments are only supported in taproot context";
+
+    fn payload_drop_script(payload_size: usize) -> String {
+        format!(
+            "and_v(payload_drop({}),pk({ECDSA_KEY}))",
+            "00".repeat(payload_size)
+        )
+    }
+
+    #[test]
+    fn rejects_520_and_521_byte_payload_drops_in_segwitv0() {
+        for payload_size in [520, 521] {
+            let script = payload_drop_script(payload_size);
+            assert!(matches!(
+                WrapMiniscript::from_string(&script, "segwitv0"),
+                Err(error) if error.to_string() == DROP_CONTEXT_ERROR
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_payload_drop_after_bitcoin_script_decode() {
+        let script = payload_drop_script(521);
+        let miniscript = Miniscript::<PublicKey, Segwitv0>::from_str_ext(
+            &script,
+            &ExtParams::sane().drop(),
+        )
+        .expect("the fork should parse the oversized push before the context guard");
+        let script = miniscript.encode().into_bytes();
+
+        assert!(matches!(
+            WrapMiniscript::from_bitcoin_script(&script, "segwitv0"),
+            Err(error) if error.to_string() == DROP_CONTEXT_ERROR
+        ));
+    }
+
+    #[test]
+    fn rejects_drop_fragments_in_legacy_context() {
+        let script = "and_v(r:after(1024),pk(02ae7c3c0ebc315a33151a1985ebb1fdcae72b3b91c38e3193c40ebabfffe9c343))";
+        assert!(WrapMiniscript::from_string(script, "legacy").is_err());
     }
 }
