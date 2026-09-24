@@ -530,7 +530,7 @@ mod tests {
                     accounts.iter().map(String::as_str).collect::<Vec<_>>()
                 );
             }
-            other => panic!("Expected Unknown instruction, got {other:?}"),
+            _ => panic!("Expected Unknown instruction"),
         }
     }
 
@@ -545,7 +545,7 @@ mod tests {
                     assert_eq!(params.mint_address, "account-3");
                     assert_eq!(params.program_id, "account-5");
                 }
-                other => panic!("Expected CreateAssociatedTokenAccount, got {other:?}"),
+                _ => panic!("Expected CreateAssociatedTokenAccount"),
             }
         }
     }
@@ -560,7 +560,7 @@ mod tests {
                 assert_eq!(params.mint_address, "account-3");
                 assert_eq!(params.program_id, "account-5");
             }
-            other => panic!("Expected CreateAssociatedTokenAccount, got {other:?}"),
+            _ => panic!("Expected CreateAssociatedTokenAccount"),
         }
     }
 
@@ -576,7 +576,7 @@ mod tests {
                 assert_eq!(params.wallet_address, "account-5");
                 assert_eq!(params.token_program_id, "account-6");
             }
-            other => panic!("Expected RecoverNestedAssociatedTokenAccount, got {other:?}"),
+            _ => panic!("Expected RecoverNestedAssociatedTokenAccount"),
         }
     }
 
