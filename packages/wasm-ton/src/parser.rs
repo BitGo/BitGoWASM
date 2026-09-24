@@ -11,7 +11,7 @@ struct BodyParseResult {
     opcode: Option<u32>,
     memo: Option<String>,
     jetton_transfer: Option<JettonTransferFields>,
-    withdraw_amount: Option<u64>,
+    withdraw_amount: Option<BigUint>,
 }
 
 /// Transaction type enum
@@ -52,10 +52,10 @@ const SINGLE_NOMINATOR_WITHDRAW_OPCODE: u32 = 0x00001000; // 4096
 #[derive(Debug, Clone)]
 pub struct JettonTransferFields {
     pub query_id: u64,
-    pub amount: u64,
+    pub amount: BigUint,
     pub destination: String,
     pub response_destination: String,
-    pub forward_ton_amount: u64,
+    pub forward_ton_amount: BigUint,
 }
 
 /// A single send action parsed from the transaction
@@ -64,14 +64,14 @@ pub struct ParsedSendAction {
     pub mode: u8,
     pub destination: String,
     pub destination_bounceable: String,
-    pub amount: u64,
+    pub amount: BigUint,
     pub bounce: bool,
     pub body_opcode: Option<u32>,
     pub state_init: bool,
     pub memo: Option<String>,
     pub jetton_transfer: Option<JettonTransferFields>,
     /// Withdraw amount encoded in the message body (SingleNominator/Whales withdrawal types).
-    pub withdraw_amount: Option<u64>,
+    pub withdraw_amount: Option<BigUint>,
 }
 
 /// A fully parsed TON transaction
@@ -134,8 +134,7 @@ fn parse_sign_body_actions(
 
                 let (destination_addr, amount, bounce) = match &msg.info {
                     CommonMsgInfo::Internal(info) => {
-                        let amount = biguint_to_u64(&info.value.grams);
-                        (info.dst, amount, info.bounce)
+                        (info.dst, info.value.grams.clone(), info.bounce)
                     }
                     _ => {
                         return Err(WasmTonError::new(
@@ -240,14 +239,14 @@ fn parse_message_body(body: &Cell) -> Result<BodyParseResult, WasmTonError> {
 /// Parse query_id + amount from a withdrawal message body (Whales or SingleNominator).
 fn parse_withdraw_amount_body(
     parser: &mut tlb_ton::de::CellParser<'_>,
-) -> Result<u64, WasmTonError> {
+) -> Result<BigUint, WasmTonError> {
     let _query_id: u64 = parser
         .unpack(())
         .map_err(|e| WasmTonError::new(&format!("withdraw: failed to read query_id: {e}")))?;
     let amount_big: BigUint = parser
         .unpack_as::<_, Grams>(())
         .map_err(|e| WasmTonError::new(&format!("withdraw: failed to read amount: {e}")))?;
-    Ok(biguint_to_u64(&amount_big))
+    Ok(amount_big)
 }
 
 /// Parse a jetton transfer body, returning the parsed fields and any text memo.
@@ -269,8 +268,6 @@ fn parse_jetton_transfer_body(
     let amount_big: BigUint = parser
         .unpack_as::<_, Grams>(())
         .map_err(|e| WasmTonError::new(&format!("jetton: failed to read amount: {e}")))?;
-    let amount = biguint_to_u64(&amount_big);
-
     // destination: MsgAddress
     let dst: MsgAddress = parser
         .unpack(())
@@ -297,18 +294,16 @@ fn parse_jetton_transfer_body(
     let forward_big: BigUint = parser.unpack_as::<_, Grams>(()).map_err(|e| {
         WasmTonError::new(&format!("jetton: failed to read forward_ton_amount: {e}"))
     })?;
-    let forward_ton_amount = biguint_to_u64(&forward_big);
-
     // forward_payload: Either Cell ^Cell — extract text memo if present
     let memo = parse_forward_payload_memo(parser, body);
 
     Ok((
         JettonTransferFields {
             query_id,
-            amount,
+            amount: amount_big,
             destination,
             response_destination,
-            forward_ton_amount,
+            forward_ton_amount: forward_big,
         },
         memo,
     ))
@@ -406,28 +401,122 @@ fn determine_transaction_type(actions: &[ParsedSendAction]) -> TransactionType {
     TransactionType::Unknown
 }
 
-fn biguint_to_u64(v: &BigUint) -> u64 {
-    let max = BigUint::from(u64::MAX);
-    if *v > max {
-        u64::MAX
-    } else {
-        v.to_u64_digits().first().copied().unwrap_or(0)
-    }
-}
-
 #[cfg(test)]
 mod parser_tests {
     use super::*;
     use crate::transaction::Transaction;
     use base64::{engine::general_purpose::STANDARD, Engine};
+    use tlb_ton::bits::ser::BitWriterExt;
+    use tlb_ton::currency::Grams;
     use tlb_ton::de::CellDeserialize;
-    use tlb_ton::Cell;
-    use ton_contracts::jetton::JettonTransfer;
+    use tlb_ton::ser::CellSerializeExt;
+    use tlb_ton::{Cell, MsgAddress};
+    use ton_contracts::jetton::{ForwardPayload, JettonTransfer};
     use ton_contracts::wallet::v4r2::WalletV4R2Op;
 
     /// signedTokenSendTransaction.tx from sdk-coin-ton fixtures.
     /// forward_payload is stored as a ref cell (Either bit=1) with memo "jetton testing".
     const TOKEN_TX: &str = "te6cckECGgEABB0AAuGIAVSGb+UGjjP3lvt+zFA8wouI3McEd6CKbO2TwcZ3OfLKGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACmpoxdJlgLSAAAAAAADgEXAgE0AhYBFP8A9KQT9LzyyAsDAgEgBBECAUgFCALm0AHQ0wMhcbCSXwTgItdJwSCSXwTgAtMfIYIQcGx1Z70ighBkc3RyvbCSXwXgA/pAMCD6RAHIygfL/8nQ7UTQgQFA1yH0BDBcgQEI9ApvoTGzkl8H4AXTP8glghBwbHVnupI4MOMNA4IQZHN0crqSXwbjDQYHAHgB+gD0BDD4J28iMFAKoSG+8uBQghBwbHVngx6xcIAYUATLBSbPFlj6Ahn0AMtpF8sfUmDLPyDJgED7AAYAilAEgQEI9Fkw7UTQgQFA1yDIAc8W9ADJ7VQBcrCOI4IQZHN0coMesXCAGFAFywVQA88WI/oCE8tqyx/LP8mAQPsAkl8D4gIBIAkQAgEgCg8CAVgLDAA9sp37UTQgQFA1yH0BDACyMoHy//J0AGBAQj0Cm+hMYAIBIA0OABmtznaiaEAga5Drhf/AABmvHfaiaEAQa5DrhY/AABG4yX7UTQ1wsfgAWb0kK29qJoQICga5D6AhhHDUCAhHpJN9KZEM5pA+n/mDeBKAG3gQFImHFZ8xhAT48oMI1xgg0x/TH9MfAvgju/Jk7UTQ0x/TH9P/9ATRUUO68qFRUbryogX5AVQQZPkQ8qP4ACSkyMsfUkDLH1Iwy/9SEPQAye1U+A8B0wchwACfbFGTINdKltMH1AL7AOgw4CHAAeMAIcAC4wABwAORMOMNA6TIyx8Syx/L/xITFBUAbtIH+gDU1CL5AAXIygcVy//J0Hd0gBjIywXLAiLPFlAF+gIUy2sSzMzJc/sAyEAUgQEI9FHypwIAcIEBCNcY+gDTP8hUIEeBAQj0UfKnghBub3RlcHSAGMjLBcsCUAbPFlAE+gIUy2oSyx/LP8lz+wACAGyBAQjXGPoA0z8wUiSBAQj0WfKnghBkc3RycHSAGMjLBcsCUAXPFlAD+gITy2rLHxLLP8lz+wAACvQAye1UAFEAAAAAKamjF9NTAQHUHhbX00VGZ3d2r8hbJxuz7PaxmuCOJ6kgckppQAFmQgABT9LR3Iqffskp0J9gWYO8Azlnb33BCMj8FqIUIGxGOZpiWgAAAAAAAAAAAAAAAAABGAGuD4p+pQAAAAAAAAAAQ7msoAgA/BGdBi/R01erquxJOvPgGKclBawUs3MAi0/IdctKQz8AKpDN/KDRxn7y32/ZigeYUXEbmOCO9BFNnbJ4OM7nPllGHoSBGQAkAAAAAGpldHRvbiB0ZXN0aW5nwHtw7A==";
+
+    fn test_amounts() -> [BigUint; 4] {
+        [
+            BigUint::parse_bytes(b"18446744073709551615", 10).unwrap(),
+            BigUint::parse_bytes(b"18446744073709551616", 10).unwrap(),
+            BigUint::parse_bytes(b"100000000000000000000", 10).unwrap(),
+            BigUint::parse_bytes(b"1329227995784915872903807060280344575", 10).unwrap(),
+        ]
+    }
+
+    fn token_transaction_with_amounts(
+        jetton_amount: &BigUint,
+        message_amount: &BigUint,
+        forward_ton_amount: &BigUint,
+    ) -> Transaction {
+        let bytes = STANDARD.decode(TOKEN_TX).unwrap();
+        let mut tx = Transaction::from_bytes(&bytes).unwrap();
+        let action = match &mut tx.message.body.body.op {
+            WalletV4R2Op::Send(actions) => &mut actions[0],
+            _ => panic!("expected Send op"),
+        };
+        match &mut action.message.info {
+            CommonMsgInfo::Internal(info) => info.value.grams = message_amount.clone(),
+            _ => panic!("expected internal message"),
+        }
+        action.message.body = JettonTransfer::<Cell> {
+            query_id: 0,
+            amount: jetton_amount.clone(),
+            dst: MsgAddress::NULL,
+            response_dst: MsgAddress::NULL,
+            custom_payload: None,
+            forward_ton_amount: forward_ton_amount.clone(),
+            forward_payload: ForwardPayload::Data(Cell::default()),
+        }
+        .to_cell(())
+        .unwrap();
+        tx
+    }
+
+    fn transaction_with_withdraw_amount(amount: &BigUint, opcode: u32) -> Transaction {
+        let bytes = STANDARD.decode(TOKEN_TX).unwrap();
+        let mut tx = Transaction::from_bytes(&bytes).unwrap();
+        let action = match &mut tx.message.body.body.op {
+            WalletV4R2Op::Send(actions) => &mut actions[0],
+            _ => panic!("expected Send op"),
+        };
+        let mut body = Cell::builder();
+        body.pack(opcode, ()).unwrap();
+        body.pack(0u64, ()).unwrap();
+        body.pack_as::<_, &Grams>(amount, ()).unwrap();
+        action.message.body = body.into_cell();
+        tx
+    }
+
+    #[test]
+    fn test_wire_width_amounts_survive_parse_sign_and_broadcast() {
+        for amount in test_amounts() {
+            let mut tx = token_transaction_with_amounts(&amount, &amount, &amount);
+            let body = match &tx.sign_body().op {
+                WalletV4R2Op::Send(actions) => &actions[0].message.body,
+                _ => panic!("expected Send op"),
+            };
+            let direct_jetton = parse_message_body(body).unwrap().jetton_transfer.unwrap();
+            assert_eq!(&direct_jetton.amount, &amount);
+            assert_eq!(&direct_jetton.forward_ton_amount, &amount);
+
+            let parsed = parse_from_transaction(&tx).unwrap();
+            let action = &parsed.send_actions[0];
+            assert_eq!(&action.amount, &amount);
+            let jetton = action.jetton_transfer.as_ref().unwrap();
+            assert_eq!(&jetton.amount, &amount);
+            assert_eq!(&jetton.forward_ton_amount, &amount);
+
+            let signable_payload = tx.signable_payload().unwrap();
+            tx.add_signature(&[0xa5; 64]).unwrap();
+            assert_eq!(tx.signable_payload().unwrap(), signable_payload);
+
+            let broadcast_tx = Transaction::from_bytes(&tx.to_bytes().unwrap()).unwrap();
+            let broadcast_parsed = parse_from_transaction(&broadcast_tx).unwrap();
+            let broadcast_action = &broadcast_parsed.send_actions[0];
+            assert_eq!(&broadcast_action.amount, &amount);
+            let broadcast_jetton = broadcast_action.jetton_transfer.as_ref().unwrap();
+            assert_eq!(&broadcast_jetton.amount, &amount);
+            assert_eq!(&broadcast_jetton.forward_ton_amount, &amount);
+        }
+    }
+
+    #[test]
+    fn test_wire_width_withdrawal_amounts_survive_parse() {
+        for amount in test_amounts() {
+            for opcode in [WHALES_WITHDRAW_OPCODE, SINGLE_NOMINATOR_WITHDRAW_OPCODE] {
+                let tx = transaction_with_withdraw_amount(&amount, opcode);
+                let parsed = parse_from_transaction(&tx).unwrap();
+                assert_eq!(
+                    parsed.send_actions[0].withdraw_amount.as_ref(),
+                    Some(&amount)
+                );
+            }
+        }
+    }
 
     /// Demonstrates a bug in `tlbits` 0.7.3 `Remainder` adapter that prevents
     /// `JettonTransfer::<Cell>::parse` from working on messages with text comments.
@@ -493,7 +582,7 @@ mod parser_tests {
         assert_eq!(action.memo.as_deref(), Some("jetton testing"));
         assert_eq!(
             action.jetton_transfer.as_ref().unwrap().amount,
-            1_000_000_000
+            BigUint::from(1_000_000_000u64)
         );
     }
 }
