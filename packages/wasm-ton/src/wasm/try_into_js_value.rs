@@ -290,9 +290,9 @@ mod tests {
             mode,
             nominal_amount: 7,
             effective_amount_kind: EffectiveAmountKind::AllRemainingBalance,
-            pay_fees_separately: mode & 1 != 0,
-            ignore_action_errors: mode & 2 != 0,
-            bounce_on_action_fail: mode & 16 != 0,
+            pay_fees_separately: false,
+            ignore_action_errors: false,
+            bounce_on_action_fail: false,
             carries_inbound_value: false,
             carries_all_balance: true,
             destroy_account_if_zero: mode & 32 != 0,
@@ -307,70 +307,31 @@ mod tests {
         }
     }
 
+    fn property(value: &JsValue, name: &str) -> JsValue {
+        js_sys::Reflect::get(value, &JsValue::from_str(name)).unwrap()
+    }
+
     #[wasm_bindgen_test]
     fn send_mode_semantics_survive_javascript_conversion() {
         for (mode, destroy_account_if_zero) in [(128, false), (160, true)] {
             let value = send_action(mode).try_to_js_value().unwrap();
-
+            assert_eq!(property(&value, "mode").as_f64(), Some(mode as f64));
+            let amount: JsValue = js_sys::BigInt::from(7u64).into();
+            assert!(js_sys::Object::is(&property(&value, "nominalAmount"), &amount));
             assert_eq!(
-                js_sys::Reflect::get(&value, &JsValue::from_str("mode"))
-                    .unwrap()
-                    .as_f64(),
-                Some(mode as f64)
-            );
-            let actual_amount =
-                js_sys::Reflect::get(&value, &JsValue::from_str("nominalAmount")).unwrap();
-            let expected_amount: JsValue = js_sys::BigInt::from(7u64).into();
-            assert!(js_sys::Object::is(&actual_amount, &expected_amount));
-            assert_eq!(
-                js_sys::Reflect::get(&value, &JsValue::from_str("effectiveAmountKind"))
-                    .unwrap()
-                    .as_string()
-                    .as_deref(),
+                property(&value, "effectiveAmountKind").as_string().as_deref(),
                 Some("AllRemainingBalance")
             );
+            assert_eq!(property(&value, "payFeesSeparately").as_bool(), Some(false));
+            assert_eq!(property(&value, "ignoreActionErrors").as_bool(), Some(false));
+            assert_eq!(property(&value, "bounceOnActionFail").as_bool(), Some(false));
+            assert_eq!(property(&value, "carriesInboundValue").as_bool(), Some(false));
+            assert_eq!(property(&value, "carriesAllBalance").as_bool(), Some(true));
             assert_eq!(
-                js_sys::Reflect::get(&value, &JsValue::from_str("payFeesSeparately"))
-                    .unwrap()
-                    .as_bool(),
-                Some(false)
-            );
-            assert_eq!(
-                js_sys::Reflect::get(&value, &JsValue::from_str("ignoreActionErrors"))
-                    .unwrap()
-                    .as_bool(),
-                Some(false)
-            );
-            assert_eq!(
-                js_sys::Reflect::get(&value, &JsValue::from_str("bounceOnActionFail"))
-                    .unwrap()
-                    .as_bool(),
-                Some(false)
-            );
-            assert_eq!(
-                js_sys::Reflect::get(&value, &JsValue::from_str("carriesInboundValue"))
-                    .unwrap()
-                    .as_bool(),
-                Some(false)
-            );
-            assert_eq!(
-                js_sys::Reflect::get(&value, &JsValue::from_str("carriesAllBalance"))
-                    .unwrap()
-                    .as_bool(),
-                Some(true)
-            );
-            assert_eq!(
-                js_sys::Reflect::get(&value, &JsValue::from_str("destroyAccountIfZero"))
-                    .unwrap()
-                    .as_bool(),
+                property(&value, "destroyAccountIfZero").as_bool(),
                 Some(destroy_account_if_zero)
             );
-            assert_eq!(
-                js_sys::Reflect::get(&value, &JsValue::from_str("bounce"))
-                    .unwrap()
-                    .as_bool(),
-                Some(true)
-            );
+            assert_eq!(property(&value, "bounce").as_bool(), Some(true));
             assert!(!js_sys::Reflect::has(&value, &JsValue::from_str("amount")).unwrap());
         }
     }
