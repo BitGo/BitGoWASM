@@ -80,6 +80,15 @@ export interface StakingDeactivateParams {
   fromAddress: string;
 }
 
+/** Staking split parameters */
+export interface StakingSplitParams {
+  type: "StakingSplit";
+  stakingAddress: string;
+  destinationStakingAddress: string;
+  fromAddress: string;
+  amount: bigint;
+}
+
 /** Staking withdraw parameters */
 export interface StakingWithdrawParams {
   type: "StakingWithdraw";
@@ -216,6 +225,7 @@ export type InstructionParams =
   | NonceInitializeParams
   | StakingActivateParams
   | StakingDeactivateParams
+  | StakingSplitParams
   | StakingWithdrawParams
   | StakingDelegateParams
   | StakingAuthorizeParams

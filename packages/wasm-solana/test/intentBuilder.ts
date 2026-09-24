@@ -193,6 +193,42 @@ describe("buildFromIntent", function () {
     });
   });
 
+  describe("partial unstake intent", function () {
+    it("should preserve the split amount and destination separately from deactivation", function () {
+      const stakingAddress = "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH";
+      const amount = 200000000n;
+      const result = buildFromIntent(
+        {
+          intentType: "unstake",
+          stakingAddress,
+          amount: { value: amount },
+          remainingStakingAmount: { value: 800000000n },
+        },
+        {
+          feePayer,
+          nonce: { type: "blockhash", value: blockhash },
+        },
+      );
+      const generatedStakeAddress = result.generatedKeypairs[0].address;
+      const parsed = parseTransaction(Transaction.fromBytes(result.transaction.toBytes()));
+      const split = parsed.instructionsData.find((i: any) => i.type === "StakingSplit");
+      const deactivate = parsed.instructionsData.find((i: any) => i.type === "StakingDeactivate");
+
+      assert(split, "Should have StakingSplit instruction");
+      assert.equal((split as any).stakingAddress, stakingAddress);
+      assert.equal((split as any).destinationStakingAddress, generatedStakeAddress);
+      assert.equal((split as any).fromAddress, feePayer);
+      assert.equal((split as any).amount, amount);
+      assert(deactivate, "Should have a separate StakingDeactivate instruction");
+      assert.equal((deactivate as any).stakingAddress, generatedStakeAddress);
+      assert.equal((deactivate as any).fromAddress, feePayer);
+      assert(
+        parsed.instructionsData.indexOf(split) < parsed.instructionsData.indexOf(deactivate),
+        "Split must precede deactivation of its destination stake account",
+      );
+    });
+  });
+
   describe("claim intent", function () {
     it("should build a claim (withdraw) transaction", function () {
       const intent = {
