@@ -11,7 +11,7 @@ import { AddressFormat } from "./types.js";
  *
  * Provides a high-level interface for working with DOT transactions.
  * Handles signing context and serialization — parsing is separate
- * (use `parseTransactionData()` from parser.ts).
+ * (use `parseTransaction()` from parser.ts).
  */
 export class DotTransaction {
   private _wasm: WasmTransaction;
@@ -59,13 +59,12 @@ export class DotTransaction {
    *
    * If you deserialize without material and the chain has non-standard
    * extensions, the call_data boundary lands in the wrong place. At that
-   * point the damage is done — `tx.callData` returns wrong bytes, and no
-   * amount of context passed later to `parseTransaction()` can fix it.
-   * That function only uses context for name resolution (pallet index →
-   * name) and address formatting, not for re-parsing the byte layout.
+   * point the damage is done — `tx.callData` returns wrong bytes, and
+   * parsing cannot repair the byte boundary. `parseTransaction()` uses
+   * the same stored material for name resolution and address formatting.
    *
-   * TL;DR: material must be available at deserialization time, which is
-   * here in `fromHex`/`fromBytes`, not later in `parseTransaction`.
+   * TL;DR: material must be available at deserialization time, where it
+   * remains bound to parsing and signing.
    *
    * @param hex - Hex-encoded extrinsic bytes (with or without 0x prefix)
    * @param material - Chain material from the fullnode (genesisHash,
@@ -125,16 +124,17 @@ export class DotTransaction {
    * Get the signable payload
    *
    * Returns the bytes that should be signed with Ed25519.
-   * Requires context to be set via `setContext()`.
+   * Requires runtime material and signing context to be set.
    */
   signablePayload(): Uint8Array {
     return this._wasm.signablePayload();
   }
 
   /**
-   * Set the signing context (material, validity, reference block)
+   * Set signing validity and reference block.
    *
-   * Required before calling signablePayload if transaction was created without context
+   * Material may be supplied once for a transaction created without context;
+   * a transaction with stored material rejects any different material.
    */
   setContext(material: Material, validity: Validity, referenceBlock: string): void {
     const materialJs = new MaterialJs(

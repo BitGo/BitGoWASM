@@ -83,19 +83,16 @@ pub fn parse_transaction(
 
 /// Parse a pre-deserialized Transaction into structured data.
 ///
-/// Same logic as `parse_transaction(bytes, context)` but skips deserialization.
+/// Parses using the runtime material stored on `tx`.
 /// Used when the caller already has a `Transaction` from `fromBytes()`.
-pub fn parse_from_transaction(
-    tx: &Transaction,
-    context: Option<&ParseContext>,
-) -> Result<ParsedTransaction, WasmDotError> {
-    let prefix = context
-        .map(|ctx| AddressFormat::from_chain_name(&ctx.material.chain_name).prefix())
-        .unwrap_or(42);
+pub fn parse_from_transaction(tx: &Transaction) -> Result<ParsedTransaction, WasmDotError> {
+    let material = tx.material().ok_or_else(|| {
+        WasmDotError::MissingContext("No runtime material stored for transaction".to_string())
+    })?;
+    let prefix = AddressFormat::from_chain_name(&material.chain_name).prefix();
+    let metadata = decode_metadata(&material.metadata)?;
 
-    let metadata = context.and_then(|ctx| decode_metadata(&ctx.material.metadata).ok());
-
-    build_parsed_transaction(tx, prefix, metadata.as_ref())
+    build_parsed_transaction(tx, prefix, Some(&metadata))
 }
 
 /// Shared logic for building ParsedTransaction from an already-deserialized Transaction.

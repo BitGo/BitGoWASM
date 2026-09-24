@@ -400,7 +400,15 @@ impl Transaction {
         &self.call_data
     }
 
-    /// Set context for the transaction
+    /// Get the runtime material associated with this transaction.
+    pub(crate) fn material(&self) -> Option<&Material> {
+        self.context.as_ref().map(|context| &context.material)
+    }
+
+    /// Set signing context without rebinding established runtime material.
+    ///
+    /// The first call can attach material to a newly built transaction. Later
+    /// calls may update validity and reference block only when material matches.
     pub fn set_context(
         &mut self,
         material: Material,
@@ -408,12 +416,22 @@ impl Transaction {
         reference_block: &str,
     ) -> Result<(), WasmDotError> {
         let block_hash = parse_hex_hash(reference_block)?;
-        self.context = Some(TransactionContext {
-            material,
-            validity,
-            reference_block: block_hash,
-            metadata: None,
-        });
+        if let Some(context) = self.context.as_mut() {
+            if context.material != material {
+                return Err(WasmDotError::InvalidTransaction(
+                    "Runtime material cannot be changed after call data is established".to_string(),
+                ));
+            }
+            context.validity = validity;
+            context.reference_block = block_hash;
+        } else {
+            self.context = Some(TransactionContext {
+                material,
+                validity,
+                reference_block: block_hash,
+                metadata: None,
+            });
+        }
         Ok(())
     }
 
