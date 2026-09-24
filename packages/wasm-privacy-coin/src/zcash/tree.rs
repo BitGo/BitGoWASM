@@ -676,7 +676,8 @@ mod tests {
     #[test]
     fn malformed_commitment_returns_err_without_changing_state() {
         let mut tree = empty_tree();
-        tree.append_commitments(1, vec![cmx(1)], vec![], None).unwrap();
+        tree.append_commitments(1, vec![cmx(1)], vec![], None)
+            .unwrap();
         let before = tree.save().unwrap();
 
         let result = tree.append_commitments(2, vec![cmx(2), vec![0; 31]], vec![], None);
