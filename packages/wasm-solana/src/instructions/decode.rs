@@ -138,7 +138,7 @@ fn decode_stake_instruction(ctx: InstructionContext) -> ParsedInstruction {
                 make_unknown(ctx)
             }
         }
-        StakeInstruction::Initialize(authorized, _lockup) => {
+        StakeInstruction::Initialize(authorized, lockup) => {
             // This is part of StakingActivate flow - parsed as intermediate StakeInitialize
             // Will be combined with CreateAccount + DelegateStake in post-processing
             // Accounts: [0] stake, [1] rent_sysvar
@@ -147,6 +147,11 @@ fn decode_stake_instruction(ctx: InstructionContext) -> ParsedInstruction {
                     staking_address: ctx.accounts[0].clone(),
                     staker: authorized.staker.to_string(),
                     withdrawer: authorized.withdrawer.to_string(),
+                    lockup: StakeLockupParams {
+                        unix_timestamp: lockup.unix_timestamp,
+                        epoch: lockup.epoch,
+                        custodian: lockup.custodian.to_string(),
+                    },
                 })
             } else {
                 make_unknown(ctx)
