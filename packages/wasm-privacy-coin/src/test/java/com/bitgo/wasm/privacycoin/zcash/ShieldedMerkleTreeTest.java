@@ -40,6 +40,10 @@ class ShieldedMerkleTreeTest {
    */
   private static final ShieldedCommitment CMX = ShieldedCommitment.of(HexFormat.of().parseHex(
       "0100000000000000000000000000000000000000000000000000000000000000"));
+  private static final ShieldedCommitment CMX_2 = ShieldedCommitment.of(HexFormat.of().parseHex(
+      "0200000000000000000000000000000000000000000000000000000000000000"));
+  private static final ShieldedCommitment CMX_3 = ShieldedCommitment.of(HexFormat.of().parseHex(
+      "0300000000000000000000000000000000000000000000000000000000000000"));
 
   private static ShieldedRoot rootAfterAppend(long height, List<ShieldedCommitment> commitments) {
     try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
@@ -237,6 +241,20 @@ class ShieldedMerkleTreeTest {
           tree.appendCommitments(1L, List.of(), List.of(), currentRoot));
 
       assertEquals("CHECKPOINT_REJECTED", ex.getErrorCode());
+      assertStateUnchanged(tree, before, beforeInfo);
+    }
+  }
+
+  @Test
+  void appendCommitments_outOfOrderMultiLeafBatchWithoutExpectedRoot_preservesState() {
+    try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
+      tree.appendCommitments(2L, List.of(CMX), List.of(), null);
+      TreeState before = tree.save();
+      MerkleTreeInfo beforeInfo = tree.getInfo();
+
+      assertThrows(WasmException.class, () ->
+          tree.appendCommitments(1L, List.of(CMX_2, CMX_3), List.of(), null));
+
       assertStateUnchanged(tree, before, beforeInfo);
     }
   }

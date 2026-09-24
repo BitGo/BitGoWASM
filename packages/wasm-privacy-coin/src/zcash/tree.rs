@@ -436,8 +436,9 @@ impl OwnedTree {
 
     /// Append raw 32-byte commitments, checkpoint at `block_height`, verify root.
     ///
-    /// When `expected_root` is present, it must be 32 bytes and the update is committed
-    /// only if the computed root matches. Any failure leaves this tree unchanged.
+    /// Every update is staged and committed only after all appends succeed. When
+    /// `expected_root` is present, it must be 32 bytes and the computed root must match.
+    /// Any failure leaves this tree unchanged.
     ///
     /// Returns the 32-byte root after appending.
     pub fn append_commitments(
@@ -454,12 +455,13 @@ impl OwnedTree {
                     expected.len()
                 ));
             }
+        }
 
-            // A verified append is transactional, including an empty batch. Build the
-            // candidate from the persisted representation so errors never expose partial
-            // checkpoint, leaf, or tip mutations to callers that retain this tree.
-            let mut staged = Self::from_state(&self.save()?)?;
-            let root = staged.append_commitments_inner(block_height, commitments, owned)?;
+        // Stage every append: a later shardtree operation can fail after earlier leaves
+        // were inserted, even when the caller did not request a root comparison.
+        let mut staged = Self::from_state(&self.save()?)?;
+        let root = staged.append_commitments_inner(block_height, commitments, owned)?;
+        if let Some(expected) = expected_root {
             if root.as_slice() != expected {
                 return Err(format!(
                     "ROOT_MISMATCH: computed {} but expected {}",
@@ -467,11 +469,9 @@ impl OwnedTree {
                     hex::encode(expected)
                 ));
             }
-            *self = staged;
-            return Ok(root);
         }
-
-        self.append_commitments_inner(block_height, commitments, owned)
+        *self = staged;
+        Ok(root)
     }
 
     fn append_commitments_inner(
@@ -691,6 +691,23 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(tree.save().unwrap(), before);
+    }
+
+    #[test]
+    fn out_of_order_multi_leaf_append_without_expected_root_is_atomic() {
+        let mut tree = empty_tree();
+        tree.append_commitments(2, vec![cmx(1)], vec![], None)
+            .unwrap();
+        let before = tree.save().unwrap();
+        let before_info = tree.get_info().unwrap();
+
+        let error = tree
+            .append_commitments(1, vec![cmx(2), cmx(3)], vec![], None)
+            .unwrap_err();
+
+        assert!(error.starts_with("append error:"));
+        assert_eq!(tree.save().unwrap(), before);
+        assert_eq!(tree.get_info().unwrap(), before_info);
     }
 
     #[test]

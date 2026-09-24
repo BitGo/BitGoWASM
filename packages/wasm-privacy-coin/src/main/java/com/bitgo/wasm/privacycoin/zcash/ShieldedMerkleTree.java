@@ -124,8 +124,8 @@ public final class ShieldedMerkleTree implements AutoCloseable {
    * @param expectedRoot  32-byte root to verify against; {@code null} to skip
    * @return computed root after appending
    * @throws WasmException with code {@code ROOT_MISMATCH} if verification fails or
-   *         {@code CHECKPOINT_REJECTED} if the checkpoint was not added; failed verified
-   *         appends leave the tree unchanged
+   *         {@code CHECKPOINT_REJECTED} if the checkpoint was not added; failed appends
+   *         leave the tree unchanged
    */
   public ShieldedRoot appendCommitments(
       long blockHeight, List<ShieldedCommitment> commitments, List<Boolean> owned,
