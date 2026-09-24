@@ -3,7 +3,7 @@
 # Order is important. The last matching pattern has the most precedence.
 
 # These owners and first officers will be the default owners for everything in the repo.
-*   @BitGo/btc-team
+* @BitGo/ecosystem
 packages/wasm-mps @BitGo/hsm
 packages/wasm-privacy-coin @BitGo/coinsshield
 
