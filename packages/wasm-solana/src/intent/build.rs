@@ -555,13 +555,15 @@ fn build_unstake(
     let amount = intent.amount.as_ref().map(|a| a.value);
     let remaining = intent.remaining_staking_amount.as_ref().map(|a| a.value);
 
-    if let (Some(amt_val), Some(rem_val)) = (amount, remaining) {
+    if let (Some(amt_val), Some(RemainingStakingAmountValue::Amount(rem_val))) =
+        (amount, remaining)
+    {
         if amt_val > 0 && rem_val > 0 {
             return build_partial_unstake(&stake_pubkey, &fee_payer, amt_val);
         }
     }
 
-    // Simple deactivate
+    // Missing or over-balance remaining amounts retain full-deactivation behavior.
     let instructions = vec![stake_ix::deactivate_stake(&stake_pubkey, &fee_payer)];
 
     Ok((instructions, vec![]))
@@ -1293,6 +1295,53 @@ mod tests {
         assert!(result.is_ok(), "Failed: {:?}", result);
         let result = result.unwrap();
         assert!(result.generated_keypairs.is_empty());
+    }
+
+    #[test]
+    fn test_negative_primary_unstake_amount_is_rejected() {
+        let intent = serde_json::json!({
+            "intentType": "unstake",
+            "stakingAddress": "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH",
+            "amount": { "value": -1 },
+            "remainingStakingAmount": { "value": "1000000" }
+        });
+
+        assert!(build_from_intent(&intent, &test_params()).is_err());
+    }
+
+    #[test]
+    fn test_negative_remaining_amount_preserves_deactivation_behavior() {
+        let intent = serde_json::json!({
+            "intentType": "unstake",
+            "stakingAddress": "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH",
+            "amount": { "value": "1000000" },
+            "remainingStakingAmount": { "value": "-1" }
+        });
+
+        let result = build_from_intent(&intent, &test_params()).unwrap();
+        assert!(result.generated_keypairs.is_empty());
+        assert_eq!(result.transaction.message().instructions.len(), 1);
+    }
+
+    #[test]
+    fn test_positive_unstake_amount_still_builds_a_partial_split() {
+        let intent = serde_json::json!({
+            "intentType": "unstake",
+            "stakingAddress": "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH",
+            "amount": { "value": "50000" },
+            "remainingStakingAmount": { "value": "100000" }
+        });
+
+        let result = build_from_intent(&intent, &test_params()).unwrap();
+        assert_eq!(result.generated_keypairs.len(), 1);
+        assert_eq!(result.transaction.message().instructions.len(), 5);
+
+        let split: solana_stake_interface::instruction::StakeInstruction =
+            bincode::deserialize(&result.transaction.message().instructions[3].data).unwrap();
+        assert!(matches!(
+            split,
+            solana_stake_interface::instruction::StakeInstruction::Split(50000)
+        ));
     }
 
     #[test]

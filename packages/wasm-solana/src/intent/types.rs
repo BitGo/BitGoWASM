@@ -132,20 +132,33 @@ pub struct AddressWrapper {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AmountWrapper {
-    /// Amount value - accepts bigint from JS (deserialized as u64)
+    /// Non-negative amount value (deserialized as u64)
     #[serde(deserialize_with = "deserialize_amount")]
     pub value: u64,
     #[serde(default)]
     pub symbol: Option<String>,
 }
 
-/// Deserialize amount from either string or number (for JS BigInt compatibility).
+/// The remaining-balance state used to decide whether an unstake can be split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemainingStakingAmountValue {
+    /// The service reported a non-negative remaining balance.
+    Amount(u64),
+    /// The requested unstake exceeds the current balance.
+    ExceedsBalance,
+}
+
+/// Remaining balance wrapper; negative values are compatibility signals here only.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemainingStakingAmount {
+    #[serde(deserialize_with = "deserialize_remaining_staking_amount")]
+    pub value: RemainingStakingAmountValue,
+}
+
+/// Deserialize a primary financial amount from a string or number.
 ///
-/// Negative values are clamped to 0 rather than rejected. The staking service can
-/// send negative `remainingStakingAmount` when the unstake amount exceeds the current
-/// balance. Callers already guard with `> 0` checks (e.g. build.rs partial unstake),
-/// so clamping is safe and avoids a deserialization error that would prevent the
-/// intent from being processed at all.
+/// Negative values are invalid for every primary amount field.
 fn deserialize_amount<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -158,7 +171,7 @@ where
         type Value = u64;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a string or number representing an amount")
+            formatter.write_str("a non-negative u64 amount")
         }
 
         fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
@@ -172,23 +185,81 @@ where
         where
             E: de::Error,
         {
-            Ok(u64::try_from(v).unwrap_or(0))
+            u64::try_from(v).map_err(|_| {
+                E::invalid_value(de::Unexpected::Signed(v), &"a non-negative u64 amount")
+            })
         }
 
         fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
         where
             E: de::Error,
         {
-            // Try u64 first, fall back to i64 parse and clamp negatives to 0
-            v.parse::<u64>().or_else(|_| {
-                v.parse::<i64>()
-                    .map(|n| u64::try_from(n).unwrap_or(0))
-                    .map_err(de::Error::custom)
+            v.parse::<u64>().map_err(|_| {
+                E::invalid_value(de::Unexpected::Str(v), &"a non-negative u64 amount")
             })
         }
     }
 
     deserializer.deserialize_any(AmountVisitor)
+}
+
+/// Preserve the service's negative remaining-balance signal only on its field.
+fn deserialize_remaining_staking_amount<'de, D>(
+    deserializer: D,
+) -> Result<RemainingStakingAmountValue, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct RemainingStakingAmountVisitor;
+
+    impl<'de> Visitor<'de> for RemainingStakingAmountVisitor {
+        type Value = RemainingStakingAmountValue;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a signed or unsigned 64-bit remaining staking amount")
+        }
+
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(RemainingStakingAmountValue::Amount(v))
+        }
+
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if v < 0 {
+                Ok(RemainingStakingAmountValue::ExceedsBalance)
+            } else {
+                Ok(RemainingStakingAmountValue::Amount(v as u64))
+            }
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if let Ok(amount) = v.parse::<u64>() {
+                return Ok(RemainingStakingAmountValue::Amount(amount));
+            }
+            if let Ok(amount) = v.parse::<i64>() {
+                if amount < 0 {
+                    return Ok(RemainingStakingAmountValue::ExceedsBalance);
+                }
+                return Ok(RemainingStakingAmountValue::Amount(amount as u64));
+            }
+            Err(E::invalid_value(
+                de::Unexpected::Str(v),
+                &"a signed or unsigned 64-bit remaining staking amount",
+            ))
+        }
+    }
+
+    deserializer.deserialize_any(RemainingStakingAmountVisitor)
 }
 
 /// Payment intent
@@ -258,7 +329,7 @@ pub struct UnstakeIntent {
     #[serde(default)]
     pub amount: Option<AmountWrapper>,
     #[serde(default)]
-    pub remaining_staking_amount: Option<AmountWrapper>,
+    pub remaining_staking_amount: Option<RemainingStakingAmount>,
     #[serde(default)]
     pub staking_type: Option<StakingType>,
     #[serde(default)]
@@ -408,4 +479,52 @@ pub struct CustomTxKey {
     pub is_signer: bool,
     /// Whether this account is writable
     pub is_writable: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn parse_primary_amount(value: Value) -> Result<AmountWrapper, serde_json::Error> {
+        serde_json::from_value(json!({ "value": value }))
+    }
+
+    fn parse_remaining_amount(value: Value) -> Result<RemainingStakingAmount, serde_json::Error> {
+        serde_json::from_value(json!({ "value": value }))
+    }
+
+    #[test]
+    fn primary_amount_rejects_negative_number_and_string() {
+        for value in [json!(-1), json!(i64::MIN), json!("-1")] {
+            assert!(parse_primary_amount(value).is_err());
+        }
+    }
+
+    #[test]
+    fn primary_amount_preserves_zero_and_full_unsigned_range() {
+        assert_eq!(parse_primary_amount(json!(0)).unwrap().value, 0);
+        assert_eq!(
+            parse_primary_amount(json!(u64::MAX)).unwrap().value,
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn negative_remaining_amount_is_a_field_specific_exceeds_balance_state() {
+        for value in [json!(-1), json!("-1")] {
+            assert_eq!(
+                parse_remaining_amount(value).unwrap().value,
+                RemainingStakingAmountValue::ExceedsBalance
+            );
+        }
+        assert_eq!(
+            parse_remaining_amount(json!(0)).unwrap().value,
+            RemainingStakingAmountValue::Amount(0)
+        );
+        assert_eq!(
+            parse_remaining_amount(json!(1)).unwrap().value,
+            RemainingStakingAmountValue::Amount(1)
+        );
+    }
 }
