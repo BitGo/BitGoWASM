@@ -9,7 +9,6 @@ pub mod types;
 
 use crate::error::WasmDotError;
 use crate::transaction::{compute_era, Transaction};
-use crate::types::{Era, Validity};
 use calls::encode_intent;
 use types::{BuildContext, TransactionIntent};
 

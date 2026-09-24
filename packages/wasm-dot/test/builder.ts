@@ -92,7 +92,12 @@ describe("buildTransaction", () => {
     it("rejects signing context with a different normalized era", () => {
       const tx = buildTransaction(intent, testContext());
       assert.throws(
-        () => tx.setContext(WESTEND_MATERIAL, { firstValid: 1000, maxDuration: 65536 }, REFERENCE_BLOCK),
+        () =>
+          tx.setContext(
+            WESTEND_MATERIAL,
+            { firstValid: 1000, maxDuration: 65536 },
+            REFERENCE_BLOCK,
+          ),
         /validity does not match transaction era/i,
       );
     });
