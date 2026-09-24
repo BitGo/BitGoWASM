@@ -1,6 +1,7 @@
 import * as assert from "assert";
 import {
   buildTransaction,
+  DotTransaction,
   parseTransaction,
   type TransactionIntent,
   type BuildContext,
@@ -63,6 +64,30 @@ describe("buildTransaction", () => {
       assert.deepStrictEqual(tx.signablePayload(), signablePayload);
 
       const parsed = parseTransaction(tx);
+      assert.strictEqual(parsed.method.pallet, "balances");
+      assert.strictEqual(parsed.method.name, "transferKeepAlive");
+      assert.strictEqual(parsed.method.args.dest, RECIPIENT);
+      assert.strictEqual(parsed.method.args.value, "1000000000000");
+    });
+
+    it("derives deserialization metadata from the stored material", () => {
+      const tx = buildTransaction(
+        {
+          type: "payment",
+          to: RECIPIENT,
+          amount: 1000000000000n,
+        },
+        testContext(),
+      );
+      const bytes = tx.toBytes();
+
+      assert.throws(
+        () => DotTransaction.fromBytes(bytes, { ...WESTEND_MATERIAL, metadata: "0x00" }),
+        /Failed to decode metadata/,
+      );
+
+      const deserialized = DotTransaction.fromBytes(bytes, WESTEND_MATERIAL);
+      const parsed = parseTransaction(deserialized);
       assert.strictEqual(parsed.method.pallet, "balances");
       assert.strictEqual(parsed.method.name, "transferKeepAlive");
       assert.strictEqual(parsed.method.args.dest, RECIPIENT);

@@ -40,6 +40,7 @@ pub fn build_transaction(
         context.nonce,
         context.tip as u128,
         context.material,
+        metadata,
         context.validity,
         &context.reference_block,
     )

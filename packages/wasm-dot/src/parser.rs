@@ -65,20 +65,15 @@ pub fn parse_transaction(
     bytes: &[u8],
     context: Option<ParseContext>,
 ) -> Result<ParsedTransaction, WasmDotError> {
-    // Extract prefix and decode metadata BEFORE moving context into from_bytes.
-    // This avoids cloning the entire context (which contains megabytes of metadata hex).
+    // Extract the address prefix before moving context into the transaction.
     let prefix = context
         .as_ref()
         .map(|ctx| AddressFormat::from_chain_name(&ctx.material.chain_name).prefix())
         .unwrap_or(42); // Default to Substrate generic
 
-    let metadata = context
-        .as_ref()
-        .and_then(|ctx| decode_metadata(&ctx.material.metadata).ok());
+    let tx = Transaction::from_bytes(bytes, context)?;
 
-    let tx = Transaction::from_bytes(bytes, context, metadata.as_ref())?;
-
-    build_parsed_transaction(&tx, prefix, metadata.as_ref())
+    build_parsed_transaction(&tx, prefix, tx.metadata())
 }
 
 /// Parse a pre-deserialized Transaction into structured data.
@@ -89,10 +84,12 @@ pub fn parse_from_transaction(tx: &Transaction) -> Result<ParsedTransaction, Was
     let material = tx.material().ok_or_else(|| {
         WasmDotError::MissingContext("No runtime material stored for transaction".to_string())
     })?;
+    let metadata = tx.metadata().ok_or_else(|| {
+        WasmDotError::MissingContext("No runtime metadata stored for transaction".to_string())
+    })?;
     let prefix = AddressFormat::from_chain_name(&material.chain_name).prefix();
-    let metadata = decode_metadata(&material.metadata)?;
 
-    build_parsed_transaction(tx, prefix, Some(&metadata))
+    build_parsed_transaction(tx, prefix, Some(metadata))
 }
 
 /// Shared logic for building ParsedTransaction from an already-deserialized Transaction.
@@ -117,9 +114,6 @@ fn build_parsed_transaction(
         is_signed: tx.is_signed(),
     })
 }
-
-// Re-use the central decode_metadata from transaction.rs
-use crate::transaction::decode_metadata;
 
 /// Resolve pallet and call names from metadata using indices.
 ///
