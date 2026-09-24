@@ -183,7 +183,6 @@ describe("buildFromIntent", function () {
   });
 
   describe("Jito stake intent", function () {
-
     it("should reject missing pool configuration before native stake construction", function () {
       assert.throws(
         () =>
@@ -254,7 +253,6 @@ describe("buildFromIntent", function () {
   });
 
   describe("Jito unstake intent", function () {
-
     it("should reject missing pool configuration before native unstake construction", function () {
       assert.throws(
         () =>
