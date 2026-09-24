@@ -48,6 +48,51 @@ describe("inscriptions (wasm-utxo)", () => {
       );
     });
 
+    it("should enforce the 520-byte content type limit", () => {
+      const ecpair = ECPair.fromPrivateKey(testPrivateKey);
+      const asciiBoundary = "a".repeat(520);
+      const acceptedAscii = inscriptions.createInscriptionRevealData(
+        ecpair,
+        asciiBoundary,
+        new Uint8Array(),
+      );
+      assert.strictEqual(acceptedAscii.outputScript.length, 34);
+
+      const unicodeBoundary = "é".repeat(260);
+      assert.strictEqual(Buffer.byteLength(unicodeBoundary, "utf8"), 520);
+      const acceptedUnicode = inscriptions.createInscriptionRevealData(
+        ecpair,
+        unicodeBoundary,
+        new Uint8Array(),
+      );
+      assert.strictEqual(acceptedUnicode.outputScript.length, 34);
+
+      const assertOversizedContentTypeRejected = (contentType: string): void => {
+        assert.throws(
+          () => inscriptions.createInscriptionRevealData(ecpair, contentType, new Uint8Array()),
+          (error: unknown) => {
+            assert.ok(error instanceof Error);
+            assert.strictEqual(
+              error.message,
+              "inscription content type exceeds 520 UTF-8 bytes",
+            );
+            assert.strictEqual(
+              (error as Error & { code: string }).code,
+              "WasmUtxoError.StringError",
+            );
+            return true;
+          },
+        );
+      };
+
+      assertOversizedContentTypeRejected("a".repeat(521));
+
+      const unicodeOversized = "é".repeat(261);
+      assert.strictEqual(unicodeOversized.length, 261);
+      assert.strictEqual(Buffer.byteLength(unicodeOversized, "utf8"), 522);
+      assertOversizedContentTypeRejected(unicodeOversized);
+    });
+
     it("should generate an inscription output script when data length is > 520", () => {
       const inscriptionData = Buffer.from("Never Gonna Let You Down".repeat(100), "ascii");
 

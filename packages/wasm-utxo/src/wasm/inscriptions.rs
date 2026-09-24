@@ -22,7 +22,8 @@ impl InscriptionsNamespace {
     ///
     /// # Arguments
     /// * `x_only_pubkey` - The x-only public key (32 bytes)
-    /// * `content_type` - MIME type of the inscription (e.g., "text/plain", "image/png")
+    /// * `content_type` - MIME type of the inscription (e.g., "text/plain", "image/png"),
+    ///   limited to 520 UTF-8 bytes
     /// * `inscription_data` - The inscription data bytes
     ///
     /// # Returns
@@ -94,5 +95,53 @@ impl InscriptionsNamespace {
             recipient_output_script,
             output_value_sats,
         )
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use crate::error::WasmErrorCode;
+    use miniscript::bitcoin::secp256k1::Secp256k1;
+    use wasm_bindgen_test::*;
+
+    #[wasm_bindgen_test]
+    fn create_inscription_reveal_data_enforces_content_type_byte_limit() {
+        let secret_key = SecretKey::from_slice(&[1u8; 32]).expect("valid test key");
+        let (x_only_pubkey, _) = secret_key.x_only_public_key(&Secp256k1::new());
+        let pubkey_bytes = x_only_pubkey.serialize();
+
+        let ascii_520 = "a".repeat(520);
+        assert!(InscriptionsNamespace::create_inscription_reveal_data(
+            &pubkey_bytes,
+            &ascii_520,
+            &[],
+        )
+        .is_ok());
+
+        let unicode_520 = "é".repeat(260);
+        assert_eq!(unicode_520.as_bytes().len(), 520);
+        assert!(InscriptionsNamespace::create_inscription_reveal_data(
+            &pubkey_bytes,
+            &unicode_520,
+            &[],
+        )
+        .is_ok());
+
+        for oversized in ["a".repeat(521), "é".repeat(261)] {
+            let error = match InscriptionsNamespace::create_inscription_reveal_data(
+                &pubkey_bytes,
+                &oversized,
+                &[],
+            ) {
+                Ok(_) => panic!("oversized content type must be rejected"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                error.to_string(),
+                "inscription content type exceeds 520 UTF-8 bytes"
+            );
+            assert_eq!(error.code(), "WasmUtxoError.StringError");
+        }
     }
 }

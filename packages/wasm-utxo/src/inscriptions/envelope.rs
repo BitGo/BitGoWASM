@@ -4,6 +4,7 @@
 //! the Ordinals protocol format.
 
 use miniscript::bitcoin::opcodes::all::{OP_CHECKSIG, OP_ENDIF, OP_IF, OP_PUSHBYTES_0};
+use crate::error::WasmUtxoError;
 use miniscript::bitcoin::opcodes::OP_FALSE;
 use miniscript::bitcoin::script::{Builder, PushBytesBuf};
 use miniscript::bitcoin::secp256k1::XOnlyPublicKey;
@@ -30,16 +31,27 @@ fn split_into_chunks(data: &[u8]) -> Vec<&[u8]> {
 ///
 /// # Arguments
 /// * `internal_key` - The x-only public key for the taproot output
-/// * `content_type` - MIME type of the inscription (e.g., "text/plain", "image/png")
+/// * `content_type` - MIME type of the inscription (e.g., "text/plain", "image/png"),
+///   limited to 520 UTF-8 bytes
 /// * `data` - The inscription data
 ///
 /// # Returns
-/// A compiled Bitcoin script containing the inscription
+/// A compiled Bitcoin script containing the inscription, or an error if
+/// the content type exceeds the tapscript push limit
 pub fn build_inscription_script(
     internal_key: &XOnlyPublicKey,
     content_type: &str,
     data: &[u8],
-) -> ScriptBuf {
+) -> Result<ScriptBuf, WasmUtxoError> {
+    if content_type.as_bytes().len() > MAX_PUSH_SIZE {
+        return Err(WasmUtxoError::new(
+            "inscription content type exceeds 520 UTF-8 bytes",
+        ));
+    }
+    let content_type_bytes = PushBytesBuf::try_from(content_type.as_bytes().to_vec()).map_err(|_| {
+        WasmUtxoError::new("inscription content type cannot be encoded as a script push")
+    })?;
+
     let mut builder = Builder::new();
 
     // <pubkey> OP_CHECKSIG
@@ -60,8 +72,6 @@ pub fn build_inscription_script(
     builder = builder.push_slice(tag_content_type);
 
     // <content_type>
-    let content_type_bytes =
-        PushBytesBuf::try_from(content_type.as_bytes().to_vec()).expect("content type too long");
     builder = builder.push_slice(content_type_bytes);
 
     // OP_0 - body tag
@@ -76,12 +86,13 @@ pub fn build_inscription_script(
     // OP_ENDIF (end inscription envelope)
     builder = builder.push_opcode(OP_ENDIF);
 
-    builder.into_script()
+    Ok(builder.into_script())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use miniscript::bitcoin::script::Instruction;
     use miniscript::bitcoin::secp256k1::{Secp256k1, SecretKey};
     use miniscript::bitcoin::XOnlyPublicKey;
 
@@ -95,7 +106,8 @@ mod tests {
     #[test]
     fn test_build_inscription_script_simple() {
         let pubkey = test_pubkey();
-        let script = build_inscription_script(&pubkey, "text/plain", b"Hello, World!");
+        let script = build_inscription_script(&pubkey, "text/plain", b"Hello, World!")
+            .expect("short content type is valid");
 
         // Verify the script contains expected elements
         let script_bytes = script.as_bytes();
@@ -117,9 +129,48 @@ mod tests {
         let pubkey = test_pubkey();
         // Create data larger than MAX_PUSH_SIZE
         let large_data = vec![0xABu8; 1000];
-        let script = build_inscription_script(&pubkey, "application/octet-stream", &large_data);
+        let script = build_inscription_script(&pubkey, "application/octet-stream", &large_data)
+            .expect("short content type is valid");
 
         // Script should be created successfully
         assert!(script.as_bytes().len() > 1000);
+
+        for instruction in script.instructions() {
+            if let Instruction::PushBytes(push) =
+                instruction.expect("script instructions are well-formed")
+            {
+                // This includes all body chunks and the content-type push.
+                assert!(push.len() <= MAX_PUSH_SIZE);
+            }
+        }
+    }
+
+    #[test]
+    fn test_content_type_push_limit_uses_utf8_bytes() {
+        let pubkey = test_pubkey();
+        let ascii_520 = "a".repeat(MAX_PUSH_SIZE);
+        let ascii_521 = "a".repeat(MAX_PUSH_SIZE + 1);
+        assert!(build_inscription_script(&pubkey, &ascii_520, b"body").is_ok());
+
+        let error = build_inscription_script(&pubkey, &ascii_521, b"body")
+            .expect_err("521-byte content type must be rejected");
+        assert_eq!(
+            error.to_string(),
+            "inscription content type exceeds 520 UTF-8 bytes"
+        );
+
+        let unicode_520 = "é".repeat(MAX_PUSH_SIZE / 2);
+        assert_eq!(unicode_520.as_bytes().len(), MAX_PUSH_SIZE);
+        assert!(build_inscription_script(&pubkey, &unicode_520, b"body").is_ok());
+
+        let unicode_522 = "é".repeat((MAX_PUSH_SIZE / 2) + 1);
+        assert_eq!(unicode_522.chars().count(), 261);
+        assert_eq!(unicode_522.as_bytes().len(), MAX_PUSH_SIZE + 2);
+        let error = build_inscription_script(&pubkey, &unicode_522, b"body")
+            .expect_err("multibyte content type over 520 bytes must be rejected");
+        assert_eq!(
+            error.to_string(),
+            "inscription content type exceeds 520 UTF-8 bytes"
+        );
     }
 }

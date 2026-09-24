@@ -68,7 +68,7 @@ pub fn create_inscription_reveal_data(
     let secp = Secp256k1::new();
 
     // Build the inscription script (pubkey is used for OP_CHECKSIG inside the script)
-    let script = build_inscription_script(script_pubkey, content_type, data);
+    let script = build_inscription_script(script_pubkey, content_type, data)?;
 
     // Create taproot tree with the inscription script as the only leaf
     let builder = TaprootBuilder::new()
@@ -269,6 +269,31 @@ mod tests {
         assert!(!data.tap_leaf_script.control_block.is_empty());
     }
 
+    #[test]
+    fn test_content_type_byte_limit_propagates() {
+        let (_, pubkey) = test_keypair();
+        let accepted = "a".repeat(520);
+        assert!(create_inscription_reveal_data(&pubkey, &accepted, b"body").is_ok());
+
+        let rejected = "a".repeat(521);
+        let error = create_inscription_reveal_data(&pubkey, &rejected, b"body")
+            .expect_err("521-byte content type must be rejected before commitment");
+        assert_eq!(
+            error.to_string(),
+            "inscription content type exceeds 520 UTF-8 bytes"
+        );
+
+        let unicode_rejected = "é".repeat(261);
+        assert!(unicode_rejected.chars().count() < 521);
+        assert_eq!(unicode_rejected.as_bytes().len(), 522);
+        let error = create_inscription_reveal_data(&pubkey, &unicode_rejected, b"body")
+            .expect_err("multibyte content type over 520 bytes must be rejected");
+        assert_eq!(
+            error.to_string(),
+            "inscription content type exceeds 520 UTF-8 bytes"
+        );
+    }
+
     /// Test with the same x-only pubkey as utxo-ord test
     /// Expected output script: 5120dc8b12eec336e7215fd1213acf66fb0d5dd962813c0616988a12c08493831109
     /// Expected address: tb1pmj939mkrxmnjzh73yyav7ehmp4wajc5p8srpdxy2ztqgfyurzyys4sg9zx
@@ -367,8 +392,8 @@ mod tests {
         println!("Internal key: {}", internal_key);
 
         let secp = Secp256k1::new();
-        let script =
-            build_inscription_script(&internal_key, "text/plain", b"Never Gonna Give You Up");
+        let script = build_inscription_script(&internal_key, "text/plain", b"Never Gonna Give You Up")
+            .expect("short content type is valid");
 
         println!("Inscription script hex: {}", hex::encode(script.as_bytes()));
         println!("Inscription script len: {}", script.len());

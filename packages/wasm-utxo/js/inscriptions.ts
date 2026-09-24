@@ -44,7 +44,7 @@ export type PreparedInscriptionRevealData = {
  * 3. An estimate of the reveal transaction's virtual size for fee calculation
  *
  * @param key - The key pair (ECPairArg: Uint8Array, ECPair, or WasmECPair). The x-only public key will be extracted.
- * @param contentType - MIME type of the inscription (e.g., "text/plain", "image/png")
+ * @param contentType - MIME type of the inscription (e.g., "text/plain", "image/png"), limited to 520 UTF-8 bytes
  * @param inscriptionData - The inscription data bytes
  * @returns PreparedInscriptionRevealData containing output script, vsize estimate, and tap leaf script
  *
