@@ -43,7 +43,7 @@ interface ParsedSendActionFields {
 }
 
 /** A send action with its TON send-mode value semantics decoded. */
-export type ParsedSendAction = ParsedSendActionFields & (
+type EffectiveAmountSemantics =
   | {
       effectiveAmountKind: "Exact";
       carriesInboundValue: false;
@@ -58,8 +58,9 @@ export type ParsedSendAction = ParsedSendActionFields & (
       effectiveAmountKind: "AllRemainingBalance";
       carriesInboundValue: false;
       carriesAllBalance: true;
-    }
-);
+    };
+
+export type ParsedSendAction = ParsedSendActionFields & EffectiveAmountSemantics;
 
 /** A fully parsed TON transaction */
 export interface ParsedTransaction {
