@@ -3,7 +3,7 @@
 //! Thin wrapper around core Transaction with #[wasm_bindgen]
 
 use crate::transaction::{decode_metadata, Transaction};
-use crate::types::{Material, ParseContext, Validity};
+use crate::types::{Material, ParseContext, Ss58AddressPolicy, Validity};
 use crate::WasmDotError;
 use wasm_bindgen::prelude::*;
 
@@ -237,6 +237,8 @@ impl MaterialJs {
         spec_version: u32,
         tx_version: u32,
         metadata: &str,
+        ss58_prefix: Option<u16>,
+        allow_generic: Option<bool>,
     ) -> MaterialJs {
         MaterialJs {
             inner: Material {
@@ -246,6 +248,10 @@ impl MaterialJs {
                 spec_version,
                 tx_version,
                 metadata: metadata.to_string(),
+                ss58_address_policy: ss58_prefix.map(|prefix| Ss58AddressPolicy {
+                    prefix,
+                    allow_generic: allow_generic.unwrap_or(false),
+                }),
             },
         }
     }

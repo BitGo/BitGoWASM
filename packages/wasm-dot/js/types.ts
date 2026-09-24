@@ -37,6 +37,20 @@ export interface Material {
    * SCALE decoding.
    */
   metadata: string;
+  /** Required for chains outside the built-in Polkadot/Kusama/Westend mapping.
+   * For known chains, prefix must match the chain's canonical format.
+   */
+  ss58AddressPolicy?: Ss58AddressPolicy;
+}
+
+/** Accepted SS58 formats for addresses used by the transaction builder. */
+export interface Ss58AddressPolicy {
+  /** The canonical chain prefix, in the SS58 range 0..16383. */
+  prefix: number;
+  /** Explicitly accept generic (42) inputs; they parse back in the chain format.
+   * Approve the canonical chain-form address before submitting such an intent.
+   */
+  allowGeneric?: boolean;
 }
 
 /**
@@ -221,16 +235,13 @@ export interface ParsedTransaction {
 }
 
 /**
- * SS58 address format prefixes.
- * Using a numeric union type rather than an enum so that callers can pass
- * the raw SS58 prefix number directly without a cast.
+ * SS58 address format prefix (0..16383). Custom chains can use their
+ * verified numeric prefix without a cast.
  */
-export type AddressFormat = 0 | 2 | 42;
+export type AddressFormat = number;
 
 /**
  * Named constants for common SS58 address formats.
- * All existing call sites using AddressFormat.Polkadot / .Kusama / .Substrate
- * continue to work unchanged.
  */
 export const AddressFormat = {
   /** Polkadot mainnet (prefix 0, addresses start with '1') */

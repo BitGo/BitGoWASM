@@ -15,7 +15,15 @@ import type { TransactionIntent, BuildContext } from "./types.js";
  *
  * The intent describes *what* to do (payment, stake, etc.) and the context
  * provides *how* to build it (sender, nonce, material, validity).
- * Multi-call intents are batched automatically.
+ * Multi-call intents are batched automatically. Destinations must have the
+ * SS58 prefix of context.material.chainName (Polkadot 0, Kusama 2, Westend 42).
+ * Other chains must supply material.ss58AddressPolicy.prefix. Generic prefix 42
+ * is only accepted on another chain with allowGeneric: true; because calls
+ * encode AccountId32 without a prefix, parseTransaction will display its
+ * canonical chain-form address. The caller must show and obtain approval for
+ * that canonical address before using allowGeneric.
+ * A wrong-domain destination throws an Error with code "WrongNetwork",
+ * actualPrefix, and expectedPrefix.
  *
  * @param intent - Business intent (payment, stake, unstake, claim, etc.)
  * @param context - Build context (sender, nonce, material, validity, referenceBlock)
@@ -26,6 +34,7 @@ import type { TransactionIntent, BuildContext } from "./types.js";
  * ```typescript
  * import { buildTransaction } from '@bitgo/wasm-dot';
  *
+ * // These prefix-42 examples assume Westend material in context.
  * // Payment
  * const tx = buildTransaction(
  *   { type: 'payment', to: '5FHneW46...', amount: 1000000000000n },
