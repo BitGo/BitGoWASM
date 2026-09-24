@@ -926,7 +926,8 @@ mod tests {
             tx_version: 1,
             metadata: "0x00".to_string(),
         };
-        let mut tx = Transaction::new(vec![1, 2], Era::Immortal, material.spec_version, 0);
+        let nonce = std::process::id();
+        let mut tx = Transaction::new(vec![1, 2], Era::Immortal, nonce, 0);
 
         let error = tx
             .set_context(
