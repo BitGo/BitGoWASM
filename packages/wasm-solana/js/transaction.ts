@@ -38,8 +38,10 @@ export interface Instruction {
  *
  * const tx = Transaction.fromBytes(txBytes);
  *
- * // Parse for decoded instructions
+ * // Parse for decoded instructions. Review the signable payload from this
+ * // same Transaction instance; the parsed data is only its semantic view.
  * const parsed = parseTransaction(tx);
+ * const reviewedMessage = tx.signablePayload();
  * for (const instr of parsed.instructionsData) {
  *   if (instr.type === 'Transfer') {
  *     console.log(`${instr.amount} lamports to ${instr.toAddress}`);

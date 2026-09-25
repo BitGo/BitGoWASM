@@ -13,6 +13,7 @@ import {
   parseTransaction,
   type ParsedTransaction,
   type InstructionParams,
+  type StakeLockup,
 } from "@bitgo/wasm-solana";
 
 /**
@@ -49,6 +50,16 @@ async function copyToClipboard(text: string, button: HTMLElement): Promise<void>
 function formatInstructionType(type: string): string {
   // Add spaces before capital letters for readability
   return type.replace(/([A-Z])/g, " $1").trim();
+}
+
+const DEFAULT_STAKE_LOCKUP_CUSTODIAN = "11111111111111111111111111111111";
+
+function hasNonDefaultStakeLockup(lockup: StakeLockup): boolean {
+  return (
+    lockup.unixTimestamp !== 0n ||
+    lockup.epoch !== 0n ||
+    lockup.custodian !== DEFAULT_STAKE_LOCKUP_CUSTODIAN
+  );
 }
 
 /**
@@ -189,6 +200,16 @@ class SolanaTransactionParser extends BaseComponent {
           background: var(--surface, #161b22);
           border: 1px solid var(--border, #30363d);
           border-radius: 6px;
+        }
+
+        .stake-lockup-warning {
+          margin-bottom: 0.75rem;
+          padding: 0.75rem;
+          border: 1px solid rgba(248, 81, 73, 0.6);
+          border-radius: 6px;
+          background: rgba(248, 81, 73, 0.1);
+          color: #ff7b72;
+          font-weight: 600;
         }
 
         .instruction-header {
@@ -635,8 +656,18 @@ class SolanaTransactionParser extends BaseComponent {
     const type = instr.type;
     const typeColor = getTypeColor(type);
 
-    // Extract params (everything except 'type')
-    const params = Object.entries(instr).filter(([key]) => key !== "type");
+    const lockup =
+      instr.type === "StakeInitialize" || instr.type === "StakingActivate" ? instr.lockup : null;
+    const params: [string, unknown][] = Object.entries(instr).filter(
+      ([key]) => key !== "type" && key !== "lockup",
+    );
+    if (lockup) {
+      params.push(
+        ["lockup.unixTimestamp", lockup.unixTimestamp],
+        ["lockup.epoch", lockup.epoch],
+        ["lockup.custodian", lockup.custodian],
+      );
+    }
 
     return h(
       "div",
@@ -651,6 +682,14 @@ class SolanaTransactionParser extends BaseComponent {
           formatInstructionType(type),
         ),
       ),
+      lockup && hasNonDefaultStakeLockup(lockup)
+        ? h(
+            "div",
+            { class: "stake-lockup-warning", role: "alert" },
+            "Non-default stake lockup. Review all terms: active terms can restrict " +
+              "withdrawals and authority changes.",
+          )
+        : null,
       params.length > 0
         ? h(
             "div",
