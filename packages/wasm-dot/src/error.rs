@@ -8,6 +8,8 @@ use wasm_bindgen::prelude::*;
 pub enum WasmDotError {
     /// Invalid SS58 address
     InvalidAddress(String),
+    /// Valid SS58 address from a disallowed network
+    WrongNetwork { actual: u16, expected: u16 },
     /// Invalid transaction format
     InvalidTransaction(String),
     /// Invalid signature
@@ -28,6 +30,9 @@ impl fmt::Display for WasmDotError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             WasmDotError::InvalidAddress(s) => write!(f, "Invalid address: {}", s),
+            WasmDotError::WrongNetwork { actual, expected } => {
+                write!(f, "Wrong SS58 network: prefix {} (expected {})", actual, expected)
+            },
             WasmDotError::InvalidTransaction(s) => write!(f, "Invalid transaction: {}", s),
             WasmDotError::InvalidSignature(s) => write!(f, "Invalid signature: {}", s),
             WasmDotError::ScaleDecodeError(s) => write!(f, "SCALE decode error: {}", s),
@@ -59,7 +64,13 @@ impl From<parity_scale_codec::Error> for WasmDotError {
 // REQUIRED: Converts to JS Error with stack trace
 impl From<WasmDotError> for JsValue {
     fn from(err: WasmDotError) -> Self {
-        js_sys::Error::new(&err.to_string()).into()
+        let error: JsValue = js_sys::Error::new(&err.to_string()).into();
+        if let WasmDotError::WrongNetwork { actual, expected } = err {
+            let _ = js_sys::Reflect::set(&error, &"code".into(), &"WrongNetwork".into());
+            let _ = js_sys::Reflect::set(&error, &"actualPrefix".into(), &JsValue::from_f64(actual as f64));
+            let _ = js_sys::Reflect::set(&error, &"expectedPrefix".into(), &JsValue::from_f64(expected as f64));
+        }
+        error
     }
 }
 

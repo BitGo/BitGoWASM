@@ -66,6 +66,8 @@ function createParseContext(ctx: ParseContext): ParseContextJs {
     ctx.material.specVersion,
     ctx.material.txVersion,
     ctx.material.metadata,
+    ctx.material.ss58AddressPolicy?.prefix,
+    ctx.material.ss58AddressPolicy?.allowGeneric,
   );
   return new ParseContextJs(material, ctx.sender ?? null);
 }
