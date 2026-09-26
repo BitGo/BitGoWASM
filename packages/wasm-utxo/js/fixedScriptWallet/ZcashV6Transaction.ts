@@ -1,4 +1,5 @@
 import { ZcashV6Transaction as WasmZcashV6Transaction } from "../wasm/wasm_utxo.js";
+import type { TxInputData } from "../wasm/wasm_utxo.js";
 
 /**
  * A parsed Zcash v6 (Ironwood / NU6.3) transaction — for inspection and txid.
@@ -89,6 +90,15 @@ export class ZcashV6Transaction {
       BigInt64Array.from(inputAmounts),
       inputScriptPubkeys,
     );
+  }
+
+  /**
+   * The transparent inputs of this transaction, in input order — e.g. each input's
+   * `previousOutput` (display-order txid + vout) for looking up the spent UTXOs of a broadcast
+   * shielding transaction. Empty for a fully shielded transaction.
+   */
+  getInputs(): TxInputData[] {
+    return this._wasm.getInputs();
   }
 
   /** @internal */

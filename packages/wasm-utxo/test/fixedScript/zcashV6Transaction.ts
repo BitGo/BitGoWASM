@@ -43,6 +43,34 @@ describe("ZcashV6Transaction", function () {
     assert.strictEqual(typeof tx.ironwoodValueBalance, "bigint");
   });
 
+  it("exposes the transparent inputs' prevouts of the reference shield tx", function () {
+    const tx = ZcashV6Transaction.fromBytes(Buffer.from(readFixture("v6_shield_rawtx.hex"), "hex"));
+    assert.deepStrictEqual(
+      tx.getInputs().map((input) => input.previousOutput),
+      [
+        { txid: "bb9a0ed8e980f02273fae80adfb462594ace1c620780c39e5e86b3900d1eebbe", vout: 0 },
+        { txid: "ac0e368c750f878ea1c4b07986e21d28472716367fd9aa8027fdf623801a5843", vout: 0 },
+      ],
+    );
+  });
+
+  it("exposes the transparent input's prevout of the multisig shield tx", function () {
+    const tx = ZcashV6Transaction.fromBytes(
+      Buffer.from(readFixture("v6_shield_multisig_rawtx.hex"), "hex"),
+    );
+    assert.deepStrictEqual(
+      tx.getInputs().map((input) => input.previousOutput),
+      [{ txid: "1ebd1da314f021d7c7b2ced6c0340067ebf3ce422bf8c53daa626d72cbd9fe73", vout: 1 }],
+    );
+  });
+
+  it("has no transparent inputs for the fully shielded self-send", function () {
+    const tx = ZcashV6Transaction.fromBytes(
+      Buffer.from(readFixture("v6_selfsend_rawtx.hex"), "hex"),
+    );
+    assert.deepStrictEqual(tx.getInputs(), []);
+  });
+
   it("throws on non-v6 bytes", function () {
     assert.throws(() => ZcashV6Transaction.fromBytes(Buffer.from("00010203", "hex")));
   });
