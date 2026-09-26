@@ -5,6 +5,7 @@
 //! generic fixed-script-wallet bindings.
 
 use crate::error::WasmUtxoError;
+use crate::wasm::try_into_js_value::TryIntoJsValue;
 use wasm_bindgen::prelude::*;
 
 /// Return the Zcash consensus branch ID active at `height` on `network`.
@@ -435,5 +436,13 @@ impl ZcashV6Transaction {
         )
         .map(|h| h.to_vec())
         .map_err(|e| WasmUtxoError::new(&e.to_string()))
+    }
+
+    /// The transparent inputs of this transaction, in input order — each input's
+    /// `previousOutput` (display-order txid + vout), sequence, scriptSig, and witness, carried
+    /// verbatim from the wire. Empty for a fully shielded transaction.
+    #[wasm_bindgen(js_name = getInputs, unchecked_return_type = "TxInputData[]")]
+    pub fn get_inputs(&self) -> Result<JsValue, WasmUtxoError> {
+        super::transaction::tx_inputs_from(&self.inner.transparent).try_to_js_value()
     }
 }
