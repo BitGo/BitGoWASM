@@ -345,6 +345,7 @@ mod mps {
         decryption_key: &[u8; 32],
         encryption_keys: &[Vec<u8>; 2],
         seed: &[u8; 32],
+        orchard_ak_sign_normalize: bool,
     ) -> Result<MsgState, MpsError>
     where
         G: GroupElem,
@@ -390,6 +391,17 @@ mod mps {
             None, // extra_data
         )
         .map_err(|_| MpsError::ProtocolError)?;
+
+        // Orchard requires the RedPallas group public key (ak) to have y-tilde = 0
+        // (Zcash Protocol Spec 4.2.3). All three DKG parties must opt in together
+        // (or none) -- see multi-party-schnorr's
+        // KeygenParty::with_orchard_ak_sign_normalize() docs.
+        // No-op for non-RedPallas groups (e.g. Ed25519), which always pass `false`.
+        let p0 = if orchard_ak_sign_normalize {
+            p0.with_orchard_ak_sign_normalize()
+        } else {
+            p0
+        };
 
         // Generate message
         let (p1, msg1) = p0.process(()).map_err(|_| MpsError::ProtocolError)?;
@@ -647,6 +659,7 @@ mod mps {
             decryption_key,
             encryption_keys,
             seed,
+            false, // Orchard ak sign normalization is RedPallas-only.
         )?;
         Ok(MsgState {
             msg: add_prefix("mps-ed25519-dkg-round1-message$", &result.msg),
@@ -1218,6 +1231,7 @@ mod mps {
             decryption_key,
             encryption_keys,
             seed,
+            true, // Enforce Orchard's ak y-tilde = 0 requirement (Zcash Protocol Spec 4.2.3).
         )?;
         Ok(MsgState {
             msg: add_prefix("mps-redpallas-dkg-round1-message$", &result.msg),
@@ -1997,6 +2011,13 @@ mod tests {
 
         assert_eq!(dkg_p0_init.pk, dkg_p2_init.pk, "DKG public keys differ");
 
+        // Orchard ak must have y-tilde = 0 (Zcash Protocol Spec 4.2.3).
+        assert_eq!(
+            dkg_p0_init.pk[31] & 0x80,
+            0,
+            "DKG public key has y-tilde = 1"
+        );
+
         let msg = b"Test message for RedPallas signing";
 
         // DSG round 0
@@ -2045,6 +2066,91 @@ mod tests {
         );
         rk.verify(msg, &sig)
             .expect("signature must verify against rk");
+    }
+
+    /// Orchard requires the spend-validating key `ak` to have a canonical
+    /// y-coordinate, y-tilde = 0 (Zcash Protocol Spec 4.2.3). The RedPallas DKG
+    /// path opts into multi-party-schnorr's ak sign normalization, so the group
+    /// public key must always come out with the high bit of its last encoding
+    /// byte cleared. Without normalization this holds only ~50% of the time, so
+    /// run enough iterations to make a regression fail reliably.
+    #[test]
+    fn test_redpallas_dkg_orchard_ak_sign_normalize() {
+        const ITERATIONS: usize = 32;
+
+        for iteration in 0..ITERATIONS {
+            let mut prv_keys = Vec::new();
+            let mut pub_keys = Vec::new();
+            let mut seeds = Vec::new();
+            for i in 0..3 {
+                let secret_key = crypto_box::SecretKey::generate(&mut rand::thread_rng());
+                let public_key = secret_key.public_key();
+                prv_keys.push(secret_key);
+                pub_keys.push((i, public_key));
+                let seed: [u8; 32] = rand::thread_rng().gen();
+                seeds.push(seed);
+            }
+
+            // DKG round 0
+            let dkg_0: Vec<_> = (0..3usize)
+                .map(|i| {
+                    let others: Vec<Vec<u8>> = (0..3usize)
+                        .filter(|j| *j != i)
+                        .map(|j| pub_keys[j].1.to_bytes().to_vec())
+                        .collect();
+                    mps::redpallas_dkg_round0_process(
+                        i as u8,
+                        &prv_keys[i].to_bytes(),
+                        &[others[0].clone(), others[1].clone()],
+                        &seeds[i],
+                    )
+                    .unwrap()
+                })
+                .collect();
+
+            // DKG round 1
+            let dkg_1: Vec<_> = (0..3usize)
+                .map(|i| {
+                    let others: Vec<Vec<u8>> = (0..3usize)
+                        .filter(|j| *j != i)
+                        .map(|j| dkg_0[j].msg.clone())
+                        .collect();
+                    mps::redpallas_dkg_round1_process(
+                        &[others[0].clone(), others[1].clone()],
+                        dkg_0[i].state.as_slice(),
+                    )
+                    .unwrap()
+                })
+                .collect();
+
+            // DKG round 2 - every party finalizes its keyshare
+            let shares: Vec<_> = (0..3usize)
+                .map(|i| {
+                    let others: Vec<Vec<u8>> = (0..3usize)
+                        .filter(|j| *j != i)
+                        .map(|j| dkg_1[j].msg.clone())
+                        .collect();
+                    mps::redpallas_dkg_round2_process(
+                        &[others[0].clone(), others[1].clone()],
+                        dkg_1[i].state.as_slice(),
+                    )
+                    .unwrap()
+                })
+                .collect();
+
+            for (i, share) in shares.iter().enumerate() {
+                assert_eq!(
+                    share.pk, shares[0].pk,
+                    "iteration {iteration}: party {i} public key differs"
+                );
+                assert_eq!(
+                    share.pk[31] & 0x80,
+                    0,
+                    "iteration {iteration}: party {i} ak has y-tilde = 1, pk = {:?}",
+                    share.pk
+                );
+            }
+        }
     }
 }
 
