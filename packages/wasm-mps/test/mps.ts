@@ -1176,6 +1176,43 @@ describe("mps", function () {
         }
       });
 
+      // Orchard requires the spend-validating key ak to have a canonical
+      // y-coordinate, y-tilde = 0 (Zcash Protocol Spec 4.2.3). Without the DKG
+      // opting into sign normalization the high bit is set in roughly half of
+      // all runs, so repeat the protocol enough times to catch a regression.
+      it("always produces an ak with y-tilde = 0", function () {
+        for (let run = 0; run < 16; run++) {
+          const round0 = [0, 1, 2].map((i) =>
+            mps.redpallas_dkg_round0_process(
+              i,
+              keypairs[i].privateKey,
+              otherIndices[i].map((j) => keypairs[j].publicKey),
+              crypto.randomBytes(32),
+            ),
+          );
+          const round1 = [0, 1, 2].map((i) =>
+            mps.redpallas_dkg_round1_process(
+              otherIndices[i].map((j) => round0[j].msg),
+              round0[i].state,
+            ),
+          );
+          const shares = [0, 1, 2].map((i) =>
+            mps.redpallas_dkg_round2_process(
+              otherIndices[i].map((j) => round1[j].msg),
+              round1[i].state,
+            ),
+          );
+          for (const [i, share] of shares.entries()) {
+            assert.deepStrictEqual(
+              Array.from(share.pk),
+              Array.from(shares[0].pk),
+              `run ${run}: party ${i} public key differs`,
+            );
+            assert.strictEqual(share.pk[31] & 0x80, 0, `run ${run}: party ${i} ak has y-tilde = 1`);
+          }
+        }
+      });
+
       it("fails to perform round 2 with invalid message prefix", function () {
         const messagePrefix = Buffer.from("mps-redpallas-dkg-round2-message$");
         for (let i = 0; i < results2.length; i++) {
