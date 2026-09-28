@@ -674,7 +674,10 @@ pub struct IronwoodOutputRequest {
     /// Note value in zatoshi.
     pub amount: u64,
     /// Outgoing viewing key, if the output should be recoverable by the sender; `None` for a
-    /// keyless build.
+    /// keyless build. Only survives if signatures are added directly via
+    /// [`ZcashBitGoPsbt::add_v6_transparent_signature`]: [`ZcashBitGoPsbt::sign_ironwood_v6`]'s
+    /// first round re-encrypts every action's `out_ciphertext` under the wallet `ovk`, replacing
+    /// whatever this produced — in the normal signing flow it has no effect.
     pub ovk: Option<crate::zcash::ironwood_build::OvkBytes>,
     /// ZIP-302 memo field.
     pub memo: crate::zcash::ironwood_build::MemoBytes,
@@ -810,10 +813,11 @@ impl ZcashBitGoPsbt {
     /// therefore all be passed in a single `requests` slice.
     ///
     /// Returns the action index assigned to each request, in the same order as `requests` — the
-    /// orchard builder pads/reorders actions, so request order does not equal action order. A
-    /// client-managed-`ovk` caller must use these indices (not the request index) when later
-    /// calling [`Self::set_ironwood_out_ciphertext`]/[`Self::set_ironwood_out_ciphertext_for_user`]
-    /// for a specific recipient.
+    /// orchard builder pads/reorders actions, so request order does not equal action order. Any
+    /// caller correlating per-action data (a stored Unified Address, an explicit
+    /// [`Self::set_ironwood_out_ciphertext`] call) must use these indices, not the request index —
+    /// though note [`Self::sign_ironwood_v6`]'s first round already patches every action's
+    /// `out_ciphertext` with the wallet `ovk` on its own.
     pub fn add_ironwood_outputs<R: rand::RngCore + rand::CryptoRng>(
         &mut self,
         requests: &[IronwoodOutputRequest],
@@ -1014,12 +1018,18 @@ impl ZcashBitGoPsbt {
     /// [`Self::add_ironwood_output`]/[`Self::deserialize_v6`] and before
     /// [`Self::v6_transparent_sighash`]/[`Self::add_v6_transparent_signature`].
     ///
+    /// Normally you do not call this per action at all: [`Self::sign_ironwood_v6`]'s first round
+    /// patches **every** action's `out_ciphertext` with the wallet `ovk` automatically (and
+    /// idempotently — same ovk ⇒ same bytes). An explicit call is only needed to pre-finalize under
+    /// a different `ovk`, and note that a first-round `sign_ironwood_v6` then overwrites it; a
+    /// custom-`ovk` ciphertext can only survive if signatures are added directly via
+    /// [`Self::add_v6_transparent_signature`], bypassing `sign_ironwood_v6`.
+    ///
     /// `action_index` is the index a shielded output landed at in the bundle — for a
     /// multi-recipient build via [`Self::add_ironwood_outputs`], this is the value returned
     /// alongside it by [`Self::ironwood_shielded_outputs_info`], not necessarily the position the
     /// output was passed in at (see [`crate::zcash::ironwood_build::construct_shield_pczt_multi`]
-    /// for why actions get reordered). Call once per recipient that needs its own client-managed
-    /// `ovk`.
+    /// for why actions get reordered).
     pub fn set_ironwood_out_ciphertext(
         &mut self,
         action_index: usize,
@@ -1085,8 +1095,25 @@ impl ZcashBitGoPsbt {
     where
         C: miniscript::bitcoin::secp256k1::Signing,
     {
-        use miniscript::bitcoin::bip32::Xpub;
         use zeroize::Zeroizing;
+
+        Self::check_user_root_key(user_xpriv, root_wallet_keys, secp)?;
+        let bitgo_pubkey = root_wallet_keys.bitgo_key().public_key.serialize();
+        let user_privkey = Zeroizing::new(user_xpriv.private_key.secret_bytes());
+        self.set_ironwood_out_ciphertext(action_index, &bitgo_pubkey, user_privkey.as_slice())
+    }
+
+    /// Reject any `user_xpriv` that is not this wallet's user root key — the only key whose ECDH
+    /// agreement with the BitGo root key yields an `ovk` both the user and the server can reproduce.
+    fn check_user_root_key<C>(
+        user_xpriv: &miniscript::bitcoin::bip32::Xpriv,
+        root_wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        secp: &miniscript::bitcoin::secp256k1::Secp256k1<C>,
+    ) -> Result<(), String>
+    where
+        C: miniscript::bitcoin::secp256k1::Signing,
+    {
+        use miniscript::bitcoin::bip32::Xpub;
 
         let expected = root_wallet_keys.user_key().public_key;
         if Xpub::from_priv(secp, user_xpriv).public_key != expected {
@@ -1098,9 +1125,7 @@ impl ZcashBitGoPsbt {
                     .to_string(),
             );
         }
-        let bitgo_pubkey = root_wallet_keys.bitgo_key().public_key.serialize();
-        let user_privkey = Zeroizing::new(user_xpriv.private_key.secret_bytes());
-        self.set_ironwood_out_ciphertext(action_index, &bitgo_pubkey, user_privkey.as_slice())
+        Ok(())
     }
 
     /// Sign every transparent input this key resolves a private key for, over the ZIP-244
@@ -1109,8 +1134,9 @@ impl ZcashBitGoPsbt {
     ///
     /// If no transparent signature has been added to this PSBT yet, this is the first signing round,
     /// and `xpriv` must be the wallet's user root key: it is used with
-    /// `root_wallet_keys.bitgo_key()` to derive the wallet's `ovk` and finalize `out_ciphertext`
-    /// ([`Self::set_ironwood_out_ciphertext_for_user`]) before any sighash is computed —
+    /// `root_wallet_keys.bitgo_key()` to derive the wallet's `ovk` and finalize **every** action's
+    /// `out_ciphertext` ([`Self::set_ironwood_out_ciphertext_for_user`], looped over the whole
+    /// bundle, so multi-recipient builds are covered too) before any sighash is computed —
     /// `out_ciphertext` is sighash-committed, so it must be final before signing. Any other key
     /// signing first is **rejected**, rather than deriving an `ovk` from it that neither the user nor
     /// the server can reproduce; the user must sign first. Once a transparent signature exists (the
@@ -1168,18 +1194,34 @@ impl ZcashBitGoPsbt {
             return Ok(Vec::new());
         }
 
-        // First signing round: finalize `out_ciphertext` under this wallet's ovk before any sighash
-        // is computed. Only the user key may open the round — `set_ironwood_out_ciphertext_for_user`
-        // enforces that, so signing out of order fails loudly here instead of shipping an
-        // `out_ciphertext` nobody can decrypt.
+        // First signing round: finalize EVERY action's `out_ciphertext` under this wallet's ovk
+        // before any sighash is computed — one wallet ovk covers the whole bundle, and re-encrypting
+        // an action under the same ovk is deterministic (same ovk ⇒ same bytes), so the loop is
+        // idempotent. Only the user key may open the round — checked once, up front, so it holds
+        // regardless of the action count and signing out of order fails loudly here instead of
+        // shipping an `out_ciphertext` nobody can decrypt.
         let already_signed = self
             .psbt
             .inputs
             .iter()
             .any(|input| !input.partial_sigs.is_empty());
         if !already_signed {
-            self.set_ironwood_out_ciphertext_for_user(0, xpriv, root_wallet_keys, secp)
+            Self::check_user_root_key(xpriv, root_wallet_keys, secp)
                 .map_err(|e| format!("{e} (the user must sign a v6 shielding PSBT first)"))?;
+            // Fail loud for a v6 PSBT with no PCZT (never added, or already extracted), or one
+            // with no actions: the first round must not sign a transparent-only digest.
+            let action_count = self.ironwood_pczt()?.actions().len();
+            if action_count == 0 {
+                return Err("Ironwood PCZT has no actions".to_string());
+            }
+            for action_index in 0..action_count {
+                self.set_ironwood_out_ciphertext_for_user(
+                    action_index,
+                    xpriv,
+                    root_wallet_keys,
+                    secp,
+                )?;
+            }
         }
 
         let mut signed = Vec::with_capacity(resolved.len());
@@ -2389,6 +2431,50 @@ mod ironwood_v6_tests {
         z
     }
 
+    /// The multi-recipient counterpart of [`build_shield_psbt`]: the same transparent side, but
+    /// `add_ironwood_outputs` with one keyless action per recipient.
+    fn build_shield_psbt_multi(seed: &str, recipients: &[[u8; 43]]) -> ZcashBitGoPsbt {
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x77u8; 32]),
+            0,
+            300_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 99_900_000, &wallet_keys)
+            .unwrap();
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+        z.add_ironwood_outputs(
+            &recipients
+                .iter()
+                .map(|&recipient| IronwoodOutputRequest {
+                    recipient,
+                    amount: 100_000_000,
+                    ovk: None,
+                    memo: [0u8; 512],
+                    unified_address: None,
+                })
+                .collect::<Vec<_>>(),
+            &Anchor::empty_tree().to_bytes(),
+            OsRng,
+        )
+        .unwrap();
+        z
+    }
+
     /// The same `RootWalletKeys` `build_shield_psbt(seed)` builds internally — so its
     /// `bitgo_key()`'s raw pubkey matches what's actually in this PSBT's `bip32_derivation` entries.
     fn root_wallet_keys(seed: &str) -> RootWalletKeys {
@@ -2521,6 +2607,101 @@ mod ironwood_v6_tests {
             test_recipient(),
             "zebra's parsed action carries the expected recipient"
         );
+    }
+
+    /// Multi-recipient build: `sign_ironwood_v6`'s first round finalizes EVERY action's
+    /// `out_ciphertext` under the wallet's ECDH `ovk` — not just action 0 — so every note is
+    /// recoverable with that ovk, and the user-set ciphertexts survive Bitgo's second round and
+    /// combine. A single-action auto-step would leave action 1 on its keyless placeholder, which no
+    /// real ovk can recover.
+    #[test]
+    fn sign_ironwood_v6_finalizes_out_ciphertext_for_every_action() {
+        use orchard::note_encryption::IronwoodDomain;
+        use zcash_note_encryption::try_output_recovery_with_ovk;
+
+        let seed = "ironwood_v6_sign_multi_action";
+        let secp = Secp256k1::new();
+        let wallet_keys = root_wallet_keys(seed);
+
+        let recipient_a = test_recipient();
+        let recipient_b = {
+            let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([11u8; 32])).unwrap();
+            FullViewingKey::from(&sk)
+                .address_at(0u32, Scope::External)
+                .to_raw_address_bytes()
+        };
+        let mut z = build_shield_psbt_multi(seed, &[recipient_a, recipient_b]);
+
+        let before = z.ironwood_action_data().unwrap();
+        assert_eq!(before.actions.len(), 2, "one action per recipient");
+        let by_recipient: std::collections::HashMap<usize, [u8; 43]> = z
+            .ironwood_shielded_outputs_info()
+            .unwrap()
+            .into_iter()
+            .map(|(action_index, _, recipient)| (action_index, recipient))
+            .collect();
+
+        let user_xpriv = test_wallet_xpriv(seed, 0);
+        assert_eq!(
+            z.sign_ironwood_v6(&user_xpriv, &wallet_keys, &secp)
+                .unwrap(),
+            vec![0],
+            "signed the one transparent input"
+        );
+
+        // Every action's keyless placeholder was replaced — not just action 0.
+        let after = z.ironwood_action_data().unwrap();
+        for (i, action) in after.actions.iter().enumerate() {
+            assert_ne!(
+                action.out_ciphertext.to_vec(),
+                before.actions[i].out_ciphertext.to_vec(),
+                "action {i}'s out_ciphertext was finalized"
+            );
+        }
+
+        // And every action is recoverable under the wallet's ECDH ovk.
+        let ovk = crate::zcash::ironwood_build::derive_client_ovk(
+            &wallet_keys.bitgo_key().public_key.serialize(),
+            &user_xpriv.private_key.secret_bytes(),
+        )
+        .unwrap();
+        let pczt = z.ironwood_pczt().unwrap();
+        for (i, action) in pczt.actions().iter().enumerate() {
+            let domain = IronwoodDomain::for_pczt_action(action);
+            let (note, recipient, _) = try_output_recovery_with_ovk(
+                &domain,
+                &orchard::keys::OutgoingViewingKey::from(ovk),
+                action,
+                action.cv_net(),
+                &after.actions[i].out_ciphertext,
+            )
+            .unwrap_or_else(|| panic!("action {i} recoverable under the wallet's ECDH ovk"));
+            assert_eq!(
+                recipient.to_raw_address_bytes(),
+                by_recipient[&i],
+                "action {i} decrypts to its own recipient"
+            );
+            assert_eq!(note.value().inner(), 100_000_000);
+        }
+
+        // Bitgo's second round skips the out_ciphertext step (a signature already exists); the
+        // user-set values survive combine.
+        let bitgo_xpriv = test_wallet_xpriv(seed, 2);
+        z.sign_ironwood_v6(&bitgo_xpriv, &wallet_keys, &secp)
+            .unwrap();
+
+        let proof = vec![0u8; Proof::expected_proof_size(2)];
+        let raw = z.combine_ironwood_proof(proof, OsRng).unwrap();
+        let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+        let bundle = tx.ironwood_bundle.as_ref().unwrap();
+        assert_eq!(bundle.actions.len(), 2);
+        for (i, action) in bundle.actions.iter().enumerate() {
+            assert_eq!(
+                action.out_ciphertext.to_vec(),
+                after.actions[i].out_ciphertext.to_vec(),
+                "action {i}'s user-set out_ciphertext survives to the broadcast transaction"
+            );
+        }
     }
 
     /// Calling `sign_ironwood_v6` with a key this PSBT has no `bip32_derivation` entries for (e.g. a

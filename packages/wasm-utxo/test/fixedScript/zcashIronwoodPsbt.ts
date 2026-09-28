@@ -805,6 +805,59 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
       assert.strictEqual(psbt.getPczt(), undefined, "combineProof drops the stored PCZT");
     });
 
+    // A two-recipient variant of `buildSignFlowPsbt` for the multi-action assertions below.
+    function buildMultiRecipientSignFlowPsbt(): {
+      psbt: ZcashIronwoodBitGoPsbt;
+      actionIndices: number[];
+    } {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", signFlowWalletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput(
+        { txid: "44".repeat(32), vout: 0, value: 300_000_000n },
+        signFlowWalletKeys,
+        { scriptId: SCRIPT_ID, signPath: { signer: "user", cosigner: "bitgo" } },
+      );
+      psbt.addWalletOutput(signFlowWalletKeys, { chain: 1, index: 0, value: 99_900_000n });
+      const recipient2 = Buffer.from(
+        ZcashUnifiedAddress.parse(MULTI_RECEIVER_UA, "zcashTest").orchardReceiver ?? [],
+      );
+      const actionIndices = psbt.addShieldedOutputs(
+        [
+          { recipient: RECIPIENT, amount: 100_000_000n },
+          { recipient: recipient2, amount: 100_000_000n },
+        ],
+        new Uint8Array(32),
+      );
+      return { psbt, actionIndices };
+    }
+
+    it("finalizes out_ciphertext for every action of a multi-recipient build, not just the first", function () {
+      const { psbt, actionIndices } = buildMultiRecipientSignFlowPsbt();
+      assert.strictEqual(actionIndices.length, 2, "one action per recipient");
+      const txidBefore = psbt.getId();
+
+      // The same serialized bytes, finalized two ways: via sign()'s own first-round auto-step, and
+      // via explicit per-action patches. The txid commits to out_ciphertext through the ZIP-244
+      // digest, so if the auto-step missed any action, its keyless placeholder would differ from
+      // the explicit patch and the two txids would disagree. This only proves coverage, not the
+      // ovk used (explicit.sign() re-patches both copies alike); recovery under the wallet ovk is
+      // asserted in the Rust `sign_ironwood_v6_finalizes_out_ciphertext_for_every_action` test.
+      const explicit = ZcashIronwoodBitGoPsbt.fromBytes(psbt.serialize(), "zcashTest");
+      for (const actionIndex of actionIndices) {
+        explicit.setShieldedOutCiphertext(actionIndex, userKey, signFlowWalletKeys);
+      }
+
+      psbt.sign(userKey, signFlowWalletKeys);
+      assert.notStrictEqual(psbt.getId(), txidBefore, "the keyless placeholders were replaced");
+      explicit.sign(userKey, signFlowWalletKeys);
+      assert.strictEqual(
+        psbt.getId(),
+        explicit.getId(),
+        "sign()'s auto-step patched every action exactly like explicit per-action calls",
+      );
+    });
+
     it("accepts any WalletKeysArg form, not just a RootWalletKeys instance", function () {
       // BitGoJS passes whatever `RootWalletKeys` it holds — potentially utxo-lib's, or this class
       // resolved from a second copy of the package. Normalizing via `RootWalletKeys.from` (as

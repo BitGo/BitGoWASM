@@ -202,7 +202,9 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
    * @param amount - note value in zatoshi
    * @param options.anchor - 32-byte Ironwood note-commitment-tree root
    * @param options.memo - optional 512-byte memo (defaults to the ZIP-302 "no memo" encoding)
-   * @param options.ovk - optional 32-byte outgoing viewing key (omit for a keyless build)
+   * @param options.ovk - optional 32-byte outgoing viewing key (omit for a keyless build). Has no
+   *   effect in the normal flow: {@link sign}'s first round re-encrypts every action's
+   *   `out_ciphertext` under the wallet `ovk`, replacing whatever this produced
    * @param options.unifiedAddress - optional full Unified Address string this output was addressed
    *   to. Its Orchard receiver must equal `recipient`. The PCZT itself only carries the raw 43-byte
    *   receiver — a lossy encoding for a multi-receiver UA, since any transparent/Sapling receiver
@@ -233,12 +235,14 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
    * {@link addShieldedOutput}).
    *
    * @param outputs - one entry per recipient; `memo` defaults per-entry to the ZIP-302 "no memo"
-   *   encoding, exactly as {@link addShieldedOutput}'s does
+   *   encoding, exactly as {@link addShieldedOutput}'s does, and `ovk` is likewise replaced by
+   *   {@link sign}'s first round
    * @param anchor - 32-byte Ironwood note-commitment-tree root, shared by every output
    * @returns the action index assigned to each output, in the same order as `outputs` — the
-   *   orchard builder pads/reorders actions, so a client-managed-`ovk` caller must use these
-   *   indices (not the position in `outputs`) when later calling
-   *   `setIronwoodOutCiphertext`/`setIronwoodOutCiphertextForUser` for a specific recipient.
+   *   orchard builder pads/reorders actions, so any caller correlating per-action data (a stored
+   *   unified address, an explicit `setShieldedOutCiphertext` call) must use these indices, not the
+   *   position in `outputs` — though note {@link sign}'s first round already patches every action's
+   *   `out_ciphertext` with the wallet `ovk` on its own.
    */
   addShieldedOutputs(
     outputs: Array<{
@@ -275,14 +279,16 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
    * `ovk` derived from those is one neither the user nor the server can reproduce, and the resulting
    * transaction would broadcast fine while leaving the shielded output permanently unrecoverable.
    *
-   * Normally you do not call this directly: {@link sign} performs it on the first signing round.
+   * Normally you do not call this directly: {@link sign} performs it for **every** action on the
+   * first signing round (idempotently — same `ovk`, same bytes).
    *
    * Must be called **before** signing: `out_ciphertext` is committed by the ZIP-244 sighash, so
    * calling this after any transparent signature has been added (via
    * {@link addTransparentSignature}) throws rather than silently invalidating that signature.
    *
-   * @param actionIndex - index of the Ironwood action whose output to re-encrypt (always `0`: only
-   *   one shielded output per transaction is supported, see {@link addShieldedOutput})
+   * @param actionIndex - index of the Ironwood action whose output to re-encrypt; use an index
+   *   returned by {@link addShieldedOutputs} (the orchard builder may reorder actions, so it is not
+   *   necessarily the output's position in the call)
    * @param userKey - the wallet's user root key (an xpriv)
    * @param rootWalletKeys - the wallet's root keys, supplying the BitGo cosigner pubkey
    */
@@ -334,7 +340,8 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
    *
    * If no transparent signature has been added to this PSBT yet, this is the first signing round and
    * `key` must be the wallet's user root key: it is used with `rootWalletKeys.bitgoKey()` to derive
-   * this wallet's `ovk` and finalize `out_ciphertext` — the client-managed-`ovk` flow — before any
+   * this wallet's `ovk` and finalize **every** action's `out_ciphertext` — the client-managed-`ovk`
+   * flow, multi-recipient builds included — before any
    * sighash is computed. Once a signature exists, that step is a no-op, so a caller passes
    * `rootWalletKeys` on every signing round unconditionally: `psbt.sign(userXpriv, rootWalletKeys)`
    * and later `psbt.sign(bitgoXpriv, rootWalletKeys)` — only the first call actually uses it.

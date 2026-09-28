@@ -530,7 +530,9 @@ impl BitGoPsbt {
     ///
     /// * `recipient` - raw Orchard/Ironwood address ([`ORCHARD_ADDRESS_SIZE`] bytes)
     /// * `amount` - note value in zatoshi
-    /// * `ovk` - optional outgoing viewing key ([`OVK_SIZE`] bytes; `None` for a keyless build)
+    /// * `ovk` - optional outgoing viewing key ([`OVK_SIZE`] bytes; `None` for a keyless build).
+    ///   Has no effect in the normal flow: `sign_ironwood_v6`'s first round re-encrypts every
+    ///   action's `out_ciphertext` under the wallet `ovk`, replacing whatever this produced
     /// * `anchor` - Ironwood note-commitment-tree root ([`ANCHOR_SIZE`] bytes)
     /// * `memo` - ZIP-302 memo field ([`MEMO_SIZE`] bytes)
     /// * `unified_address` - optional full Unified Address the output was addressed to; if given,
@@ -585,9 +587,10 @@ impl BitGoPsbt {
     /// output.
     ///
     /// Returns the action index assigned to each output, in the same order as `outputs` — the
-    /// orchard builder pads/reorders actions, so a client-managed-`ovk` caller must use these
-    /// indices (not the position in `outputs`) when later calling `set_ironwood_out_ciphertext`
-    /// for a specific recipient.
+    /// orchard builder pads/reorders actions, so a caller correlating per-action data (a stored
+    /// Unified Address, an explicit `set_ironwood_out_ciphertext` call) must use these indices, not
+    /// the position in `outputs` — though note `sign_ironwood_v6`'s first round already patches
+    /// every action's `out_ciphertext` with the wallet `ovk` on its own.
     pub fn add_ironwood_outputs(
         &mut self,
         outputs: JsValue,
@@ -683,7 +686,8 @@ impl BitGoPsbt {
     ///
     /// If no transparent signature has been collected yet, this is the first signing round and
     /// `xpriv` must be the wallet's user root key: it is used with `root_wallet_keys.bitgo_key()` to
-    /// derive this wallet's `ovk` and finalize `out_ciphertext` before computing any sighash (it is
+    /// derive this wallet's `ovk` and finalize every action's `out_ciphertext` (multi-recipient
+    /// builds included) before computing any sighash (it is
     /// sighash-committed). Any other key signing first is rejected, rather than deriving an `ovk`
     /// nobody can reproduce. Once a signature exists, the step is skipped and any key may sign — so
     /// callers pass `root_wallet_keys` unconditionally on every signing round without needing to know
