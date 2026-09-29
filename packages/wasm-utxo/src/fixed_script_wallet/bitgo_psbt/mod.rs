@@ -238,6 +238,12 @@ fn get_default_sighash_type(
     }
 }
 
+/// An input carrying Taproot metadata spends a Taproot output, so its
+/// signatures are schnorr signatures governed by the Taproot sighash rules.
+fn is_taproot_input(input: &miniscript::bitcoin::psbt::Input) -> bool {
+    input.tap_internal_key.is_some() || !input.tap_scripts.is_empty()
+}
+
 /// Create BIP32 derivation map for all 3 wallet keys
 pub(crate) fn create_bip32_derivation(
     wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
@@ -1332,6 +1338,88 @@ impl BitGoPsbt {
             BitGoPsbt::Dash(_, network) => *network,
             BitGoPsbt::Zcash(_, network) => *network,
         }
+    }
+
+    /// Returns the declared sighash type (BIP-174 `PSBT_IN_SIGHASH_TYPE`) of
+    /// every input, in input order.
+    ///
+    /// `None` means the input does not declare a sighash type, in which case
+    /// the signer's default sighash type applies.
+    pub fn get_input_sighash_types(&self) -> Vec<Option<u32>> {
+        self.psbt()
+            .inputs
+            .iter()
+            .map(|input| input.sighash_type.map(|sighash_type| sighash_type.to_u32()))
+            .collect()
+    }
+
+    /// Asserts the sighash policy required when signing an externally
+    /// supplied PSBT: every input must commit to the entire transaction.
+    ///
+    /// For every input this checks that
+    ///
+    /// 1. the declared sighash type (`PSBT_IN_SIGHASH_TYPE`), if present,
+    ///    commits to every input and every output: SIGHASH_ALL (0x01) —
+    ///    SIGHASH_ALL | SIGHASH_FORKID (0x41) on BCH-family coins — or
+    ///    SIGHASH_DEFAULT (0x00) / SIGHASH_ALL on Taproot inputs. An absent
+    ///    sighash type is accepted: the signer then applies its default,
+    ///    which commits to the entire transaction.
+    /// 2. every signature already present on the input (ECDSA partial
+    ///    signatures, Taproot key-path and script-path signatures) uses
+    ///    such a sighash type. MuSig2 partial signatures carry no sighash
+    ///    byte; the declared sighash type checked above governs them.
+    ///
+    /// SIGHASH_NONE, SIGHASH_SINGLE, SIGHASH_ANYONECANPAY, and combinations
+    /// thereof leave outputs (or inputs) uncommitted, so a signature produced
+    /// under one of them does not bind the signer to the transaction the
+    /// signer reviewed. Callers that ingest foreign PSBTs must run this check
+    /// before signing and again afterwards.
+    ///
+    /// See WCN-1994.
+    pub fn assert_sighash_all_policy(&self) -> Result<(), String> {
+        let network = self.network();
+        for (index, input) in self.psbt().inputs.iter().enumerate() {
+            let taproot_input = is_taproot_input(input);
+            if let Some(declared) = input.sighash_type {
+                let declared = declared.to_u32();
+                if !sighash::commits_to_entire_transaction(declared, network, taproot_input) {
+                    return Err(format!(
+                        "Input {index} declares sighash type 0x{declared:02x}, which does not commit \
+                         to the entire transaction. Only SIGHASH_ALL (0x01) is accepted \
+                         (SIGHASH_ALL|SIGHASH_FORKID, 0x41, on BCH-family coins; SIGHASH_DEFAULT, \
+                         0x00, or SIGHASH_ALL on Taproot inputs)"
+                    ));
+                }
+            }
+            for (pubkey, signature) in &input.partial_sigs {
+                // The BitGo fork keeps the ECDSA sighash type as a raw u32 so
+                // that BCH-family signatures can carry SIGHASH_FORKID (0x40).
+                let sighash_type = signature.sighash_type;
+                if !sighash::commits_to_entire_transaction(sighash_type, network, false) {
+                    return Err(format!(
+                        "Input {index} carries an ECDSA partial signature from {pubkey} with sighash \
+                         type 0x{sighash_type:02x}, which does not commit to the entire transaction. \
+                         Only SIGHASH_ALL (0x01) is accepted (SIGHASH_ALL|SIGHASH_FORKID, 0x41, on \
+                         BCH-family coins)"
+                    ));
+                }
+            }
+            for signature in input
+                .tap_key_sig
+                .iter()
+                .chain(input.tap_script_sigs.values())
+            {
+                let sighash_type = signature.sighash_type as u32;
+                if !sighash::commits_to_entire_transaction(sighash_type, network, true) {
+                    return Err(format!(
+                        "Input {index} carries a Taproot signature with sighash type \
+                         0x{sighash_type:02x}, which does not commit to the entire transaction. Only \
+                         SIGHASH_DEFAULT (0x00) and SIGHASH_ALL (0x01) are accepted on Taproot inputs"
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Combine/merge data from another PSBT into this one
@@ -5984,5 +6072,228 @@ mod tests {
             ok,
             "Zcash signature over 256-byte (block-aligned) outputs preimage must verify"
         );
+    }
+
+    fn new_psbt_with_wallet_input(network: Network, seed: &str) -> BitGoPsbt {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use miniscript::bitcoin::hashes::Hash;
+
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let mut psbt = BitGoPsbt::new(network, &wallet_keys, Some(2), Some(0));
+        psbt.add_wallet_input(
+            Txid::all_zeros(),
+            0,
+            100_000,
+            &wallet_keys,
+            ScriptId {
+                chain: 20,
+                index: 0,
+            },
+            WalletInputOptions::default(),
+        )
+        .expect("add_wallet_input");
+        psbt
+    }
+
+    #[test]
+    fn test_get_input_sighash_types() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use miniscript::bitcoin::hashes::Hash;
+
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("input_sighash_types"));
+        let mut psbt = BitGoPsbt::new(Network::Bitcoin, &wallet_keys, Some(2), Some(0));
+        psbt.add_wallet_input(
+            Txid::all_zeros(),
+            0,
+            100_000,
+            &wallet_keys,
+            ScriptId {
+                chain: 20,
+                index: 0,
+            },
+            WalletInputOptions::default(),
+        )
+        .expect("add_wallet_input");
+
+        // add_wallet_input stamps the network's default sighash type (SIGHASH_ALL)
+        assert_eq!(vec![Some(1)], psbt.get_input_sighash_types());
+
+        // A foreign PSBT may omit the field entirely; the signer default then applies
+        crate::psbt_ops::PsbtAccess::psbt_mut(&mut psbt).inputs[0].sighash_type = None;
+        assert_eq!(vec![None], psbt.get_input_sighash_types());
+    }
+
+    #[test]
+    fn test_assert_sighash_all_policy_declared_types() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use miniscript::bitcoin::hashes::Hash;
+        use miniscript::bitcoin::psbt::PsbtSighashType;
+
+        let make_psbt = |network: Network, sighash_type: Option<u32>| {
+            let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("sighash_policy"));
+            let mut psbt = BitGoPsbt::new(network, &wallet_keys, Some(2), Some(0));
+            psbt.add_wallet_input(
+                Txid::all_zeros(),
+                0,
+                100_000,
+                &wallet_keys,
+                // p2sh works on every network under test, including BCH
+                ScriptId { chain: 0, index: 0 },
+                WalletInputOptions::default(),
+            )
+            .expect("add_wallet_input");
+            crate::psbt_ops::PsbtAccess::psbt_mut(&mut psbt).inputs[0].sighash_type =
+                sighash_type.map(PsbtSighashType::from_u32);
+            psbt
+        };
+
+        make_psbt(Network::Bitcoin, None)
+            .assert_sighash_all_policy()
+            .expect("absent sighash type accepted");
+        make_psbt(Network::Bitcoin, Some(0x01))
+            .assert_sighash_all_policy()
+            .expect("SIGHASH_ALL accepted");
+
+        // Every declaration that leaves parts of the transaction uncommitted is rejected
+        for sighash_type in [0x02, 0x03, 0x80, 0x81, 0x82, 0x83] {
+            let error = make_psbt(Network::Bitcoin, Some(sighash_type))
+                .assert_sighash_all_policy()
+                .expect_err("unsafe declared type must be rejected");
+            assert!(
+                error.contains("Only SIGHASH_ALL"),
+                "unexpected error for 0x{sighash_type:02x}: {error}"
+            );
+            assert!(
+                error.contains("Input 0"),
+                "must name the offending input: {error}"
+            );
+        }
+
+        // BCH-family coins require the FORKID form of SIGHASH_ALL
+        make_psbt(Network::BitcoinCash, Some(0x41))
+            .assert_sighash_all_policy()
+            .expect("SIGHASH_ALL|FORKID accepted on BCH");
+        let error = make_psbt(Network::BitcoinCash, Some(0x01))
+            .assert_sighash_all_policy()
+            .expect_err("plain SIGHASH_ALL must be rejected on BCH");
+        assert!(error.contains("Only SIGHASH_ALL"));
+    }
+
+    #[test]
+    fn test_assert_sighash_all_policy_checks_existing_signatures() {
+        use miniscript::bitcoin::hashes::{sha256, Hash};
+        use miniscript::bitcoin::sighash::{EcdsaSighashType, TapSighashType};
+        use miniscript::bitcoin::{ecdsa, taproot};
+
+        let secp = secp256k1::Secp256k1::new();
+        let seed = sha256::Hash::hash(b"sighash_policy_signatures").to_byte_array();
+        let secret_key = secp256k1::SecretKey::from_slice(&seed).expect("secret key");
+        let public_key = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+        let dummy_ecdsa_signature =
+            secp256k1::ecdsa::Signature::from_compact(&[0u8; 64]).expect("ecdsa signature");
+        let dummy_schnorr_signature =
+            secp256k1::schnorr::Signature::from_slice(&[0u8; 64]).expect("schnorr signature");
+
+        let insert_partial_sig = |sighash_type: EcdsaSighashType| {
+            let mut psbt =
+                new_psbt_with_wallet_input(Network::Bitcoin, "sighash_policy_signatures");
+            crate::psbt_ops::PsbtAccess::psbt_mut(&mut psbt).inputs[0]
+                .partial_sigs
+                .insert(
+                    miniscript::bitcoin::PublicKey::new(public_key),
+                    ecdsa::Signature {
+                        signature: dummy_ecdsa_signature,
+                        sighash_type: sighash_type as u32,
+                    },
+                );
+            psbt
+        };
+
+        insert_partial_sig(EcdsaSighashType::All)
+            .assert_sighash_all_policy()
+            .expect("SIGHASH_ALL partial signature accepted");
+        let error = insert_partial_sig(EcdsaSighashType::None)
+            .assert_sighash_all_policy()
+            .expect_err("SIGHASH_NONE partial signature must be rejected");
+        assert!(error.contains("ECDSA partial signature"));
+        assert!(error.contains("Only SIGHASH_ALL"));
+        let error = insert_partial_sig(EcdsaSighashType::AllPlusAnyoneCanPay)
+            .assert_sighash_all_policy()
+            .expect_err("ANYONECANPAY partial signature must be rejected");
+        assert!(error.contains("Only SIGHASH_ALL"));
+
+        let insert_tap_key_sig = |sighash_type: TapSighashType| {
+            let mut psbt =
+                new_psbt_with_wallet_input(Network::Bitcoin, "sighash_policy_signatures");
+            crate::psbt_ops::PsbtAccess::psbt_mut(&mut psbt).inputs[0].tap_key_sig =
+                Some(taproot::Signature {
+                    signature: dummy_schnorr_signature,
+                    sighash_type,
+                });
+            psbt
+        };
+
+        insert_tap_key_sig(TapSighashType::Default)
+            .assert_sighash_all_policy()
+            .expect("SIGHASH_DEFAULT taproot signature accepted");
+        insert_tap_key_sig(TapSighashType::All)
+            .assert_sighash_all_policy()
+            .expect("SIGHASH_ALL taproot signature accepted");
+        let error = insert_tap_key_sig(TapSighashType::Single)
+            .assert_sighash_all_policy()
+            .expect_err("SIGHASH_SINGLE taproot signature must be rejected");
+        assert!(error.contains("Taproot signature"));
+    }
+
+    #[test]
+    fn test_assert_sighash_all_policy_accepts_signed_wallet_psbt() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use miniscript::bitcoin::bip32::{DerivationPath, Xpriv};
+        use miniscript::bitcoin::hashes::{sha256, Hash};
+        use miniscript::bitcoin::secp256k1::Secp256k1;
+        use miniscript::bitcoin::Network as BitcoinNetwork;
+
+        let seed = "sighash_policy_signed";
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let mut psbt = BitGoPsbt::new(Network::Bitcoin, &wallet_keys, Some(2), Some(0));
+        psbt.add_wallet_input(
+            Txid::all_zeros(),
+            0,
+            100_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .expect("add_wallet_input");
+        psbt.add_wallet_output(1, 0, 90_000, &wallet_keys)
+            .expect("add_wallet_output");
+
+        let secp = Secp256k1::new();
+        let user_xpriv = Xpriv::new_master(
+            BitcoinNetwork::Testnet,
+            &sha256::Hash::hash(format!("{seed}.0").as_bytes()).to_byte_array(),
+        )
+        .expect("user xpriv");
+        let bitgo_xpriv = Xpriv::new_master(
+            BitcoinNetwork::Testnet,
+            &sha256::Hash::hash(format!("{seed}.2").as_bytes()).to_byte_array(),
+        )
+        .expect("bitgo xpriv");
+        let path = DerivationPath::from_str("m/0/0/0/0").expect("derivation path");
+        let user_privkey = user_xpriv
+            .derive_priv(&secp, &path)
+            .expect("derive user")
+            .private_key;
+        let bitgo_privkey = bitgo_xpriv
+            .derive_priv(&secp, &path)
+            .expect("derive bitgo")
+            .private_key;
+
+        psbt.sign_with_privkey(0, &user_privkey).expect("sign user");
+        psbt.sign_with_privkey(0, &bitgo_privkey)
+            .expect("sign bitgo");
+
+        psbt.assert_sighash_all_policy()
+            .expect("signed wallet PSBT satisfies the policy");
     }
 }

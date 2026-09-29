@@ -76,6 +76,45 @@ pub fn validate_sighash_type(sighash_type: u32, network: Network) -> Result<(), 
     }
 }
 
+/// Implicit Taproot sighash type (BIP-341).
+///
+/// A 64-byte Taproot signature is implicitly SIGHASH_DEFAULT which, like
+/// SIGHASH_ALL, commits to every input and every output of the transaction.
+const SIGHASH_DEFAULT: u32 = 0x00;
+
+/// Returns true when a sighash type commits a signature to the entire
+/// transaction: every input and every output.
+///
+/// These are the only sighash types accepted when signing externally
+/// supplied PSBTs. By input kind and network:
+///
+/// - Taproot inputs: SIGHASH_DEFAULT (0x00) and SIGHASH_ALL (0x01)
+/// - BCH-family networks (BCH/BSV/BTG/Ecash): SIGHASH_ALL | SIGHASH_FORKID (0x41)
+/// - all other inputs and networks: SIGHASH_ALL (0x01)
+///
+/// SIGHASH_NONE, SIGHASH_SINGLE, SIGHASH_ANYONECANPAY, and combinations
+/// thereof leave parts of the transaction (outputs or inputs) uncommitted,
+/// so a signature produced under one of them does not bind the signer to
+/// the outputs the signer intended to authorize.
+pub(crate) fn commits_to_entire_transaction(
+    sighash_type: u32,
+    network: Network,
+    taproot_input: bool,
+) -> bool {
+    if taproot_input {
+        return matches!(sighash_type, SIGHASH_DEFAULT | SIGHASH_ALL);
+    }
+    let uses_forkid = matches!(
+        network.mainnet(),
+        Network::BitcoinCash | Network::BitcoinGold | Network::BitcoinSV | Network::Ecash
+    );
+    if uses_forkid {
+        sighash_type == SIGHASH_ALL | SIGHASH_FORKID
+    } else {
+        sighash_type == SIGHASH_ALL
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +257,114 @@ mod tests {
             validate_sighash_type(SIGHASH_ALL | SIGHASH_ANYONECANPAY, Network::BitcoinCash)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn test_commits_to_entire_transaction_bitcoin() {
+        // Taproot inputs accept SIGHASH_DEFAULT and SIGHASH_ALL
+        assert!(commits_to_entire_transaction(
+            SIGHASH_ALL,
+            Network::Bitcoin,
+            true
+        ));
+        assert!(commits_to_entire_transaction(
+            SIGHASH_DEFAULT,
+            Network::Bitcoin,
+            true
+        ));
+        for sighash_type in [SIGHASH_NONE, SIGHASH_SINGLE, 0x80, 0x81, 0x82, 0x83, 0x41] {
+            assert!(
+                !commits_to_entire_transaction(sighash_type, Network::Bitcoin, true),
+                "Taproot input must reject 0x{sighash_type:02x}"
+            );
+        }
+
+        // Non-Taproot inputs accept SIGHASH_ALL only
+        assert!(commits_to_entire_transaction(
+            SIGHASH_ALL,
+            Network::Bitcoin,
+            false
+        ));
+        for sighash_type in [
+            SIGHASH_DEFAULT,
+            SIGHASH_NONE,
+            SIGHASH_SINGLE,
+            0x80,
+            0x81,
+            0x82,
+            0x83,
+            0x41,
+        ] {
+            assert!(
+                !commits_to_entire_transaction(sighash_type, Network::Bitcoin, false),
+                "Bitcoin input must reject 0x{sighash_type:02x}"
+            );
+        }
+
+        // Non-forked testnets follow the same rules as their mainnet
+        assert!(commits_to_entire_transaction(
+            SIGHASH_ALL,
+            Network::BitcoinTestnet3,
+            false
+        ));
+        assert!(!commits_to_entire_transaction(
+            SIGHASH_ALL | SIGHASH_FORKID,
+            Network::Litecoin,
+            false
+        ));
+        assert!(commits_to_entire_transaction(
+            SIGHASH_ALL,
+            Network::Dogecoin,
+            false
+        ));
+    }
+
+    #[test]
+    fn test_commits_to_entire_transaction_forkid_networks() {
+        let forkid_networks = [
+            Network::BitcoinCash,
+            Network::BitcoinGold,
+            Network::BitcoinSV,
+            Network::Ecash,
+        ];
+        for network in forkid_networks {
+            assert!(
+                commits_to_entire_transaction(SIGHASH_ALL | SIGHASH_FORKID, network, false),
+                "{network:?} must accept SIGHASH_ALL|FORKID"
+            );
+            for sighash_type in [
+                SIGHASH_ALL,
+                SIGHASH_NONE,
+                SIGHASH_SINGLE,
+                SIGHASH_DEFAULT,
+                0x42,
+                0x43,
+                0xC1,
+                0xC2,
+                0xC3,
+            ] {
+                assert!(
+                    !commits_to_entire_transaction(sighash_type, network, false),
+                    "{network:?} must reject 0x{sighash_type:02x}"
+                );
+            }
+        }
+
+        // Testnet variants normalize to their mainnet
+        assert!(commits_to_entire_transaction(
+            SIGHASH_ALL | SIGHASH_FORKID,
+            Network::BitcoinCashTestnet,
+            false
+        ));
+        assert!(commits_to_entire_transaction(
+            SIGHASH_ALL | SIGHASH_FORKID,
+            Network::BitcoinGoldTestnet,
+            false
+        ));
+        assert!(!commits_to_entire_transaction(
+            SIGHASH_ALL,
+            Network::BitcoinCashTestnet,
+            false
+        ));
     }
 }
