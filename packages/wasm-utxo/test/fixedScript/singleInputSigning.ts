@@ -7,10 +7,12 @@
 
 import assert from "node:assert";
 import { BIP32 } from "../../js/bip32.js";
-import { BitGoPsbt, RootWalletKeys } from "../../js/fixedScriptWallet/index.js";
+import { BitGoPsbt, ChainCode, RootWalletKeys } from "../../js/fixedScriptWallet/index.js";
 import type { BIP32Interface } from "../../js/bip32.js";
 import type { IWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
 import type { NetworkName } from "../../js/fixedScriptWallet/BitGoPsbt.js";
+import { outputScript } from "../../js/fixedScriptWallet/address.js";
+import { createSyntheticPrevTx } from "../../js/testutils/AcidTest.js";
 
 type Triple<T> = [T, T, T];
 
@@ -53,7 +55,11 @@ function createPsbtWithInputs(
   for (let i = 0; i < inputCount; i++) {
     const txidBytes = Buffer.alloc(32);
     txidBytes.writeUInt32BE(i, 0);
-    const txid = txidBytes.toString("hex");
+    const value = 100000n;
+    const prevTx =
+      ChainCode.is(chain) && ChainCode.scriptType(chain) === "p2sh"
+        ? createSyntheticPrevTx(outputScript(walletKeys, chain, i, network), value)
+        : undefined;
 
     const walletOptions: { scriptId: { chain: number; index: number }; signPath?: SignPath } = {
       scriptId: { chain, index: i },
@@ -66,9 +72,10 @@ function createPsbtWithInputs(
 
     psbt.addWalletInput(
       {
-        txid,
+        txid: prevTx?.txid ?? txidBytes.toString("hex"),
         vout: 0,
-        value: BigInt(100000),
+        value,
+        prevTx: prevTx?.prevTx,
         sequence: 0xfffffffe,
       },
       walletKeys,

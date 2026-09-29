@@ -16,6 +16,8 @@ import {
 } from "./fixtureUtil.js";
 import { mainnetCoinNames } from "./networkSupport.util.js";
 import { createOtherWalletKeys } from "./generateFixture.js";
+import { createSyntheticPrevTx } from "../../js/testutils/AcidTest.js";
+import { requiresPrevTxForP2sh } from "../../js/fixedScriptWallet/prevTx.js";
 
 // Zcash Sapling consensus branch ID for test fixtures
 const ZCASH_SAPLING_BRANCH_ID = 0x76b809bb;
@@ -98,6 +100,11 @@ describe("PSBT reconstruction", function () {
 
           // Convert fixture txid (internal byte order) to display order
           const txid = reverseHex(fixtureInput.hash);
+          const prevTx =
+            requiresPrevTxForP2sh(networkName) &&
+            (parsedInput.scriptType === "p2sh" || parsedInput.scriptType === "p2shP2pk")
+              ? createSyntheticPrevTx(parsedInput.script, parsedInput.value, fixtureInput.index)
+              : undefined;
 
           if (parsedInput.scriptId !== null) {
             // Wallet input - use addWalletInput
@@ -109,6 +116,7 @@ describe("PSBT reconstruction", function () {
                 vout: fixtureInput.index,
                 value: parsedInput.value,
                 sequence: parsedInput.sequence,
+                prevTx: prevTx?.prevTx,
               },
               rootWalletKeys,
               { scriptId: parsedInput.scriptId, signPath },
@@ -127,6 +135,7 @@ describe("PSBT reconstruction", function () {
                 vout: fixtureInput.index,
                 value: parsedInput.value,
                 sequence: parsedInput.sequence,
+                prevTx: prevTx?.prevTx,
               },
               replayProtectionKey,
             );

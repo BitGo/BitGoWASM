@@ -1344,9 +1344,12 @@ impl ZcashBitGoPsbt {
                 .get(i)
                 .ok_or_else(|| format!("input {i}: no matching tx input"))?
                 .previous_output;
-            let (script, value) =
-                super::psbt_wallet_input::get_output_script_and_value(input, prevout)
-                    .map_err(|e| format!("input {i}: missing UTXO value/script: {e}"))?;
+            let (script, value) = super::psbt_wallet_input::get_output_script_and_value_for_network(
+                input,
+                prevout,
+                self.network,
+            )
+            .map_err(|e| format!("input {i}: missing UTXO value/script: {e}"))?;
             amounts.push(value.to_sat() as i64);
             scripts.push(script.clone());
         }

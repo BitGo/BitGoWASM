@@ -132,8 +132,19 @@ export type ParseOutputsOptions = {
 };
 
 export type HydrationUnspent =
-  | { chain: number; index: number; value: bigint } // wallet input
-  | { pubkey: Uint8Array; value: bigint }; // P2SH-P2PK replay protection input
+  | {
+      chain: number;
+      index: number;
+      value: bigint;
+      /** Full previous transaction; required for legacy P2SH on non-value-committing coins. */
+      prevTx?: Uint8Array;
+    }
+  | {
+      pubkey: Uint8Array;
+      value: bigint;
+      /** Full previous transaction; required for replay protection on non-value-committing coins. */
+      prevTx?: Uint8Array;
+    };
 
 export class BitGoPsbt<TOutput extends ParsedOutput = ParsedOutput>
   extends PsbtBase<WasmBitGoPsbt>
@@ -206,8 +217,9 @@ export class BitGoPsbt<TOutput extends ParsedOutput = ParsedOutput>
    * (exactly 1 sig per wallet input) is moving to the caller.
    *
    * Extracts partial signatures from scriptSig/witness and creates a PSBT
-   * with proper wallet metadata (bip32Derivation, scripts, witnessUtxo).
-   * Only supports p2sh, p2shP2wsh, and p2wsh inputs (not taproot).
+   * with proper wallet metadata (bip32Derivation, scripts, and authenticated
+   * UTXO data). Legacy P2SH inputs require `prevTx` on non-value-committing
+   * networks. Only supports p2sh, p2shP2wsh, and p2wsh inputs (not taproot).
    *
    * Supports both Bitcoin-like coins (BTC, LTC, DOGE) and Dash (DASH).
    * Zcash is NOT supported; use ZcashBitGoPsbt.fromNetworkFormat instead.
@@ -215,7 +227,8 @@ export class BitGoPsbt<TOutput extends ParsedOutput = ParsedOutput>
    * @param txBytesOrTx - Transaction bytes or decoded transaction instance (Bitcoin-like or Dash)
    * @param network - Network name
    * @param walletKeys - The wallet's root keys
-   * @param unspents - Chain, index, and value for each input
+   * @param unspents - Input metadata; include `prevTx` for legacy P2SH on
+   *   networks whose sighash does not commit the input amount
    * @param _options - Reserved for future use and signature compatibility with subclasses
    * @throws Error if transaction is Zcash (use ZcashBitGoPsbt.fromNetworkFormat instead)
    */
@@ -268,7 +281,8 @@ export class BitGoPsbt<TOutput extends ParsedOutput = ParsedOutput>
    * @param txBytesOrTx - Transaction bytes or decoded Transaction/DashTransaction
    * @param network - Network name
    * @param walletKeys - The wallet's root keys
-   * @param unspents - Chain, index, and value for each input
+   * @param unspents - Input metadata; include `prevTx` for legacy P2SH on
+   *   networks whose sighash does not commit the input amount
    */
   static fromNetworkFormat(
     txBytesOrTx: Uint8Array | Transaction | DashTransaction,

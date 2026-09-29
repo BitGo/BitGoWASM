@@ -60,6 +60,7 @@ pub fn handle_add_input_command(
         &descriptor,
         sequence,
         non_witness_utxo,
+        network,
     )
     .map_err(|e| anyhow!(e))
     .with_context(|| format!("failed to add input {index}"))?;

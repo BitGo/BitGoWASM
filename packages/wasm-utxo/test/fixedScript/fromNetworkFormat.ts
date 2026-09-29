@@ -2,7 +2,13 @@ import { describe, it } from "mocha";
 import * as assert from "assert";
 import { BitGoPsbt, type HydrationUnspent } from "../../js/fixedScriptWallet/BitGoPsbt.js";
 import { ZcashBitGoPsbt } from "../../js/fixedScriptWallet/ZcashBitGoPsbt.js";
-import { supportsScriptType } from "../../js/fixedScriptWallet/index.js";
+import {
+  outputScript,
+  p2shP2pkOutputScript,
+  requiresPrevTxForP2sh,
+  supportsScriptType,
+} from "../../js/fixedScriptWallet/index.js";
+import { createSyntheticPrevTx } from "../../js/testutils/AcidTest.js";
 import { ChainCode } from "../../js/fixedScriptWallet/chains.js";
 import { ECPair } from "../../js/ecpair.js";
 import { ZcashTransaction } from "../../js/transaction.js";
@@ -58,17 +64,23 @@ function createSignedP2msPsbt(
   supportedTypes.forEach((scriptType, index) => {
     const chain = ChainCode.value(scriptType, "external");
     const value = valueOverride ?? BigInt(10000 + index * 10000);
+    const script = outputScript(rootWalletKeys, chain, index, coinName);
+    const prevTx =
+      scriptType === "p2sh" && requiresPrevTxForP2sh(coinName)
+        ? createSyntheticPrevTx(script, value)
+        : undefined;
     psbt.addWalletInput(
       {
-        txid: `${"00".repeat(31)}${index.toString(16).padStart(2, "0")}`,
+        txid: prevTx?.txid ?? `${"00".repeat(31)}${index.toString(16).padStart(2, "0")}`,
         vout: 0,
         value,
         sequence: 0xfffffffd,
+        prevTx: prevTx?.prevTx,
       },
       rootWalletKeys,
       { scriptId: { chain, index } },
     );
-    unspents.push({ chain, index, value });
+    unspents.push({ chain, index, value, ...(prevTx ? { prevTx: prevTx.prevTx } : {}) });
   });
 
   psbt.addWalletOutput(rootWalletKeys, { chain: 0, index: 100, value: BigInt(5000) });
@@ -149,13 +161,29 @@ describe("BitGoPsbt.fromNetworkFormat", function () {
         const ecpair = ECPair.fromPrivateKey(Buffer.from(userXprv.privateKey));
 
         const psbt = BitGoPsbt.createEmpty(coin, rootWalletKeys, { version: 2, lockTime: 0 });
+        const walletScript = outputScript(rootWalletKeys, 0, 0, coin);
+        const walletPrevTx = createSyntheticPrevTx(walletScript, 10000n);
+        const replayScript = p2shP2pkOutputScript(ecpair.publicKey);
+        const replayPrevTx = createSyntheticPrevTx(replayScript, 1000n);
         psbt.addWalletInput(
-          { txid: "00".repeat(32), vout: 0, value: BigInt(10000), sequence: 0xfffffffd },
+          {
+            txid: walletPrevTx.txid,
+            vout: 0,
+            value: 10000n,
+            sequence: 0xfffffffd,
+            prevTx: walletPrevTx.prevTx,
+          },
           rootWalletKeys,
           { scriptId: { chain: 0, index: 0 } },
         );
         psbt.addReplayProtectionInput(
-          { txid: "aa".repeat(32), vout: 0, value: BigInt(1000), sequence: 0xfffffffd },
+          {
+            txid: replayPrevTx.txid,
+            vout: 0,
+            value: 1000n,
+            sequence: 0xfffffffd,
+            prevTx: replayPrevTx.prevTx,
+          },
           ecpair,
         );
         psbt.addWalletOutput(rootWalletKeys, { chain: 0, index: 100, value: BigInt(5000) });
@@ -164,8 +192,8 @@ describe("BitGoPsbt.fromNetworkFormat", function () {
 
         const txBytes = psbt.getHalfSignedLegacyFormat();
         const unspents: HydrationUnspent[] = [
-          { chain: 0, index: 0, value: BigInt(10000) },
-          { pubkey: ecpair.publicKey, value: BigInt(1000) },
+          { chain: 0, index: 0, value: 10000n, prevTx: walletPrevTx.prevTx },
+          { pubkey: ecpair.publicKey, value: 1000n, prevTx: replayPrevTx.prevTx },
         ];
         const reconstructed = BitGoPsbt.fromNetworkFormat(txBytes, coin, rootWalletKeys, unspents);
 
@@ -179,13 +207,29 @@ describe("BitGoPsbt.fromNetworkFormat", function () {
         const ecpair = ECPair.fromPrivateKey(Buffer.from(userXprv.privateKey));
 
         const psbt = BitGoPsbt.createEmpty(coin, rootWalletKeys, { version: 2, lockTime: 0 });
+        const walletScript = outputScript(rootWalletKeys, 0, 0, coin);
+        const walletPrevTx = createSyntheticPrevTx(walletScript, 10000n);
+        const replayScript = p2shP2pkOutputScript(ecpair.publicKey);
+        const replayPrevTx = createSyntheticPrevTx(replayScript, 1000n);
         psbt.addWalletInput(
-          { txid: "00".repeat(32), vout: 0, value: BigInt(10000), sequence: 0xfffffffd },
+          {
+            txid: walletPrevTx.txid,
+            vout: 0,
+            value: 10000n,
+            sequence: 0xfffffffd,
+            prevTx: walletPrevTx.prevTx,
+          },
           rootWalletKeys,
           { scriptId: { chain: 0, index: 0 } },
         );
         psbt.addReplayProtectionInput(
-          { txid: "aa".repeat(32), vout: 0, value: BigInt(1000), sequence: 0xfffffffd },
+          {
+            txid: replayPrevTx.txid,
+            vout: 0,
+            value: 1000n,
+            sequence: 0xfffffffd,
+            prevTx: replayPrevTx.prevTx,
+          },
           ecpair,
         );
         psbt.addWalletOutput(rootWalletKeys, { chain: 0, index: 100, value: BigInt(5000) });
@@ -196,8 +240,8 @@ describe("BitGoPsbt.fromNetworkFormat", function () {
         const txBytes = psbt.extractTransaction().toBytes();
 
         const unspents: HydrationUnspent[] = [
-          { chain: 0, index: 0, value: BigInt(10000) },
-          { pubkey: ecpair.publicKey, value: BigInt(1000) },
+          { chain: 0, index: 0, value: 10000n, prevTx: walletPrevTx.prevTx },
+          { pubkey: ecpair.publicKey, value: 1000n, prevTx: replayPrevTx.prevTx },
         ];
         const reconstructed = BitGoPsbt.fromNetworkFormat(txBytes, coin, rootWalletKeys, unspents);
 

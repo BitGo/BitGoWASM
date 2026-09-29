@@ -250,6 +250,13 @@ impl TryFromJsValue for crate::fixed_script_wallet::bitgo_psbt::HydrationUnspent
             .map_err(|_| WasmUtxoError::new("Missing 'value' field on unspent"))?;
         let value = u64::try_from(js_sys::BigInt::unchecked_from_js(value_js))
             .map_err(|_| WasmUtxoError::new("'value' must be a bigint convertible to u64"))?;
+        let prev_tx_val =
+            js_sys::Reflect::get(item, &"prevTx".into()).unwrap_or(JsValue::UNDEFINED);
+        let prev_tx = if prev_tx_val.is_undefined() {
+            None
+        } else {
+            Some(js_sys::Uint8Array::new(&prev_tx_val).to_vec())
+        };
 
         // Check if 'chain' is present; if missing → ReplayProtection, else → Wallet
         let chain_val = js_sys::Reflect::get(item, &"chain".into()).unwrap_or(JsValue::UNDEFINED);
@@ -263,12 +270,21 @@ impl TryFromJsValue for crate::fixed_script_wallet::bitgo_psbt::HydrationUnspent
                 .map_err(|_| {
                     WasmUtxoError::new("'pubkey' is not a valid compressed public key (33 bytes)")
                 })?;
-            Ok(
-                crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput::ReplayProtection {
-                    pubkey,
-                    value,
-                },
-            )
+            Ok(match prev_tx {
+                Some(prev_tx) => {
+                    crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput::ReplayProtectionWithPrevTx {
+                        pubkey,
+                        value,
+                        prev_tx,
+                    }
+                }
+                None => {
+                    crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput::ReplayProtection {
+                        pubkey,
+                        value,
+                    }
+                }
+            })
         } else {
             // Wallet input: requires 'chain' and 'index' fields
             let chain = chain_val
@@ -280,15 +296,20 @@ impl TryFromJsValue for crate::fixed_script_wallet::bitgo_psbt::HydrationUnspent
                 .as_f64()
                 .ok_or_else(|| WasmUtxoError::new("'index' must be a number"))?
                 as u32;
-            Ok(
-                crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput::Wallet(
-                    ScriptIdWithValue {
-                        chain,
-                        index,
-                        value,
-                    },
-                ),
-            )
+            let unspent = ScriptIdWithValue {
+                chain,
+                index,
+                value,
+            };
+            Ok(match prev_tx {
+                Some(prev_tx) => {
+                    crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput::WalletWithPrevTx {
+                        unspent,
+                        prev_tx,
+                    }
+                }
+                None => crate::fixed_script_wallet::bitgo_psbt::HydrationUnspentInput::Wallet(unspent),
+            })
         }
     }
 }

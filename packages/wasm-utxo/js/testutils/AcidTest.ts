@@ -18,6 +18,7 @@ import {
 } from "../fixedScriptWallet/index.js";
 import type { CoinName } from "../coinName.js";
 import { coinNames, isMainnet } from "../coinName.js";
+import { requiresPrevTxForP2sh } from "../fixedScriptWallet/prevTx.js";
 import { getDefaultWalletKeys, getWalletKeysForSeed, getKeyTriple } from "./keys.js";
 import type { Triple } from "../triple.js";
 
@@ -26,6 +27,21 @@ export type SignStage = (typeof signStages)[number];
 
 export const txFormats = ["psbt", "psbt-lite"] as const;
 export type TxFormat = (typeof txFormats)[number];
+
+/** Build a synthetic previous transaction and its matching txid. */
+export function createSyntheticPrevTx(
+  script: Uint8Array,
+  value: bigint,
+  vout = 0,
+): { txid: string; prevTx: Uint8Array } {
+  const tx = Transaction.create();
+  tx.addInput("0".repeat(64), 0xffffffff);
+  for (let i = 0; i < vout; i++) {
+    tx.addOutput(new Uint8Array(0), 0n);
+  }
+  tx.addOutput(script, value);
+  return { txid: tx.getId(), prevTx: tx.toBytes() };
+}
 
 /**
  * Utility type to make union variants mutually exclusive.
@@ -270,21 +286,32 @@ export class AcidTest {
           lockTime: 0,
         });
 
-    // Build a fake previous transaction for non_witness_utxo (psbt format)
-    const usePrevTx = this.txFormat === "psbt" && !isZcash;
+    // Build synthetic previous transactions whose computed txids match their outpoints.
+    const usePrevTxForPsbt = this.txFormat === "psbt" && !isZcash;
     const buildPrevTx = (
       vout: number,
       script: Uint8Array,
       value: bigint,
-    ): Uint8Array | undefined => {
-      if (!usePrevTx) return undefined;
-      const tx = Transaction.create();
-      tx.addInput("0".repeat(64), 0xffffffff);
-      for (let i = 0; i < vout; i++) {
-        tx.addOutput(new Uint8Array(0), 0n);
+    ): { txid: string; bytes: Uint8Array } => {
+      const prevTx = createSyntheticPrevTx(script, value, vout);
+      return { txid: prevTx.txid, bytes: prevTx.prevTx };
+    };
+
+    const getPrevTx = (
+      real: { txid: string; vout: number; prevTx?: Uint8Array } | undefined,
+      vout: number,
+      script: Uint8Array,
+      value: bigint,
+      isLegacyP2sh: boolean,
+    ): { txid: string; bytes: Uint8Array } | undefined => {
+      if (real?.prevTx) return { txid: real.txid, bytes: real.prevTx };
+      if (
+        usePrevTxForPsbt ||
+        (isLegacyP2sh && requiresPrevTxForP2sh(this.coin))
+      ) {
+        return buildPrevTx(vout, script, value);
       }
-      tx.addOutput(script, value);
-      return tx.toBytes();
+      return undefined;
     };
 
     if (options?.outpoints && options.outpoints.length !== this.inputs.length) {
@@ -297,12 +324,6 @@ export class AcidTest {
     this.inputs.forEach((input, index) => {
       const walletKeys = input.walletKeys ?? this.rootWalletKeys;
       const real = options?.outpoints?.[index];
-      const outpoint = {
-        txid: real?.txid ?? "0".repeat(64),
-        vout: real?.vout ?? index,
-        value: input.value,
-      };
-
       // scriptId variant: caller provides explicit chain + index
       if (input.scriptId) {
         const script = outputScript(
@@ -311,10 +332,20 @@ export class AcidTest {
           input.scriptId.index,
           this.coin,
         );
+        const prevTx = getPrevTx(
+          real,
+          real?.vout ?? index,
+          script,
+          input.value,
+          ChainCode.is(input.scriptId.chain) &&
+            ChainCode.scriptType(input.scriptId.chain) === "p2sh",
+        );
         psbt.addWalletInput(
           {
-            ...outpoint,
-            prevTx: real?.prevTx ?? buildPrevTx(index, script, input.value),
+            txid: real?.txid ?? prevTx?.txid ?? "0".repeat(64),
+            vout: real?.vout ?? index,
+            value: input.value,
+            prevTx: prevTx?.bytes,
           },
           walletKeys,
           { scriptId: input.scriptId, signPath: { signer: "user", cosigner: "bitgo" } },
@@ -327,10 +358,13 @@ export class AcidTest {
       if (scriptType === "p2shP2pk") {
         const ecpair = ECPair.fromPublicKey(this.getReplayProtectionKey().publicKey);
         const script = p2shP2pkOutputScript(ecpair.publicKey);
+        const prevTx = getPrevTx(real, real?.vout ?? index, script, input.value, true);
         psbt.addReplayProtectionInput(
           {
-            ...outpoint,
-            prevTx: real?.prevTx ?? buildPrevTx(index, script, input.value),
+            txid: real?.txid ?? prevTx?.txid ?? "0".repeat(64),
+            vout: real?.vout ?? index,
+            value: input.value,
+            prevTx: prevTx?.bytes,
           },
           ecpair,
         );
@@ -346,11 +380,14 @@ export class AcidTest {
           ? { signer: "user", cosigner: "backup" }
           : { signer: "user", cosigner: "bitgo" };
       const script = outputScript(walletKeys, scriptId.chain, scriptId.index, this.coin);
+      const prevTx = getPrevTx(real, real?.vout ?? index, script, input.value, scriptType === "p2sh");
 
       psbt.addWalletInput(
         {
-          ...outpoint,
-          prevTx: real?.prevTx ?? buildPrevTx(index, script, input.value),
+          txid: real?.txid ?? prevTx?.txid ?? "0".repeat(64),
+          vout: real?.vout ?? index,
+          value: input.value,
+          prevTx: prevTx?.bytes,
         },
         walletKeys,
         { scriptId, signPath },

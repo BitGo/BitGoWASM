@@ -6,7 +6,7 @@
 //! - if type != 0: varint payload_size + payload bytes
 
 use miniscript::bitcoin::consensus::{Decodable, Encodable};
-use miniscript::bitcoin::{Transaction, TxIn, TxOut, VarInt};
+use miniscript::bitcoin::{hashes::{sha256d, Hash}, Transaction, TxIn, TxOut, Txid, VarInt};
 
 /// Parsed Dash transaction fields needed for round-tripping.
 #[derive(Debug, Clone)]
@@ -73,6 +73,11 @@ pub fn decode_dash_transaction_parts(bytes: &[u8]) -> Result<DashTransactionPart
         tx_type,
         extra_payload,
     })
+}
+
+/// Compute the txid over the complete Dash transaction wire bytes.
+pub fn compute_dash_txid(bytes: &[u8]) -> Txid {
+    Txid::from_raw_hash(sha256d::Hash::hash(bytes))
 }
 
 /// Encode a Dash transaction back to bytes, including tx_type and extra payload.

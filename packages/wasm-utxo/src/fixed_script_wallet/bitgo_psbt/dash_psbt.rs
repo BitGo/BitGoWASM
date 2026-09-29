@@ -296,12 +296,16 @@ impl DashBitGoPsbt {
             ));
         }
 
-        Ok(DashBitGoPsbt {
+        let dash_psbt = DashBitGoPsbt {
             psbt,
             network,
             unsigned_tx_bytes,
             non_witness_utxo_bytes_by_input,
-        })
+        };
+        dash_psbt
+            .validate_prevouts(false)
+            .map_err(super::DeserializeError::Network)?;
+        Ok(dash_psbt)
     }
 
     pub fn deserialize(
@@ -309,6 +313,70 @@ impl DashBitGoPsbt {
         network: crate::Network,
     ) -> Result<Self, super::DeserializeError> {
         Self::decode_with_dash_tx(bytes, network)
+    }
+
+    pub(crate) fn validate_prevouts(&self, require_all_utxos: bool) -> Result<(), String> {
+        use super::psbt_wallet_input::get_output_script_and_value_for_network;
+
+        if self.psbt.unsigned_tx.input.len() != self.psbt.inputs.len() {
+            return Err(format!(
+                "Invalid PSBT: transaction has {} inputs but PSBT has {} input maps",
+                self.psbt.unsigned_tx.input.len(),
+                self.psbt.inputs.len()
+            ));
+        }
+
+        for (index, (tx_input, psbt_input)) in self
+            .psbt
+            .unsigned_tx
+            .input
+            .iter()
+            .zip(self.psbt.inputs.iter())
+            .enumerate()
+        {
+            if let Some(raw_prev_tx) = self
+                .non_witness_utxo_bytes_by_input
+                .get(index)
+                .and_then(Option::as_deref)
+            {
+                let parts = crate::dash::transaction::decode_dash_transaction_parts(raw_prev_tx)
+                    .map_err(|error| format!("Input {}: {}", index, error))?;
+                let actual_txid = crate::dash::transaction::compute_dash_txid(raw_prev_tx);
+                if actual_txid != tx_input.previous_output.txid {
+                    return Err(format!(
+                        "Input {}: non_witness_utxo txid {} does not match prevout txid {}",
+                        index, actual_txid, tx_input.previous_output.txid
+                    ));
+                }
+                if psbt_input.non_witness_utxo.as_ref() != Some(&parts.transaction) {
+                    return Err(format!(
+                        "Input {}: decoded non_witness_utxo differs from preserved Dash transaction",
+                        index
+                    ));
+                }
+            } else if let Some(prev_tx) = &psbt_input.non_witness_utxo {
+                let actual_txid = prev_tx.compute_txid();
+                if actual_txid != tx_input.previous_output.txid {
+                    return Err(format!(
+                        "Input {}: non_witness_utxo txid {} does not match prevout txid {}",
+                        index, actual_txid, tx_input.previous_output.txid
+                    ));
+                }
+            }
+
+            match get_output_script_and_value_for_network(
+                psbt_input,
+                tx_input.previous_output,
+                self.network,
+            ) {
+                Ok(_) => {}
+                Err(super::psbt_wallet_input::OutputScriptError::NoUtxoFields)
+                    if !require_all_utxos => {}
+                Err(error) => return Err(format!("Input {}: {}", index, error)),
+            }
+        }
+
+        Ok(())
     }
 
     /// Serialize the Dash PSBT back to bytes, preserving original Dash transaction bytes.
@@ -508,8 +576,9 @@ impl DashBitGoPsbt {
 mod tests {
     use super::*;
     use miniscript::bitcoin::consensus::Encodable;
+    use miniscript::bitcoin::hashes::{sha256d, Hash};
     use miniscript::bitcoin::{
-        absolute::LockTime, transaction::Version, OutPoint, ScriptBuf, TxIn, TxOut,
+        absolute::LockTime, transaction::Version, OutPoint, ScriptBuf, TxIn, TxOut, Txid,
     };
     use serde::Deserialize;
 
@@ -653,7 +722,10 @@ mod tests {
             version: Version(2),
             lock_time: LockTime::from_consensus(0),
             input: vec![TxIn {
-                previous_output: OutPoint::null(),
+                previous_output: OutPoint {
+                    txid: crate::dash::transaction::compute_dash_txid(&dash_prev_tx_bytes),
+                    vout: 0,
+                },
                 script_sig: ScriptBuf::new(),
                 sequence: miniscript::bitcoin::transaction::Sequence(0xFFFF_FFFE),
                 witness: miniscript::bitcoin::Witness::default(),
@@ -664,8 +736,9 @@ mod tests {
             }],
         };
 
-        let mut psbt = Psbt::from_unsigned_tx(unsigned_tx).expect("psbt from unsigned tx");
-        psbt.inputs[0].non_witness_utxo = Some(bitcoin_prev_tx);
+        let mut psbt =
+            Psbt::from_unsigned_tx(unsigned_tx.clone()).expect("psbt from unsigned tx");
+        psbt.inputs[0].non_witness_utxo = Some(bitcoin_prev_tx.clone());
 
         let bitcoin_psbt_bytes = psbt.serialize();
         let patched_psbt_bytes =
@@ -679,5 +752,20 @@ mod tests {
         let serialized = dash_psbt.serialize().expect("serialize");
         let extracted = extract_first_input_non_witness_utxo(&serialized);
         assert_eq!(extracted, dash_prev_tx_bytes);
+
+        let mut mismatched_unsigned_tx = unsigned_tx;
+        mismatched_unsigned_tx.input[0].previous_output.txid =
+            Txid::from_raw_hash(sha256d::Hash::hash(b"wrong Dash prevout"));
+        let mut mismatched_psbt =
+            Psbt::from_unsigned_tx(mismatched_unsigned_tx).expect("valid unsigned tx");
+        mismatched_psbt.inputs[0].non_witness_utxo = Some(bitcoin_prev_tx);
+        let mismatched_bytes = replace_first_input_non_witness_utxo(
+            &mismatched_psbt.serialize(),
+            &dash_prev_tx_bytes,
+        );
+        assert!(
+            DashBitGoPsbt::deserialize(&mismatched_bytes, crate::Network::Dash).is_err(),
+            "Dash PSBT must reject a source transaction whose txid differs from the prevout"
+        );
     }
 }

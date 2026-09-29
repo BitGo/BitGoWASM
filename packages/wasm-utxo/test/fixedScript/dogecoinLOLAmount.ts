@@ -2,6 +2,8 @@ import assert from "node:assert";
 import * as utxolib from "@bitgo/utxo-lib";
 import { BIP32, fixedScriptWallet } from "../../js/index.js";
 import type { RootWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
+import { createSyntheticPrevTx } from "../../js/testutils/AcidTest.js";
+import { outputScript } from "../../js/fixedScriptWallet/address.js";
 
 function getWalletKeysForSeed(seed: string): RootWalletKeys {
   const triple = utxolib.testutil.getKeyTriple(seed);
@@ -18,7 +20,7 @@ function getWalletKeysForSeed(seed: string): RootWalletKeys {
 
 describe("Dogecoin large output limit amount (LOL amounts) (1-in/1-out)", function () {
   it("should sign, finalize, and extract tx with 1e19 output value", function () {
-    const networkName = "dogecoin";
+    const networkName = "dogecoin" as const;
     const seed = "doge_1e19";
     const walletKeys = getWalletKeysForSeed(seed);
 
@@ -28,9 +30,14 @@ describe("Dogecoin large output limit amount (LOL amounts) (1-in/1-out)", functi
     });
 
     const value = 10_000_000_000_000_000_000n; // 1e19
-    const txid = "00".repeat(32);
+    const script = outputScript(walletKeys, 0, 0, networkName);
+    const prevTx = createSyntheticPrevTx(script, value);
 
-    psbt.addWalletInput({ txid, vout: 0, value }, walletKeys, { scriptId: { chain: 0, index: 0 } });
+    psbt.addWalletInput(
+      { ...prevTx, vout: 0, value },
+      walletKeys,
+      { scriptId: { chain: 0, index: 0 } },
+    );
     psbt.addWalletOutput(walletKeys, { chain: 0, index: 0, value });
 
     const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, {

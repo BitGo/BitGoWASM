@@ -1,7 +1,7 @@
 use miniscript::bitcoin::bip32::DerivationPath;
 use miniscript::bitcoin::psbt::{Input, Psbt};
 use miniscript::bitcoin::secp256k1::{self, PublicKey};
-use miniscript::bitcoin::{OutPoint, ScriptBuf, TapLeafHash, XOnlyPublicKey};
+use miniscript::bitcoin::{OutPoint, ScriptBuf, TapLeafHash, Txid, XOnlyPublicKey};
 
 use crate::address::is_p2mr;
 use crate::bitcoin::bip32::KeySource;
@@ -404,6 +404,9 @@ pub fn get_derivation_paths(input: &Input) -> Vec<&DerivationPath> {
 #[derive(Debug, strum::IntoStaticStr)]
 pub enum OutputScriptError {
     OutputIndexOutOfBounds { vout: u32 },
+    NonWitnessUtxoTxidMismatch { expected: Txid, actual: Txid },
+    WitnessUtxoMismatch,
+    MissingNonWitnessUtxoForLegacyInput,
     NoUtxoFields,
 }
 
@@ -413,6 +416,19 @@ impl std::fmt::Display for OutputScriptError {
             OutputScriptError::OutputIndexOutOfBounds { vout } => {
                 write!(f, "Output index {} out of bounds", vout)
             }
+            OutputScriptError::NonWitnessUtxoTxidMismatch { expected, actual } => write!(
+                f,
+                "non_witness_utxo txid {} does not match prevout txid {}",
+                actual, expected
+            ),
+            OutputScriptError::WitnessUtxoMismatch => write!(
+                f,
+                "witness_utxo does not match the referenced non_witness_utxo output"
+            ),
+            OutputScriptError::MissingNonWitnessUtxoForLegacyInput => write!(
+                f,
+                "non_witness_utxo is required for legacy P2SH inputs on this network"
+            ),
             OutputScriptError::NoUtxoFields => {
                 write!(f, "Neither witness_utxo nor non_witness_utxo is set")
             }
@@ -564,9 +580,12 @@ impl ParsedInput {
         replay_protection: &ReplayProtection,
         network: Network,
     ) -> Result<Self, ParseInputError> {
-        let (output_script, value) =
-            get_output_script_and_value(psbt_input, tx_input.previous_output)
-                .map_err(ParseInputError::Utxo)?;
+        let (output_script, value) = get_output_script_and_value_for_network(
+            psbt_input,
+            tx_input.previous_output,
+            network,
+        )
+        .map_err(ParseInputError::Utxo)?;
 
         let is_replay_protection = replay_protection.is_replay_protection_input(output_script);
 
@@ -667,31 +686,155 @@ impl crate::error::WasmErrorCode for ParseInputError {
     }
 }
 
-/// Get both output script and value from a PSBT input
+/// Get both output script and value from a PSBT input, authenticating any full prev tx.
 pub fn get_output_script_and_value(
     input: &Input,
     prevout: OutPoint,
 ) -> Result<(&ScriptBuf, miniscript::bitcoin::Amount), OutputScriptError> {
-    match (&input.witness_utxo, &input.non_witness_utxo) {
-        // Prefer witness_utxo when both are set (common in some wallet implementations)
-        (Some(witness_utxo), _) => Ok((&witness_utxo.script_pubkey, witness_utxo.value)),
-        (None, Some(non_witness_utxo)) => {
-            let output = non_witness_utxo
+    get_output_script_and_value_inner(input, prevout, true)
+}
+
+fn is_p2sh_witness_spend(input: &Input, output_script: &ScriptBuf) -> bool {
+    let matches_output = |redeem_script: &ScriptBuf| {
+        (redeem_script.is_p2wpkh() || redeem_script.is_p2wsh())
+            && redeem_script.to_p2sh() == *output_script
+    };
+
+    if input
+        .redeem_script
+        .as_ref()
+        .is_some_and(matches_output)
+    {
+        return true;
+    }
+
+    let Some(final_script_sig) = input.final_script_sig.as_ref() else {
+        return false;
+    };
+    let mut instructions = final_script_sig.instructions();
+    let Some(Ok(miniscript::bitcoin::script::Instruction::PushBytes(redeem_bytes))) =
+        instructions.next()
+    else {
+        return false;
+    };
+    if instructions.next().is_some() {
+        return false;
+    }
+
+    let redeem_script = ScriptBuf::from_bytes(redeem_bytes.as_bytes().to_vec());
+    matches_output(&redeem_script)
+}
+
+/// Get an input's spent output using its network's transaction ID rules.
+/// Dash special transactions and Zcash transparent transactions use txid formats
+/// that are not represented by `bitcoin::Transaction::compute_txid`.
+pub fn get_output_script_and_value_for_network(
+    input: &Input,
+    prevout: OutPoint,
+    network: Network,
+) -> Result<(&ScriptBuf, miniscript::bitcoin::Amount), OutputScriptError> {
+    let validates_txid = !matches!(network.mainnet(), Network::Dash | Network::Zcash);
+    let (script, value) = get_output_script_and_value_inner(input, prevout, validates_txid)?;
+
+    if network.requires_prev_tx_for_legacy_input()
+        && script.is_p2sh()
+        && !is_p2sh_witness_spend(input, script)
+        && input.non_witness_utxo.is_none()
+    {
+        return Err(OutputScriptError::MissingNonWitnessUtxoForLegacyInput);
+    }
+
+    Ok((script, value))
+}
+
+fn get_output_script_and_value_inner(
+    input: &Input,
+    prevout: OutPoint,
+    validates_txid: bool,
+) -> Result<(&ScriptBuf, miniscript::bitcoin::Amount), OutputScriptError> {
+    let non_witness_output = if let Some(non_witness_utxo) = &input.non_witness_utxo {
+        if validates_txid {
+            let actual = non_witness_utxo.compute_txid();
+            if actual != prevout.txid {
+                return Err(OutputScriptError::NonWitnessUtxoTxidMismatch {
+                    expected: prevout.txid,
+                    actual,
+                });
+            }
+        }
+        Some(
+            non_witness_utxo
                 .output
                 .get(prevout.vout as usize)
-                .ok_or(OutputScriptError::OutputIndexOutOfBounds { vout: prevout.vout })?;
-            Ok((&output.script_pubkey, output.value))
+                .ok_or(OutputScriptError::OutputIndexOutOfBounds { vout: prevout.vout })?,
+        )
+    } else {
+        None
+    };
+
+    match (&input.witness_utxo, non_witness_output) {
+        (Some(witness_utxo), Some(non_witness_output)) => {
+            if witness_utxo != non_witness_output {
+                return Err(OutputScriptError::WitnessUtxoMismatch);
+            }
+            Ok((&non_witness_output.script_pubkey, non_witness_output.value))
         }
+        (Some(witness_utxo), None) => Ok((&witness_utxo.script_pubkey, witness_utxo.value)),
+        (None, Some(output)) => Ok((&output.script_pubkey, output.value)),
         (None, None) => Err(OutputScriptError::NoUtxoFields),
     }
+}
+
+/// Validate PSBT input UTXO fields for the given network, allowing missing UTXOs.
+pub fn validate_psbt_utxo_fields(psbt: &Psbt, network: Network) -> Result<(), String> {
+    validate_psbt_utxos_inner(psbt, network, false)
+}
+
+/// Validate all PSBT input UTXOs for operations that need every prevout.
+pub fn validate_psbt_utxos(psbt: &Psbt, network: Network) -> Result<(), String> {
+    validate_psbt_utxos_inner(psbt, network, true)
+}
+
+fn validate_psbt_utxos_inner(
+    psbt: &Psbt,
+    network: Network,
+    require_all_utxos: bool,
+) -> Result<(), String> {
+    if psbt.unsigned_tx.input.len() != psbt.inputs.len() {
+        return Err(format!(
+            "Invalid PSBT: transaction has {} inputs but PSBT has {} input maps",
+            psbt.unsigned_tx.input.len(),
+            psbt.inputs.len()
+        ));
+    }
+
+    for (index, (tx_input, psbt_input)) in psbt
+        .unsigned_tx
+        .input
+        .iter()
+        .zip(psbt.inputs.iter())
+        .enumerate()
+    {
+        match get_output_script_and_value_for_network(
+            psbt_input,
+            tx_input.previous_output,
+            network,
+        ) {
+            Ok(_) => {}
+            Err(OutputScriptError::NoUtxoFields) if !require_all_utxos => {}
+            Err(error) => return Err(format!("Input {}: {}", index, error)),
+        }
+    }
+
+    Ok(())
 }
 
 fn get_output_script_from_input(
     input: &Input,
     prevout: OutPoint,
 ) -> Result<&ScriptBuf, OutputScriptError> {
-    // Delegate to get_output_script_and_value and return just the script
-    get_output_script_and_value(input, prevout).map(|(script, _value)| script)
+    // Classification has no network context; still cross-check both UTXO fields.
+    get_output_script_and_value_inner(input, prevout, false).map(|(script, _value)| script)
 }
 
 /// Check that the output-script shape is consistent with a candidate type.
@@ -904,8 +1047,9 @@ pub fn validate_psbt_wallet_inputs(
     let mut validation_errors = Vec::new();
 
     for (input_index, (prevout, input)) in prevouts.iter().zip(psbt.inputs.iter()).enumerate() {
-        let output_script = match get_output_script_from_input(input, *prevout) {
-            Ok(script) => script,
+        let output_script = match get_output_script_and_value_for_network(input, *prevout, network)
+        {
+            Ok((script, _value)) => script,
             Err(e) => {
                 validation_errors.push(InputValidationError {
                     input_index,
@@ -1345,5 +1489,202 @@ mod infer_tests {
             result.is_err(),
             "expected error when shape cross-check fails"
         );
+    }
+}
+
+#[cfg(test)]
+mod prevout_authentication_tests {
+    use super::*;
+    use miniscript::bitcoin::{
+        absolute::LockTime,
+        hashes::{sha256d, Hash},
+        transaction::{Sequence, Version},
+        Amount, OutPoint, Transaction, TxIn, TxOut, Witness,
+    };
+
+    fn p2sh_script() -> ScriptBuf {
+        ScriptBuf::from_bytes(vec![0x51]).to_p2sh()
+    }
+
+    fn previous_transaction(script_pubkey: ScriptBuf, value: u64) -> Transaction {
+        Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::default(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(value),
+                script_pubkey,
+            }],
+        }
+    }
+
+    fn prevout(tx: &Transaction) -> OutPoint {
+        OutPoint {
+            txid: tx.compute_txid(),
+            vout: 0,
+        }
+    }
+
+    #[test]
+    fn non_witness_transaction_must_match_prevout_txid() {
+        let tx = previous_transaction(p2sh_script(), 10_000);
+        let expected = Txid::from_raw_hash(sha256d::Hash::hash(b"different previous tx"));
+        assert_ne!(tx.compute_txid(), expected);
+        let input = Input {
+            non_witness_utxo: Some(tx),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            get_output_script_and_value(
+                &input,
+                OutPoint {
+                    txid: expected,
+                    vout: 0,
+                },
+            ),
+            Err(OutputScriptError::NonWitnessUtxoTxidMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn witness_and_non_witness_utxos_must_agree() {
+        let tx = previous_transaction(p2sh_script(), 10_000);
+        let input = Input {
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(9_000),
+                script_pubkey: tx.output[0].script_pubkey.clone(),
+            }),
+            non_witness_utxo: Some(tx.clone()),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            get_output_script_and_value(&input, prevout(&tx)),
+            Err(OutputScriptError::WitnessUtxoMismatch)
+        ));
+    }
+
+    #[test]
+    fn legacy_p2sh_requires_non_witness_utxo_on_noncommitting_networks() {
+        let input = Input {
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(10_000),
+                script_pubkey: p2sh_script(),
+            }),
+            ..Default::default()
+        };
+        let prevout = OutPoint {
+            txid: Txid::all_zeros(),
+            vout: 0,
+        };
+
+        assert!(matches!(
+            get_output_script_and_value_for_network(&input, prevout, Network::Bitcoin),
+            Err(OutputScriptError::MissingNonWitnessUtxoForLegacyInput)
+        ));
+        assert!(get_output_script_and_value_for_network(&input, prevout, Network::BitcoinCash).is_ok());
+    }
+
+    #[test]
+    fn nested_segwit_p2sh_can_use_witness_utxo() {
+        let witness_script = ScriptBuf::from_bytes(vec![0x51]);
+        let redeem_script = witness_script.to_p2wsh();
+        let input = Input {
+            witness_script: Some(witness_script),
+            redeem_script: Some(redeem_script.clone()),
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(10_000),
+                script_pubkey: redeem_script.to_p2sh(),
+            }),
+            ..Default::default()
+        };
+        let prevout = OutPoint {
+            txid: Txid::all_zeros(),
+            vout: 0,
+        };
+
+        assert!(get_output_script_and_value_for_network(&input, prevout, Network::Bitcoin).is_ok());
+    }
+
+    #[test]
+    fn finalized_nested_segwit_can_use_witness_utxo_after_metadata_is_removed() {
+        let redeem_script = ScriptBuf::from_bytes(vec![0x51]).to_p2wsh();
+        let final_script_sig = ScriptBuf::builder()
+            .push_slice(redeem_script.as_bytes())
+            .into_script();
+        let input = Input {
+            final_script_sig: Some(final_script_sig),
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(10_000),
+                script_pubkey: redeem_script.to_p2sh(),
+            }),
+            ..Default::default()
+        };
+        let prevout = OutPoint {
+            txid: Txid::all_zeros(),
+            vout: 0,
+        };
+
+        assert!(get_output_script_and_value_for_network(&input, prevout, Network::Bitcoin).is_ok());
+    }
+
+    #[test]
+    fn unrelated_witness_script_does_not_bypass_legacy_prev_tx_requirement() {
+        let redeem_script = ScriptBuf::from_bytes(vec![0x51]);
+        let input = Input {
+            redeem_script: Some(redeem_script.clone()),
+            witness_script: Some(ScriptBuf::from_bytes(vec![0x51])),
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(10_000),
+                script_pubkey: redeem_script.to_p2sh(),
+            }),
+            ..Default::default()
+        };
+        let prevout = OutPoint {
+            txid: Txid::all_zeros(),
+            vout: 0,
+        };
+
+        assert!(matches!(
+            get_output_script_and_value_for_network(&input, prevout, Network::Bitcoin),
+            Err(OutputScriptError::MissingNonWitnessUtxoForLegacyInput)
+        ));
+    }
+
+    #[test]
+    fn psbt_deserialization_rejects_mismatched_non_witness_txid() {
+        use super::super::BitGoPsbt;
+
+        let source = previous_transaction(p2sh_script(), 10_000);
+        let wrong_txid = Txid::from_raw_hash(sha256d::Hash::hash(b"different prev tx"));
+        let unsigned_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: wrong_txid,
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::default(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(unsigned_tx).expect("valid unsigned tx");
+        psbt.inputs[0].non_witness_utxo = Some(source);
+
+        let error = BitGoPsbt::deserialize(&psbt.serialize(), Network::Bitcoin)
+            .expect_err("mismatched source transaction must not deserialize");
+        assert!(error.to_string().contains("does not match prevout txid"));
     }
 }

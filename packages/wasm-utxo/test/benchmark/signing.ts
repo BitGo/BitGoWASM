@@ -18,7 +18,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { BIP32 } from "../../js/bip32.js";
-import { BitGoPsbt, RootWalletKeys, type NetworkName } from "../../js/fixedScriptWallet/index.js";
+import {
+  BitGoPsbt,
+  RootWalletKeys,
+  outputScript,
+  type NetworkName,
+} from "../../js/fixedScriptWallet/index.js";
+import { createSyntheticPrevTx } from "../../js/testutils/AcidTest.js";
 import type { IWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";
 import type { BIP32Interface } from "../../js/bip32.js";
 import type { SignPath } from "../../js/fixedScriptWallet/BitGoPsbt.js";
@@ -91,15 +97,18 @@ function createPsbtWithInputs(
 
   // Add inputs
   for (let i = 0; i < inputCount; i++) {
-    // Create a unique txid for each input (32 bytes hex = 64 chars)
     const txidBytes = Buffer.alloc(32);
     txidBytes.writeUInt32BE(i, 0);
-    const txid = txidBytes.toString("hex");
-
+    const value = 100000n;
+    const prevTx =
+      scriptType.name === "p2sh"
+        ? createSyntheticPrevTx(outputScript(walletKeys, scriptType.chain, i, network), value)
+        : undefined;
     const inputOptions = {
-      txid,
+      txid: prevTx?.txid ?? txidBytes.toString("hex"),
       vout: 0,
-      value: BigInt(100000), // 0.001 BTC per input
+      value, // 0.001 BTC per input
+      prevTx: prevTx?.prevTx,
       sequence: 0xfffffffe,
     };
 

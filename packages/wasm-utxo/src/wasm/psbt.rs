@@ -1223,6 +1223,7 @@ mod tests {
             &format!("pkh({})", pubkey),
             0xFFFFFFFE,
             None,
+            crate::Network::Zcash,
         )
         .unwrap();
         crate::psbt_ops::insert_output(

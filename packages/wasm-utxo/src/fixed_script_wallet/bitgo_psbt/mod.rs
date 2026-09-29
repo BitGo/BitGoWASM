@@ -119,12 +119,33 @@ pub use psbt_wallet_output::ParsedOutput;
 pub enum HydrationUnspentInput {
     /// A regular wallet input with derivation chain, index, and value.
     Wallet(ScriptIdWithValue),
+    /// A wallet input with its full previous transaction for legacy P2SH validation.
+    WalletWithPrevTx {
+        unspent: ScriptIdWithValue,
+        prev_tx: Vec<u8>,
+    },
     /// A P2SH-P2PK replay protection input. The caller provides the expected pubkey so it can be
     /// validated against the redeemScript embedded in the legacy transaction.
     ReplayProtection {
         pubkey: miniscript::bitcoin::CompressedPublicKey,
         value: u64,
     },
+    /// A replay protection input with its full previous transaction for legacy validation.
+    ReplayProtectionWithPrevTx {
+        pubkey: miniscript::bitcoin::CompressedPublicKey,
+        value: u64,
+        prev_tx: Vec<u8>,
+    },
+}
+
+impl HydrationUnspentInput {
+    fn prev_tx(&self) -> Option<&[u8]> {
+        match self {
+            Self::WalletWithPrevTx { prev_tx, .. }
+            | Self::ReplayProtectionWithPrevTx { prev_tx, .. } => Some(prev_tx),
+            Self::Wallet(_) | Self::ReplayProtection { .. } => None,
+        }
+    }
 }
 
 /// Parsed transaction with wallet information
@@ -145,6 +166,8 @@ pub enum ParseTransactionError {
         index: usize,
         error: psbt_wallet_input::ParseInputError,
     },
+    /// Input UTXO metadata failed authentication
+    InputUtxoValidation(String),
     /// Input value overflow when adding to total
     InputValueOverflow { index: usize },
     /// Failed to parse output
@@ -167,6 +190,9 @@ impl std::fmt::Display for ParseTransactionError {
         match self {
             ParseTransactionError::Input { index, error } => {
                 write!(f, "Input {}: {}", index, error)
+            }
+            ParseTransactionError::InputUtxoValidation(error) => {
+                write!(f, "Input UTXO validation failed: {}", error)
             }
             ParseTransactionError::InputValueOverflow { index } => {
                 write!(f, "Input {}: value overflow", index)
@@ -365,6 +391,23 @@ pub enum ExtractFeePolicy {
     Limited(FeeRate),
 }
 
+fn decode_prev_tx(
+    tx_bytes: &[u8],
+    network: Network,
+) -> Result<(miniscript::bitcoin::Transaction, Txid), String> {
+    if network.mainnet() == Network::Dash {
+        let parts = crate::dash::transaction::decode_dash_transaction_parts(tx_bytes)?;
+        let txid = crate::dash::transaction::compute_dash_txid(tx_bytes);
+        Ok((parts.transaction, txid))
+    } else {
+        let tx: miniscript::bitcoin::Transaction =
+            miniscript::bitcoin::consensus::deserialize(tx_bytes)
+                .map_err(|e| format!("Failed to deserialize previous transaction: {}", e))?;
+        let txid = tx.compute_txid();
+        Ok((tx, txid))
+    }
+}
+
 /// Extract a `Transaction` from a rust-bitcoin `Psbt` applying an
 /// [`ExtractFeePolicy`]. Shared by the `BitcoinLike` and `Dash` branches,
 /// which both hold an inner `Psbt`.
@@ -391,6 +434,8 @@ impl BitGoPsbt {
                 // Zcash uses overwintered transaction format which is not compatible
                 // with standard Bitcoin transaction deserialization
                 let zcash_psbt = ZcashBitGoPsbt::deserialize(psbt_bytes, network)?;
+                psbt_wallet_input::validate_psbt_utxo_fields(&zcash_psbt.psbt, network)
+                    .map_err(DeserializeError::Network)?;
                 Ok(BitGoPsbt::Zcash(zcash_psbt, network))
             }
 
@@ -420,10 +465,56 @@ impl BitGoPsbt {
             | Network::LitecoinTestnet
             | Network::Pearl
             | Network::PearlTestnet
-            | Network::PearlRegtest => Ok(BitGoPsbt::BitcoinLike(
-                Psbt::deserialize(psbt_bytes)?,
-                network,
-            )),
+            | Network::PearlRegtest => {
+                let psbt = Psbt::deserialize(psbt_bytes)?;
+                psbt_wallet_input::validate_psbt_utxo_fields(&psbt, network)
+                    .map_err(DeserializeError::Network)?;
+                Ok(BitGoPsbt::BitcoinLike(psbt, network))
+            },
+        }
+    }
+
+    fn validate_input_utxos(&self) -> Result<(), String> {
+        match self {
+            BitGoPsbt::BitcoinLike(psbt, network) => {
+                psbt_wallet_input::validate_psbt_utxos(psbt, *network)
+            }
+            BitGoPsbt::Dash(dash_psbt, _network) => dash_psbt.validate_prevouts(true),
+            BitGoPsbt::Zcash(zcash_psbt, network) => {
+                psbt_wallet_input::validate_psbt_utxos(&zcash_psbt.psbt, *network)
+            }
+        }
+    }
+
+    fn insert_dash_prev_tx_bytes(&mut self, index: usize, prev_tx: Option<Vec<u8>>) {
+        if let BitGoPsbt::Dash(dash_psbt, _) = self {
+            let input_count = dash_psbt.psbt.inputs.len();
+            let prev_txs = &mut dash_psbt.non_witness_utxo_bytes_by_input;
+            prev_txs.resize_with(index, || None);
+            prev_txs.insert(index, prev_tx);
+            prev_txs.truncate(input_count);
+            prev_txs.resize_with(input_count, || None);
+        }
+    }
+
+    fn preserve_dash_prev_txs_from_hydration(&mut self, unspents: &[HydrationUnspentInput]) {
+        if let BitGoPsbt::Dash(dash_psbt, _) = self {
+            dash_psbt.non_witness_utxo_bytes_by_input = unspents
+                .iter()
+                .enumerate()
+                .map(|(index, unspent)| {
+                    if dash_psbt
+                        .psbt
+                        .inputs
+                        .get(index)
+                        .is_some_and(|input| input.non_witness_utxo.is_some())
+                    {
+                        unspent.prev_tx().map(ToOwned::to_owned)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
         }
     }
 
@@ -622,7 +713,14 @@ impl BitGoPsbt {
 
         for (i, (tx_in, unspent)) in tx.input.iter().zip(unspents.iter()).enumerate() {
             match unspent {
-                HydrationUnspentInput::Wallet(sv) => {
+                HydrationUnspentInput::Wallet(sv)
+                | HydrationUnspentInput::WalletWithPrevTx { unspent: sv, .. } => {
+                    let prev_tx = match unspent {
+                        HydrationUnspentInput::WalletWithPrevTx { prev_tx, .. } => {
+                            Some(prev_tx.as_slice())
+                        }
+                        _ => None,
+                    };
                     let script_id = ScriptId {
                         chain: sv.chain,
                         index: sv.index,
@@ -639,7 +737,7 @@ impl BitGoPsbt {
                         psbt_wallet_input::WalletInputOptions {
                             sign_path: None,
                             sequence: Some(tx_in.sequence.0),
-                            prev_tx: None,
+                            prev_tx,
                         },
                     )
                     .map_err(|e| format!("Input {}: {}", i, e))?;
@@ -647,7 +745,18 @@ impl BitGoPsbt {
                 HydrationUnspentInput::ReplayProtection {
                     pubkey: expected_pubkey,
                     value,
+                }
+                | HydrationUnspentInput::ReplayProtectionWithPrevTx {
+                    pubkey: expected_pubkey,
+                    value,
+                    ..
                 } => {
+                    let prev_tx = match unspent {
+                        HydrationUnspentInput::ReplayProtectionWithPrevTx { prev_tx, .. } => {
+                            Some(prev_tx.as_slice())
+                        }
+                        _ => None,
+                    };
                     let parsed = FixedScriptInput::from_txin(tx_in)
                         .map_err(|e| format!("Input {}: {}", i, e))?;
                     let pubkey = match &parsed {
@@ -675,7 +784,7 @@ impl BitGoPsbt {
                         *value,
                         ReplayProtectionOptions {
                             sequence: Some(tx_in.sequence.0),
-                            prev_tx: None,
+                            prev_tx,
                             sighash_type: None,
                         },
                     )
@@ -753,6 +862,7 @@ impl BitGoPsbt {
             Some(tx.lock_time.to_consensus_u32()),
         );
         Self::hydrate_psbt(psbt.psbt_mut(), network, wallet_keys, tx, unspents)?;
+        psbt.preserve_dash_prev_txs_from_hydration(unspents);
         Ok(psbt)
     }
 
@@ -795,6 +905,10 @@ impl BitGoPsbt {
     ) -> Result<usize, String> {
         use miniscript::bitcoin::{transaction::Sequence, Amount, OutPoint, TxIn, TxOut};
 
+        let network = self.network();
+        let prev_tx_bytes = prev_tx
+            .as_ref()
+            .map(miniscript::bitcoin::consensus::serialize);
         let tx_in = TxIn {
             previous_output: OutPoint { txid, vout },
             script_sig: miniscript::bitcoin::ScriptBuf::new(),
@@ -810,7 +924,33 @@ impl BitGoPsbt {
             ..Default::default()
         };
 
-        crate::psbt_ops::insert_input(self.psbt_mut(), index, tx_in, psbt_input)
+        if network.mainnet() == Network::Dash {
+            if let Some(prev_tx) = &psbt_input.non_witness_utxo {
+                let actual = prev_tx.compute_txid();
+                if actual != tx_in.previous_output.txid {
+                    return Err(format!(
+                        "non_witness_utxo txid {} does not match prevout txid {}",
+                        actual, tx_in.previous_output.txid
+                    ));
+                }
+            }
+        }
+        psbt_wallet_input::get_output_script_and_value_for_network(
+            &psbt_input,
+            tx_in.previous_output,
+            network,
+        )
+        .map_err(|error| error.to_string())?;
+
+        crate::psbt_ops::insert_input(self.psbt_mut(), index, tx_in, psbt_input)?;
+        let stored_prev_tx = self
+            .psbt()
+            .inputs
+            .get(index)
+            .filter(|input| input.non_witness_utxo.is_some())
+            .and(prev_tx_bytes);
+        self.insert_dash_prev_tx_bytes(index, stored_prev_tx);
+        Ok(index)
     }
 
     pub fn add_input(
@@ -821,10 +961,9 @@ impl BitGoPsbt {
         script: miniscript::bitcoin::ScriptBuf,
         sequence: Option<u32>,
         prev_tx: Option<miniscript::bitcoin::Transaction>,
-    ) -> usize {
+    ) -> Result<usize, String> {
         let index = self.psbt().inputs.len();
         self.add_input_at_index(index, txid, vout, value, script, sequence, prev_tx)
-            .expect("insert at len should never fail")
     }
 
     /// Add a replay protection input (p2shP2pk) to the PSBT
@@ -853,11 +992,8 @@ impl BitGoPsbt {
         options: ReplayProtectionOptions,
     ) -> Result<(), String> {
         use crate::fixed_script_wallet::wallet_scripts::ScriptP2shP2pk;
-        use miniscript::bitcoin::consensus::Decodable;
         use miniscript::bitcoin::psbt::{Input, PsbtSighashType};
-        use miniscript::bitcoin::{
-            transaction::Sequence, Amount, OutPoint, Transaction, TxIn, TxOut,
-        };
+        use miniscript::bitcoin::{transaction::Sequence, Amount, OutPoint, TxIn, TxOut};
 
         let script = ScriptP2shP2pk::new(pubkey);
         let output_script = script.output_script();
@@ -886,16 +1022,54 @@ impl BitGoPsbt {
             ..Default::default()
         };
 
-        if let Some(tx_bytes) = options.prev_tx {
-            let tx = Transaction::consensus_decode(&mut &tx_bytes[..])
-                .expect("Failed to decode prev_tx");
-            psbt_input.non_witness_utxo = Some(tx);
+        let prev_tx = options
+            .prev_tx
+            .map(|tx_bytes| {
+                let (tx, actual_txid) = decode_prev_tx(tx_bytes, network)?;
+                if actual_txid != txid {
+                    return Err(format!(
+                        "non_witness_utxo txid {} does not match prevout txid {}",
+                        actual_txid, txid
+                    ));
+                }
+                let output = tx
+                    .output
+                    .get(vout as usize)
+                    .ok_or_else(|| format!("Previous transaction output {} is out of bounds", vout))?;
+                if output.script_pubkey != output_script
+                    || output.value != Amount::from_sat(value)
+                {
+                    return Err(
+                        "previous transaction output does not match the supplied script and value"
+                            .to_string(),
+                    );
+                }
+                Ok(tx)
+            })
+            .transpose()?;
+
+        if network.requires_prev_tx_for_legacy_input() && prev_tx.is_none() {
+            return Err(format!(
+                "non_witness_utxo is required for replay protection inputs on network {}",
+                network
+            ));
+        }
+
+        if let Some(prev_tx) = prev_tx {
+            psbt_input.non_witness_utxo = Some(prev_tx);
         } else {
             psbt_input.witness_utxo = Some(TxOut {
                 value: Amount::from_sat(value),
                 script_pubkey: output_script,
             });
         }
+
+        psbt_wallet_input::get_output_script_and_value_for_network(
+            &psbt_input,
+            tx_in.previous_output,
+            network,
+        )
+        .map_err(|error| error.to_string())?;
 
         crate::psbt_ops::insert_input(psbt, index, tx_in, psbt_input).map(|_| ())
     }
@@ -910,6 +1084,7 @@ impl BitGoPsbt {
         options: ReplayProtectionOptions,
     ) -> Result<usize, String> {
         let network = self.network();
+        let prev_tx_bytes = options.prev_tx.map(ToOwned::to_owned);
         Self::add_replay_protection_input_to_psbt(
             self.psbt_mut(),
             index,
@@ -920,6 +1095,13 @@ impl BitGoPsbt {
             value,
             options,
         )?;
+        let stored_prev_tx = self
+            .psbt()
+            .inputs
+            .get(index)
+            .filter(|input| input.non_witness_utxo.is_some())
+            .and(prev_tx_bytes);
+        self.insert_dash_prev_tx_bytes(index, stored_prev_tx);
         Ok(index)
     }
 
@@ -930,10 +1112,9 @@ impl BitGoPsbt {
         vout: u32,
         value: u64,
         options: ReplayProtectionOptions,
-    ) -> usize {
+    ) -> Result<usize, String> {
         let index = self.psbt().inputs.len();
         self.add_replay_protection_input_at_index(index, pubkey, txid, vout, value, options)
-            .expect("insert at len should never fail")
     }
 
     /// Add an output to the PSBT
@@ -1054,12 +1235,48 @@ impl BitGoPsbt {
         let mut psbt_input = Input::default();
 
         let is_segwit = chain_enum.script_type != OutputScriptType::P2sh;
+        let prev_tx = options
+            .prev_tx
+            .map(|tx_bytes| {
+                let (tx, actual_txid) = decode_prev_tx(tx_bytes, network)?;
+                if actual_txid != txid {
+                    return Err(format!(
+                        "non_witness_utxo txid {} does not match prevout txid {}",
+                        actual_txid, txid
+                    ));
+                }
+                let output = tx
+                    .output
+                    .get(vout as usize)
+                    .ok_or_else(|| format!("Previous transaction output {} is out of bounds", vout))?;
+                if output.script_pubkey.as_script() != output_script.as_script()
+                    || output.value != Amount::from_sat(value)
+                {
+                    return Err(
+                        "previous transaction output does not match the supplied script and value"
+                            .to_string(),
+                    );
+                }
+                Ok(tx)
+            })
+            .transpose()?;
 
-        if let (false, Some(tx_bytes)) = (is_segwit, options.prev_tx) {
-            psbt_input.non_witness_utxo = Some(
-                miniscript::bitcoin::consensus::deserialize(tx_bytes)
-                    .map_err(|e| format!("Failed to deserialize previous transaction: {}", e))?,
-            );
+        if !is_segwit && network.requires_prev_tx_for_legacy_input() && prev_tx.is_none() {
+            return Err(format!(
+                "non_witness_utxo is required for legacy P2SH inputs on network {}",
+                network
+            ));
+        }
+
+        if !is_segwit {
+            if let Some(prev_tx) = prev_tx {
+                psbt_input.non_witness_utxo = Some(prev_tx);
+            } else {
+                psbt_input.witness_utxo = Some(TxOut {
+                    value: Amount::from_sat(value),
+                    script_pubkey: output_script.clone(),
+                });
+            }
         } else {
             psbt_input.witness_utxo = Some(TxOut {
                 value: Amount::from_sat(value),
@@ -1173,6 +1390,7 @@ impl BitGoPsbt {
         options: WalletInputOptions,
     ) -> Result<usize, String> {
         let network = self.network();
+        let prev_tx_bytes = options.prev_tx.map(ToOwned::to_owned);
         Self::add_wallet_input_to_psbt(
             self.psbt_mut(),
             index,
@@ -1184,6 +1402,13 @@ impl BitGoPsbt {
             script_id,
             options,
         )?;
+        let stored_prev_tx = self
+            .psbt()
+            .inputs
+            .get(index)
+            .filter(|input| input.non_witness_utxo.is_some())
+            .and(prev_tx_bytes);
+        self.insert_dash_prev_tx_bytes(index, stored_prev_tx);
         Ok(index)
     }
 
@@ -1500,6 +1725,7 @@ impl BitGoPsbt {
     pub fn extract_tx_with_fee_policy(self, policy: ExtractFeePolicy) -> Result<Vec<u8>, String> {
         use miniscript::bitcoin::consensus::serialize;
 
+        self.validate_input_utxos()?;
         match self {
             BitGoPsbt::Zcash(zcash_psbt, _) => zcash_psbt
                 .extract_tx_with_fee_policy(policy)
@@ -1530,6 +1756,7 @@ impl BitGoPsbt {
         self,
         policy: ExtractFeePolicy,
     ) -> Result<miniscript::bitcoin::Transaction, String> {
+        self.validate_input_utxos()?;
         match self {
             BitGoPsbt::BitcoinLike(psbt, _) => extract_inner_with_fee_policy(psbt, policy),
             _ => Err("extract_bitcoin_tx only supported for BitcoinLike networks".to_string()),
@@ -1556,6 +1783,7 @@ impl BitGoPsbt {
         policy: ExtractFeePolicy,
     ) -> Result<crate::dash::transaction::DashTransactionParts, String> {
         use miniscript::bitcoin::consensus::serialize;
+        self.validate_input_utxos()?;
         match self {
             BitGoPsbt::Dash(dash_psbt, _) => {
                 let tx = extract_inner_with_fee_policy(dash_psbt.psbt, policy)?;
@@ -1912,6 +2140,7 @@ impl BitGoPsbt {
         if matches!(self, BitGoPsbt::Zcash(_, _)) {
             return Err("MuSig2 not supported for Zcash".to_string());
         }
+        self.validate_input_utxos()?;
 
         let psbt = self.psbt_mut();
         if input_index >= psbt.inputs.len() {
@@ -2046,20 +2275,19 @@ impl BitGoPsbt {
         self.ensure_not_ironwood_v6()?;
         use miniscript::bitcoin::PublicKey;
 
-        // Get network before mutable borrow
         let network = self.network();
         let is_testnet = network.is_testnet();
 
-        let psbt = self.psbt_mut();
-
-        // Check bounds
-        if input_index >= psbt.inputs.len() {
+        if input_index >= self.psbt().inputs.len() {
             return Err(format!(
                 "Input index {} out of bounds (total inputs: {})",
                 input_index,
-                psbt.inputs.len()
+                self.psbt().inputs.len()
             ));
         }
+        self.validate_input_utxos()?;
+
+        let psbt = self.psbt_mut();
 
         // Check if this is a MuSig2 input
         if p2tr_musig2_input::Musig2Input::is_musig2_input(&psbt.inputs[input_index]) {
@@ -2449,6 +2677,16 @@ impl BitGoPsbt {
         C: secp256k1::Signing + secp256k1::Verification,
         K: miniscript::bitcoin::psbt::GetKey,
     {
+        if self.validate_input_utxos().is_err() {
+            return Err((
+                Default::default(),
+                std::collections::BTreeMap::from_iter([(
+                    0,
+                    miniscript::bitcoin::psbt::SignError::UnknownOutputType,
+                )]),
+            ));
+        }
+
         match self {
             BitGoPsbt::BitcoinLike(ref mut psbt, network) => {
                 // Check if this network uses SIGHASH_FORKID
@@ -2545,6 +2783,7 @@ impl BitGoPsbt {
         xpriv: &miniscript::bitcoin::bip32::Xpriv,
     ) -> Result<miniscript::bitcoin::psbt::SigningKeysMap, String> {
         self.ensure_not_ironwood_v6()?;
+        self.validate_input_utxos()?;
         let secp = secp256k1::Secp256k1::new();
 
         // Sign all inputs - miniscript handles this efficiently
@@ -2611,6 +2850,7 @@ impl BitGoPsbt {
         xpriv: &miniscript::bitcoin::bip32::Xpriv,
     ) -> Result<(), String> {
         self.ensure_not_ironwood_v6()?;
+        self.validate_input_utxos()?;
         let psbt = self.psbt();
         if input_index >= psbt.inputs.len() {
             return Err(format!(
@@ -2942,9 +3182,11 @@ impl BitGoPsbt {
         // Get input value for sighash computation
         let input = &psbt.inputs[input_index];
         let prevout = psbt.unsigned_tx.input[input_index].previous_output;
-        let value = psbt_wallet_input::get_output_script_and_value(input, prevout)
-            .map(|(_, v)| v)
-            .unwrap_or(miniscript::bitcoin::Amount::ZERO);
+        let value = psbt_wallet_input::get_output_script_and_value_for_network(
+            input, prevout, network,
+        )
+        .map(|(_, value)| value)
+        .map_err(|error| format!("Failed to get input UTXO: {}", error))?;
 
         let fork_id = network.sighash_fork_id();
 
@@ -3027,9 +3269,13 @@ impl BitGoPsbt {
         // Get input value for sighash computation
         let input = &psbt.inputs[input_index];
         let prevout = psbt.unsigned_tx.input[input_index].previous_output;
-        let value = psbt_wallet_input::get_output_script_and_value(input, prevout)
-            .map(|(_, v)| v)
-            .unwrap_or(miniscript::bitcoin::Amount::ZERO);
+        let value = psbt_wallet_input::get_output_script_and_value_for_network(
+            input,
+            prevout,
+            Network::Zcash,
+        )
+        .map(|(_, value)| value)
+        .map_err(|error| format!("Failed to get input UTXO: {}", error))?;
 
         // Compute ZIP-243 sighash
         let mut cache = SighashCache::new(&psbt.unsigned_tx);
@@ -3097,8 +3343,10 @@ impl BitGoPsbt {
         let prevout = psbt.unsigned_tx.input[input_index].previous_output;
 
         // Get output script and value from input
-        let (output_script, value) = psbt_wallet_input::get_output_script_and_value(input, prevout)
-            .map_err(|e| format!("Failed to get output script: {}", e))?;
+        let (output_script, value) = psbt_wallet_input::get_output_script_and_value_for_network(
+            input, prevout, network,
+        )
+        .map_err(|e| format!("Failed to get output script: {}", e))?;
 
         // Verify this is a replay protection input
         if !replay_protection.is_replay_protection_input(output_script) {
@@ -3558,6 +3806,8 @@ impl BitGoPsbt {
         replay_protection: &crate::fixed_script_wallet::ReplayProtection,
         paygo_pubkeys: &[secp256k1::PublicKey],
     ) -> Result<ParsedTransaction, ParseTransactionError> {
+        self.validate_input_utxos()
+            .map_err(ParseTransactionError::InputUtxoValidation)?;
         let psbt = self.psbt();
 
         // Parse inputs and outputs
@@ -3676,9 +3926,10 @@ pub fn to_wallet_keys(
         let wallet_keys = RootWalletKeys::new(permuted);
 
         let all_match = wallet_inputs.iter().all(|(tx_input, psbt_input)| {
-            let output_script = psbt_wallet_input::get_output_script_and_value(
+            let output_script = psbt_wallet_input::get_output_script_and_value_for_network(
                 psbt_input,
                 tx_input.previous_output,
+                network,
             );
             match output_script {
                 Ok((script, _value)) => crate::fixed_script_wallet::WalletOutputScript::from_psbt(
@@ -4811,17 +5062,42 @@ mod tests {
                 }
                 let chain = u32::from(*components[components.len() - 2]);
                 let index = u32::from(*components[components.len() - 1]);
+                let prevout = psbt.unsigned_tx.input[i].previous_output;
+                let prev_tx = match &bitgo_psbt {
+                    BitGoPsbt::Dash(dash_psbt, _) => dash_psbt
+                        .non_witness_utxo_bytes_by_input
+                        .get(i)
+                        .cloned()
+                        .flatten(),
+                    _ => input
+                        .non_witness_utxo
+                        .as_ref()
+                        .map(miniscript::bitcoin::consensus::serialize),
+                };
                 let value = input
                     .witness_utxo
                     .as_ref()
-                    .ok_or_else(|| format!("Input {} has no witnessUtxo", i))?
-                    .value
-                    .to_sat();
-                Ok(HydrationUnspentInput::Wallet(ScriptIdWithValue {
+                    .map(|output| output.value.to_sat())
+                    .or_else(|| {
+                        input
+                            .non_witness_utxo
+                            .as_ref()
+                            .and_then(|tx| tx.output.get(prevout.vout as usize))
+                            .map(|output| output.value.to_sat())
+                    })
+                    .ok_or_else(|| format!("Input {} has no UTXO value", i))?;
+                let unspent = ScriptIdWithValue {
                     chain,
                     index,
                     value,
-                }))
+                };
+                Ok(match prev_tx {
+                    Some(prev_tx) => HydrationUnspentInput::WalletWithPrevTx {
+                        unspent,
+                        prev_tx,
+                    },
+                    None => HydrationUnspentInput::Wallet(unspent),
+                })
             })
             .collect::<Result<Vec<_>, String>>()?;
 
@@ -5487,7 +5763,8 @@ mod tests {
                         sighash_type: orig_psbt_input.sighash_type,
                         prev_tx: prev_tx.as_deref(),
                     },
-                );
+                )
+                .expect("add replay protection input");
             }
         }
 
@@ -5720,7 +5997,13 @@ mod tests {
         use miniscript::bitcoin::hashes::{sha256, Hash};
         use miniscript::bitcoin::psbt::Psbt as BitcoinPsbt;
         use miniscript::bitcoin::secp256k1::Secp256k1;
-        use miniscript::bitcoin::{Network as BitcoinNetwork, Txid};
+        use crate::fixed_script_wallet::wallet_scripts::{chain_index_path, OutputScriptType, WalletScripts};
+        use miniscript::bitcoin::absolute::LockTime;
+        use miniscript::bitcoin::transaction::{Sequence, Version};
+        use miniscript::bitcoin::{
+            Amount, Network as BitcoinNetwork, OutPoint, ScriptBuf, Transaction, TxIn, TxOut,
+            Witness,
+        };
         use std::str::FromStr;
 
         let wallet_keys =
@@ -5731,17 +6014,42 @@ mod tests {
         // Large output amount (1e19) should fit in u64 and round-trip.
         let value: u64 = 10_000_000_000_000_000_000;
 
-        let txid = Txid::all_zeros();
+        let output_script = WalletScripts::from_wallet_keys(
+            &wallet_keys,
+            OutputScriptType::P2sh,
+            &chain_index_path(0, 0),
+            &Network::Dogecoin.output_script_support(),
+        )
+        .expect("build source output script")
+        .output_script();
+        let prev_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::default(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(value),
+                script_pubkey: output_script,
+            }],
+        };
+        let prev_tx_bytes = serialize(&prev_tx);
         let vout = 0u32;
         let script_id = ScriptId { chain: 0, index: 0 };
 
         psbt.add_wallet_input(
-            txid,
+            prev_tx.compute_txid(),
             vout,
             value,
             &wallet_keys,
             script_id,
-            WalletInputOptions::default(),
+            WalletInputOptions {
+                prev_tx: Some(&prev_tx_bytes),
+                ..Default::default()
+            },
         )
         .expect("add_wallet_input");
 

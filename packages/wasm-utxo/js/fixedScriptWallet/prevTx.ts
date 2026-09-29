@@ -1,7 +1,7 @@
 /**
  * Previous-transaction inclusion policy for fixed-script wallet PSBT inputs.
  *
- * Decides whether a p2sh input requires the full previous transaction
+ * Decides whether a legacy p2sh input requires the full previous transaction
  * (PSBT_IN_NON_WITNESS_UTXO) or can be signed from witness_utxo-only.
  *
  * This is a pure-JS module (no WASM initialization) so callers can evaluate
@@ -10,11 +10,10 @@
 import { type CoinName, getMainnet } from "../coinName.js";
 
 /**
- * Whether a p2sh input requires the full previous transaction
- * (PSBT_IN_NON_WITNESS_UTXO). Callers are expected to have already
- * confirmed the input is p2sh (non-segwit) and that the tx format
- * includes prevTx (e.g. "psbt", not "psbt-lite"); this predicate only
- * answers the coin-level question.
+ * Whether a legacy p2sh input requires the full previous transaction
+ * (PSBT_IN_NON_WITNESS_UTXO). Callers can use this coin-level predicate
+ * to decide whether to fetch prevTx; the library also validates that a
+ * supplied prevTx matches the input outpoint and spent output.
  *
  * Returns false for value-committing coins whose sighash commits the
  * input amount, making `non_witness_utxo` (full prevTx) cryptographically
@@ -22,14 +21,10 @@ import { type CoinName, getMainnet } from "../coinName.js";
  * scriptPubKey) suffices:
  *
  * - Zcash (`zec`/`tzec`): ZIP-243 transparent sighash commits the amount.
- *   Including prevTx also crashes wasm-utxo, whose consensus::deserialize
- *   rejects Zcash overwintered transactions.
  * - BCH family (`bch`/`bcha`/`bsv`/`btg` + testnets): replay-protected
  *   BIP-143 sighash (SIGHASH_FORKID, the default for the whole family)
  *   commits the 8-byte value as preimage item #6. eCash is `bcha`/`tbcha`.
- *   For the BCH family, skipping prevTx is an optimization (no DB fetch)
- *   plus defense-in-depth, with the same fee-validation risk that the
- *   existing `psbt-lite` path already accepts for all coins.
+ *   For these networks, witness_utxo is sufficient for legacy signing.
  *
  * Testnets are normalized via `getMainnet` before the switch. True
  * otherwise.

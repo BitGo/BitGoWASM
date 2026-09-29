@@ -104,12 +104,9 @@ pub fn script_pubkey_from_descriptor(descriptor: &str) -> Result<ScriptBuf, Stri
 /// `descriptor` is a definite descriptor string with concrete keys, e.g. `pkh(<pubkey>)` or
 /// `wpkh(<pubkey>)`; not limited to P2PKH.
 ///
-/// `non_witness_utxo`, when given, is validated against `witness_utxo` and the descriptor via
-/// the checked `PsbtExt::update_input_with_descriptor` (BIP174-safe). When omitted, falls back
-/// to `PsbtInputExt::update_with_descriptor_unchecked` — safe only for value-committing sighash
-/// networks where `non_witness_utxo` is cryptographically pointless (see
-/// [`Network::requires_prev_tx_for_legacy_input`](crate::Network::requires_prev_tx_for_legacy_input)).
-/// Callers must gate on that predicate themselves before omitting `non_witness_utxo`.
+/// `non_witness_utxo`, when given, must match the input txid and spent output. Legacy P2SH inputs
+/// require it on networks whose sighash does not commit the input amount. `network` selects that
+/// policy. Descriptor metadata is then validated with `PsbtExt::update_input_with_descriptor`.
 #[allow(clippy::too_many_arguments)]
 pub fn add_input_with_descriptor(
     psbt: &mut miniscript::bitcoin::Psbt,
@@ -121,6 +118,7 @@ pub fn add_input_with_descriptor(
     descriptor: &str,
     sequence: u32,
     non_witness_utxo: Option<Transaction>,
+    network: crate::Network,
 ) -> Result<(), String> {
     let desc =
         Descriptor::<DefiniteDescriptorKey>::from_str(descriptor).map_err(|e| e.to_string())?;
@@ -132,7 +130,7 @@ pub fn add_input_with_descriptor(
         witness: miniscript::bitcoin::Witness::default(),
     };
     let has_non_witness_utxo = non_witness_utxo.is_some();
-    let psbt_input = psbt::Input {
+    let mut psbt_input = psbt::Input {
         witness_utxo: Some(TxOut {
             value: Amount::from_sat(value),
             script_pubkey,
@@ -140,16 +138,31 @@ pub fn add_input_with_descriptor(
         non_witness_utxo,
         ..Default::default()
     };
+    if !has_non_witness_utxo {
+        psbt_input
+            .update_with_descriptor_unchecked(&desc)
+            .map_err(|e| e.to_string())?;
+    }
+    crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::get_output_script_and_value_for_network(
+        &psbt_input,
+        tx_in.previous_output,
+        network,
+    )
+    .map_err(|e| e.to_string())?;
+    if has_non_witness_utxo && network.mainnet() == crate::Network::Dash {
+        crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::get_output_script_and_value(
+            &psbt_input,
+            tx_in.previous_output,
+        )
+        .map_err(|e| e.to_string())?;
+    }
     crate::psbt_ops::insert_input(psbt, index, tx_in, psbt_input)?;
 
     if has_non_witness_utxo {
         psbt.update_input_with_descriptor(index, &desc)
             .map_err(|e| e.to_string())
     } else {
-        psbt.inputs[index]
-            .update_with_descriptor_unchecked(&desc)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        Ok(())
     }
 }
 

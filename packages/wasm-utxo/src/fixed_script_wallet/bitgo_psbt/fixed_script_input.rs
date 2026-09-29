@@ -207,12 +207,13 @@ impl FixedScriptInput {
             } => {
                 use miniscript::bitcoin::sighash::SighashCacheZcashExt;
                 let prevout = psbt.unsigned_tx.input[index].previous_output;
-                let value =
-                    crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::get_output_script_and_value(
-                        &psbt.inputs[index], prevout,
-                    )
-                    .map(|(_, v)| v)
-                    .unwrap_or(miniscript::bitcoin::Amount::ZERO);
+                let value = crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::get_output_script_and_value_for_network(
+                    &psbt.inputs[index],
+                    prevout,
+                    crate::Network::Zcash,
+                )
+                .map(|(_, value)| value)
+                .map_err(|error| format!("Input {}: invalid UTXO data: {}", index, error))?;
                 let script = psbt.inputs[index]
                     .witness_script
                     .as_ref()
