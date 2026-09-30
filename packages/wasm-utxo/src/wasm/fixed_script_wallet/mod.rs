@@ -1289,6 +1289,32 @@ impl BitGoPsbt {
         self.psbt.network().to_string()
     }
 
+    /// Returns each input's declared sighash type (BIP-174
+    /// `PSBT_IN_SIGHASH_TYPE`), in input order.
+    ///
+    /// Entries are `null` when the input does not declare a sighash type, in
+    /// which case the signer's default sighash type applies.
+    pub fn get_input_sighash_types(&self) -> Result<JsValue, WasmUtxoError> {
+        self.psbt.get_input_sighash_types().try_to_js_value()
+    }
+
+    /// Asserts the sighash policy required when signing an externally
+    /// supplied PSBT: every input must commit to the entire transaction.
+    ///
+    /// Rejects SIGHASH_NONE, SIGHASH_SINGLE, SIGHASH_ANYONECANPAY, and
+    /// combinations thereof — in both the declared per-input sighash type
+    /// and the signatures already present in the PSBT — because signatures
+    /// produced under those types do not bind the signer to the outputs of
+    /// the transaction. Accepted types are SIGHASH_ALL (0x01),
+    /// SIGHASH_ALL | SIGHASH_FORKID (0x41) on BCH-family networks, and
+    /// SIGHASH_DEFAULT (0x00) / SIGHASH_ALL (0x01) on Taproot inputs; an
+    /// absent sighash type uses the signer default.
+    pub fn assert_sighash_all_policy(&self) -> Result<(), WasmUtxoError> {
+        self.psbt
+            .assert_sighash_all_policy()
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
     /// Get the network type for transaction extraction
     ///
     /// Returns "bitcoin", "dash", or "zcash" to indicate which transaction

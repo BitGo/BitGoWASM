@@ -1021,6 +1021,49 @@ export class BitGoPsbt<TOutput extends ParsedOutput = ParsedOutput>
   }
 
   /**
+   * Returns each input's declared sighash type (BIP-174 PSBT_IN_SIGHASH_TYPE),
+   * in input order.
+   *
+   * Entries are `undefined` when the input does not declare a sighash type, in
+   * which case the signer's default sighash type applies.
+   */
+  getInputSighashTypes(): (number | undefined)[] {
+    return (this._wasm.get_input_sighash_types() as (number | null)[]).map(
+      (sighashType) => sighashType ?? undefined,
+    );
+  }
+
+  /**
+   * Asserts the sighash policy required when signing an externally supplied
+   * PSBT: every input must commit to the entire transaction.
+   *
+   * For every input this checks that
+   *
+   * 1. the declared sighash type (PSBT_IN_SIGHASH_TYPE), if present, commits
+   *    to every input and every output: SIGHASH_ALL (0x01) — SIGHASH_ALL |
+   *    SIGHASH_FORKID (0x41) on BCH-family coins — or SIGHASH_DEFAULT
+   *    (0x00) / SIGHASH_ALL (0x01) on Taproot inputs. An absent sighash type
+   *    is accepted: the signer then applies its default, which commits to
+   *    the entire transaction.
+   * 2. every signature already present on the input (ECDSA partial
+   *    signatures, Taproot key-path and script-path signatures) uses such a
+   *    sighash type. MuSig2 partial signatures carry no sighash byte; the
+   *    declared sighash type checked above governs them.
+   *
+   * SIGHASH_NONE, SIGHASH_SINGLE, SIGHASH_ANYONECANPAY, and combinations
+   * thereof leave outputs (or inputs) uncommitted, so a signature produced
+   * under one of them does not bind the signer to the transaction the signer
+   * reviewed. Callers that ingest foreign PSBTs must run this check before
+   * signing and again afterwards.
+   *
+   * @throws Error if any input declares a sighash type, or carries a
+   *         signature, that does not commit to the entire transaction.
+   */
+  assertSighashAllPolicy(): void {
+    this._wasm.assert_sighash_all_policy();
+  }
+
+  /**
    * Get all PSBT outputs with resolved address strings
    *
    * Unlike the generic Psbt class which requires a coin parameter,
