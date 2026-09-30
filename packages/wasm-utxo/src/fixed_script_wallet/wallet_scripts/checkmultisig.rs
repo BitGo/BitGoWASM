@@ -1,20 +1,22 @@
 use crate::bitcoin::blockdata::opcodes::all::OP_CHECKMULTISIG;
 use crate::bitcoin::blockdata::script::Builder;
 use crate::bitcoin::{CompressedPublicKey, ScriptBuf};
-use crate::fixed_script_wallet::wallet_keys::PubTriple;
+use crate::error::WasmUtxoError;
+use crate::fixed_script_wallet::wallet_keys::{require_distinct_pubkeys, PubTriple};
 
 /// Build bare multisig script. Needs to wrapped to be useful as an output script.
-pub fn build_multisig_script_2_of_3(keys: &PubTriple) -> ScriptBuf {
+pub fn build_multisig_script_2_of_3(keys: &PubTriple) -> Result<ScriptBuf, WasmUtxoError> {
+    require_distinct_pubkeys(keys)?;
     let quorum = 2;
     let total_count = 3;
     let mut builder = Builder::default().push_int(quorum as i64);
     for key in keys {
         builder = builder.push_slice(key.to_bytes())
     }
-    builder
+    Ok(builder
         .push_int(total_count as i64)
         .push_opcode(OP_CHECKMULTISIG)
-        .into_script()
+        .into_script())
 }
 
 pub fn parse_multisig_script_2_of_3(script: &ScriptBuf) -> Result<PubTriple, String> {
@@ -71,8 +73,11 @@ pub fn parse_multisig_script_2_of_3(script: &ScriptBuf) -> Result<PubTriple, Str
         }
     }
 
-    keys.try_into()
-        .map_err(|_| "Failed to convert vec to array of 3 keys".to_string())
+    let keys: PubTriple = keys
+        .try_into()
+        .map_err(|_| "Failed to convert vec to array of 3 keys".to_string())?;
+    require_distinct_pubkeys(&keys).map_err(|error| error.to_string())?;
+    Ok(keys)
 }
 
 #[derive(Debug)]
@@ -110,7 +115,7 @@ mod tests {
         let pub_triple = to_pub_triple(&derived_keys);
 
         // Build a valid 2-of-3 multisig script
-        let script = build_multisig_script_2_of_3(&pub_triple);
+        let script = build_multisig_script_2_of_3(&pub_triple).unwrap();
 
         // Parse it back
         let parsed_keys = parse_multisig_script_2_of_3(&script).expect("Should parse valid script");
@@ -128,7 +133,7 @@ mod tests {
             let original_keys = to_pub_triple(&derived_keys);
 
             // Build script from keys
-            let script = build_multisig_script_2_of_3(&original_keys);
+            let script = build_multisig_script_2_of_3(&original_keys).unwrap();
 
             // Parse script back to keys
             let parsed_keys =
@@ -140,6 +145,32 @@ mod tests {
                 "Roundtrip failed for seed: {}",
                 seed
             );
+        }
+    }
+
+    #[test]
+    fn test_multisig_builder_and_parser_reject_duplicate_keys() {
+        let wallet_keys = get_test_wallet_keys("duplicate-multisig-keys");
+        let derived = wallet_keys.derive_path(&chain_index_path(0, 0)).unwrap();
+        let distinct = to_pub_triple(&derived);
+
+        for (first, second) in [(0, 1), (0, 2), (1, 2)] {
+            let mut duplicate = distinct;
+            duplicate[second] = duplicate[first];
+
+            let builder_error = build_multisig_script_2_of_3(&duplicate).unwrap_err();
+            assert!(builder_error.to_string().contains("must be distinct"));
+
+            let script = Builder::new()
+                .push_int(2)
+                .push_slice(duplicate[0].to_bytes())
+                .push_slice(duplicate[1].to_bytes())
+                .push_slice(duplicate[2].to_bytes())
+                .push_int(3)
+                .push_opcode(OP_CHECKMULTISIG)
+                .into_script();
+            let parser_error = parse_multisig_script_2_of_3(&script).unwrap_err();
+            assert!(parser_error.contains("must be distinct"));
         }
     }
 
