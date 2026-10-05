@@ -23,6 +23,7 @@ use orchard::note::{NoteVersion, Nullifier};
 use orchard::pczt::{
     Action as PcztAction, Bundle as PcztBundle, Output as PcztOutput, Spend as PcztSpend,
 };
+use orchard::primitives::redpallas;
 use orchard::value::Sign;
 use orchard::{ProtocolVersion, ValuePool};
 
@@ -149,6 +150,27 @@ pub fn serialize_pczt(bundle: &PcztBundle) -> Result<Vec<u8>, IronwoodPcztError>
     Ok(out)
 }
 
+/// Shared body of the wire patchers: validate the version byte, decode the wire form, apply one
+/// field mutation, and re-encode with the version byte.
+fn with_patched_wire<F>(bytes: &[u8], patch: F) -> Result<Vec<u8>, IronwoodPcztError>
+where
+    F: FnOnce(&mut BundleWire) -> Result<(), IronwoodPcztError>,
+{
+    let (&version, body) = bytes.split_first().ok_or(IronwoodPcztError::Empty)?;
+    if version != FORMAT_VERSION {
+        return Err(IronwoodPcztError::UnsupportedVersion(version));
+    }
+    let mut wire: BundleWire =
+        postcard::from_bytes(body).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
+    patch(&mut wire)?;
+    let reencoded =
+        postcard::to_stdvec(&wire).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
+    let mut out = Vec::with_capacity(1 + reencoded.len());
+    out.push(FORMAT_VERSION);
+    out.extend_from_slice(&reencoded);
+    Ok(out)
+}
+
 /// Splice the prover's `zkproof` bytes into an already-serialized PCZT.
 ///
 /// This is the proof-service response path: `wasm-utxo` sends the signed PCZT (no proof), the
@@ -157,19 +179,10 @@ pub fn serialize_pczt(bundle: &PcztBundle) -> Result<Vec<u8>, IronwoodPcztError>
 /// publicly settable). The proof length is NOT validated here; the Transaction Extractor
 /// ([`orchard::pczt::Bundle::extract`]) rejects non-canonical proof sizes when combining.
 pub fn with_zkproof(bytes: &[u8], proof: Vec<u8>) -> Result<Vec<u8>, IronwoodPcztError> {
-    let (&version, body) = bytes.split_first().ok_or(IronwoodPcztError::Empty)?;
-    if version != FORMAT_VERSION {
-        return Err(IronwoodPcztError::UnsupportedVersion(version));
-    }
-    let mut wire: BundleWire =
-        postcard::from_bytes(body).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
-    wire.zkproof = Some(proof);
-    let mut out = Vec::with_capacity(1 + body.len());
-    out.push(FORMAT_VERSION);
-    let reencoded =
-        postcard::to_stdvec(&wire).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
-    out.extend_from_slice(&reencoded);
-    Ok(out)
+    with_patched_wire(bytes, |wire| {
+        wire.zkproof = Some(proof);
+        Ok(())
+    })
 }
 
 /// Splice a client-encrypted `out_ciphertext` into one action's output of an already-serialized
@@ -184,23 +197,55 @@ pub fn with_out_ciphertext(
     action_index: usize,
     out_ciphertext: super::ironwood_build::OutCiphertextBytes,
 ) -> Result<Vec<u8>, IronwoodPcztError> {
-    let (&version, body) = bytes.split_first().ok_or(IronwoodPcztError::Empty)?;
-    if version != FORMAT_VERSION {
-        return Err(IronwoodPcztError::UnsupportedVersion(version));
-    }
-    let mut wire: BundleWire =
-        postcard::from_bytes(body).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
-    let action = wire
-        .actions
-        .get_mut(action_index)
-        .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?;
-    action.output.out_ciphertext = out_ciphertext.to_vec();
-    let reencoded =
-        postcard::to_stdvec(&wire).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
-    let mut out = Vec::with_capacity(1 + reencoded.len());
-    out.push(FORMAT_VERSION);
-    out.extend_from_slice(&reencoded);
-    Ok(out)
+    with_patched_wire(bytes, |wire| {
+        wire.actions
+            .get_mut(action_index)
+            .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
+            .output
+            .out_ciphertext = out_ciphertext.to_vec();
+        Ok(())
+    })
+}
+
+/// Replace one action spend's `rk` (spend validating key) in an already-serialized PCZT.
+///
+/// Rejects an `rk` that is not a canonical RedPallas verification key; every other field of the
+/// bundle/action is untouched.
+pub fn with_spend_rk(
+    bytes: &[u8],
+    action_index: usize,
+    rk: [u8; 32],
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        let spend = &mut wire
+            .actions
+            .get_mut(action_index)
+            .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
+            .spend;
+        if redpallas::VerificationKey::<redpallas::SpendAuth>::try_from(rk).is_err() {
+            return Err(IronwoodPcztError::BadFieldEncoding("spend.rk"));
+        }
+        spend.rk = rk;
+        Ok(())
+    })
+}
+
+/// Splice one action spend's 64-byte RedPallas `spend_auth_sig` into an already-serialized PCZT.
+///
+/// Only the shape is enforced here; every other field of the bundle/action is untouched.
+pub fn with_spend_auth_sig(
+    bytes: &[u8],
+    action_index: usize,
+    sig: [u8; 64],
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        wire.actions
+            .get_mut(action_index)
+            .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
+            .spend
+            .spend_auth_sig = Some(sig.to_vec());
+        Ok(())
+    })
 }
 
 /// Test-only: replace one action output's `rseed` in the wire form, producing a PCZT whose output
@@ -213,23 +258,14 @@ pub(crate) fn with_output_rseed_for_test(
     action_index: usize,
     rseed: [u8; 32],
 ) -> Result<Vec<u8>, IronwoodPcztError> {
-    let (&version, body) = bytes.split_first().ok_or(IronwoodPcztError::Empty)?;
-    if version != FORMAT_VERSION {
-        return Err(IronwoodPcztError::UnsupportedVersion(version));
-    }
-    let mut wire: BundleWire =
-        postcard::from_bytes(body).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
-    wire.actions
-        .get_mut(action_index)
-        .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
-        .output
-        .rseed = Some(rseed);
-    let reencoded =
-        postcard::to_stdvec(&wire).map_err(|e| IronwoodPcztError::Codec(e.to_string()))?;
-    let mut out = Vec::with_capacity(1 + reencoded.len());
-    out.push(FORMAT_VERSION);
-    out.extend_from_slice(&reencoded);
-    Ok(out)
+    with_patched_wire(bytes, |wire| {
+        wire.actions
+            .get_mut(action_index)
+            .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
+            .output
+            .rseed = Some(rseed);
+        Ok(())
+    })
 }
 
 /// Reconstruct an `orchard` PCZT Ironwood bundle from its wire form.
@@ -447,8 +483,9 @@ fn wire_to_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ff::Field;
     use orchard::builder::{Builder, BundleType};
-    use orchard::keys::{FullViewingKey, Scope, SpendingKey};
+    use orchard::keys::{FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey};
     use orchard::tree::Anchor;
     use orchard::value::NoteValue;
     use rand::rngs::OsRng;
@@ -575,6 +612,77 @@ mod tests {
         assert!(matches!(
             deserialize_pczt(truncated),
             Err(IronwoodPcztError::Codec(_))
+        ));
+    }
+
+    #[test]
+    fn with_spend_rk_replaces_the_rk() {
+        let bytes = serialize_pczt(&sample_pczt()).unwrap();
+        let old_rk = <[u8; 32]>::from(deserialize_pczt(&bytes).unwrap().actions()[0].spend().rk());
+
+        let sk2 = Option::<SpendingKey>::from(SpendingKey::from_bytes([9u8; 32])).unwrap();
+        let new_rk = <[u8; 32]>::from(redpallas::VerificationKey::from(
+            &SpendAuthorizingKey::from(&sk2).randomize(&pasta_curves::pallas::Scalar::ZERO),
+        ));
+        assert_ne!(old_rk, new_rk);
+
+        let patched = with_spend_rk(&bytes, 0, new_rk).unwrap();
+        let bundle = deserialize_pczt(&patched).unwrap();
+        assert_eq!(<[u8; 32]>::from(bundle.actions()[0].spend().rk()), new_rk);
+        assert_eq!(serialize_pczt(&bundle).unwrap(), patched);
+        assert_eq!(with_spend_rk(&patched, 0, new_rk).unwrap(), patched);
+    }
+
+    #[test]
+    fn with_spend_rk_rejects_non_canonical_point() {
+        let bytes = serialize_pczt(&sample_pczt()).unwrap();
+        assert!(matches!(
+            with_spend_rk(&bytes, 0, [0xffu8; 32]),
+            Err(IronwoodPcztError::BadFieldEncoding("spend.rk"))
+        ));
+    }
+
+    #[test]
+    fn with_spend_auth_sig_sets_the_signature() {
+        let bytes = serialize_pczt(&sample_pczt()).unwrap();
+        let sig = [0x42u8; 64];
+        let patched = with_spend_auth_sig(&bytes, 0, sig).unwrap();
+        let bundle = deserialize_pczt(&patched).unwrap();
+        assert_eq!(
+            bundle.actions()[0]
+                .spend()
+                .spend_auth_sig()
+                .as_ref()
+                .map(<[u8; 64]>::from),
+            Some(sig)
+        );
+    }
+
+    #[test]
+    fn with_spend_patchers_reject_bad_context() {
+        let bytes = serialize_pczt(&sample_pczt()).unwrap();
+        let mut bad_version = bytes.clone();
+        bad_version[0] = 0xff;
+        assert!(matches!(
+            with_spend_rk(&bad_version, 0, [1u8; 32]),
+            Err(IronwoodPcztError::UnsupportedVersion(0xff))
+        ));
+        assert!(matches!(
+            with_spend_auth_sig(&bad_version, 0, [1u8; 64]),
+            Err(IronwoodPcztError::UnsupportedVersion(0xff))
+        ));
+        assert!(matches!(
+            with_spend_rk(&[], 0, [1u8; 32]),
+            Err(IronwoodPcztError::Empty)
+        ));
+
+        assert!(matches!(
+            with_spend_rk(&bytes, 1, [1u8; 32]),
+            Err(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))
+        ));
+        assert!(matches!(
+            with_spend_auth_sig(&bytes, 1, [1u8; 64]),
+            Err(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))
         ));
     }
 }
