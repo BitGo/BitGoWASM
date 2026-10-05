@@ -14,8 +14,8 @@ mod mps {
         derive::{HardDeriveOutputEd25519, HardDerivePartyEd25519, MpcDeriveInitEd25519},
         group::{Group, GroupEncoding},
         keygen::{
-            KeyRefreshData, KeygenMsg1, KeygenMsg2, KeygenParty, Keyshare, R0 as DkgR0,
-            R1 as DkgR1, R2 as DkgR2,
+            KeyRefreshData, KeygenMsg1, KeygenMsg2, KeygenParty, Keyshare, RerandMsg1, RerandMsg2,
+            RerandParty, RerandR1, RerandR2, R0 as DkgR0, R1 as DkgR1, R2 as DkgR2,
         },
         sign::{
             messages::{SignMsg1, SignMsg2, SignMsg3},
@@ -264,7 +264,20 @@ mod mps {
     {
         pub msg: SignMsg3<G>,
         pub party: PartialSign<G>,
-        pub alpha: [u8; 32],
+    }
+
+    /// Internal RedPallas rerand state used for round 1.
+    #[derive(Serialize, Deserialize)]
+    struct RedPallasRerandStateR1 {
+        pub msg: RerandMsg1,
+        pub party: RerandParty<RerandR1>,
+    }
+
+    /// Internal RedPallas rerand state used for round 2.
+    #[derive(Serialize, Deserialize)]
+    struct RedPallasRerandStateR2 {
+        pub msg: RerandMsg2,
+        pub party: RerandParty<RerandR2>,
     }
 
     /// Result from processing that includes a public messages for other
@@ -287,6 +300,15 @@ mod mps {
         pub pk: [u8; 32],
     }
 
+    /// Rerandomized keyshare returned from round 2 of RedPallas rerand.
+    /// The share plugs into `redpallas_dsg_round0_process`; the signature then
+    /// verifies against `pk`, and `alpha` is exposed for Orchard proof binding.
+    pub struct RedPallasRerandShare {
+        pub share: Vec<u8>,
+        pub pk: [u8; 32],
+        pub alpha: [u8; 32],
+    }
+
     /// Result from processing that includes a per-recipient message pool and a private state to be stored in memory.
     pub struct MsgStateMap {
         pub msg: HashMap<u8, Vec<u8>>,
@@ -302,28 +324,6 @@ mod mps {
     pub struct RedPallasSignature {
         pub signature: Vec<u8>,
         pub rk: [u8; 32],
-        pub alpha: [u8; 32],
-    }
-
-    trait IntoSignReady<G: GroupElem> {
-        fn into_sign_ready(self) -> Result<(SignReady<G>, [u8; 32]), MpsError>;
-    }
-
-    impl<G: GroupElem> IntoSignReady<G> for SignReady<G> {
-        fn into_sign_ready(self) -> Result<(SignReady<G>, [u8; 32]), MpsError> {
-            Ok((self, [0u8; 32]))
-        }
-    }
-
-    impl<G: GroupElem, T: Serialize> IntoSignReady<G> for (SignReady<G>, T) {
-        fn into_sign_ready(self) -> Result<(SignReady<G>, [u8; 32]), MpsError> {
-            let alpha: [u8; 32] =
-                bincode::serde::encode_to_vec(&self.1, bincode::config::standard())
-                    .map_err(|_| MpsError::SerializationError)?
-                    .try_into()
-                    .map_err(|_| MpsError::SerializationError)?;
-            Ok((self.0, alpha))
-        }
     }
 
     fn rem_prefix(prefix: &str, data: &[u8]) -> Result<Vec<u8>, MpsError> {
@@ -580,9 +580,9 @@ mod mps {
     ) -> Result<MsgState, MpsError>
     where
         G: GroupElem,
-        G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
-        SignerParty<DsgR2<G>, G>: Round<Input = Vec<SignMsg2<G>>, Error = SignError>,
-        <SignerParty<DsgR2<G>, G> as Round>::Output: IntoSignReady<G>,
+        G::Scalar: Serializable,
+        SignerParty<DsgR2<G>, G>:
+            Round<Input = Vec<SignMsg2<G>>, Output = SignReady<G>, Error = SignError>,
         SignReady<G>: Round<Input = (), Output = (PartialSign<G>, SignMsg3<G>), Error = SignError>,
     {
         let i0_msg2: SignMsg2<G> =
@@ -594,18 +594,16 @@ mod mps {
                 .map(|(v, _)| v)
                 .map_err(|_| MpsError::DeserializationError)?;
         let msgs = vec![i0_msg2, state.msg];
-        let (ready_signer, alpha) = state
+        let ready_signer = state
             .party
             .process(msgs)
-            .map_err(|_| MpsError::ProtocolError)?
-            .into_sign_ready()?;
+            .map_err(|_| MpsError::ProtocolError)?;
         let (p3, msg3) = ready_signer
             .process(())
             .map_err(|_| MpsError::ProtocolError)?;
         let new_state = DsgStateR3 {
             msg: msg3.clone(),
             party: p3,
-            alpha,
         };
         Ok(MsgState {
             msg: bincode::serde::encode_to_vec(&msg3, bincode::config::standard())
@@ -618,10 +616,10 @@ mod mps {
     fn internal_dsg_round3_process<G, S, SC>(
         round3_message: &[u8],
         state: &[u8],
-    ) -> Result<(Vec<u8>, G, [u8; 32]), MpsError>
+    ) -> Result<(Vec<u8>, G), MpsError>
     where
         G: GroupElem,
-        G::Scalar: ScalarReduce<[u8; 32]> + Serializable,
+        G::Scalar: Serializable,
         PartialSign<G>: Round<Input = Vec<SignMsg3<G>>, Output = (S, SC), Error = SignError>,
         S: Into<[u8; 64]>,
     {
@@ -634,13 +632,109 @@ mod mps {
                 .map(|(v, _)| v)
                 .map_err(|_| MpsError::DeserializationError)?;
         let public_key = state.party.public_key;
-        let alpha = state.alpha;
         let (sig, _) = state
             .party
             .process(vec![i0_msg3, state.msg])
             .map_err(|_| MpsError::ProtocolError)?;
         let sig_bytes: [u8; 64] = sig.into();
-        Ok((sig_bytes.to_vec(), public_key, alpha))
+        Ok((sig_bytes.to_vec(), public_key))
+    }
+
+    fn internal_rerand_round0_process(share: &[u8]) -> Result<MsgState, MpsError> {
+        // Parse share
+        let keyshare: Keyshare<RedPallasPoint> =
+            bincode::serde::decode_from_slice(share, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
+
+        // Sample entropy and broadcast the commitment
+        let (p1, msg1) = RerandParty::new(keyshare, &mut rand::thread_rng())
+            .process(())
+            .map_err(|_| MpsError::ProtocolError)?;
+
+        // Create the state for storage between rounds
+        let state = RedPallasRerandStateR1 {
+            msg: msg1.clone(),
+            party: p1,
+        };
+
+        Ok(MsgState {
+            msg: bincode::serde::encode_to_vec(msg1, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+            state: bincode::serde::encode_to_vec(&state, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+        })
+    }
+
+    fn internal_rerand_round1_process(
+        round1_message: &[u8],
+        state: &[u8],
+    ) -> Result<MsgState, MpsError> {
+        // Parse state
+        let state: RedPallasRerandStateR1 =
+            bincode::serde::decode_from_slice(state, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
+
+        // Parse message
+        let i0_msg1: RerandMsg1 =
+            bincode::serde::decode_from_slice(round1_message, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
+
+        // The crate expects the full participant set, own commitment included
+        let msgs = vec![i0_msg1, state.msg];
+
+        // Validate the participant set, derive final_session_id, and open
+        let (p2, msg2) = state
+            .party
+            .process(msgs)
+            .map_err(|_| MpsError::ProtocolError)?;
+
+        // Create the state for storage between rounds
+        let state = RedPallasRerandStateR2 {
+            msg: msg2.clone(),
+            party: p2,
+        };
+
+        Ok(MsgState {
+            msg: bincode::serde::encode_to_vec(&msg2, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+            state: bincode::serde::encode_to_vec(&state, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?,
+        })
+    }
+
+    fn internal_rerand_round2_process(
+        round2_message: &[u8],
+        state: &[u8],
+    ) -> Result<(Keyshare<RedPallasPoint>, [u8; 32]), MpsError> {
+        // Parse state
+        let state: RedPallasRerandStateR2 =
+            bincode::serde::decode_from_slice(state, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
+
+        // Parse message
+        let i0_msg2: RerandMsg2 =
+            bincode::serde::decode_from_slice(round2_message, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|_| MpsError::DeserializationError)?;
+
+        // Verify openings, aggregate the randomizers, and tweak the share
+        let msgs = vec![i0_msg2, state.msg];
+        let (share, alpha) = state
+            .party
+            .process(msgs)
+            .map_err(|_| MpsError::ProtocolError)?;
+
+        let alpha_bytes: [u8; 32] =
+            bincode::serde::encode_to_vec(alpha, bincode::config::standard())
+                .map_err(|_| MpsError::SerializationError)?
+                .try_into()
+                .map_err(|_| MpsError::SerializationError)?;
+
+        Ok((share, alpha_bytes))
     }
 
     /// Process round 0 of DKG protocol for Ed25519.
@@ -1213,8 +1307,7 @@ mod mps {
         let round3_message = rem_prefix("mps-ed25519-dsg-round3-message$", round3_message)?;
         let state = rem_prefix("mps-ed25519-dsg-round3-state$", state)?;
 
-        let (sig, _, _) =
-            internal_dsg_round3_process::<EdwardsPoint, _, _>(&round3_message, &state)?;
+        let (sig, _) = internal_dsg_round3_process::<EdwardsPoint, _, _>(&round3_message, &state)?;
 
         Ok(sig)
     }
@@ -1325,19 +1418,64 @@ mod mps {
     }
 
     /// Process round 3 of RedPallas DSG; returns the 64-byte signature and the
-    /// per-session randomized verification key (rk) against which it verifies.
+    /// verification key (rk) against which it verifies. With rerandomization
+    /// moved into the separate rerand protocol, rk is the keyshare's own
+    /// public key — fresh per session when rerand ran before DSG.
     pub fn redpallas_dsg_round3_process(
         round3_message: &[u8],
         state: &[u8],
     ) -> Result<RedPallasSignature, MpsError> {
         let round3_message = rem_prefix("mps-redpallas-dsg-round3-message$", round3_message)?;
         let state = rem_prefix("mps-redpallas-dsg-round3-state$", state)?;
-        let (signature, pk, alpha) =
+        let (signature, pk) =
             internal_dsg_round3_process::<RedPallasPoint, _, _>(&round3_message, &state)?;
         let rk = RedPallasPointBytes::from(pk).0;
-        Ok(RedPallasSignature {
-            signature,
-            rk,
+        Ok(RedPallasSignature { signature, rk })
+    }
+
+    /// Process round 0 of RedPallas rerand; broadcasts the randomizer
+    /// commitment. share: Signing share from RedPallas DKG (unrerandomized).
+    /// Run this before every redpallas_dsg_round0_process.
+    pub fn redpallas_rerand_round0_process(share: &[u8]) -> Result<MsgState, MpsError> {
+        let result = internal_rerand_round0_process(share)?;
+        Ok(MsgState {
+            msg: add_prefix("mps-redpallas-rerand-round1-message$", &result.msg),
+            state: add_prefix("mps-redpallas-rerand-round1-state$", &result.state),
+        })
+    }
+
+    /// Process round 1 of RedPallas rerand; validates the participant set,
+    /// binds the session via the aggregate final_session_id, and opens the
+    /// round-1 commitment.
+    pub fn redpallas_rerand_round1_process(
+        round1_message: &[u8],
+        state: &[u8],
+    ) -> Result<MsgState, MpsError> {
+        let round1_message = rem_prefix("mps-redpallas-rerand-round1-message$", round1_message)?;
+        let state = rem_prefix("mps-redpallas-rerand-round1-state$", state)?;
+        let result = internal_rerand_round1_process(&round1_message, &state)?;
+        Ok(MsgState {
+            msg: add_prefix("mps-redpallas-rerand-round2-message$", &result.msg),
+            state: add_prefix("mps-redpallas-rerand-round2-state$", &result.state),
+        })
+    }
+
+    /// Process round 2 of RedPallas rerand; verifies every opening against its
+    /// commitment and returns the rerandomized keyshare with the aggregate
+    /// alpha. The share feeds redpallas_dsg_round0_process.
+    pub fn redpallas_rerand_round2_process(
+        round2_message: &[u8],
+        state: &[u8],
+    ) -> Result<RedPallasRerandShare, MpsError> {
+        let round2_message = rem_prefix("mps-redpallas-rerand-round2-message$", round2_message)?;
+        let state = rem_prefix("mps-redpallas-rerand-round2-state$", state)?;
+        let (share, alpha) = internal_rerand_round2_process(&round2_message, &state)?;
+        let pk = RedPallasPointBytes::from(share.public_key).0;
+        let share_bytes = bincode::serde::encode_to_vec(&share, bincode::config::standard())
+            .map_err(|_| MpsError::SerializationError)?;
+        Ok(RedPallasRerandShare {
+            share: share_bytes,
+            pk,
             alpha,
         })
     }
@@ -1930,8 +2068,9 @@ mod tests {
             .unwrap();
     }
 
-    /// Test full RedPallas DSG protocol; verifies alpha is non-zero, consistent
-    /// between parties, and that the signature verifies against rk.
+    /// Test full RedPallas rerand + DSG protocol: rerand tweaks the keyshare
+    /// before signing, DSG signs with the rerandomized share, and the
+    /// signature verifies against the rerandomized key (rk), not the DKG key.
     #[test]
     fn test_redpallas_dsg() {
         use orchard::primitives::redpallas::{Signature, SpendAuth, VerificationKey};
@@ -2020,11 +2159,33 @@ mod tests {
 
         let msg = b"Test message for RedPallas signing";
 
-        // DSG round 0
-        let dsg_p0_0 =
-            mps::redpallas_dsg_round0_process(dkg_p0_init.share.as_slice(), msg).unwrap();
-        let dsg_p2_0 =
-            mps::redpallas_dsg_round0_process(dkg_p2_init.share.as_slice(), msg).unwrap();
+        // Rerand rounds (commit, open, tweak) between the signing parties
+        let rr_p0_0 = mps::redpallas_rerand_round0_process(dkg_p0_init.share.as_slice()).unwrap();
+        let rr_p2_0 = mps::redpallas_rerand_round0_process(dkg_p2_init.share.as_slice()).unwrap();
+
+        let rr_p0_1 =
+            mps::redpallas_rerand_round1_process(rr_p2_0.msg.as_slice(), rr_p0_0.state.as_slice())
+                .unwrap();
+        let rr_p2_1 =
+            mps::redpallas_rerand_round1_process(rr_p0_0.msg.as_slice(), rr_p2_0.state.as_slice())
+                .unwrap();
+
+        let rr_p0 =
+            mps::redpallas_rerand_round2_process(rr_p2_1.msg.as_slice(), rr_p0_1.state.as_slice())
+                .unwrap();
+        let rr_p2 =
+            mps::redpallas_rerand_round2_process(rr_p0_1.msg.as_slice(), rr_p2_1.state.as_slice())
+                .unwrap();
+
+        // Both parties derive the same rerandomized key and alpha
+        assert_eq!(rr_p0.pk, rr_p2.pk, "Rerandomized keys differ");
+        assert_ne!(rr_p0.pk, dkg_p0_init.pk, "Rerand must tweak the public key");
+        assert_eq!(rr_p0.alpha, rr_p2.alpha, "Alpha values differ");
+        assert_ne!(rr_p0.alpha, [0u8; 32], "Alpha is zero");
+
+        // DSG round 0 with the rerandomized shares
+        let dsg_p0_0 = mps::redpallas_dsg_round0_process(rr_p0.share.as_slice(), msg).unwrap();
+        let dsg_p2_0 = mps::redpallas_dsg_round0_process(rr_p2.share.as_slice(), msg).unwrap();
 
         // DSG round 1
         let dsg_p0_1 =
@@ -2050,13 +2211,10 @@ mod tests {
             mps::redpallas_dsg_round3_process(dsg_p0_2.msg.as_slice(), dsg_p2_2.state.as_slice())
                 .unwrap();
 
-        // Both parties produce identical outputs
+        // Both parties produce identical outputs; rk is the rerandomized key
         assert_eq!(dsg_p0.signature, dsg_p2.signature, "Signatures differ");
         assert_eq!(dsg_p0.rk, dsg_p2.rk, "Randomized keys differ");
-        assert_eq!(dsg_p0.alpha, dsg_p2.alpha, "Alpha values differ");
-
-        // Alpha is a random field element and must not be zero
-        assert_ne!(dsg_p0.alpha, [0u8; 32], "Alpha is zero");
+        assert_eq!(dsg_p0.rk, rr_p0.pk, "DSG rk must be the rerandomized key");
 
         // Signature verifies against rk, not the original public key
         let rk = VerificationKey::<SpendAuth>::try_from(dsg_p0.rk)
@@ -2066,6 +2224,139 @@ mod tests {
         );
         rk.verify(msg, &sig)
             .expect("signature must verify against rk");
+        assert!(
+            !redpallas_verify(&dkg_p0_init.pk, &dsg_p0.signature, msg).unwrap(),
+            "signature must not verify under the original DKG public key"
+        );
+    }
+
+    /// Test RedPallas rerand tweak math: both parties derive the same alpha,
+    /// each share shifts by d_i' = d_i + alpha and the group public key by
+    /// pk' = pk + G*alpha.
+    #[test]
+    fn test_redpallas_rerand() {
+        use multi_party_schnorr::{
+            common::redpallas::{RedPallasPoint, RedPallasPointBytes},
+            common::traits::ScalarReduce,
+            group::Group,
+        };
+
+        use crate::mps::KeyshareCompat;
+
+        let mut prv_keys = Vec::new();
+        let mut pub_keys = Vec::new();
+        let mut seeds = Vec::new();
+        for i in 0..3 {
+            let secret_key = crypto_box::SecretKey::generate(&mut rand::thread_rng());
+            let public_key = secret_key.public_key();
+            prv_keys.push(secret_key);
+            pub_keys.push((i, public_key));
+            let seed: [u8; 32] = rand::thread_rng().gen();
+            seeds.push(seed);
+        }
+
+        // DKG rounds 0-2 for all three parties; quorum is {0, 2}
+        let dkg_p0_0 = mps::redpallas_dkg_round0_process(
+            0,
+            &prv_keys[0].to_bytes(),
+            &[
+                pub_keys[1].1.to_bytes().to_vec(),
+                pub_keys[2].1.to_bytes().to_vec(),
+            ],
+            &seeds[0],
+        )
+        .unwrap();
+        let dkg_p1_0 = mps::redpallas_dkg_round0_process(
+            1,
+            &prv_keys[1].to_bytes(),
+            &[
+                pub_keys[0].1.to_bytes().to_vec(),
+                pub_keys[2].1.to_bytes().to_vec(),
+            ],
+            &seeds[1],
+        )
+        .unwrap();
+        let dkg_p2_0 = mps::redpallas_dkg_round0_process(
+            2,
+            &prv_keys[2].to_bytes(),
+            &[
+                pub_keys[0].1.to_bytes().to_vec(),
+                pub_keys[1].1.to_bytes().to_vec(),
+            ],
+            &seeds[2],
+        )
+        .unwrap();
+
+        let dkg_p0_1 = mps::redpallas_dkg_round1_process(
+            &[dkg_p1_0.msg.clone(), dkg_p2_0.msg.clone()],
+            dkg_p0_0.state.as_slice(),
+        )
+        .unwrap();
+        let dkg_p1_1 = mps::redpallas_dkg_round1_process(
+            &[dkg_p0_0.msg.clone(), dkg_p2_0.msg.clone()],
+            dkg_p1_0.state.as_slice(),
+        )
+        .unwrap();
+        let dkg_p2_1 = mps::redpallas_dkg_round1_process(
+            &[dkg_p0_0.msg.clone(), dkg_p1_0.msg.clone()],
+            dkg_p2_0.state.as_slice(),
+        )
+        .unwrap();
+
+        let dkg_p0_init = mps::redpallas_dkg_round2_process(
+            &[dkg_p1_1.msg.clone(), dkg_p2_1.msg.clone()],
+            dkg_p0_1.state.as_slice(),
+        )
+        .unwrap();
+        let dkg_p2_init = mps::redpallas_dkg_round2_process(
+            &[dkg_p0_1.msg.clone(), dkg_p1_1.msg.clone()],
+            dkg_p2_1.state.as_slice(),
+        )
+        .unwrap();
+
+        // Rerand rounds between parties 0 and 2
+        let rr_p0_0 = mps::redpallas_rerand_round0_process(dkg_p0_init.share.as_slice()).unwrap();
+        let rr_p2_0 = mps::redpallas_rerand_round0_process(dkg_p2_init.share.as_slice()).unwrap();
+
+        let rr_p0_1 =
+            mps::redpallas_rerand_round1_process(rr_p2_0.msg.as_slice(), rr_p0_0.state.as_slice())
+                .unwrap();
+        let rr_p2_1 =
+            mps::redpallas_rerand_round1_process(rr_p0_0.msg.as_slice(), rr_p2_0.state.as_slice())
+                .unwrap();
+
+        let rr_p0 =
+            mps::redpallas_rerand_round2_process(rr_p2_1.msg.as_slice(), rr_p0_1.state.as_slice())
+                .unwrap();
+        let rr_p2 =
+            mps::redpallas_rerand_round2_process(rr_p0_1.msg.as_slice(), rr_p2_1.state.as_slice())
+                .unwrap();
+
+        // Same alpha and key from both parties, different from the DKG key
+        assert_eq!(rr_p0.alpha, rr_p2.alpha, "Alpha values differ");
+        assert_ne!(rr_p0.alpha, [0u8; 32], "Alpha is zero");
+        assert_eq!(rr_p0.pk, rr_p2.pk, "Rerandomized keys differ");
+        assert_ne!(rr_p0.pk, dkg_p0_init.pk, "Rerand must tweak the public key");
+
+        // Share delta math: d_i' = d_i + alpha and pk' = pk + G*alpha
+        let old_p0: KeyshareCompat<RedPallasPoint> = bincode::serde::decode_from_slice(
+            dkg_p0_init.share.as_slice(),
+            bincode::config::standard(),
+        )
+        .map(|(v, _)| v)
+        .unwrap();
+        let new_p0: KeyshareCompat<RedPallasPoint> =
+            bincode::serde::decode_from_slice(rr_p0.share.as_slice(), bincode::config::standard())
+                .map(|(v, _)| v)
+                .unwrap();
+        let alpha = <pasta_curves::Fq as ScalarReduce<[u8; 32]>>::reduce_from_bytes(&rr_p0.alpha);
+
+        assert_eq!(new_p0.d_i - old_p0.d_i, alpha, "Share delta must be alpha");
+        assert_eq!(
+            RedPallasPointBytes::from(new_p0.public_key - old_p0.public_key).0,
+            RedPallasPointBytes::from(RedPallasPoint::generator() * alpha).0,
+            "Public key delta must be G*alpha"
+        );
     }
 
     /// Orchard requires the spend-validating key `ak` to have a canonical
@@ -2586,7 +2877,6 @@ pub fn redpallas_dsg_round2_process(
 pub struct RedPallasSignature {
     signature: Vec<u8>,
     rk: Vec<u8>,
-    alpha: Vec<u8>,
 }
 
 #[wasm_bindgen]
@@ -2600,11 +2890,6 @@ impl RedPallasSignature {
     pub fn rk(&self) -> Vec<u8> {
         self.rk.clone()
     }
-
-    #[wasm_bindgen(getter)]
-    pub fn alpha(&self) -> Vec<u8> {
-        self.alpha.clone()
-    }
 }
 
 #[wasm_bindgen]
@@ -2617,6 +2902,69 @@ pub fn redpallas_dsg_round3_process(
     Ok(RedPallasSignature {
         signature: result.signature,
         rk: result.rk.to_vec(),
+    })
+}
+
+#[wasm_bindgen]
+pub struct RedPallasRerandShare {
+    share: Vec<u8>,
+    pk: Vec<u8>,
+    alpha: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl RedPallasRerandShare {
+    #[wasm_bindgen(getter)]
+    pub fn share(&self) -> Vec<u8> {
+        self.share.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn pk(&self) -> Vec<u8> {
+        self.pk.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn alpha(&self) -> Vec<u8> {
+        self.alpha.clone()
+    }
+}
+
+#[wasm_bindgen]
+pub fn redpallas_rerand_round0_process(share: &[u8]) -> Result<MsgState, String> {
+    let result = mps::redpallas_rerand_round0_process(share).map_err(|e| e.to_string())?;
+
+    Ok(MsgState {
+        msg: result.msg,
+        state: result.state,
+    })
+}
+
+#[wasm_bindgen]
+pub fn redpallas_rerand_round1_process(
+    round1_message: &[u8],
+    state: &[u8],
+) -> Result<MsgState, String> {
+    let result =
+        mps::redpallas_rerand_round1_process(round1_message, state).map_err(|e| e.to_string())?;
+
+    Ok(MsgState {
+        msg: result.msg,
+        state: result.state,
+    })
+}
+
+#[wasm_bindgen]
+pub fn redpallas_rerand_round2_process(
+    round2_message: &[u8],
+    state: &[u8],
+) -> Result<RedPallasRerandShare, String> {
+    let result =
+        mps::redpallas_rerand_round2_process(round2_message, state).map_err(|e| e.to_string())?;
+
+    Ok(RedPallasRerandShare {
+        share: result.share,
+        pk: result.pk.to_vec(),
         alpha: result.alpha.to_vec(),
     })
 }

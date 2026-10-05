@@ -690,9 +690,9 @@ checksum = "3d97bbf43eb4f088f8ca469930cde17fa036207c9a5e02ccc5107c4e8b17c964"
 
 [[package]]
 name = "multi-party-schnorr"
-version = "1.3.0-pre.11"
+version = "1.3.0-pre.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5856d2fea7c520b5d88ffa949a2d3153ae6c03ddf6e095c5272647cf5bc90507"
+checksum = "3d5f327e3a5278e33de35d5cde7f371c2d569ef2d4429df8c58ffee59b7b192d"
 dependencies = [
  "blake2b_simd",
  "bytemuck",

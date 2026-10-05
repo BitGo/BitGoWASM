@@ -1258,6 +1258,183 @@ describe("mps", function () {
       });
     });
 
+    describe("rerand", function () {
+      // Signing quorum {0, 2}; result arrays are indexed by position.
+      const quorum = [0, 2];
+      const otherIndex = [1, 0];
+      let shares: Array<mps.RedPallasShare>;
+
+      before("performs dkg", function () {
+        const results1 = [0, 1, 2].map((i) =>
+          mps.redpallas_dkg_round0_process(
+            i,
+            keypairs[i].privateKey,
+            otherIndices[i].map((j) => keypairs[j].publicKey),
+            crypto.randomBytes(32),
+          ),
+        );
+        const results2 = [0, 1, 2].map((i) =>
+          mps.redpallas_dkg_round1_process(
+            otherIndices[i].map((j) => results1[j].msg),
+            results1[i].state,
+          ),
+        );
+        shares = [0, 1, 2].map((i) =>
+          mps.redpallas_dkg_round2_process(
+            otherIndices[i].map((j) => results2[j].msg),
+            results2[i].state,
+          ),
+        );
+      });
+
+      it("performs round 0", function () {
+        const messagePrefix = Buffer.from("mps-redpallas-rerand-round1-message$");
+        const statePrefix = Buffer.from("mps-redpallas-rerand-round1-state$");
+        for (const i of quorum) {
+          const result = mps.redpallas_rerand_round0_process(shares[i].share);
+          assert(Buffer.from(result.msg).slice(0, messagePrefix.length).equals(messagePrefix));
+          assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
+        }
+      });
+
+      let results1: Array<mps.MsgState>;
+
+      before("performs round 0", function () {
+        results1 = quorum.map((i) => mps.redpallas_rerand_round0_process(shares[i].share));
+      });
+
+      it("performs round 1", function () {
+        const messagePrefix = Buffer.from("mps-redpallas-rerand-round2-message$");
+        const statePrefix = Buffer.from("mps-redpallas-rerand-round2-state$");
+        for (let i = 0; i < results1.length; i++) {
+          const result = mps.redpallas_rerand_round1_process(
+            results1[otherIndex[i]].msg,
+            results1[i].state,
+          );
+          assert(Buffer.from(result.msg).slice(0, messagePrefix.length).equals(messagePrefix));
+          assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
+        }
+      });
+
+      it("fails to perform round 1 with invalid message prefix", function () {
+        const messagePrefix = Buffer.from("mps-redpallas-rerand-round1-message$");
+        for (let i = 0; i < results1.length; i++) {
+          shouldThrow(() =>
+            mps.redpallas_rerand_round1_process(
+              Buffer.from(results1[otherIndex[i]].msg).slice(messagePrefix.length),
+              results1[i].state,
+            ),
+          );
+          shouldThrow(() =>
+            mps.redpallas_rerand_round1_process(
+              Buffer.concat([
+                Buffer.from("mps-redpallas-rerand-round2-message$"),
+                Buffer.from(results1[otherIndex[i]].msg).slice(messagePrefix.length),
+              ]),
+              results1[i].state,
+            ),
+          );
+        }
+      });
+
+      it("fails to perform round 1 with invalid state prefix", function () {
+        const statePrefix = Buffer.from("mps-redpallas-rerand-round1-state$");
+        for (let i = 0; i < results1.length; i++) {
+          shouldThrow(() =>
+            mps.redpallas_rerand_round1_process(
+              results1[otherIndex[i]].msg,
+              Buffer.from(results1[i].state).slice(statePrefix.length),
+            ),
+          );
+          shouldThrow(() =>
+            mps.redpallas_rerand_round1_process(
+              results1[otherIndex[i]].msg,
+              Buffer.concat([
+                Buffer.from("mps-redpallas-rerand-round2-state$"),
+                Buffer.from(results1[i].state).slice(statePrefix.length),
+              ]),
+            ),
+          );
+        }
+      });
+
+      let results2: Array<mps.MsgState>;
+
+      before("performs round 1", function () {
+        results2 = [0, 1].map((i) =>
+          mps.redpallas_rerand_round1_process(results1[otherIndex[i]].msg, results1[i].state),
+        );
+      });
+
+      it("performs round 2", function () {
+        const rerandShares = [0, 1].map((i) =>
+          mps.redpallas_rerand_round2_process(results2[otherIndex[i]].msg, results2[i].state),
+        );
+        // Both parties agree on the rerandomized public key and alpha
+        assert.deepStrictEqual(rerandShares[0].pk, rerandShares[1].pk, "pk values differ");
+        assert.deepStrictEqual(rerandShares[0].alpha, rerandShares[1].alpha, "alpha values differ");
+        // The rerandomized key differs from the DKG key
+        assert.notDeepStrictEqual(rerandShares[0].pk, shares[0].pk, "pk was not rerandomized");
+        // Alpha is a random field element — must not be zero
+        assert(!rerandShares[0].alpha.every((b) => b === 0), "alpha is zero");
+        // The rerandomized share differs from the original share
+        assert.notDeepStrictEqual(rerandShares[0].share, shares[0].share, "share unchanged");
+      });
+
+      it("produces a fresh alpha per session", function () {
+        const run = () => {
+          const r1 = quorum.map((i) => mps.redpallas_rerand_round0_process(shares[i].share));
+          const r2 = [0, 1].map((i) =>
+            mps.redpallas_rerand_round1_process(r1[otherIndex[i]].msg, r1[i].state),
+          );
+          return mps.redpallas_rerand_round2_process(r2[1].msg, r2[0].state);
+        };
+        assert.notDeepStrictEqual(run().alpha, run().alpha, "alpha reused across sessions");
+      });
+
+      it("fails to perform round 2 with invalid message prefix", function () {
+        const messagePrefix = Buffer.from("mps-redpallas-rerand-round2-message$");
+        for (let i = 0; i < results2.length; i++) {
+          shouldThrow(() =>
+            mps.redpallas_rerand_round2_process(
+              Buffer.from(results2[otherIndex[i]].msg).slice(messagePrefix.length),
+              results2[i].state,
+            ),
+          );
+          shouldThrow(() =>
+            mps.redpallas_rerand_round2_process(
+              Buffer.concat([
+                Buffer.from("mps-redpallas-rerand-round3-message$"),
+                Buffer.from(results2[otherIndex[i]].msg).slice(messagePrefix.length),
+              ]),
+              results2[i].state,
+            ),
+          );
+        }
+      });
+
+      it("fails to perform round 2 with invalid state prefix", function () {
+        const statePrefix = Buffer.from("mps-redpallas-rerand-round2-state$");
+        for (let i = 0; i < results2.length; i++) {
+          shouldThrow(() =>
+            mps.redpallas_rerand_round2_process(
+              results2[otherIndex[i]].msg,
+              Buffer.from(results2[i].state).slice(statePrefix.length),
+            ),
+          );
+          shouldThrow(() =>
+            mps.redpallas_rerand_round2_process(
+              results2[otherIndex[i]].msg,
+              Buffer.concat([
+                Buffer.from("mps-redpallas-rerand-round3-state$"),
+                Buffer.from(results2[i].state).slice(statePrefix.length),
+              ]),
+            ),
+          );
+        }
+      });
+    });
+
     describe("dsg", function () {
       const otherIndex = [1, 0];
       let shares: Array<mps.RedPallasShare>;
@@ -1285,6 +1462,18 @@ describe("mps", function () {
         );
       });
 
+      let rerandShares: Array<mps.RedPallasRerandShare>;
+
+      before("performs rerand", function () {
+        const r1 = [0, 2].map((i) => mps.redpallas_rerand_round0_process(shares[i].share));
+        const r2 = [0, 1].map((i) =>
+          mps.redpallas_rerand_round1_process(r1[otherIndex[i]].msg, r1[i].state),
+        );
+        rerandShares = [0, 1].map((i) =>
+          mps.redpallas_rerand_round2_process(r2[otherIndex[i]].msg, r2[i].state),
+        );
+      });
+
       const message = Buffer.from(
         "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks",
       );
@@ -1292,8 +1481,8 @@ describe("mps", function () {
       it("performs round 0", function () {
         const messagePrefix = Buffer.from("mps-redpallas-dsg-round1-message$");
         const statePrefix = Buffer.from("mps-redpallas-dsg-round1-state$");
-        for (const i of [0, 2]) {
-          const result = mps.redpallas_dsg_round0_process(shares[i].share, message);
+        for (let i = 0; i < rerandShares.length; i++) {
+          const result = mps.redpallas_dsg_round0_process(rerandShares[i].share, message);
           assert(Buffer.from(result.msg).slice(0, messagePrefix.length).equals(messagePrefix));
           assert(Buffer.from(result.state).slice(0, statePrefix.length).equals(statePrefix));
         }
@@ -1302,7 +1491,9 @@ describe("mps", function () {
       let results1: Array<mps.MsgState>;
 
       before("performs round 0", function () {
-        results1 = [0, 2].map((i) => mps.redpallas_dsg_round0_process(shares[i].share, message));
+        results1 = [0, 1].map((i) =>
+          mps.redpallas_dsg_round0_process(rerandShares[i].share, message),
+        );
       });
 
       it("performs round 1", function () {
@@ -1432,11 +1623,11 @@ describe("mps", function () {
         for (let i = 0; i < 2; i++) {
           assert(mps.redpallas_verify(results4[i].rk, results4[i].signature, message));
         }
-        // Both parties produce the same alpha and rk
-        assert.deepStrictEqual(results4[0].alpha, results4[1].alpha, "alpha values differ");
+        // Both parties produce the same rk, equal to the rerandomized public key
         assert.deepStrictEqual(results4[0].rk, results4[1].rk, "rk values differ");
-        // Alpha is a random field element — must not be zero
-        assert(!results4[0].alpha.every((b) => b === 0), "alpha is zero");
+        assert.deepStrictEqual(results4[0].rk, rerandShares[0].pk, "rk is not the rerandomized pk");
+        // The signature must not verify under the un-rerandomized DKG key
+        assert(!mps.redpallas_verify(shares[0].pk, results4[0].signature, message));
       });
 
       it("fails to perform round 3 with invalid message prefix", function () {
