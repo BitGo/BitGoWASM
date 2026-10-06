@@ -3861,7 +3861,9 @@ mod tests {
         let keys = RootWalletKeys::new(get_test_wallet_keys("test_zcash_at_height"));
 
         // Test with Nu5 activation height (mainnet)
-        let nu5_height = NetworkUpgrade::Nu5.mainnet_activation_height();
+        let nu5_height = NetworkUpgrade::Nu5
+            .mainnet_activation_height()
+            .expect("Nu5 has a mainnet activation height");
         let result = BitGoPsbt::new_zcash_at_height(
             Network::Zcash,
             &keys,
@@ -3875,7 +3877,9 @@ mod tests {
         let _ = result.unwrap();
 
         // Test with Nu6 activation height
-        let nu6_height = NetworkUpgrade::Nu6.mainnet_activation_height();
+        let nu6_height = NetworkUpgrade::Nu6
+            .mainnet_activation_height()
+            .expect("Nu6 has a mainnet activation height");
         let result = BitGoPsbt::new_zcash_at_height(
             Network::Zcash,
             &keys,
@@ -3888,7 +3892,10 @@ mod tests {
         assert!(result.is_ok(), "Should succeed for Nu6 height");
 
         // Test with pre-Overwinter height (should fail)
-        let pre_overwinter_height = NetworkUpgrade::Overwinter.mainnet_activation_height() - 1;
+        let pre_overwinter_height = NetworkUpgrade::Overwinter
+            .mainnet_activation_height()
+            .expect("Overwinter has a mainnet activation height")
+            - 1;
         let result = BitGoPsbt::new_zcash_at_height(
             Network::Zcash,
             &keys,
@@ -3941,6 +3948,68 @@ mod tests {
         assert!(
             result.unwrap_err().contains("testnet"),
             "Error message should mention testnet"
+        );
+    }
+
+    /// Regression test for SPT-483: before this guard, a testnet build at a post-NU7 height
+    /// produced a version 4 transaction carrying the NU7 branch id. It signed and queued fine,
+    /// then every broadcast was rejected with "transaction version 4 not supported by the
+    /// network upgrade Nu7" and retried forever. Fail at build time instead.
+    #[test]
+    fn test_new_zcash_at_height_rejects_v4_after_nu7_on_testnet() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use crate::zcash::NetworkUpgrade;
+
+        let keys = RootWalletKeys::new(get_test_wallet_keys("test_zcash_nu7"));
+        let nu7_height = NetworkUpgrade::Nu7.testnet_activation_height();
+
+        // The last pre-NU7 block still builds v4 — the cutover is exact, not approximate.
+        let result = BitGoPsbt::new_zcash_at_height(
+            Network::ZcashTestnet,
+            &keys,
+            nu7_height - 1,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_ok(), "v4 is still valid on the block before NU7");
+
+        // At activation and beyond, a v4 build is refused.
+        for height in [nu7_height, nu7_height + 10_000] {
+            let err = BitGoPsbt::new_zcash_at_height(
+                Network::ZcashTestnet,
+                &keys,
+                height,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect_err("v4 must be refused at or after NU7 activation");
+            assert!(
+                err.contains("NU7") && err.contains("version 4"),
+                "error should name NU7 and the invalid version, got: {err}"
+            );
+        }
+
+        // Mainnet has no assigned NU7 height yet, so the same height stays buildable there.
+        assert!(
+            NetworkUpgrade::Nu7.mainnet_activation_height().is_none(),
+            "this test assumes NU7 mainnet activation is still unassigned"
+        );
+        let result = BitGoPsbt::new_zcash_at_height(
+            Network::Zcash,
+            &keys,
+            nu7_height,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "mainnet is unaffected until NU7 is scheduled"
         );
     }
 

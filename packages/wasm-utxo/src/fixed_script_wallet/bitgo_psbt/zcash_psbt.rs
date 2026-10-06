@@ -121,6 +121,12 @@ impl ZcashBitGoPsbt {
     }
 
     /// Create an empty Zcash PSBT with consensus branch ID resolved from `block_height`.
+    ///
+    /// Rejects a v4 build at or after NU7 activation: per ZIP-2003 a version 4 transaction is
+    /// invalid once NU7 activates, and the node only reports that at broadcast ("transaction
+    /// version 4 not supported by the network upgrade Nu7"), after the transaction has been
+    /// signed and queued. This path only ever builds v4/Sapling, so at those heights it has no
+    /// valid output to produce and must fail loudly instead.
     pub(crate) fn new_at_height(
         network: crate::Network,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
@@ -131,14 +137,26 @@ impl ZcashBitGoPsbt {
         expiry_height: Option<u32>,
     ) -> Result<Self, String> {
         let is_mainnet = matches!(network, crate::Network::Zcash);
+        let network_name = if is_mainnet { "mainnet" } else { "testnet" };
         let consensus_branch_id = crate::zcash::branch_id_for_height(block_height, is_mainnet)
             .ok_or_else(|| {
                 format!(
-                    "Block height {} is before Overwinter activation on {}",
-                    block_height,
-                    if is_mainnet { "mainnet" } else { "testnet" }
+                    "Block height {block_height} is before Overwinter activation on {network_name}"
                 )
             })?;
+
+        if version.unwrap_or(4) == 4 {
+            if let Some(nu7) = crate::zcash::NetworkUpgrade::Nu7.activation_height(is_mainnet) {
+                if block_height >= nu7 {
+                    return Err(format!(
+                        "Block height {block_height} is at or after NU7 activation ({nu7}) on \
+                         {network_name}; version 4 transactions are invalid under NU7 (ZIP-2003). \
+                         Build a v6 (Ironwood) transaction with new_v6_at_height instead"
+                    ));
+                }
+            }
+        }
+
         Ok(Self::new(
             network,
             wallet_keys,
@@ -704,14 +722,21 @@ impl ZcashBitGoPsbt {
         expiry_height: Option<u32>,
     ) -> Result<Self, String> {
         let is_mainnet = matches!(network, crate::Network::Zcash);
-        let nu6_3 = crate::zcash::NetworkUpgrade::Nu6_3.activation_height(is_mainnet);
+        let network_name = if is_mainnet { "mainnet" } else { "testnet" };
+        // NU6.3 has an assigned height on both networks today. Treat an unassigned one as
+        // "not activated here yet" rather than silently skipping the check.
+        let nu6_3 = crate::zcash::NetworkUpgrade::Nu6_3
+            .activation_height(is_mainnet)
+            .ok_or_else(|| {
+                format!(
+                    "NU6.3 (Ironwood) has no assigned activation height on {network_name}; \
+                     v6 transactions cannot be built there"
+                )
+            })?;
         if block_height < nu6_3 {
             return Err(format!(
-                "Block height {} is before NU6.3 (Ironwood) activation ({}) on {}; \
-                 v6 transactions are not valid before then",
-                block_height,
-                nu6_3,
-                if is_mainnet { "mainnet" } else { "testnet" }
+                "Block height {block_height} is before NU6.3 (Ironwood) activation ({nu6_3}) on \
+                 {network_name}; v6 transactions are not valid before then"
             ));
         }
         let consensus_branch_id = crate::zcash::branch_id_for_height(block_height, is_mainnet)
@@ -2561,17 +2586,27 @@ mod ironwood_v6_tests {
         use orchard::value::{NoteValue, ValueCommitment};
         use orchard::Action as OrchardAction;
 
+        // zebra-chain links its own orchard release, a different crate version than ours, so its
+        // `Action` cannot be fed to our `zcash_note_encryption` directly. Round-trip through the
+        // canonical byte encoding of each field to rebuild the action against our orchard.
         let zebra_action = zebra
             .ironwood_actions()
             .next()
             .expect("one ironwood action");
-        let cv_bytes: [u8; 32] = zebra_action.cv.into();
-        let nf_bytes: [u8; 32] = zebra_action.nullifier.into();
-        let rk_bytes: [u8; 32] = zebra_action.rk.into();
-        let cmx_bytes: [u8; 32] = zebra_action.cm_x.into();
-        let epk_bytes: [u8; 32] = zebra_action.ephemeral_key.into();
-        let enc_bytes: [u8; 580] = zebra_action.enc_ciphertext.into();
-        let out_bytes: [u8; 80] = zebra_action.out_ciphertext.into();
+        let cv_bytes: [u8; 32] = zebra_action.cv_net().to_bytes();
+        let nf_bytes: [u8; 32] = zebra_action.nullifier().to_bytes();
+        let rk_bytes: [u8; 32] = zebra_action.rk().into();
+        let cmx_bytes: [u8; 32] = zebra_action.cmx().to_bytes();
+        let encrypted = zebra_action.encrypted_note();
+        let epk_bytes: [u8; 32] = encrypted.epk_bytes;
+        // zebra's newer zcash_note_encryption wraps `enc_ciphertext` in `NoteBytesData`; take the
+        // inner bytes so they land in our crate version's plain-array field.
+        let enc_bytes: [u8; 580] = encrypted
+            .enc_ciphertext
+            .as_ref()
+            .try_into()
+            .expect("enc_ciphertext is 580 bytes");
+        let out_bytes: [u8; 80] = encrypted.out_ciphertext;
 
         let cv_net = Option::from(ValueCommitment::from_bytes(&cv_bytes)).expect("valid cv_net");
         let rk = VerificationKey::<SpendAuth>::try_from(rk_bytes).expect("valid rk");
