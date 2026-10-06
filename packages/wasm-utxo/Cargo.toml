@@ -28,7 +28,12 @@ inspect = ["dep:num-bigint", "dep:serde_json", "dep:hex"]
 # circuit synthesis + proving-key generation), so it's opt-in and off by default — the shipped
 # WASM build (browser consumers) must not link the circuit. Standalone tooling (the CLI) enables
 # it explicitly.
-orchard-proving = ["orchard/circuit"]
+# `halo2_proofs/multicore` is enabled explicitly: orchard takes halo2 with default features off,
+# and halo2 0.3.2's rayon-free (`multicore`-off) configuration does not compile. Previously this
+# came in by accident — zebra-chain 11.2 pulled the same orchard release we use, and its feature
+# set unified onto ours. zebra-chain 14 moved to a newer orchard, so our halo2 is no longer
+# unified with zebra's and has to ask for the feature itself.
+orchard-proving = ["orchard/circuit", "dep:halo2_proofs", "halo2_proofs/multicore"]
 
 [dependencies]
 wasm-bindgen = "0.2"
@@ -59,6 +64,9 @@ orchard = { version = "0.15", default-features = false, features = ["std"] }
 # `IronwoodDomain`. Version pinned to match orchard 0.15's own dependency so the `Domain` impl and
 # this crate's `NoteEncryption<D>` agree on wire types.
 zcash_note_encryption = "0.4"
+# Not used directly — declared only so `orchard-proving` can turn on halo2's `multicore`
+# feature (see that feature's comment). Version must match what orchard 0.15 resolves to.
+halo2_proofs = { version = "0.3.2", optional = true }
 # Scrub the copies of the user's secret key made while deriving the client-managed `ovk`, so the
 # "the ovk never leaves this call" guarantee also covers what is left behind in freed memory.
 zeroize = "1.8"
