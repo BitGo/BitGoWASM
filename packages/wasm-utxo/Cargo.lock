@@ -3763,6 +3763,7 @@ dependencies = [
  "crossbeam-epoch",
  "ff 0.13.1",
  "getrandom 0.2.16",
+ "halo2_proofs 0.3.2",
  "hex",
  "incrementalmerkletree 0.8.2",
  "js-sys",

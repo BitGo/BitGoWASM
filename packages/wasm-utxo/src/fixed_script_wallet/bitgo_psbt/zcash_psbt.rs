@@ -146,14 +146,13 @@ impl ZcashBitGoPsbt {
             })?;
 
         if version.unwrap_or(4) == 4 {
-            if let Some(nu7) = crate::zcash::NetworkUpgrade::Nu7.activation_height(is_mainnet) {
-                if block_height >= nu7 {
-                    return Err(format!(
-                        "Block height {block_height} is at or after NU7 activation ({nu7}) on \
-                         {network_name}; version 4 transactions are invalid under NU7 (ZIP-2003). \
-                         Build a v6 (Ironwood) transaction with new_v6_at_height instead"
-                    ));
-                }
+            let nu7 = crate::zcash::NetworkUpgrade::Nu7.activation_height(is_mainnet);
+            if block_height >= nu7 {
+                return Err(format!(
+                    "Block height {block_height} is at or after NU7 activation ({nu7}) on \
+                     {network_name}; version 4 transactions are invalid under NU7 (ZIP-2003). \
+                     Build a v6 (Ironwood) transaction with new_v6_at_height instead"
+                ));
             }
         }
 
@@ -723,16 +722,7 @@ impl ZcashBitGoPsbt {
     ) -> Result<Self, String> {
         let is_mainnet = matches!(network, crate::Network::Zcash);
         let network_name = if is_mainnet { "mainnet" } else { "testnet" };
-        // NU6.3 has an assigned height on both networks today. Treat an unassigned one as
-        // "not activated here yet" rather than silently skipping the check.
-        let nu6_3 = crate::zcash::NetworkUpgrade::Nu6_3
-            .activation_height(is_mainnet)
-            .ok_or_else(|| {
-                format!(
-                    "NU6.3 (Ironwood) has no assigned activation height on {network_name}; \
-                     v6 transactions cannot be built there"
-                )
-            })?;
+        let nu6_3 = crate::zcash::NetworkUpgrade::Nu6_3.activation_height(is_mainnet);
         if block_height < nu6_3 {
             return Err(format!(
                 "Block height {block_height} is before NU6.3 (Ironwood) activation ({nu6_3}) on \

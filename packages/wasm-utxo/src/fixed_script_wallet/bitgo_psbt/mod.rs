@@ -3861,9 +3861,7 @@ mod tests {
         let keys = RootWalletKeys::new(get_test_wallet_keys("test_zcash_at_height"));
 
         // Test with Nu5 activation height (mainnet)
-        let nu5_height = NetworkUpgrade::Nu5
-            .mainnet_activation_height()
-            .expect("Nu5 has a mainnet activation height");
+        let nu5_height = NetworkUpgrade::Nu5.mainnet_activation_height();
         let result = BitGoPsbt::new_zcash_at_height(
             Network::Zcash,
             &keys,
@@ -3877,9 +3875,7 @@ mod tests {
         let _ = result.unwrap();
 
         // Test with Nu6 activation height
-        let nu6_height = NetworkUpgrade::Nu6
-            .mainnet_activation_height()
-            .expect("Nu6 has a mainnet activation height");
+        let nu6_height = NetworkUpgrade::Nu6.mainnet_activation_height();
         let result = BitGoPsbt::new_zcash_at_height(
             Network::Zcash,
             &keys,
@@ -3892,10 +3888,7 @@ mod tests {
         assert!(result.is_ok(), "Should succeed for Nu6 height");
 
         // Test with pre-Overwinter height (should fail)
-        let pre_overwinter_height = NetworkUpgrade::Overwinter
-            .mainnet_activation_height()
-            .expect("Overwinter has a mainnet activation height")
-            - 1;
+        let pre_overwinter_height = NetworkUpgrade::Overwinter.mainnet_activation_height() - 1;
         let result = BitGoPsbt::new_zcash_at_height(
             Network::Zcash,
             &keys,
@@ -3993,10 +3986,12 @@ mod tests {
             );
         }
 
-        // Mainnet has no assigned NU7 height yet, so the same height stays buildable there.
-        assert!(
-            NetworkUpgrade::Nu7.mainnet_activation_height().is_none(),
-            "this test assumes NU7 mainnet activation is still unassigned"
+        // Mainnet has no assigned NU7 height yet (u32::MAX sentinel), so the same
+        // height stays buildable there.
+        assert_eq!(
+            NetworkUpgrade::Nu7.mainnet_activation_height(),
+            u32::MAX,
+            "this test assumes NU7 mainnet activation is still unassigned (u32::MAX)"
         );
         let result = BitGoPsbt::new_zcash_at_height(
             Network::Zcash,
