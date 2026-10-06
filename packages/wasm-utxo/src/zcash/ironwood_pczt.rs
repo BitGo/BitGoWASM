@@ -248,6 +248,20 @@ pub fn with_spend_auth_sig(
     })
 }
 
+/// Clear one action spend's `alpha` (spend authorizing randomizer) in an already-serialized PCZT.
+///
+/// No-op when already absent; every other field of the bundle/action is untouched.
+pub fn clear_spend_alpha(bytes: &[u8], action_index: usize) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        wire.actions
+            .get_mut(action_index)
+            .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
+            .spend
+            .alpha = None;
+        Ok(())
+    })
+}
+
 /// Test-only: replace one action output's `rseed` in the wire form, producing a PCZT whose output
 /// fields no longer reconstruct the note its `cmx` commits to. Exists to exercise
 /// [`super::ironwood_build::IronwoodBuildError::NoteCommitmentMismatch`], which is otherwise
@@ -684,5 +698,25 @@ mod tests {
             with_spend_auth_sig(&bytes, 1, [1u8; 64]),
             Err(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))
         ));
+    }
+
+    #[test]
+    fn clear_spend_alpha_clears_the_randomizer() {
+        let bytes = serialize_pczt(&sample_pczt()).unwrap();
+        assert!(deserialize_pczt(&bytes).unwrap().actions()[0]
+            .spend()
+            .alpha()
+            .is_some());
+        let cleared = clear_spend_alpha(&bytes, 0).unwrap();
+        assert!(deserialize_pczt(&cleared).unwrap().actions()[0]
+            .spend()
+            .alpha()
+            .is_none());
+        // Idempotent, and the rest of the bundle round-trips byte-stable.
+        assert_eq!(clear_spend_alpha(&cleared, 0).unwrap(), cleared);
+        assert_eq!(
+            serialize_pczt(&deserialize_pczt(&cleared).unwrap()).unwrap(),
+            cleared
+        );
     }
 }

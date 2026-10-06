@@ -1,12 +1,15 @@
 //! Bridge between the `orchard` PCZT roles and the v6 [`IronwoodBundle`] wire type.
 //!
-//! For a transparent → Ironwood shielding transaction, `wasm-utxo` plays three of the four
-//! `orchard` PCZT roles; the fourth (Prover) runs in an external service:
+//! For an Ironwood bundle — shielding (outputs only), unshielding (spends only), or shielded
+//! transfer — `wasm-utxo` plays three of the four `orchard` PCZT roles; the fourth (Prover) runs
+//! in an external service:
 //!
-//! - **Constructor** ([`construct_shield_pczt`]): builds the shielded bundle — one output note to
-//!   the recipient, padded with a dummy spend — as an `orchard::pczt::Bundle` with no proof or
-//!   signatures yet. All action data (value commitments, note commitments, ciphertexts) is fixed
-//!   here, and it is exactly what the ZIP-244 shielded sighash commits to.
+//! - **Constructor** ([`construct_spend_pczt_multi`]): builds the bundle from real spends (each
+//!   carrying its full note plaintext) and/or requested outputs (each padded with a dummy spend)
+//!   as an `orchard::pczt::Bundle` with no proof or signatures yet. All action data (value
+//!   commitments, note commitments, ciphertexts) is fixed here, and it is exactly what the
+//!   ZIP-244 shielded sighash commits to. Real spends carry only a placeholder `rk` and no
+//!   `alpha` — the signing service owns both.
 //! - **IO Finalizer / Signer** ([`finalize_shield_io`]): derives the binding signing key (`bsk`)
 //!   and signs the dummy spends over the now-fixed shielded sighash.
 //! - **Transaction Extractor** ([`combine`]): given the signed PCZT with the prover's `zkproof`
@@ -30,8 +33,8 @@ use rand::{CryptoRng, RngCore};
 
 use orchard::builder::{Builder, BundleType};
 use orchard::bundle::BundleVersion;
-use orchard::keys::OutgoingViewingKey;
-use orchard::note::ExtractedNoteCommitment;
+use orchard::keys::{FullViewingKey, OutgoingViewingKey, Scope};
+use orchard::note::{ExtractedNoteCommitment, Note, NoteVersion, RandomSeed, Rho};
 use orchard::pczt::Bundle as PcztBundle;
 use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath};
 use orchard::value::NoteValue;
@@ -52,6 +55,8 @@ pub const OVK_SIZE: usize = 32;
 /// Length of the ZIP-302 memo field in bytes.
 pub const MEMO_SIZE: usize = 512;
 
+/// Length of an Orchard/Ironwood full viewing key in bytes (`ak ‖ nk ‖ rivk`).
+pub const FVK_SIZE: usize = 96;
 /// A raw Orchard/Ironwood receiver.
 pub type OrchardAddressBytes = [u8; ORCHARD_ADDRESS_SIZE];
 /// An Ironwood note-commitment-tree root.
@@ -60,6 +65,11 @@ pub type AnchorBytes = [u8; ANCHOR_SIZE];
 pub type OvkBytes = [u8; OVK_SIZE];
 /// A ZIP-302 memo field.
 pub type MemoBytes = [u8; MEMO_SIZE];
+/// A raw Orchard/Ironwood full viewing key.
+pub type FvkBytes = [u8; FVK_SIZE];
+/// Proprietary key under which a real spend's on-chain note commitment (`cmx`) is recorded in its
+/// action's proprietary map (reconciliation/audit; the PCZT spend side has no dedicated cmx field).
+pub const CMX_PROPRIETARY_KEY: &str = "cmx";
 
 /// Merkle depth of the Ironwood/Orchard note commitment tree.
 pub const IRONWOOD_MERKLE_DEPTH: usize = 32;
@@ -68,9 +78,9 @@ pub const IRONWOOD_MERKLE_DEPTH: usize = 32;
 /// leaf-to-root order.
 pub type WitnessAuthPath = [[u8; 32]; IRONWOOD_MERKLE_DEPTH];
 
-/// A validated Merkle witness for a note commitment, ready to be installed into a spend once
-/// real-spend construction exists (see module docs — that wiring is out of scope for now).
-#[derive(Debug, PartialEq)]
+/// A validated Merkle witness for a note commitment, installable into a real spend via
+/// `Builder::add_spend` (see [`construct_spend_pczt_multi`]).
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct IronwoodWitness {
     pub position: u32,
     pub auth_path: WitnessAuthPath,
@@ -145,7 +155,7 @@ pub enum IronwoodBuildError {
     Finalize(String),
     /// The Transaction Extractor rejected the PCZT (missing proof/sig/bsk, or a non-canonical proof).
     Extract(String),
-    /// The bundle had no actions (nothing to shield).
+    /// The bundle had no spends and no outputs.
     EmptyBundle,
     /// Binding the bundle failed: either the spend-auth signatures didn't verify against the
     /// sighash, or `bsk` (set by [`finalize_shield_io`]) is missing or does not match the bundle's
@@ -180,6 +190,17 @@ pub enum IronwoodBuildError {
     /// `cap` does not have enough detail to compute a sibling root above the shard (e.g. a `Nil`
     /// or pruned `Leaf` node covers a range that a witness sibling needs to be split out of).
     CapNodeMissing,
+    /// The full viewing key bytes are not a valid Orchard/Ironwood FVK.
+    BadFvk,
+    /// The bundle's spends use more than one full viewing key; one wallet (one FVK) per bundle,
+    /// because the output `ovk` defaults to the spending FVK's own.
+    MixedSpendingFvks,
+    /// The orchard PCZT Updater role rejected an update (e.g. an action index out of range).
+    Updater(String),
+    /// The PCZT wire round-trip (serialize/patch/deserialize) failed.
+    PcztWire(String),
+    /// The orchard PCZT Verifier rejected the bundle, with the failing check/action as context.
+    Verify(String),
 }
 
 impl core::fmt::Display for IronwoodBuildError {
@@ -237,13 +258,21 @@ impl core::fmt::Display for IronwoodBuildError {
                 f,
                 "ironwood-build: cap does not have enough detail to compute a sibling root"
             ),
+            Self::BadFvk => write!(f, "ironwood-build: invalid full viewing key bytes"),
+            Self::MixedSpendingFvks => write!(
+                f,
+                "ironwood-build: all spends in one bundle must share one full viewing key"
+            ),
+            Self::Updater(e) => write!(f, "ironwood-build: PCZT updater error: {e}"),
+            Self::PcztWire(e) => write!(f, "ironwood-build: PCZT wire error: {e}"),
+            Self::Verify(e) => write!(f, "ironwood-build: PCZT verification failed: {e}"),
         }
     }
 }
 
 crate::impl_wasm_error_code!(IronwoodBuildError);
 
-/// One requested Ironwood shielded output, as passed to [`construct_shield_pczt_multi`].
+/// One requested Ironwood shielded output, as passed to [`construct_spend_pczt_multi`].
 #[derive(Clone, Copy)]
 pub struct IronwoodOutputSpec {
     /// 43-byte raw Orchard/Ironwood address.
@@ -251,46 +280,130 @@ pub struct IronwoodOutputSpec {
     /// Note value in zatoshi.
     pub amount: u64,
     /// Outgoing viewing key, if the output should be recoverable by the sender; `None` for a
-    /// keyless build.
+    /// keyless build, or in a bundle with real spends (the spending FVK's external `ovk` is then
+    /// used).
     pub ovk: Option<OvkBytes>,
     /// ZIP-302 memo field.
     pub memo: MemoBytes,
 }
 
-/// Constructor: build a transparent → Ironwood shielding bundle with one or more outputs, as an
-/// orchard PCZT.
+/// One Ironwood note to spend, as passed to [`construct_spend_pczt_multi`].
 ///
-/// Each entry in `outputs` becomes one output note, each paired with a fabricated dummy spend
-/// (`BundleType::UNPADDED` ⇒ exactly `outputs.len()` actions, no additional padding). `anchor` is
-/// the current Ironwood note-commitment-tree root, shared by every action. `rng` must be a CSPRNG —
-/// it seeds the note randomness (`rseed`, `rcv`) that fixes the action data.
+/// Everything except the witness is the note's plaintext from the wallet's own note record: the
+/// FVK must own the note, the reconstructed note must commit to `cmx`, and the witness must
+/// recompute to the bundle's anchor. The FVK is carried in the PCZT in plaintext — the prover
+/// needs `nk` to re-derive the nullifier — and its `ak` doubles as the placeholder `rk` until the
+/// signing service replaces it.
+#[derive(Clone, Copy, Debug)]
+pub struct IronwoodSpendSpec {
+    /// Raw full viewing key, 96 bytes: `ak ‖ nk ‖ rivk` (orchard's `FullViewingKey::to_bytes`
+    /// layout). All spends in one bundle must share the same FVK.
+    pub fvk: FvkBytes,
+    /// The spent note's recipient: 43-byte raw Orchard/Ironwood address.
+    pub recipient: OrchardAddressBytes,
+    /// Note value in zatoshi.
+    pub value: u64,
+    /// The spent note's `rho` — the nullifier of the action that created the note.
+    pub rho: [u8; 32],
+    /// The spent note's random seed.
+    pub rseed: [u8; 32],
+    /// The note commitment the spent note's on-chain action carried; the reconstructed note must
+    /// commit to exactly this.
+    pub cmx: [u8; 32],
+    /// Merkle witness for `cmx` at the bundle's anchor.
+    pub witness: IronwoodWitness,
+}
+/// Constructor: build an Ironwood bundle as an orchard PCZT from real spends and/or requested
+/// outputs — the general Constructor for the shielding (outputs only), unshielding (spends only),
+/// and shielded-transfer flows.
 ///
-/// Actions are randomized (reordered) relative to `outputs`' order (see
-/// `orchard::builder::BundleMetadata`), so the returned `Vec<usize>` gives, for each `outputs[i]`,
-/// the action index it landed at in the bundle — callers that need to associate per-output data (a
-/// stored Unified Address, a per-output `ovk` re-encryption) with the right action must go through
-/// this mapping rather than assuming index `i`.
+/// `BundleType::UNPADDED` ⇒ exactly `max(spends.len(), outputs.len())` actions, no additional
+/// padding; where an action pairs a real side with a missing one, the missing side is the
+/// protocol's dummy (a fabricated zero-value spend for shielding, a dummy output description for
+/// spend-only actions).
 ///
-/// The returned PCZT carries no signatures or proof yet; run [`finalize_shield_io`] once the sighash
-/// is known, then hand it to the prover and [`combine`].
-pub fn construct_shield_pczt_multi<R: RngCore + CryptoRng>(
+/// Every spend must share one full viewing key (one wallet per bundle), because an output's `ovk`
+/// defaults to that FVK's own external `ovk` (`fvk.to_ovk(Scope::External)`) — so an output with
+/// `ovk: None` in a bundle with real spends gets its `out_ciphertext` finalized at construction;
+/// in the spend-free (shielding) case `None` still means a keyless build.
+///
+/// `anchor` is the Ironwood note-commitment-tree root every spend's witness must recompute to.
+/// `rng` must be a CSPRNG — it seeds the builder's internal randomness.
+///
+/// Actions are randomized (reordered) relative to the `spends`/`outputs` order (see
+/// `orchard::builder::BundleMetadata`), so the returned index vectors give, for each
+/// `spends[i]`/`outputs[i]`, the action index it landed at in the bundle — callers that need to
+/// associate per-spend or per-output data with the right action must go through these mappings
+/// rather than assuming index `i`.
+///
+/// The returned PCZT carries no signatures or proof yet. Real spends carry the full note plaintext
+/// (fvk/recipient/value/rho/rseed/witness) but only a placeholder `rk` (the spend's `ak`) and no
+/// `alpha` — the signing service owns both; see [`scrub_spend_randomizers`]. Run
+/// [`finalize_shield_io`] once the sighash is known, then hand the PCZT to the prover and
+/// [`combine`].
+pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
+    spends: &[IronwoodSpendSpec],
     outputs: &[IronwoodOutputSpec],
     anchor: &AnchorBytes,
     rng: R,
-) -> Result<(PcztBundle, Vec<usize>), IronwoodBuildError> {
-    if outputs.is_empty() {
+) -> Result<(PcztBundle, Vec<usize>, Vec<usize>), IronwoodBuildError> {
+    if spends.is_empty() && outputs.is_empty() {
         return Err(IronwoodBuildError::EmptyBundle);
     }
-    let anchor = Option::from(Anchor::from_bytes(*anchor)).ok_or(IronwoodBuildError::BadAnchor)?;
+    let anchor_root =
+        Option::from(Anchor::from_bytes(*anchor)).ok_or(IronwoodBuildError::BadAnchor)?;
 
     let bundle_version = BundleVersion::ironwood_v3();
-    let flags = bundle_version.default_flags();
-    let mut builder = Builder::new(BundleType::UNPADDED, bundle_version, flags, anchor)
-        .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
+    let mut builder = Builder::new(
+        BundleType::UNPADDED,
+        bundle_version,
+        bundle_version.default_flags(),
+        anchor_root,
+    )
+    .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
+
+    // Parse and validate every spend's note data before touching the builder: typed errors here
+    // instead of the builder's opaque SpendError strings.
+    let parsed: Vec<ParsedSpend> = spends
+        .iter()
+        .map(|spec| parse_spend_spec(spec, anchor, bundle_version.note_version()))
+        .collect::<Result<_, _>>()?;
+    // One wallet = one FVK per bundle; a differing FVK is rejected before the note-ownership
+    // check in the builder (which would fail anyway with the wrong FVK).
+    if let Some(first) = parsed.first() {
+        if parsed
+            .iter()
+            .any(|p| p.fvk.to_bytes() != first.fvk.to_bytes())
+        {
+            return Err(IronwoodBuildError::MixedSpendingFvks);
+        }
+    }
+    let default_ovk = parsed
+        .first()
+        .map(|p| *p.fvk.to_ovk(Scope::External).as_ref());
+    let spend_ak_bytes: Vec<[u8; 32]> = parsed
+        .iter()
+        .map(|p| {
+            let mut ak = [0u8; 32];
+            ak.copy_from_slice(&p.fvk.to_bytes()[..32]);
+            ak
+        })
+        .collect();
+    for ParsedSpend {
+        fvk,
+        note,
+        merkle_path,
+    } in parsed
+    {
+        builder
+            .add_spend(fvk, note, merkle_path)
+            .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
+    }
+
     for spec in outputs {
         let recipient = Option::from(Address::from_raw_address_bytes(&spec.recipient))
             .ok_or(IronwoodBuildError::BadRecipient)?;
-        let ovk = spec.ovk.map(OutgoingViewingKey::from);
+        let ovk = spec.ovk.or(default_ovk).map(OutgoingViewingKey::from);
         builder
             .add_output(ovk, recipient, NoteValue::from_raw(spec.amount), spec.memo)
             .map_err(|e| IronwoodBuildError::Output(e.to_string()))?;
@@ -298,13 +411,170 @@ pub fn construct_shield_pczt_multi<R: RngCore + CryptoRng>(
     let (bundle, meta) = builder
         .build_for_pczt(rng)
         .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
-    let action_indices = (0..outputs.len())
+    let spend_indices = (0..spends.len())
+        .map(|i| {
+            meta.spend_action_index(i)
+                .ok_or(IronwoodBuildError::ActionIndexOutOfRange)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let output_indices = (0..outputs.len())
         .map(|i| {
             meta.output_action_index(i)
                 .ok_or(IronwoodBuildError::ActionIndexOutOfRange)
         })
         .collect::<Result<Vec<_>, _>>()?;
+
+    // Record the spent note's cmx per real-spend action for reconciliation, then strip what the
+    // signing service owns: the builder bakes a random `alpha` and a randomized `rk` into every
+    // real spend at build time, but `alpha` is derived at signing — the persisted PCZT carries
+    // only the placeholder. Dummy spends are untouched (the IO Finalizer signs them from their
+    // stored alpha/dummy_sk).
+    let mut bundle = bundle;
+    for (i, spec) in spends.iter().enumerate() {
+        let idx = spend_indices[i];
+        bundle
+            .update_with(|mut u| {
+                u.update_action_with(idx, |mut a| {
+                    a.set_spend_proprietary(CMX_PROPRIETARY_KEY.to_string(), spec.cmx.to_vec());
+                    Ok(())
+                })
+            })
+            .map_err(|e| IronwoodBuildError::Updater(e.to_string()))?;
+    }
+    let bundle = scrub_spend_randomizers(&bundle, &spend_indices, &spend_ak_bytes)?;
+    Ok((bundle, spend_indices, output_indices))
+}
+
+/// Constructor: build a transparent → Ironwood shielding bundle (no real spends) as an orchard
+/// PCZT, for one or more outputs. A thin wrapper over [`construct_spend_pczt_multi`]; see it for
+/// the general (and multi-output) contract.
+pub fn construct_shield_pczt_multi<R: RngCore + CryptoRng>(
+    outputs: &[IronwoodOutputSpec],
+    anchor: &AnchorBytes,
+    rng: R,
+) -> Result<(PcztBundle, Vec<usize>), IronwoodBuildError> {
+    let (bundle, _spend_indices, action_indices) =
+        construct_spend_pczt_multi(&[], outputs, anchor, rng)?;
     Ok((bundle, action_indices))
+}
+
+/// The parsed-and-validated values one real spend contributes to the builder.
+struct ParsedSpend {
+    fvk: FullViewingKey,
+    note: Note,
+    merkle_path: MerklePath,
+}
+
+/// Parse and validate one real spend's note data — typed errors instead of the builder's opaque
+/// `SpendError` strings:
+///
+/// - the FVK bytes must parse as an Orchard/Ironwood full viewing key
+///   ([`IronwoodBuildError::BadFvk`]);
+/// - the recipient bytes must be a valid raw address ([`IronwoodBuildError::BadRecipient`]);
+/// - the note reconstructed from (`recipient`, `value`, `rho`, `rseed`) must be internally valid
+///   ([`IronwoodBuildError::InvalidNote`]) and must commit to exactly `spec.cmx`
+///   ([`IronwoodBuildError::NoteCommitmentMismatch`]);
+/// - the witness must recompute to the bundle's anchor (the `build_ironwood_witness` errors).
+fn parse_spend_spec(
+    spec: &IronwoodSpendSpec,
+    anchor: &AnchorBytes,
+    note_version: NoteVersion,
+) -> Result<ParsedSpend, IronwoodBuildError> {
+    let fvk = FullViewingKey::from_bytes(&spec.fvk).ok_or(IronwoodBuildError::BadFvk)?;
+    let recipient = Option::from(Address::from_raw_address_bytes(&spec.recipient))
+        .ok_or(IronwoodBuildError::BadRecipient)?;
+    let rho = Option::from(Rho::from_bytes(&spec.rho)).ok_or(IronwoodBuildError::InvalidNote)?;
+    let rseed = Option::from(RandomSeed::from_bytes(spec.rseed, &rho))
+        .ok_or(IronwoodBuildError::InvalidNote)?;
+    let note: Note = Option::from(Note::from_parts(
+        recipient,
+        NoteValue::from_raw(spec.value),
+        rho,
+        rseed,
+        note_version,
+    ))
+    .ok_or(IronwoodBuildError::InvalidNote)?;
+
+    if ExtractedNoteCommitment::from(note.commitment()).to_bytes() != spec.cmx {
+        return Err(IronwoodBuildError::NoteCommitmentMismatch);
+    }
+    build_ironwood_witness(
+        &spec.cmx,
+        spec.witness.position,
+        &spec.witness.auth_path,
+        anchor,
+    )?;
+
+    let mut sibling_hashes = [MerkleHashOrchard::empty_leaf(); IRONWOOD_MERKLE_DEPTH];
+    for (to, from) in sibling_hashes.iter_mut().zip(spec.witness.auth_path.iter()) {
+        *to = parse_hash(from)?;
+    }
+    Ok(ParsedSpend {
+        fvk,
+        note,
+        merkle_path: MerklePath::from_parts(spec.witness.position, sibling_hashes),
+    })
+}
+
+/// Strip the builder-generated spend authorizing data from every real spend, through the wire
+/// form (the only place a built PCZT's `alpha`/`rk` are writable): `alpha` cleared, `rk` replaced
+/// with the spend's own `ak` — `ak.randomize(0)`, a valid point so `Spend::parse` accepts the
+/// placeholder. Dummy spends are untouched: their stored `alpha`/`dummy_sk` are what the IO
+/// Finalizer signs with.
+fn scrub_spend_randomizers(
+    bundle: &PcztBundle,
+    spend_indices: &[usize],
+    spend_ak_bytes: &[[u8; 32]],
+) -> Result<PcztBundle, IronwoodBuildError> {
+    use super::ironwood_pczt::{
+        clear_spend_alpha, deserialize_pczt, serialize_pczt, with_spend_rk, IronwoodPcztError,
+    };
+    let map = |e: IronwoodPcztError| IronwoodBuildError::PcztWire(e.to_string());
+
+    let mut bytes = serialize_pczt(bundle).map_err(map)?;
+    for (i, ak) in spend_ak_bytes.iter().enumerate() {
+        let idx = spend_indices[i];
+        bytes = clear_spend_alpha(&bytes, idx).map_err(map)?;
+        bytes = with_spend_rk(&bytes, idx, *ak).map_err(map)?;
+    }
+    deserialize_pczt(&bytes).map_err(map)
+}
+
+/// Verifier: run the orchard PCZT checks that are meaningful for a constructed bundle, before it
+/// is signed/proven. Each check runs only where its fields exist:
+///
+/// - every real spend (its `fvk` present) — `verify_nullifier` re-derives the note and nullifier
+///   from the stored plaintext and checks both against the wire `nullifier` and the FVK;
+/// - every real output (its `recipient` present) — `verify_note_commitment`;
+/// - actions with both sides real — `verify_cv_net`.
+///
+/// `verify_rk` is deliberately skipped: it requires a stored `alpha`, which real spends do not
+/// carry (the signing service owns it); the randomized `rk` is validated when the spend-auth
+/// signature verifies against it.
+pub fn verify_spend_pczt(bundle: &PcztBundle) -> Result<(), IronwoodBuildError> {
+    bundle
+        .verify_cross_address_restriction()
+        .map_err(|e| IronwoodBuildError::Verify(e.to_string()))?;
+    for (i, action) in bundle.actions().iter().enumerate() {
+        let spend = action.spend();
+        let output = action.output();
+        if spend.fvk().is_some() {
+            spend.verify_nullifier(None).map_err(|e| {
+                IronwoodBuildError::Verify(format!("spend action {i}: nullifier: {e}"))
+            })?;
+        }
+        if output.recipient().is_some() {
+            output.verify_note_commitment(spend).map_err(|e| {
+                IronwoodBuildError::Verify(format!("output action {i}: note commitment: {e}"))
+            })?;
+        }
+        if spend.fvk().is_some() && output.recipient().is_some() {
+            action.verify_cv_net().map_err(|e| {
+                IronwoodBuildError::Verify(format!("action {i}: value commitment: {e}"))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Constructor: build a transparent → Ironwood shielding bundle as an orchard PCZT, for a single
@@ -736,7 +1006,8 @@ pub fn compute_out_ciphertext<R: RngCore + CryptoRng>(
 mod tests {
     use super::*;
     use crate::zcash::ironwood_pczt::{
-        deserialize_pczt, serialize_pczt, with_out_ciphertext, with_zkproof,
+        deserialize_pczt, serialize_pczt, with_out_ciphertext, with_output_rseed_for_test,
+        with_zkproof,
     };
     use crate::zcash::transaction::ZCASH_IRONWOOD_VERSION_GROUP_ID;
     use crate::zcash::v6::{
@@ -748,6 +1019,7 @@ mod tests {
         Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
     };
     use orchard::keys::{FullViewingKey, Scope, SpendingKey};
+    use orchard::note::{Note, RandomSeed, Rho};
     use orchard::Proof;
     use rand::rngs::OsRng;
 
@@ -1998,5 +2270,297 @@ mod tests {
         let encoded = encode_v6_transaction(&tx).unwrap();
         let decoded = decode_v6_transaction(&encoded).unwrap();
         assert_eq!(decoded, tx);
+    }
+
+    // ---- Real-spend construction (Constructor role) ----
+
+    /// A real-spend fixture: a wallet note (fvk/recipient/value/rho/rseed) plus a self-consistent
+    /// witness path around its cmx — what a wallet that scanned the note would supply. Returns the
+    /// bundle `anchor` the witness recomputes to.
+    fn test_spend_spec() -> (IronwoodSpendSpec, AnchorBytes) {
+        let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([7u8; 32])).unwrap();
+        let fvk = FullViewingKey::from(&sk);
+        let recipient = fvk.address_at(0u32, Scope::External).to_raw_address_bytes();
+        let rho = Option::<Rho>::from(Rho::from_bytes(&field_bytes(100))).unwrap();
+        let rseed = Option::<RandomSeed>::from(RandomSeed::from_bytes([42u8; 32], &rho)).unwrap();
+        let address = Option::<Address>::from(Address::from_raw_address_bytes(&recipient)).unwrap();
+        let note = Option::<Note>::from(Note::from_parts(
+            address,
+            NoteValue::from_raw(100_000_000),
+            rho,
+            rseed,
+            BundleVersion::ironwood_v3().note_version(),
+        ))
+        .unwrap();
+        let cmx = ExtractedNoteCommitment::from(note.commitment()).to_bytes();
+
+        let position = 5u32;
+        let auth_path: WitnessAuthPath = std::array::from_fn(|i| field_bytes(i as u64 + 1));
+        let sibling_hashes: [MerkleHashOrchard; IRONWOOD_MERKLE_DEPTH] =
+            auth_path.map(|s| Option::from(MerkleHashOrchard::from_bytes(&s)).unwrap());
+        let anchor = MerklePath::from_parts(position, sibling_hashes)
+            .root(
+                Option::<ExtractedNoteCommitment>::from(ExtractedNoteCommitment::from_bytes(&cmx))
+                    .unwrap(),
+            )
+            .to_bytes();
+
+        (
+            IronwoodSpendSpec {
+                fvk: fvk.to_bytes(),
+                recipient,
+                value: 100_000_000,
+                rho: rho.to_bytes(),
+                rseed: *rseed.as_bytes(),
+                cmx,
+                witness: IronwoodWitness {
+                    position,
+                    auth_path,
+                },
+            },
+            anchor,
+        )
+    }
+
+    #[test]
+    fn construct_spend_pczt_builds_a_real_spend_bundle() {
+        let (spec, anchor) = test_spend_spec();
+        let (bundle, spend_indices, output_indices) =
+            construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
+        assert_eq!(spend_indices, vec![0], "one spend ⇒ one action");
+        assert!(output_indices.is_empty());
+
+        let spend = bundle.actions()[0].spend();
+        let fvk = FullViewingKey::from_bytes(&spec.fvk).unwrap();
+        // The persisted PCZT carries only the placeholder: no alpha, rk = ak (a zero randomizer).
+        assert!(spend.alpha().is_none());
+        assert_eq!(
+            <[u8; 32]>::from(spend.rk()),
+            <[u8; 32]>::try_from(&fvk.to_bytes()[0..32]).unwrap()
+        );
+        // Full note plaintext, exactly what the caller supplied.
+        assert_eq!(spend.value().as_ref().map(|v| v.inner()), Some(spec.value));
+        assert_eq!(spend.rho().as_ref().map(|r| r.to_bytes()), Some(spec.rho));
+        assert_eq!(
+            spend.rseed().as_ref().map(|r| *r.as_bytes()),
+            Some(spec.rseed)
+        );
+        assert_eq!(
+            spend
+                .recipient()
+                .as_ref()
+                .map(|a| a.to_raw_address_bytes().to_vec()),
+            Some(spec.recipient.to_vec())
+        );
+        assert_eq!(spend.fvk().as_ref().map(|f| f.to_bytes()), Some(spec.fvk));
+        assert!(spend.witness().is_some());
+        assert!(spend.spend_auth_sig().is_none());
+        assert!(spend.dummy_sk().is_none());
+        assert_eq!(
+            spend
+                .proprietary()
+                .get(CMX_PROPRIETARY_KEY)
+                .map(|v| v.as_slice()),
+            Some(&spec.cmx.to_vec()[..])
+        );
+        // Spend-only action: the paired output side is the builder's random dummy note — a real
+        // note commitment (random recipient, zero value) no one can detect, decrypt, or spend,
+        // in contrast to the real spend which carries the wallet's note plaintext.
+        let output = bundle.actions()[0].output();
+        assert!(output.recipient().is_some());
+        assert_eq!(output.value().as_ref().map(|v| v.inner()), Some(0));
+        assert_ne!(output.cmx().to_bytes(), spec.cmx);
+
+        // The full plaintext round-trips the wire losslessly.
+        let bytes = serialize_pczt(&bundle).unwrap();
+        assert_eq!(
+            serialize_pczt(&deserialize_pczt(&bytes).unwrap()).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn construct_spend_pczt_defaults_output_ovk_to_the_spending_fvk() {
+        let (spec, anchor) = test_spend_spec();
+        let (bundle, _spend_indices, output_indices) = construct_spend_pczt_multi(
+            &[spec],
+            &[IronwoodOutputSpec {
+                recipient: test_recipient(),
+                amount: 90_000_000,
+                ovk: None,
+                memo: [0u8; 512],
+            }],
+            &anchor,
+            OsRng,
+        )
+        .unwrap();
+        let out_idx = output_indices[0];
+        let output = bundle.actions()[out_idx].output();
+        assert!(output.recipient().is_some(), "real output, not a dummy");
+
+        // Its out_ciphertext is exactly what this crate computes under the spending FVK's
+        // external ovk — the outgoing note is recoverable by the wallet at construction time,
+        // with no separate key-supply or re-encryption step.
+        let ovk = FullViewingKey::from_bytes(&spec.fvk)
+            .unwrap()
+            .to_ovk(Scope::External)
+            .as_ref()
+            .to_owned();
+        let mut rng = OsRng;
+        let recomputed = compute_out_ciphertext(&bundle, out_idx, ovk, &mut rng).unwrap();
+        assert_eq!(
+            output.encrypted_note().out_ciphertext,
+            recomputed,
+            "out_ciphertext must be final at construction under the FVK ovk"
+        );
+    }
+
+    #[test]
+    fn construct_spend_pczt_rejects_inconsistent_note_data() {
+        let (spec, anchor) = test_spend_spec();
+
+        // A cmx the note plaintext does not commit to.
+        let mut bad = spec;
+        bad.cmx = field_bytes(999);
+        assert!(matches!(
+            construct_spend_pczt_multi(&[bad], &[], &anchor, OsRng),
+            Err(IronwoodBuildError::NoteCommitmentMismatch)
+        ));
+
+        // Non-canonical rho bytes.
+        let mut bad = spec;
+        bad.rho = [0xffu8; 32];
+        assert!(matches!(
+            construct_spend_pczt_multi(&[bad], &[], &anchor, OsRng),
+            Err(IronwoodBuildError::InvalidNote)
+        ));
+
+        // A valid recipient the note does not own (different address index) — the reconstructed
+        // note commits elsewhere.
+        let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([7u8; 32])).unwrap();
+        let fvk = FullViewingKey::from(&sk);
+        let mut bad = spec;
+        bad.recipient = fvk.address_at(1u32, Scope::External).to_raw_address_bytes();
+        assert!(matches!(
+            construct_spend_pczt_multi(&[bad], &[], &anchor, OsRng),
+            Err(IronwoodBuildError::NoteCommitmentMismatch)
+        ));
+    }
+
+    #[test]
+    fn construct_spend_pczt_rejects_a_witness_not_recomputing_to_the_anchor() {
+        let (spec, _anchor) = test_spend_spec();
+        assert!(matches!(
+            construct_spend_pczt_multi(&[spec], &[], &Anchor::empty_tree().to_bytes(), OsRng),
+            Err(IronwoodBuildError::WitnessAnchorMismatch)
+        ));
+    }
+
+    #[test]
+    fn construct_spend_pczt_rejects_a_non_canonical_witness_entry() {
+        let (mut spec, anchor) = test_spend_spec();
+        spec.witness.auth_path[3] = [0xffu8; 32];
+        assert!(matches!(
+            construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng),
+            Err(IronwoodBuildError::BadWitnessPath)
+        ));
+    }
+
+    #[test]
+    fn construct_spend_pczt_rejects_bad_and_mixed_fvks() {
+        let (spec, anchor) = test_spend_spec();
+
+        let mut bad = spec;
+        bad.fvk = [0xffu8; 96];
+        assert!(matches!(
+            construct_spend_pczt_multi(&[bad], &[], &anchor, OsRng),
+            Err(IronwoodBuildError::BadFvk)
+        ));
+
+        // Two spends from two different wallets.
+        let sk2 = Option::<SpendingKey>::from(SpendingKey::from_bytes([9u8; 32])).unwrap();
+        let mut other = spec;
+        other.fvk = FullViewingKey::from(&sk2).to_bytes();
+        assert!(matches!(
+            construct_spend_pczt_multi(&[spec, other], &[], &anchor, OsRng),
+            Err(IronwoodBuildError::MixedSpendingFvks)
+        ));
+    }
+
+    #[test]
+    fn construct_spend_pczt_rejects_an_empty_bundle() {
+        let (_spec, anchor) = test_spend_spec();
+        assert!(matches!(
+            construct_spend_pczt_multi(&[], &[], &anchor, OsRng),
+            Err(IronwoodBuildError::EmptyBundle)
+        ));
+
+        // Shielding (no spends) still builds keyless with ovk None.
+        let (_, _, out_idx) = construct_spend_pczt_multi(
+            &[],
+            &[IronwoodOutputSpec {
+                recipient: test_recipient(),
+                amount: 1,
+                ovk: None,
+                memo: [0u8; 512],
+            }],
+            &anchor,
+            OsRng,
+        )
+        .unwrap();
+        assert_eq!(out_idx.len(), 1);
+    }
+
+    #[test]
+    fn verify_spend_pczt_accepts_constructed_bundles() {
+        let (spec, anchor) = test_spend_spec();
+        let (bundle, _, _) = construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
+        verify_spend_pczt(&bundle).unwrap();
+
+        // One spend + one output: all three checks run (nullifier, note commitment, cv_net).
+        let (bundle, _, _) = construct_spend_pczt_multi(
+            &[spec],
+            &[IronwoodOutputSpec {
+                recipient: test_recipient(),
+                amount: 90_000_000,
+                ovk: None,
+                memo: [0u8; 512],
+            }],
+            &anchor,
+            OsRng,
+        )
+        .unwrap();
+        verify_spend_pczt(&bundle).unwrap();
+
+        // Shielding bundle (dummy spend): every check is skipped, the cross-address restriction
+        // is a no-op under the default flags.
+        let shield =
+            construct_shield_pczt(&test_recipient(), 1_000, None, &anchor, &[0u8; 512], OsRng)
+                .unwrap();
+        verify_spend_pczt(&shield).unwrap();
+    }
+
+    #[test]
+    fn verify_spend_pczt_rejects_a_tampered_output_note() {
+        let (spec, anchor) = test_spend_spec();
+        let (bundle, _, output_indices) = construct_spend_pczt_multi(
+            &[spec],
+            &[IronwoodOutputSpec {
+                recipient: test_recipient(),
+                amount: 90_000_000,
+                ovk: None,
+                memo: [0u8; 512],
+            }],
+            &anchor,
+            OsRng,
+        )
+        .unwrap();
+        let bytes = serialize_pczt(&bundle).unwrap();
+        let tampered = with_output_rseed_for_test(&bytes, output_indices[0], [9u8; 32]).unwrap();
+        let msg = match verify_spend_pczt(&deserialize_pczt(&tampered).unwrap()) {
+            Err(IronwoodBuildError::Verify(msg)) => msg,
+            other => panic!("expected a Verify error, got {other:?}"),
+        };
+        assert!(msg.contains("cmx"), "got {msg:?}");
     }
 }
