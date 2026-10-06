@@ -108,9 +108,11 @@ pasta_curves = "0.5"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # 11.2 is the first release with the `Transaction::V6` / Ironwood (`ironwood_shielded_data`)
-# variant used as the txid oracle in the v6 codec tests. Native-only dev-dependency, so its
-# pre-release zcash_*/orchard cohort stays out of the shipped wasm artifact.
-zebra-chain = { version = "11.2", default-features = false }
+# variant used as the txid oracle in the v6 codec tests; 14.0 is the first with the real NU7
+# constants (branch id 0x77190ad9, testnet height 4465026) rather than a test-only placeholder,
+# which the `parity_with_zebra_chain` tests check our NU7 entry against. Native-only
+# dev-dependency, so its pre-release zcash_*/orchard cohort stays out of the shipped wasm artifact.
+zebra-chain = { version = "14.0", default-features = false }
 # `NonEmpty` is required by `orchard::Bundle::from_parts`, used only in the ironwood_build golden
 # test to reconstruct an orchard bundle from on-wire action data. Matches orchard's own version.
 nonempty = "0.11"

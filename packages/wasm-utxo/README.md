@@ -28,7 +28,8 @@ This project is under active development.
 Zcash support includes:
 
 - **Network Upgrade Awareness**: Automatic consensus branch ID determination based on block height
-- **All Network Upgrades**: Support for Overwinter, Sapling, Blossom, Heartwood, Canopy, Nu5, Nu6, and Nu6_1
+- **All Network Upgrades**: Support for Overwinter, Sapling, Blossom, Heartwood, Canopy, Nu5, Nu6, Nu6_1, Nu6_2, Nu6_3, and Nu7
+- **NU7 (ZIP-259)**: Testnet-only so far (activation block 4465026; mainnet height TBD). Version 4 transactions are invalid under NU7 per ZIP-2003, so a v4 build at or after that height is rejected rather than signed and left unbroadcastable
 - **Height-Based API**: Preferred `createEmpty()` method automatically selects correct consensus rules
 - **Parity Testing**: Validated against `zebra-chain` for accuracy across all network upgrades
 

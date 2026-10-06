@@ -32,13 +32,17 @@ pub enum NetworkUpgrade {
     Nu6_1,
     Nu6_2,
     Nu6_3,
+    Nu7,
 }
 
 /// Parameters for a single network upgrade
 #[derive(Debug, Clone, Copy)]
 pub struct UpgradeParams {
     pub branch_id: u32,
-    pub mainnet_activation_height: u32,
+    /// Mainnet activation height, or `None` when the upgrade has no assigned mainnet height
+    /// yet (NU7 — ZIP-259 lists it as TBD). An upgrade with no height on a network is never
+    /// active there, so a `None` here keeps mainnet on the previous upgrade's rules.
+    pub mainnet_activation_height: Option<u32>,
     pub testnet_activation_height: u32,
 }
 
@@ -55,6 +59,7 @@ impl NetworkUpgrade {
         NetworkUpgrade::Nu6_1,
         NetworkUpgrade::Nu6_2,
         NetworkUpgrade::Nu6_3,
+        NetworkUpgrade::Nu7,
     ];
 
     /// Get the parameters for this network upgrade
@@ -62,58 +67,67 @@ impl NetworkUpgrade {
         match self {
             NetworkUpgrade::Overwinter => UpgradeParams {
                 branch_id: 0x5ba81b19,
-                mainnet_activation_height: 347500,
+                mainnet_activation_height: Some(347500),
                 testnet_activation_height: 207500,
             },
             NetworkUpgrade::Sapling => UpgradeParams {
                 branch_id: 0x76b809bb,
-                mainnet_activation_height: 419200,
+                mainnet_activation_height: Some(419200),
                 testnet_activation_height: 280000,
             },
             NetworkUpgrade::Blossom => UpgradeParams {
                 branch_id: 0x2bb40e60,
-                mainnet_activation_height: 653600,
+                mainnet_activation_height: Some(653600),
                 testnet_activation_height: 584000,
             },
             NetworkUpgrade::Heartwood => UpgradeParams {
                 branch_id: 0xf5b9230b,
-                mainnet_activation_height: 903000,
+                mainnet_activation_height: Some(903000),
                 testnet_activation_height: 903800,
             },
             NetworkUpgrade::Canopy => UpgradeParams {
                 branch_id: 0xe9ff75a6,
-                mainnet_activation_height: 1046400,
+                mainnet_activation_height: Some(1046400),
                 testnet_activation_height: 1028500,
             },
             NetworkUpgrade::Nu5 => UpgradeParams {
                 branch_id: 0xc2d6d0b4,
-                mainnet_activation_height: 1687104,
+                mainnet_activation_height: Some(1687104),
                 testnet_activation_height: 1842420,
             },
             // https://zips.z.cash/zip-0253
             NetworkUpgrade::Nu6 => UpgradeParams {
                 branch_id: 0xc8e71055,
-                mainnet_activation_height: 2726400,
+                mainnet_activation_height: Some(2726400),
                 testnet_activation_height: 2976000,
             },
             // https://zips.z.cash/zip-0254
             NetworkUpgrade::Nu6_1 => UpgradeParams {
                 branch_id: 0x4dec4df0,
-                mainnet_activation_height: 3146400,
+                mainnet_activation_height: Some(3146400),
                 testnet_activation_height: 3536500,
             },
             // NU6.2: emergency hard fork re-enabling Orchard with the corrected circuit
             // after GHSA-ghc3-g8w4-whf9.
             NetworkUpgrade::Nu6_2 => UpgradeParams {
                 branch_id: 0x5437f330,
-                mainnet_activation_height: 3364600,
+                mainnet_activation_height: Some(3364600),
                 testnet_activation_height: 4052000,
             },
             // https://zips.z.cash/zip-0255
             NetworkUpgrade::Nu6_3 => UpgradeParams {
                 branch_id: 0x37a5165b,
-                mainnet_activation_height: 3428143,
+                mainnet_activation_height: Some(3428143),
                 testnet_activation_height: 4134000,
+            },
+            // https://zips.z.cash/zip-0259 — NU7. Per ZIP-2003 version 4 transactions become
+            // invalid once NU7 activates; only v5 (ZIP-225) and v6 (ZIP-229) stay valid. The
+            // mainnet activation height is still TBD in ZIP-259, so NU7 is testnet-only here
+            // and mainnet keeps resolving to NU6.3 until that height is published.
+            NetworkUpgrade::Nu7 => UpgradeParams {
+                branch_id: 0x77190ad9,
+                mainnet_activation_height: None,
+                testnet_activation_height: 4465026,
             },
         }
     }
@@ -123,8 +137,8 @@ impl NetworkUpgrade {
         self.params().branch_id
     }
 
-    /// Get the mainnet activation height
-    pub const fn mainnet_activation_height(self) -> u32 {
+    /// Get the mainnet activation height, or `None` if it has not been assigned yet.
+    pub const fn mainnet_activation_height(self) -> Option<u32> {
         self.params().mainnet_activation_height
     }
 
@@ -133,12 +147,13 @@ impl NetworkUpgrade {
         self.params().testnet_activation_height
     }
 
-    /// Get the activation height for the specified network
-    pub const fn activation_height(self, is_mainnet: bool) -> u32 {
+    /// Get the activation height for the specified network, or `None` if this upgrade has no
+    /// assigned activation height there yet.
+    pub const fn activation_height(self, is_mainnet: bool) -> Option<u32> {
         if is_mainnet {
             self.mainnet_activation_height()
         } else {
-            self.testnet_activation_height()
+            Some(self.testnet_activation_height())
         }
     }
 }
@@ -146,12 +161,19 @@ impl NetworkUpgrade {
 /// Get the network upgrade active at a given block height
 ///
 /// Returns `None` if the height is before Overwinter activation.
+///
+/// An upgrade with no assigned activation height on this network (NU7 on mainnet) is never
+/// reported as active.
 pub fn network_upgrade_at_height(height: u32, is_mainnet: bool) -> Option<NetworkUpgrade> {
     // Iterate in reverse chronological order
     NetworkUpgrade::ALL
         .iter()
         .rev()
-        .find(|&&upgrade| height >= upgrade.activation_height(is_mainnet))
+        .find(|&&upgrade| {
+            upgrade
+                .activation_height(is_mainnet)
+                .is_some_and(|h| height >= h)
+        })
         .copied()
 }
 
@@ -168,13 +190,35 @@ mod tests {
 
     #[test]
     fn test_upgrade_ordering() {
-        // Verify chronological ordering
+        // Mainnet: assigned heights must be strictly increasing, and no upgrade may carry a
+        // height after an earlier one with none — `ALL` is chronological, so a gap followed by
+        // a height means a mis-ordered entry.
+        let mut last: Option<u32> = None;
+        let mut seen_unassigned = false;
+        for &upgrade in NetworkUpgrade::ALL {
+            match upgrade.mainnet_activation_height() {
+                Some(height) => {
+                    assert!(
+                        !seen_unassigned,
+                        "{:?} has a mainnet activation height after an earlier upgrade with none",
+                        upgrade
+                    );
+                    if let Some(prev) = last {
+                        assert!(prev < height, "{:?} is out of order on mainnet", upgrade);
+                    }
+                    last = Some(height);
+                }
+                None => seen_unassigned = true,
+            }
+        }
+
+        // Testnet: every upgrade has an assigned height, so ordering is unconditional.
         for i in 1..NetworkUpgrade::ALL.len() {
             let prev = NetworkUpgrade::ALL[i - 1];
             let curr = NetworkUpgrade::ALL[i];
             assert!(
-                prev.mainnet_activation_height() < curr.mainnet_activation_height(),
-                "{:?} should activate before {:?} on mainnet",
+                prev.testnet_activation_height() < curr.testnet_activation_height(),
+                "{:?} should activate before {:?} on testnet",
                 prev,
                 curr
             );
@@ -205,6 +249,7 @@ mod tests {
                 NetworkUpgrade::Nu6_1 => ZebraNetworkUpgrade::Nu6_1,
                 NetworkUpgrade::Nu6_2 => ZebraNetworkUpgrade::Nu6_2,
                 NetworkUpgrade::Nu6_3 => ZebraNetworkUpgrade::Nu6_3,
+                NetworkUpgrade::Nu7 => ZebraNetworkUpgrade::Nu7,
             }
         }
 
@@ -224,8 +269,7 @@ mod tests {
                 ZebraNetworkUpgrade::Nu6_1 => Some(NetworkUpgrade::Nu6_1),
                 ZebraNetworkUpgrade::Nu6_2 => Some(NetworkUpgrade::Nu6_2),
                 ZebraNetworkUpgrade::Nu6_3 => Some(NetworkUpgrade::Nu6_3),
-                #[cfg(any(test, feature = "zebra-test"))]
-                ZebraNetworkUpgrade::Nu7 => None,
+                ZebraNetworkUpgrade::Nu7 => Some(NetworkUpgrade::Nu7),
                 #[cfg(zcash_unstable = "zfuture")]
                 ZebraNetworkUpgrade::ZFuture => None,
             }
@@ -240,11 +284,6 @@ mod tests {
                     continue;
                 }
 
-                // Skip test-only upgrades
-                #[cfg(any(test, feature = "zebra-test"))]
-                if matches!(zebra_upgrade, ZebraNetworkUpgrade::Nu7) {
-                    continue;
-                }
                 #[cfg(zcash_unstable = "zfuture")]
                 if matches!(zebra_upgrade, ZebraNetworkUpgrade::ZFuture) {
                     continue;
@@ -301,16 +340,17 @@ mod tests {
         fn test_mainnet_heights_match_zebra() {
             let network = ZebraNetwork::Mainnet;
             for &upgrade in NetworkUpgrade::ALL {
-                let zebra_upgrade = to_zebra_upgrade(upgrade);
-                let expected = zebra_upgrade
+                let expected = to_zebra_upgrade(upgrade)
                     .activation_height(&network)
-                    .map(|h| h.0)
-                    .expect("upgrade should have mainnet activation height");
+                    .map(|h| h.0);
 
+                // Compared as `Option`, so an upgrade whose mainnet height is unassigned (NU7 —
+                // TBD in ZIP-259) must stay unassigned here, and this test starts failing the
+                // moment zebra publishes one.
                 assert_eq!(
                     upgrade.mainnet_activation_height(),
                     expected,
-                    "{:?} mainnet activation height mismatch: ours={}, zebra={}",
+                    "{:?} mainnet activation height mismatch: ours={:?}, zebra={:?}",
                     upgrade,
                     upgrade.mainnet_activation_height(),
                     expected
