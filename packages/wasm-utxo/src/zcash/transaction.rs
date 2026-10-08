@@ -240,3 +240,20 @@ pub fn encode_zcash_transaction_parts(parts: &ZcashTransactionParts) -> Result<V
 
     Ok(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v6 (Ironwood) reorders the header (consensusBranchId/lockTime/expiryHeight move to the
+    /// front) and is not a v4 tail extension; the generic v4 codec must refuse it and route
+    /// callers to the dedicated v6 codec. This guard is what keeps Ironwood v6 bytes from
+    /// being silently mis-parsed as v4.
+    #[test]
+    fn rejects_v6_ironwood() {
+        let mut bytes = 0x8000_0004u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&ZCASH_IRONWOOD_VERSION_GROUP_ID.to_le_bytes());
+        let err = decode_zcash_transaction_parts(&bytes).unwrap_err();
+        assert!(err.contains("v6 (Ironwood)"), "unexpected error: {err}");
+    }
+}

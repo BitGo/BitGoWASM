@@ -28,7 +28,10 @@ use orchard::value::Sign;
 use orchard::{ProtocolVersion, ValuePool};
 
 /// Wire format version; bump on any layout change (deserialize rejects unknown versions).
-pub const FORMAT_VERSION: u8 = 0x01;
+pub const FORMAT_VERSION: u8 = 0x02;
+
+/// Per-spend metadata key recording whether a real spend's placeholder `rk` was replaced.
+pub(crate) const SPEND_RK_STATE_PROPRIETARY_KEY: &str = "bitgo.rk_state";
 
 /// Errors from Ironwood PCZT (de)serialization.
 #[derive(Debug, strum::IntoStaticStr)]
@@ -111,7 +114,7 @@ struct SpendWire {
     value: Option<u64>,
     rho: Option<[u8; 32]>,
     rseed: Option<[u8; 32]>,
-    fvk: Option<Vec<u8>>, // 96
+    fvk: Option<Vec<u8>>, // 96 — None for real spends; dummy spends carry their fabricating fvk
     witness: Option<WitnessWire>,
     alpha: Option<[u8; 32]>,
     dummy_sk: Option<[u8; 32]>,
@@ -207,14 +210,30 @@ pub fn with_out_ciphertext(
     })
 }
 
-/// Replace one action spend's `rk` (spend validating key) in an already-serialized PCZT.
-///
-/// Rejects an `rk` that is not a canonical RedPallas verification key; every other field of the
-/// bundle/action is untouched.
+/// Replace one action spend's `rk` (spend validating key) and mark it ready for sighashing.
+/// Rejects an `rk` that is not a canonical RedPallas verification key.
 pub fn with_spend_rk(
     bytes: &[u8],
     action_index: usize,
     rk: [u8; 32],
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    patch_spend_rk(bytes, action_index, rk, false)
+}
+
+/// Set the constructor placeholder `rk` and mark it as requiring signer replacement.
+pub(crate) fn with_placeholder_spend_rk(
+    bytes: &[u8],
+    action_index: usize,
+    rk: [u8; 32],
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    patch_spend_rk(bytes, action_index, rk, true)
+}
+
+fn patch_spend_rk(
+    bytes: &[u8],
+    action_index: usize,
+    rk: [u8; 32],
+    is_placeholder: bool,
 ) -> Result<Vec<u8>, IronwoodPcztError> {
     with_patched_wire(bytes, |wire| {
         let spend = &mut wire
@@ -226,6 +245,55 @@ pub fn with_spend_rk(
             return Err(IronwoodPcztError::BadFieldEncoding("spend.rk"));
         }
         spend.rk = rk;
+        spend.proprietary.insert(
+            SPEND_RK_STATE_PROPRIETARY_KEY.to_string(),
+            vec![u8::from(!is_placeholder)],
+        );
+        Ok(())
+    })
+}
+
+/// Replace one action spend's plaintext `value` in an already-serialized PCZT.
+///
+/// Test/defense tooling for the plaintext-integrity cross-check: a spend's plaintext value is
+/// NOT bound by the proofs (only `cv_net`/`cm` are), so a value that disagrees with the bundle's
+/// committed `value_sum` must be caught by `ironwood_bundle_info`'s cross-check instead of
+/// silently flowing into fee accounting. The committed `value_sum` field is untouched.
+pub fn with_spend_value(
+    bytes: &[u8],
+    action_index: usize,
+    value: u64,
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        wire.actions
+            .get_mut(action_index)
+            .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
+            .spend
+            .value = Some(value);
+        Ok(())
+    })
+}
+
+/// Clear one action spend's `fvk` in an already-serialized PCZT.
+///
+/// The Constructor role's real spends are built with the full viewing key held
+/// transiently (the caller supplied it), so `bundle_to_wire` serializes it —
+/// but the serialized PCZT the Constructor hands on must be keyless: the FVK
+/// never leaves its holder (the client in the keyless flow, KMS in the keyed
+/// flow). `scrub_spend_randomizers` clears it for every real spend, next to
+/// the `alpha`/`rk` scrub. Dummy spends (shielding builds) keep their wire
+/// `fvk`: it is the fabricating builder's random key, and `create_proof`
+/// requires an fvk on every spend.
+pub fn with_spend_fvk_cleared(
+    bytes: &[u8],
+    action_index: usize,
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        wire.actions
+            .get_mut(action_index)
+            .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
+            .spend
+            .fvk = None;
         Ok(())
     })
 }
@@ -248,16 +316,21 @@ pub fn with_spend_auth_sig(
     })
 }
 
-/// Clear one action spend's `alpha` (spend authorizing randomizer) in an already-serialized PCZT.
+/// Set or clear one action spend's `alpha` (spend authorizing randomizer) in an
+/// already-serialized PCZT.
 ///
-/// No-op when already absent; every other field of the bundle/action is untouched.
-pub fn clear_spend_alpha(bytes: &[u8], action_index: usize) -> Result<Vec<u8>, IronwoodPcztError> {
+/// `None` clears it; every other field of the bundle/action is untouched.
+pub fn with_spend_alpha(
+    bytes: &[u8],
+    action_index: usize,
+    alpha: Option<[u8; 32]>,
+) -> Result<Vec<u8>, IronwoodPcztError> {
     with_patched_wire(bytes, |wire| {
         wire.actions
             .get_mut(action_index)
             .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
             .spend
-            .alpha = None;
+            .alpha = alpha;
         Ok(())
     })
 }
@@ -432,7 +505,6 @@ fn wire_to_spend(s: SpendWire, note_version: NoteVersion) -> Result<PcztSpend, I
         .as_deref()
         .map(|v| arr::<43>(v, "spend.recipient"))
         .transpose()?;
-    let fvk = s.fvk.as_deref().map(|v| arr::<96>(v, "fvk")).transpose()?;
     let witness = s
         .witness
         .map(|w| -> Result<_, IronwoodPcztError> {
@@ -443,6 +515,7 @@ fn wire_to_spend(s: SpendWire, note_version: NoteVersion) -> Result<PcztSpend, I
             Ok((w.position, path))
         })
         .transpose()?;
+    let fvk = s.fvk.as_deref().map(|v| arr::<96>(v, "fvk")).transpose()?;
 
     PcztSpend::parse(
         s.nullifier,
@@ -500,9 +573,12 @@ mod tests {
     use ff::Field;
     use orchard::builder::{Builder, BundleType};
     use orchard::keys::{FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey};
+    use orchard::note::{Note, Rho};
     use orchard::tree::Anchor;
     use orchard::value::NoteValue;
     use rand::rngs::OsRng;
+
+    use crate::zcash::ironwood_build::test_field_bytes as field_bytes;
 
     /// Construct a shielding PCZT (one Ironwood output, dummy spend) via the orchard Constructor.
     fn sample_pczt() -> PcztBundle {
@@ -630,9 +706,20 @@ mod tests {
     }
 
     #[test]
-    fn with_spend_rk_replaces_the_rk() {
+    fn rk_patcher_tracks_placeholder_and_replaced_states() {
         let bytes = serialize_pczt(&sample_pczt()).unwrap();
         let old_rk = <[u8; 32]>::from(deserialize_pczt(&bytes).unwrap().actions()[0].spend().rk());
+
+        let placeholder = with_placeholder_spend_rk(&bytes, 0, old_rk).unwrap();
+        let placeholder_bundle = deserialize_pczt(&placeholder).unwrap();
+        assert_eq!(
+            placeholder_bundle.actions()[0]
+                .spend()
+                .proprietary()
+                .get(SPEND_RK_STATE_PROPRIETARY_KEY)
+                .map(|state| state.as_slice()),
+            Some(&[0u8][..])
+        );
 
         let sk2 = Option::<SpendingKey>::from(SpendingKey::from_bytes([9u8; 32])).unwrap();
         let new_rk = <[u8; 32]>::from(redpallas::VerificationKey::from(
@@ -640,9 +727,17 @@ mod tests {
         ));
         assert_ne!(old_rk, new_rk);
 
-        let patched = with_spend_rk(&bytes, 0, new_rk).unwrap();
+        let patched = with_spend_rk(&placeholder, 0, new_rk).unwrap();
         let bundle = deserialize_pczt(&patched).unwrap();
         assert_eq!(<[u8; 32]>::from(bundle.actions()[0].spend().rk()), new_rk);
+        assert_eq!(
+            bundle.actions()[0]
+                .spend()
+                .proprietary()
+                .get(SPEND_RK_STATE_PROPRIETARY_KEY)
+                .map(|state| state.as_slice()),
+            Some(&[1u8][..])
+        );
         assert_eq!(serialize_pczt(&bundle).unwrap(), patched);
         assert_eq!(with_spend_rk(&patched, 0, new_rk).unwrap(), patched);
     }
@@ -701,22 +796,253 @@ mod tests {
     }
 
     #[test]
-    fn clear_spend_alpha_clears_the_randomizer() {
+    fn with_spend_alpha_sets_and_clears_the_randomizer() {
         let bytes = serialize_pczt(&sample_pczt()).unwrap();
         assert!(deserialize_pczt(&bytes).unwrap().actions()[0]
             .spend()
             .alpha()
             .is_some());
-        let cleared = clear_spend_alpha(&bytes, 0).unwrap();
+
+        // Set an arbitrary canonical alpha, then clear it again.
+        let alpha = field_bytes(7);
+        let set = with_spend_alpha(&bytes, 0, Some(alpha)).unwrap();
+        assert_eq!(
+            deserialize_pczt(&set).unwrap().actions()[0]
+                .spend()
+                .alpha()
+                .map(|a| a.to_repr()),
+            Some(alpha)
+        );
+
+        let cleared = with_spend_alpha(&set, 0, None).unwrap();
         assert!(deserialize_pczt(&cleared).unwrap().actions()[0]
             .spend()
             .alpha()
             .is_none());
-        // Idempotent, and the rest of the bundle round-trips byte-stable.
-        assert_eq!(clear_spend_alpha(&cleared, 0).unwrap(), cleared);
+        // Clearing the original bundle reproduces the byte-stable state, and the rest of the
+        // bundle round-trips byte-stable.
         assert_eq!(
             serialize_pczt(&deserialize_pczt(&cleared).unwrap()).unwrap(),
             cleared
         );
+    }
+
+    /// A PCZT whose spend is fully populated — every optional `SpendWire` field
+    /// (`witness`, `fvk`, `alpha`, `rho`, `rseed`, `value`, `recipient`, `spend_auth_sig`) is
+    /// set at once, which no single stage of the real flow produces (the Constructor omits the
+    /// FVK and `alpha` from real spends), so the round-trip and negative tests below exercise
+    /// every optional field's encoding.
+    ///
+    /// The orchard structs are hand-assembled via `parse` rather than built with
+    /// `Builder::add_spend`, so every field can be set directly. Cryptographically valid encodings are harvested from [`sample_pczt`]'s
+    /// Builder output: the dummy spend's `nullifier`/`rk`/`cv_net` are real curve values, and
+    /// the real output note's fields (`recipient`/`value`/`rseed`/`cmx`) satisfy the
+    /// nullifier-is-rho coupling that
+    /// [`compute_out_ciphertext`](super::super::ironwood_build::compute_out_ciphertext)
+    /// relies on.
+    fn sample_spend_pczt() -> PcztBundle {
+        let base = sample_pczt();
+        let base_bytes = serialize_pczt(&base).unwrap();
+        let base_wire: BundleWire = postcard::from_bytes(&base_bytes[1..]).unwrap();
+        let a = &base_wire.actions[0];
+
+        let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([7u8; 32])).unwrap();
+        let fvk = FullViewingKey::from(&sk);
+
+        // Recipient/value/rseed from the real output note; the paired dummy spend's
+        // nullifier serves both as the spent note's rho (rseed validates against it) and as
+        // the output note's rho (the coupling pinned by the test below).
+        let recipient: [u8; 43] = a.output.recipient.clone().unwrap().try_into().unwrap();
+        let value = a.output.value.unwrap();
+        let rseed = a.output.rseed.unwrap();
+        let nullifier = a.spend.nullifier;
+        let rho = nullifier;
+
+        // 32 canonical Merkle-hash encodings. `Spend::parse` only validates that each auth
+        // path entry decodes as a base-field element (`MerkleHashOrchard::from_bytes` is
+        // `pallas::Base::from_repr`), not tree structure, so small integers are valid
+        // stand-ins for sibling hashes (real witnesses are covered by the `ironwood_build` tests).
+        let auth_path: [[u8; 32]; 32] = core::array::from_fn(|i| {
+            let mut b = [0u8; 32];
+            b[0] = i as u8;
+            b
+        });
+
+        // `alpha` is any canonical Pallas scalar; `[1u8; 32]` is 0x0101..01 < p.
+        let alpha = [1u8; 32];
+        // `spend_auth_sig` is an opaque 64-byte redpallas signature at parse time.
+        let spend_auth_sig = [0xabu8; 64];
+
+        let spend = PcztSpend::parse(
+            nullifier,
+            a.spend.rk,
+            Some(spend_auth_sig),
+            Some(recipient),
+            Some(value),
+            Some(rho),
+            Some(rseed),
+            Some(fvk.to_bytes()),
+            Some((0u32, auth_path)),
+            Some(alpha),
+            None, // zip32_derivation: stays dropped (flat per-wallet key)
+            None, // dummy_sk: a real spend, not a dummy
+            BundleVersion::ironwood_v3().note_version(),
+            BTreeMap::new(),
+        )
+        .unwrap();
+
+        let output = PcztOutput::parse(
+            Option::<Nullifier>::from(Nullifier::from_bytes(&nullifier)).unwrap(),
+            a.output.cmx,
+            a.output.ephemeral_key,
+            a.output.enc_ciphertext.clone(),
+            a.output.out_ciphertext.clone(),
+            Some(recipient),
+            Some(value),
+            Some(rseed),
+            a.output.ock,
+            None,
+            None,
+            BundleVersion::ironwood_v3().note_version(),
+            BTreeMap::new(),
+        )
+        .unwrap();
+
+        let action = PcztAction::parse(a.cv_net, spend, output, a.rcv).unwrap();
+
+        PcztBundle::parse(
+            vec![action],
+            base_wire.flags,
+            BundleVersion::ironwood_v3(),
+            (base_wire.value_sum_magnitude, base_wire.value_sum_negative),
+            base_wire.anchor,
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Round-trip a fully-populated real spend and assert byte-exact re-serialization.
+    #[test]
+    fn spend_fields_roundtrip_is_byte_stable() {
+        let bundle = sample_spend_pczt();
+        let bytes = serialize_pczt(&bundle).unwrap();
+        assert_eq!(bytes[0], FORMAT_VERSION);
+
+        let wire: BundleWire = postcard::from_bytes(&bytes[1..]).unwrap();
+        let s = &wire.actions[0].spend;
+        assert!(s.spend_auth_sig.is_some());
+        assert!(s.recipient.is_some());
+        assert!(s.value.is_some());
+        assert!(s.rho.is_some());
+        assert!(s.rseed.is_some());
+        assert!(s.fvk.is_some());
+        assert!(s.witness.is_some());
+        assert!(s.alpha.is_some());
+        assert!(s.dummy_sk.is_none(), "a real spend carries no dummy_sk");
+        assert_eq!(s.witness.as_ref().unwrap().auth_path.len(), 32);
+
+        let bundle2 = deserialize_pczt(&bytes).unwrap();
+        let bytes2 = serialize_pczt(&bundle2).unwrap();
+        assert_eq!(
+            bytes, bytes2,
+            "serialize∘deserialize is byte-stable for a populated spend"
+        );
+
+        // And a third pass, for good measure.
+        let bundle3 = deserialize_pczt(&bytes2).unwrap();
+        assert_eq!(serialize_pczt(&bundle3).unwrap(), bytes);
+    }
+
+    /// The spend-path negative tests: malformed field lengths in `wire_to_spend` must reject
+    /// with the exact error variant.
+    #[test]
+    fn spend_path_rejects_malformed_field_lengths() {
+        let mk_wire = || {
+            let bytes = serialize_pczt(&sample_spend_pczt()).unwrap();
+            postcard::from_bytes::<BundleWire>(&bytes[1..]).unwrap()
+        };
+        let reencode = |wire: &BundleWire| {
+            let mut out = vec![FORMAT_VERSION];
+            out.extend_from_slice(&postcard::to_stdvec(wire).unwrap());
+            out
+        };
+
+        // `fvk` must be 96 bytes.
+        let mut wire = mk_wire();
+        wire.actions[0].spend.fvk = Some(vec![0u8; 95]);
+        assert!(matches!(
+            deserialize_pczt(&reencode(&wire)),
+            Err(IronwoodPcztError::BadLength("fvk", 96, 95))
+        ));
+
+        // `spend_auth_sig` must be 64 bytes.
+        let mut wire = mk_wire();
+        wire.actions[0].spend.spend_auth_sig = Some(vec![0u8; 63]);
+        assert!(matches!(
+            deserialize_pczt(&reencode(&wire)),
+            Err(IronwoodPcztError::BadLength("spend_auth_sig", 64, 63))
+        ));
+
+        // `spend.recipient` must be 43 bytes.
+        let mut wire = mk_wire();
+        wire.actions[0].spend.recipient = Some(vec![0u8; 42]);
+        assert!(matches!(
+            deserialize_pczt(&reencode(&wire)),
+            Err(IronwoodPcztError::BadLength("spend.recipient", 43, 42))
+        ));
+
+        // `witness.auth_path` must have exactly 32 entries.
+        let mut wire = mk_wire();
+        wire.actions[0]
+            .spend
+            .witness
+            .as_mut()
+            .unwrap()
+            .auth_path
+            .truncate(31);
+        assert!(matches!(
+            deserialize_pczt(&reencode(&wire)),
+            Err(IronwoodPcztError::BadFieldEncoding("witness.auth_path"))
+        ));
+    }
+
+    /// Pins the nullifier-is-rho coupling: for a Builder-produced Ironwood
+    /// bundle, the output note's rho is the paired spend's nullifier, so the note reconstructs
+    /// from wire fields and re-derives the committed `cmx`. If this coupling ever broke,
+    /// `compute_out_ciphertext` would fail as a confusing `NoteCommitmentMismatch`.
+    #[test]
+    fn output_note_rho_is_paired_spend_nullifier() {
+        for bundle in [sample_pczt(), sample_spend_pczt()] {
+            let bundle = deserialize_pczt(&serialize_pczt(&bundle).unwrap()).unwrap();
+            let action = bundle.actions().first().unwrap();
+            let spend = action.spend();
+            let output = action.output();
+
+            let nf = spend.nullifier().to_bytes();
+            let rho = Option::<Rho>::from(Rho::from_bytes(&nf)).expect("nullifier decodes as rho");
+            let note = Option::<Note>::from(Note::from_parts(
+                *output.recipient().as_ref().unwrap(),
+                *output.value().as_ref().unwrap(),
+                rho,
+                *output.rseed().as_ref().unwrap(),
+                *output.note_version(),
+            ))
+            .unwrap();
+            assert_eq!(
+                orchard::note::ExtractedNoteCommitment::from(note.commitment()).to_bytes(),
+                output.cmx().to_bytes()
+            );
+        }
+    }
+
+    /// The spend fields are `Option`s in the wire layout, so populating them is not a layout
+    /// change: a fully-populated spend serializes under the current `FORMAT_VERSION` and
+    /// deserializes cleanly.
+    #[test]
+    fn populated_spend_fields_use_the_current_format_version() {
+        let bytes = serialize_pczt(&sample_spend_pczt()).unwrap();
+        assert_eq!(bytes[0], FORMAT_VERSION);
+        assert!(deserialize_pczt(&bytes).is_ok());
     }
 }

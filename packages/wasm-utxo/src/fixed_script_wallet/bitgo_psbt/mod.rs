@@ -160,6 +160,8 @@ pub enum ParseTransactionError {
     FeeCalculation,
     /// Failed to read the shielded (Ironwood) output's value
     ShieldedOutput(String),
+    /// Failed to read the shielded (Ironwood) spends' values, or their total overflowed
+    ShieldedSpend(String),
 }
 
 impl std::fmt::Display for ParseTransactionError {
@@ -185,6 +187,9 @@ impl std::fmt::Display for ParseTransactionError {
             }
             ParseTransactionError::ShieldedOutput(error) => {
                 write!(f, "Shielded output: {}", error)
+            }
+            ParseTransactionError::ShieldedSpend(error) => {
+                write!(f, "Shielded spend: {}", error)
             }
         }
     }
@@ -2894,6 +2899,27 @@ impl BitGoPsbt {
             .collect()
     }
 
+    /// Total value (zatoshi) of this PSBT's real shielded (Ironwood) spends — `0` if this isn't a
+    /// v6 (Ironwood) PSBT, or no shielded spend has been added. Like the shielded outputs, the
+    /// spends live in the proprietary-map PCZT, invisible to transparent-input parsing, so
+    /// `parse_transaction_with_wallet_keys` folds this into its input total.
+    fn shielded_spend_total(&self) -> Result<u64, ParseTransactionError> {
+        let BitGoPsbt::Zcash(z, _) = self else {
+            return Ok(0);
+        };
+        z.ironwood_shielded_spends_info()
+            .map_err(ParseTransactionError::ShieldedSpend)?
+            .iter()
+            .try_fold(0u64, |total, spend| {
+                total.checked_add(spend.value).ok_or_else(|| {
+                    ParseTransactionError::ShieldedSpend(format!(
+                        "action {}: value overflow",
+                        spend.action_index
+                    ))
+                })
+            })
+    }
+
     /// Calculate total input value from parsed inputs
     ///
     /// # Returns
@@ -3654,7 +3680,13 @@ impl BitGoPsbt {
         let mut parsed_outputs = self.parse_outputs(wallet_keys, paygo_pubkeys)?;
 
         // Calculate totals
-        let total_input_value = Self::sum_input_values(&parsed_inputs)?;
+        // Shielded spends fund the transaction alongside the transparent inputs (unshielding /
+        // mixed transactions); without them `miner_fee` underflows.
+        let total_input_value = Self::sum_input_values(&parsed_inputs)?
+            .checked_add(self.shielded_spend_total()?)
+            .ok_or_else(|| {
+                ParseTransactionError::ShieldedSpend("total input value overflow".to_string())
+            })?;
         let (mut total_output_value, mut spend_amount) =
             Self::sum_output_values(&psbt.unsigned_tx.output, &parsed_outputs)?;
 
