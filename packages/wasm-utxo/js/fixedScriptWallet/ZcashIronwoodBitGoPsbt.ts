@@ -306,8 +306,9 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
 
   /**
    * The canonical (display-order) ZIP-244 v6 txid as a lowercase hex string, matching
-   * `ITransaction.getId()`. Defined once the transparent inputs/outputs and the shielded output are
-   * in place; unchanged by signing or proving.
+   * `ITransaction.getId()`. Defined once the transparent inputs/outputs are in place; unchanged by
+   * signing or proving. Works whether or not a shielded output has been added — a transparent-only
+   * v6 PSBT has a well-defined ZIP-244 txid too.
    */
   getId(): string {
     return this.wasm.ironwood_v6_txid();
@@ -417,7 +418,9 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
    * @returns true if a valid signature by the key's public key exists for the input's
    *   ZIP-244 transparent sighash
    * @throws Error if the input index is out of range, the key cannot be parsed, or the v6
-   *   sighash cannot be computed (e.g. the Ironwood PCZT has not been added yet)
+   *   sighash cannot be computed. Works whether or not a shielded output has been added; the one
+   *   case this still throws for is a shielded output that was added and then consumed by
+   *   `combineProof` (its action data is gone, not merely absent).
    *
    * @example
    * ```typescript
@@ -448,6 +451,25 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
    */
   combineProof(proof: Uint8Array): Uint8Array {
     return this.wasm.combine_ironwood_proof(proof);
+  }
+
+  /**
+   * Transaction Extractor role for a transparent-only v6 transaction: valid only when
+   * no shielded output was ever added via {@link addShieldedOutput}/{@link addShieldedOutputs} —
+   * there is no PCZT, and therefore nothing to combine an external proof into. Finalizes the
+   * transparent inputs (the same 2-of-3 signature check {@link combineProof} performs) and
+   * returns broadcast-ready v6 transaction bytes with an empty Ironwood bundle slot.
+   *
+   * Not terminal (unlike {@link combineProof}): there is no stored PCZT to drop, so calling this
+   * more than once is safe and simply re-finalizes the same already-signed inputs.
+   *
+   * Use {@link combineProof} instead for a PSBT that carries (or carried) a shielded output.
+   *
+   * @throws Error if a shielded output was ever added to this PSBT (even one already extracted),
+   *   or if any transparent input is missing a required signature
+   */
+  extractTransparentOnlyTransaction(): Uint8Array {
+    return this.wasm.extract_transparent_only_v6_tx();
   }
 
   /**
