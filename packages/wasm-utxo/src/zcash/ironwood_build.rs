@@ -9,7 +9,7 @@
 //!   as an `orchard::pczt::Bundle` with no proof or signatures yet. All action data (value
 //!   commitments, note commitments, ciphertexts) is fixed here, and it is exactly what the
 //!   ZIP-244 shielded sighash commits to. Real spends carry only a placeholder `rk` and no
-//!   `alpha` — the signing service owns both.
+//!   `alpha`.
 //! - **IO Finalizer / Signer** ([`finalize_shield_io`]): derives the binding signing key (`bsk`)
 //!   and signs the dummy spends over the now-fixed shielded sighash.
 //! - **Transaction Extractor** ([`combine`]): given the signed PCZT with the prover's `zkproof`
@@ -173,6 +173,8 @@ pub enum IronwoodBuildError {
     /// already carries, so recomputing `out_ciphertext` from it would encrypt an `esk` inconsistent
     /// with the action's fixed `ephemeral_key`.
     NoteCommitmentMismatch,
+    /// A constructed output's `out_ciphertext` does not match the expected outgoing viewing key.
+    OutCiphertextMismatch,
     /// The bitgo/user key bytes are not a valid secp256k1 public/private key.
     BadKey(String),
     /// Local proof generation (`orchard-proving` feature) failed.
@@ -235,6 +237,10 @@ impl core::fmt::Display for IronwoodBuildError {
                 "ironwood-build: the note reconstructed from the output's recipient/value/rseed does \
                  not commit to the action's cmx; refusing to recompute out_ciphertext from it"
             ),
+            Self::OutCiphertextMismatch => write!(
+                f,
+                "ironwood-build: output out_ciphertext does not match the expected ovk"
+            ),
             Self::BadKey(e) => write!(f, "ironwood-build: invalid key: {e}"),
             Self::Prove(e) => write!(f, "ironwood-build: proof generation failed: {e}"),
             Self::BadWitnessPath => write!(
@@ -289,11 +295,8 @@ pub struct IronwoodOutputSpec {
 
 /// One Ironwood note to spend, as passed to [`construct_spend_pczt_multi`].
 ///
-/// Everything except the witness is the note's plaintext from the wallet's own note record: the
-/// FVK must own the note, the reconstructed note must commit to `cmx`, and the witness must
-/// recompute to the bundle's anchor. The FVK is carried in the PCZT in plaintext — the prover
-/// needs `nk` to re-derive the nullifier — and its `ak` doubles as the placeholder `rk` until the
-/// signing service replaces it.
+/// The FVK is used transiently to validate ownership and reconstruct the note. Its public `ak`
+/// supplies the temporary `rk`; the serialized PCZT omits the FVK entirely.
 #[derive(Clone, Copy, Debug)]
 pub struct IronwoodSpendSpec {
     /// Raw full viewing key, 96 bytes: `ak ‖ nk ‖ rivk` (orchard's `FullViewingKey::to_bytes`
@@ -338,7 +341,7 @@ pub struct IronwoodSpendSpec {
 ///
 /// The returned PCZT carries no signatures or proof yet. Real spends carry the full note plaintext
 /// (fvk/recipient/value/rho/rseed/witness) but only a placeholder `rk` (the spend's `ak`) and no
-/// `alpha` — the signing service owns both; see [`scrub_spend_randomizers`]. Run
+/// `alpha`; see [`scrub_spend_randomizers`]. Run
 /// [`finalize_shield_io`] once the sighash is known, then hand the PCZT to the prover and
 /// [`combine`].
 pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
@@ -424,11 +427,12 @@ pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Record the spent note's cmx per real-spend action for reconciliation, then strip what the
-    // signing service owns: the builder bakes a random `alpha` and a randomized `rk` into every
-    // real spend at build time, but `alpha` is derived at signing — the persisted PCZT carries
-    // only the placeholder. Dummy spends are untouched (the IO Finalizer signs them from their
-    // stored alpha/dummy_sk).
+    // Validate FVK-dependent invariants while the constructor still has the transient FVKs.
+    verify_spend_pczt(&bundle)?;
+    validate_constructed_out_ciphertexts(&bundle, outputs, &output_indices, default_ovk)?;
+
+    // Record each spent note's cmx for reconciliation, then scrub the real spends' randomizers.
+    // FVK data is used only during construction and is omitted from the serialized PCZT.
     let mut bundle = bundle;
     for (i, spec) in spends.iter().enumerate() {
         let idx = spend_indices[i];
@@ -443,6 +447,33 @@ pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
     }
     let bundle = scrub_spend_randomizers(&bundle, &spend_indices, &spend_ak_bytes)?;
     Ok((bundle, spend_indices, output_indices))
+}
+
+fn validate_constructed_out_ciphertexts(
+    bundle: &PcztBundle,
+    outputs: &[IronwoodOutputSpec],
+    output_indices: &[usize],
+    default_ovk: Option<OvkBytes>,
+) -> Result<(), IronwoodBuildError> {
+    let mut rng = rand::rngs::OsRng;
+    for (output, &action_index) in outputs.iter().zip(output_indices) {
+        if output.amount == 0 {
+            continue;
+        }
+        let Some(ovk) = output.ovk.or(default_ovk) else {
+            continue;
+        };
+        let expected = compute_out_ciphertext(bundle, action_index, ovk, &mut rng)?;
+        if bundle.actions()[action_index]
+            .output()
+            .encrypted_note()
+            .out_ciphertext
+            != expected
+        {
+            return Err(IronwoodBuildError::OutCiphertextMismatch);
+        }
+    }
+    Ok(())
 }
 
 /// Constructor: build a transparent → Ironwood shielding bundle (no real spends) as an orchard
@@ -516,41 +547,39 @@ fn parse_spend_spec(
     })
 }
 
-/// Strip the builder-generated spend authorizing data from every real spend, through the wire
-/// form (the only place a built PCZT's `alpha`/`rk` are writable): `alpha` cleared, `rk` replaced
-/// with the spend's own `ak` — `ak.randomize(0)`, a valid point so `Spend::parse` accepts the
-/// placeholder. Dummy spends are untouched: their stored `alpha`/`dummy_sk` are what the IO
-/// Finalizer signs with.
+/// Strip builder-generated spend authorizing data from every real spend, through the wire form
+/// (the only place a built PCZT's `alpha`/`rk` are writable): clear `alpha`, install the spend's
+/// `ak` as a valid placeholder `rk`, and mark it for later signer replacement. Dummy spends are
+/// untouched: their stored `alpha`/`dummy_sk` are what the IO Finalizer signs with.
 fn scrub_spend_randomizers(
     bundle: &PcztBundle,
     spend_indices: &[usize],
     spend_ak_bytes: &[[u8; 32]],
 ) -> Result<PcztBundle, IronwoodBuildError> {
     use super::ironwood_pczt::{
-        clear_spend_alpha, deserialize_pczt, serialize_pczt, with_spend_rk, IronwoodPcztError,
+        deserialize_pczt, serialize_pczt, with_placeholder_spend_rk, with_spend_alpha,
+        IronwoodPcztError,
     };
     let map = |e: IronwoodPcztError| IronwoodBuildError::PcztWire(e.to_string());
 
     let mut bytes = serialize_pczt(bundle).map_err(map)?;
     for (i, ak) in spend_ak_bytes.iter().enumerate() {
         let idx = spend_indices[i];
-        bytes = clear_spend_alpha(&bytes, idx).map_err(map)?;
-        bytes = with_spend_rk(&bytes, idx, *ak).map_err(map)?;
+        bytes = with_spend_alpha(&bytes, idx, None).map_err(map)?;
+        bytes = with_placeholder_spend_rk(&bytes, idx, *ak).map_err(map)?;
     }
     deserialize_pczt(&bytes).map_err(map)
 }
 
-/// Verifier: run the orchard PCZT checks that are meaningful for a constructed bundle, before it
-/// is signed/proven. Each check runs only where its fields exist:
+/// Verifier: run the orchard PCZT checks that are meaningful while their fields are present.
+/// The Constructor calls this before serialization, while the transient FVK is available for
+/// nullifier and value-commitment checks; serialized PCZTs intentionally omit that FVK.
 ///
-/// - every real spend (its `fvk` present) — `verify_nullifier` re-derives the note and nullifier
-///   from the stored plaintext and checks both against the wire `nullifier` and the FVK;
-/// - every real output (its `recipient` present) — `verify_note_commitment`;
-/// - actions with both sides real — `verify_cv_net`.
+/// - spends with an FVK — re-derive and check the note nullifier;
+/// - outputs with a recipient — verify the note commitment;
+/// - actions with both sides' fields present — verify the value commitment.
 ///
-/// `verify_rk` is deliberately skipped: it requires a stored `alpha`, which real spends do not
-/// carry (the signing service owns it); the randomized `rk` is validated when the spend-auth
-/// signature verifies against it.
+/// `verify_rk` is deliberately skipped: it requires `alpha`, which real spends do not carry.
 pub fn verify_spend_pczt(bundle: &PcztBundle) -> Result<(), IronwoodBuildError> {
     bundle
         .verify_cross_address_restriction()
@@ -2332,13 +2361,14 @@ mod tests {
 
         let spend = bundle.actions()[0].spend();
         let fvk = FullViewingKey::from_bytes(&spec.fvk).unwrap();
-        // The persisted PCZT carries only the placeholder: no alpha, rk = ak (a zero randomizer).
+        // The in-memory Constructor uses the FVK, but the persisted PCZT carries no FVK or alpha.
+        assert!(spend.fvk().is_none());
         assert!(spend.alpha().is_none());
         assert_eq!(
             <[u8; 32]>::from(spend.rk()),
             <[u8; 32]>::try_from(&fvk.to_bytes()[0..32]).unwrap()
         );
-        // Full note plaintext, exactly what the caller supplied.
+        // The note plaintext required by the proof flow remains available, excluding the FVK.
         assert_eq!(spend.value().as_ref().map(|v| v.inner()), Some(spec.value));
         assert_eq!(spend.rho().as_ref().map(|r| r.to_bytes()), Some(spec.rho));
         assert_eq!(
@@ -2352,7 +2382,6 @@ mod tests {
                 .map(|a| a.to_raw_address_bytes().to_vec()),
             Some(spec.recipient.to_vec())
         );
-        assert_eq!(spend.fvk().as_ref().map(|f| f.to_bytes()), Some(spec.fvk));
         assert!(spend.witness().is_some());
         assert!(spend.spend_auth_sig().is_none());
         assert!(spend.dummy_sk().is_none());
@@ -2363,20 +2392,26 @@ mod tests {
                 .map(|v| v.as_slice()),
             Some(&spec.cmx.to_vec()[..])
         );
-        // Spend-only action: the paired output side is the builder's random dummy note — a real
-        // note commitment (random recipient, zero value) no one can detect, decrypt, or spend,
-        // in contrast to the real spend which carries the wallet's note plaintext.
+        assert_eq!(
+            spend
+                .proprietary()
+                .get(super::super::ironwood_pczt::SPEND_RK_STATE_PROPRIETARY_KEY)
+                .map(|v| v.as_slice()),
+            Some(&[0u8][..])
+        );
+        // Spend-only action: the paired output side is a zero-valued dummy note.
         let output = bundle.actions()[0].output();
         assert!(output.recipient().is_some());
         assert_eq!(output.value().as_ref().map(|v| v.inner()), Some(0));
         assert_ne!(output.cmx().to_bytes(), spec.cmx);
 
-        // The full plaintext round-trips the wire losslessly.
         let bytes = serialize_pczt(&bundle).unwrap();
-        assert_eq!(
-            serialize_pczt(&deserialize_pczt(&bytes).unwrap()).unwrap(),
-            bytes
-        );
+        assert!(!bytes
+            .windows(spec.fvk.len())
+            .any(|window| window == &spec.fvk[..]));
+        let roundtrip = deserialize_pczt(&bytes).unwrap();
+        assert!(roundtrip.actions()[0].spend().fvk().is_none());
+        assert_eq!(serialize_pczt(&roundtrip).unwrap(), bytes);
     }
 
     #[test]
@@ -2517,7 +2552,8 @@ mod tests {
         let (bundle, _, _) = construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
         verify_spend_pczt(&bundle).unwrap();
 
-        // One spend + one output: all three checks run (nullifier, note commitment, cv_net).
+        // The Constructor ran nullifier, note-commitment, and cv_net checks before serializing; the
+        // returned PCZT intentionally no longer carries the FVK needed to repeat spend checks.
         let (bundle, _, _) = construct_spend_pczt_multi(
             &[spec],
             &[IronwoodOutputSpec {

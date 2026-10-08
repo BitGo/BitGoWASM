@@ -28,7 +28,10 @@ use orchard::value::Sign;
 use orchard::{ProtocolVersion, ValuePool};
 
 /// Wire format version; bump on any layout change (deserialize rejects unknown versions).
-pub const FORMAT_VERSION: u8 = 0x01;
+pub const FORMAT_VERSION: u8 = 0x02;
+
+/// Per-spend metadata key recording whether a real spend's placeholder `rk` was replaced.
+pub(crate) const SPEND_RK_STATE_PROPRIETARY_KEY: &str = "bitgo.rk_state";
 
 /// Errors from Ironwood PCZT (de)serialization.
 #[derive(Debug, strum::IntoStaticStr)]
@@ -111,7 +114,6 @@ struct SpendWire {
     value: Option<u64>,
     rho: Option<[u8; 32]>,
     rseed: Option<[u8; 32]>,
-    fvk: Option<Vec<u8>>, // 96
     witness: Option<WitnessWire>,
     alpha: Option<[u8; 32]>,
     dummy_sk: Option<[u8; 32]>,
@@ -207,14 +209,30 @@ pub fn with_out_ciphertext(
     })
 }
 
-/// Replace one action spend's `rk` (spend validating key) in an already-serialized PCZT.
-///
-/// Rejects an `rk` that is not a canonical RedPallas verification key; every other field of the
-/// bundle/action is untouched.
+/// Replace one action spend's `rk` (spend validating key) and mark it ready for sighashing.
+/// Rejects an `rk` that is not a canonical RedPallas verification key.
 pub fn with_spend_rk(
     bytes: &[u8],
     action_index: usize,
     rk: [u8; 32],
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    patch_spend_rk(bytes, action_index, rk, false)
+}
+
+/// Set the constructor placeholder `rk` and mark it as requiring signer replacement.
+pub(crate) fn with_placeholder_spend_rk(
+    bytes: &[u8],
+    action_index: usize,
+    rk: [u8; 32],
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    patch_spend_rk(bytes, action_index, rk, true)
+}
+
+fn patch_spend_rk(
+    bytes: &[u8],
+    action_index: usize,
+    rk: [u8; 32],
+    is_placeholder: bool,
 ) -> Result<Vec<u8>, IronwoodPcztError> {
     with_patched_wire(bytes, |wire| {
         let spend = &mut wire
@@ -226,6 +244,10 @@ pub fn with_spend_rk(
             return Err(IronwoodPcztError::BadFieldEncoding("spend.rk"));
         }
         spend.rk = rk;
+        spend.proprietary.insert(
+            SPEND_RK_STATE_PROPRIETARY_KEY.to_string(),
+            vec![u8::from(!is_placeholder)],
+        );
         Ok(())
     })
 }
@@ -248,16 +270,21 @@ pub fn with_spend_auth_sig(
     })
 }
 
-/// Clear one action spend's `alpha` (spend authorizing randomizer) in an already-serialized PCZT.
+/// Set or clear one action spend's `alpha` (spend authorizing randomizer) in an
+/// already-serialized PCZT.
 ///
-/// No-op when already absent; every other field of the bundle/action is untouched.
-pub fn clear_spend_alpha(bytes: &[u8], action_index: usize) -> Result<Vec<u8>, IronwoodPcztError> {
+/// `None` clears it; every other field of the bundle/action is untouched.
+pub fn with_spend_alpha(
+    bytes: &[u8],
+    action_index: usize,
+    alpha: Option<[u8; 32]>,
+) -> Result<Vec<u8>, IronwoodPcztError> {
     with_patched_wire(bytes, |wire| {
         wire.actions
             .get_mut(action_index)
             .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
             .spend
-            .alpha = None;
+            .alpha = alpha;
         Ok(())
     })
 }
@@ -341,7 +368,6 @@ fn spend_to_wire(s: &PcztSpend) -> SpendWire {
         value: s.value().as_ref().map(|v| v.inner()),
         rho: s.rho().as_ref().map(|r| r.to_bytes()),
         rseed: s.rseed().as_ref().map(|r| *r.as_bytes()),
-        fvk: s.fvk().as_ref().map(|f| f.to_bytes().to_vec()),
         witness: s.witness().as_ref().map(|w| WitnessWire {
             position: w.position(),
             auth_path: w.auth_path().iter().map(|h| h.to_bytes()).collect(),
@@ -432,7 +458,6 @@ fn wire_to_spend(s: SpendWire, note_version: NoteVersion) -> Result<PcztSpend, I
         .as_deref()
         .map(|v| arr::<43>(v, "spend.recipient"))
         .transpose()?;
-    let fvk = s.fvk.as_deref().map(|v| arr::<96>(v, "fvk")).transpose()?;
     let witness = s
         .witness
         .map(|w| -> Result<_, IronwoodPcztError> {
@@ -452,7 +477,7 @@ fn wire_to_spend(s: SpendWire, note_version: NoteVersion) -> Result<PcztSpend, I
         s.value,
         s.rho,
         s.rseed,
-        fvk,
+        None, // FVK is constructor-only and intentionally omitted from the serialized PCZT.
         witness,
         s.alpha,
         None, // zip32_derivation: wallet metadata, not needed by the prover
@@ -503,6 +528,12 @@ mod tests {
     use orchard::tree::Anchor;
     use orchard::value::NoteValue;
     use rand::rngs::OsRng;
+
+    /// An arbitrary canonical Pallas field element keyed off `seed`.
+    fn field_bytes(seed: u64) -> [u8; 32] {
+        use ff::PrimeField;
+        pasta_curves::pallas::Base::from(seed).to_repr()
+    }
 
     /// Construct a shielding PCZT (one Ironwood output, dummy spend) via the orchard Constructor.
     fn sample_pczt() -> PcztBundle {
@@ -630,9 +661,20 @@ mod tests {
     }
 
     #[test]
-    fn with_spend_rk_replaces_the_rk() {
+    fn rk_patcher_tracks_placeholder_and_replaced_states() {
         let bytes = serialize_pczt(&sample_pczt()).unwrap();
         let old_rk = <[u8; 32]>::from(deserialize_pczt(&bytes).unwrap().actions()[0].spend().rk());
+
+        let placeholder = with_placeholder_spend_rk(&bytes, 0, old_rk).unwrap();
+        let placeholder_bundle = deserialize_pczt(&placeholder).unwrap();
+        assert_eq!(
+            placeholder_bundle.actions()[0]
+                .spend()
+                .proprietary()
+                .get(SPEND_RK_STATE_PROPRIETARY_KEY)
+                .map(|state| state.as_slice()),
+            Some(&[0u8][..])
+        );
 
         let sk2 = Option::<SpendingKey>::from(SpendingKey::from_bytes([9u8; 32])).unwrap();
         let new_rk = <[u8; 32]>::from(redpallas::VerificationKey::from(
@@ -640,9 +682,17 @@ mod tests {
         ));
         assert_ne!(old_rk, new_rk);
 
-        let patched = with_spend_rk(&bytes, 0, new_rk).unwrap();
+        let patched = with_spend_rk(&placeholder, 0, new_rk).unwrap();
         let bundle = deserialize_pczt(&patched).unwrap();
         assert_eq!(<[u8; 32]>::from(bundle.actions()[0].spend().rk()), new_rk);
+        assert_eq!(
+            bundle.actions()[0]
+                .spend()
+                .proprietary()
+                .get(SPEND_RK_STATE_PROPRIETARY_KEY)
+                .map(|state| state.as_slice()),
+            Some(&[1u8][..])
+        );
         assert_eq!(serialize_pczt(&bundle).unwrap(), patched);
         assert_eq!(with_spend_rk(&patched, 0, new_rk).unwrap(), patched);
     }
@@ -701,19 +751,31 @@ mod tests {
     }
 
     #[test]
-    fn clear_spend_alpha_clears_the_randomizer() {
+    fn with_spend_alpha_sets_and_clears_the_randomizer() {
         let bytes = serialize_pczt(&sample_pczt()).unwrap();
         assert!(deserialize_pczt(&bytes).unwrap().actions()[0]
             .spend()
             .alpha()
             .is_some());
-        let cleared = clear_spend_alpha(&bytes, 0).unwrap();
+
+        // Set an arbitrary canonical alpha, then clear it again.
+        let alpha = field_bytes(7);
+        let set = with_spend_alpha(&bytes, 0, Some(alpha)).unwrap();
+        assert_eq!(
+            deserialize_pczt(&set).unwrap().actions()[0]
+                .spend()
+                .alpha()
+                .map(|a| a.to_repr()),
+            Some(alpha)
+        );
+
+        let cleared = with_spend_alpha(&set, 0, None).unwrap();
         assert!(deserialize_pczt(&cleared).unwrap().actions()[0]
             .spend()
             .alpha()
             .is_none());
-        // Idempotent, and the rest of the bundle round-trips byte-stable.
-        assert_eq!(clear_spend_alpha(&cleared, 0).unwrap(), cleared);
+        // Clearing the original bundle reproduces the byte-stable state, and the rest of the
+        // bundle round-trips byte-stable.
         assert_eq!(
             serialize_pczt(&deserialize_pczt(&cleared).unwrap()).unwrap(),
             cleared

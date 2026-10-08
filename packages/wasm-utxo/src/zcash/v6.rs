@@ -414,12 +414,9 @@ fn transparent_sig_digest_with_txin(
     txin_sig_hash: [u8; 32],
 ) -> [u8; 32] {
     let inputs = &tx.transparent.input;
-    // Per ZIP-244, the sig transparent digest collapses to the txid one only when there are
-    // neither transparent inputs nor outputs (e.g. a fully-shielded tx). With outputs but no
-    // inputs (unshield: shielded spend -> transparent output), the full S.2 structure still
-    // applies, since hash_type/amounts/scripts/txin differ from the txid digest whenever
-    // outputs is non-empty.
-    if inputs.is_empty() && tx.transparent.output.is_empty() {
+    // ZIP-244 uses the transparent txid digest for shielded signatures whenever there are no
+    // transparent inputs, even if transparent outputs are present (the unshield case).
+    if inputs.is_empty() {
         return transparent_txid_digest(tx);
     }
 
@@ -1048,10 +1045,9 @@ mod tests {
     }
 
     #[test]
-    fn shielded_sig_digest_unshield_case_differs_from_txid() {
-        // Unshield: transparent output present, no transparent inputs. The sig transparent
-        // digest must NOT collapse to the txid digest here, since the txid digest omits
-        // hash_type/amounts/scripts/txin while the sig digest includes them.
+    fn shielded_sig_digest_without_inputs_uses_txid_transparent_digest() {
+        // Unshield: transparent outputs are present, but the ZIP-244 shielded signature digest
+        // reuses the transparent txid digest because there are no transparent inputs.
         let (_, output) = {
             let sample = sample_transparent(true);
             (sample.input, sample.output)
@@ -1070,7 +1066,7 @@ mod tests {
             sapling_value_balance: 0,
             ironwood_bundle: Some(sample_bundle()),
         };
-        assert_ne!(compute_v6_sig_digest(&tx, &[], &[]), compute_v6_txid(&tx));
+        assert_eq!(compute_v6_sig_digest(&tx, &[], &[]), compute_v6_txid(&tx));
     }
 
     #[test]
