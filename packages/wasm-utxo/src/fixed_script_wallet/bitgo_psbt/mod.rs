@@ -3555,7 +3555,8 @@ impl BitGoPsbt {
     /// - `Ok(true)` if a valid signature exists for the public key
     /// - `Ok(false)` if no signature exists for the public key
     /// - `Err(VerifyV6SignatureError)` if the PSBT is not Zcash or not v6, the input index is
-    ///   out of bounds, the Ironwood PCZT is absent, or the sighash cannot be computed
+    ///   out of bounds, a shielded output was added and then extracted, or the sighash cannot be
+    ///   computed
     pub fn verify_v6_signature_with_pub<C: secp256k1::Verification>(
         &self,
         secp: &secp256k1::Secp256k1<C>,
@@ -3584,8 +3585,8 @@ impl BitGoPsbt {
     /// - `Ok(false)` if no matching derivation path exists, or no valid signature exists for the
     ///   derived public key
     /// - `Err(VerifyV6SignatureError)` if the PSBT is not Zcash or not v6, the input index is
-    ///   out of bounds, derivation fails, the Ironwood PCZT is absent, or the sighash cannot be
-    ///   computed
+    ///   out of bounds, derivation fails, a shielded output was added and then extracted, or the
+    ///   sighash cannot be computed
     pub fn verify_v6_signature_with_xpub<C: secp256k1::Verification>(
         &self,
         secp: &secp256k1::Secp256k1<C>,

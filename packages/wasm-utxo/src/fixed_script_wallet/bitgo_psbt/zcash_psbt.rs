@@ -58,8 +58,10 @@ pub enum VerifyV6SignatureError {
     InputIndexOutOfRange { index: usize },
     /// The xpub could not be derived down the input's `bip32_derivation` path.
     Derivation(String),
-    /// The Ironwood PCZT (whose shielded action data the ZIP-244 sighash commits) is absent —
-    /// it was never added, or was consumed by [`ZcashBitGoPsbt::combine_ironwood_proof`].
+    /// The Ironwood PCZT (whose shielded action data the ZIP-244 sighash commits) was added and
+    /// then consumed by [`ZcashBitGoPsbt::combine_ironwood_proof`] — not simply never added,
+    /// since a transparent-only v6 PSBT (no shielded output ever added) is verified against a
+    /// bundle-less ZIP-244 digest instead, exactly like [`ZcashBitGoPsbt::unsigned_v6_txid`].
     MissingIronwoodPczt,
     /// The ZIP-244 transparent sighash could not be computed (structural input problem).
     Sighash(String),
@@ -85,7 +87,7 @@ impl std::fmt::Display for VerifyV6SignatureError {
             ),
             Self::MissingIronwoodPczt => write!(
                 f,
-                "verify-v6-signature: no Ironwood PCZT stored in PSBT (the ZIP-244 transparent sighash commits the shielded action data)"
+                "verify-v6-signature: this PSBT's Ironwood PCZT has already been extracted (via combine_ironwood_proof); its shielded action data is gone, not merely absent"
             ),
             Self::Sighash(e) => write!(
                 f,
@@ -1132,8 +1134,8 @@ impl ZcashBitGoPsbt {
     /// transparent sighash. Client-side counterpart to the generic `BitGoPsbt::sign()` (which
     /// rejects v6 PSBTs outright, since it only knows the ZIP-243 digest).
     ///
-    /// If no transparent signature has been added to this PSBT yet, this is the first signing round,
-    /// and `xpriv` must be the wallet's user root key: it is used with
+    /// If no transparent signature has been added to this PSBT yet, this is the first signing round.
+    /// With a shielded output present, `xpriv` must be the wallet's user root key: it is used with
     /// `root_wallet_keys.bitgo_key()` to derive the wallet's `ovk` and finalize **every** action's
     /// `out_ciphertext` ([`Self::set_ironwood_out_ciphertext_for_user`], looped over the whole
     /// bundle, so multi-recipient builds are covered too) before any sighash is computed —
@@ -1144,8 +1146,13 @@ impl ZcashBitGoPsbt {
     /// pass `root_wallet_keys` unconditionally on every round without needing to know which key is
     /// signing, and it is mandatory precisely so the step can never be silently skipped by omission.
     ///
-    /// A consequence worth stating: a backup-key recovery cannot open the first signing round, since
-    /// the user key is what defines this transaction's `ovk`.
+    /// A consequence worth stating: a backup-key recovery cannot open the first signing round of a
+    /// shielding transaction, since the user key is what defines its `ovk`.
+    ///
+    /// For a **transparent-only** v6 PSBT (no shielded output was ever added — see
+    /// [`Self::require_no_shielded_output_ever_added`]), there is no `ovk`/`out_ciphertext` to
+    /// finalize and nothing to commit to it, so this step — and the user-signs-first restriction
+    /// that exists only to protect it — does not apply: any key may open the first round.
     ///
     /// Keys are resolved the same way `miniscript`'s own PSBT signer does for legacy scripts: via
     /// each input's `bip32_derivation` map (fingerprint + path) against `k.get_key(..)` — the same
@@ -1205,11 +1212,11 @@ impl ZcashBitGoPsbt {
             .inputs
             .iter()
             .any(|input| !input.partial_sigs.is_empty());
-        if !already_signed {
+        if !already_signed && !self.require_no_shielded_output_ever_added()? {
             Self::check_user_root_key(xpriv, root_wallet_keys, secp)
                 .map_err(|e| format!("{e} (the user must sign a v6 shielding PSBT first)"))?;
-            // Fail loud for a v6 PSBT with no PCZT (never added, or already extracted), or one
-            // with no actions: the first round must not sign a transparent-only digest.
+            // Fail loud for a v6 PSBT with no actions: the first round must not sign a
+            // transparent-only digest under the (shielded-only) ovk-derivation rules above.
             let action_count = self.ironwood_pczt()?.actions().len();
             if action_count == 0 {
                 return Err("Ironwood PCZT has no actions".to_string());
@@ -1248,13 +1255,14 @@ impl ZcashBitGoPsbt {
             .map_err(|e| e.to_string())
     }
 
-    /// Distinguishes "no shielded output has ever been added" (`Ok(false)`) from "one was added
-    /// and then extracted via [`Self::combine_ironwood_proof`]/`mark_ironwood_extracted`"
-    /// (`Err`) — both look identical as bare PCZT-presence (`None` either way), but only the
-    /// first is safe to treat as "there is no shielded output here". Call this before trusting an
-    /// absent PCZT to mean the latter.
+    /// Distinguishes "no shielded output has ever been added" (`Ok(true)`) from "a shielded output
+    /// is currently present" (`Ok(false)`) from "one was added and then extracted via
+    /// [`Self::combine_ironwood_proof`]/`mark_ironwood_extracted`" (`Err`) — the latter two look
+    /// identical as bare PCZT-presence (`None` either way), but only "never added" is safe to
+    /// treat as "there is no shielded output here". Call this before trusting an absent PCZT to
+    /// mean that.
     fn require_no_shielded_output_ever_added(&self) -> Result<bool, String> {
-        if super::propkv::get_ironwood_pczt(&self.psbt).is_some() {
+        if super::propkv::has_ironwood_pczt(&self.psbt) {
             return Ok(false);
         }
         if super::propkv::is_ironwood_extracted(&self.psbt) {
@@ -1373,10 +1381,20 @@ impl ZcashBitGoPsbt {
     }
 
     /// The ZIP-244 v6 txid (internal byte order — reverse for display) of the transaction as it
-    /// currently stands (transparent skeleton + shielded action data).
+    /// currently stands: with a shielded output present, this commits to its action data (via
+    /// [`Self::ironwood_action_data`]); for a transparent-only v6 PSBT (no shielded output ever
+    /// added), it is the ZIP-244 txid of the transparent skeleton alone (`ironwood_bundle: None`
+    /// is a valid ZIP-244 input) — identical to [`Self::unsigned_v6_txid`] in both cases. Errors
+    /// only if a shielded output was added and then extracted via
+    /// [`Self::combine_ironwood_proof`], since the action data an already-computed txid would
+    /// commit to is then gone.
     pub fn v6_txid(&self) -> Result<[u8; 32], String> {
-        let bundle = self.ironwood_action_data()?;
-        let tx = self.to_v6_transaction(self.psbt.unsigned_tx.clone(), Some(bundle))?;
+        let bundle = if self.require_no_shielded_output_ever_added()? {
+            None
+        } else {
+            Some(self.ironwood_action_data()?)
+        };
+        let tx = self.to_v6_transaction(self.psbt.unsigned_tx.clone(), bundle)?;
         Ok(crate::zcash::v6::compute_v6_txid(&tx))
     }
 
@@ -1400,10 +1418,19 @@ impl ZcashBitGoPsbt {
 
     /// ZIP-244 per-input transparent sighash for transparent input `index` (SIGHASH_ALL) — the
     /// message the key controlling that input must sign.
+    ///
+    /// Works whether or not a shielded output has been added: with one, the digest commits to its
+    /// action data (via [`Self::ironwood_action_data`]); without one — the transparent-only v6
+    /// case — it commits to the bundle-less (`None`) ZIP-244 encoding instead, exactly as
+    /// [`Self::unsigned_v6_txid`] does for the txid.
     pub fn v6_transparent_sighash(&self, index: usize) -> Result<[u8; 32], String> {
         let (amounts, scripts) = self.transparent_input_amounts_and_scripts()?;
-        let bundle = self.ironwood_action_data()?;
-        let tx = self.to_v6_transaction(self.psbt.unsigned_tx.clone(), Some(bundle))?;
+        let bundle = if self.require_no_shielded_output_ever_added()? {
+            None
+        } else {
+            Some(self.ironwood_action_data()?)
+        };
+        let tx = self.to_v6_transaction(self.psbt.unsigned_tx.clone(), bundle)?;
         let input = self
             .psbt
             .inputs
@@ -1493,7 +1520,7 @@ impl ZcashBitGoPsbt {
     /// - `Ok(true)` if a valid signature exists for the public key
     /// - `Ok(false)` if no signature exists for the public key
     /// - `Err(VerifyV6SignatureError)` if the input index is out of bounds, the PSBT is not v6,
-    ///   the Ironwood PCZT is absent, or the sighash cannot be computed
+    ///   a shielded output was added and then extracted, or the sighash cannot be computed
     pub fn verify_v6_signature_with_pub<C: secp256k1::Verification>(
         &self,
         secp: &secp256k1::Secp256k1<C>,
@@ -1512,10 +1539,12 @@ impl ZcashBitGoPsbt {
             .get(input_index)
             .ok_or(VerifyV6SignatureError::InputIndexOutOfRange { index: input_index })?;
 
-        // The ZIP-244 transparent sighash commits the PCZT's shielded action data. If it is
-        // absent (never added, or consumed by `combine_ironwood_proof`), the stored signature
-        // cannot be evaluated no matter what — distinguish that from "no signature".
-        if !super::propkv::has_ironwood_pczt(&self.psbt) {
+        // The ZIP-244 transparent sighash commits the PCZT's shielded action data if one was ever
+        // added. A shielded output that was added and then consumed by `combine_ironwood_proof`
+        // leaves that data unrecoverable, so the stored signature cannot be evaluated no matter
+        // what. "Never added" is not an error, though — a transparent-only v6 PSBT is valid, and
+        // `v6_transparent_sighash` below computes a bundle-less digest for it.
+        if self.require_no_shielded_output_ever_added().is_err() {
             return Err(VerifyV6SignatureError::MissingIronwoodPczt);
         }
 
@@ -1562,7 +1591,8 @@ impl ZcashBitGoPsbt {
     /// - `Ok(false)` if no matching derivation path exists, or no valid signature exists for the
     ///   derived public key
     /// - `Err(VerifyV6SignatureError)` if the input index is out of bounds, the PSBT is not v6,
-    ///   derivation fails, the Ironwood PCZT is absent, or the sighash cannot be computed
+    ///   derivation fails, a shielded output was added and then extracted, or the sighash cannot
+    ///   be computed
     pub fn verify_v6_signature_with_xpub<C: secp256k1::Verification>(
         &self,
         secp: &secp256k1::Secp256k1<C>,
@@ -1693,6 +1723,35 @@ impl ZcashBitGoPsbt {
             ironwood_build::combine(&proven, sighash, &mut rng).map_err(|e| e.to_string())?;
 
         let tx = self.to_v6_transaction(transparent, Some(full_bundle))?;
+        crate::zcash::v6::encode_v6_transaction(&tx).map_err(|e| e.to_string())
+    }
+
+    /// Transaction Extractor role for a transparent-only v6 transaction: no shielded
+    /// output was ever added to this PSBT, so there is no PCZT and nothing to combine an
+    /// external proof into. Finalizes the transparent inputs (enforcing the same 2-of-3
+    /// signature threshold [`Self::combine_ironwood_proof`] does) and encodes a v6 transaction
+    /// with an empty (zero-action) Ironwood bundle slot — a structurally valid ZIP-244 encoding
+    /// (see `zcash::v6::round_trip_empty_ironwood_slot`).
+    ///
+    /// Does not consume `self` and is not terminal: unlike [`Self::combine_ironwood_proof`],
+    /// there is no stored PCZT to drop, so calling this more than once is safe and simply
+    /// re-finalizes the same already-signed inputs.
+    ///
+    /// # Errors
+    /// Returns an error if a shielded output was ever added to this PSBT — even one already
+    /// extracted via [`Self::combine_ironwood_proof`] — since such a PSBT's ZIP-244 digest
+    /// commits to real action data and must go through `combine_ironwood_proof` instead. Also
+    /// errors if any transparent input is missing a required signature.
+    pub fn extract_transparent_only_v6_tx(&self) -> Result<Vec<u8>, String> {
+        if !self.require_no_shielded_output_ever_added()? {
+            return Err(
+                "this v6 PSBT carries a shielded output (or had one extracted); use \
+                 combine_ironwood_proof instead"
+                    .to_string(),
+            );
+        }
+        let transparent = self.finalized_transparent_tx()?;
+        let tx = self.to_v6_transaction(transparent, None)?;
         crate::zcash::v6::encode_v6_transaction(&tx).map_err(|e| e.to_string())
     }
 
@@ -2095,6 +2154,159 @@ mod ironwood_v6_tests {
             zebra.hash().to_string(),
             hex::encode(internal),
             "zebra txid == ours"
+        );
+    }
+
+    /// A transparent-only v6 (Ironwood) PSBT — no shielded output is ever added — is the shape
+    /// IMS will build once t->t ZEC sends move to v6 ahead of a shielded-send path existing for
+    /// them. Verifies the dedicated no-PCZT extractor produces a structurally valid, zebra-chain-
+    /// agreeing v6 transaction with an empty Ironwood bundle slot.
+    #[test]
+    fn extract_transparent_only_v6_tx_produces_a_valid_v6_tx() {
+        let seed = "v6_transparent_only";
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
+
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            nu6_3,
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x44u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 199_900_000, &wallet_keys)
+            .unwrap();
+
+        let BitGoPsbt::Zcash(z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+        assert!(z.is_ironwood_v6());
+        // No add_ironwood_output call: this PSBT never has a shielded output or a PCZT.
+        assert!(z.raw_ironwood_pczt_bytes().is_none());
+
+        let txid_before_signing = z.unsigned_v6_txid().unwrap();
+
+        let secp = Secp256k1::new();
+        let sighash = z.v6_transparent_sighash(0).unwrap();
+        let msg = Message::from_digest(sighash);
+        let mut z = z;
+        for i in [0usize, 2] {
+            let sk = signing_secret_keys(seed, 0, 0)[i];
+            let secp_pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+            let pubkey = PublicKey::from(CompressedPublicKey(secp_pk));
+            let mut der = secp.sign_ecdsa(&msg, &sk).serialize_der().to_vec();
+            der.push(0x01); // SIGHASH_ALL
+            z.add_v6_transparent_signature(0, pubkey, &der).unwrap();
+        }
+
+        let raw = z.extract_transparent_only_v6_tx().unwrap();
+
+        let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+        assert_eq!(tx.transparent.input.len(), 1);
+        assert_eq!(tx.transparent.output.len(), 1);
+        assert!(
+            !tx.transparent.input[0].script_sig.is_empty(),
+            "input finalized"
+        );
+        assert!(
+            tx.ironwood_bundle.is_none(),
+            "transparent-only v6 tx has no Ironwood bundle"
+        );
+
+        // The unsigned v6 txid (defined before any signature existed) is unchanged by finalizing
+        // the transparent input — ZIP-244 excludes scriptSigs, exactly as it does for the
+        // shielded case in `build_sign_combine_produces_valid_v6_tx`.
+        let internal_txid = crate::zcash::v6::compute_v6_txid(&tx);
+        assert_eq!(internal_txid, txid_before_signing);
+
+        // Not terminal: calling it again re-finalizes the same already-signed inputs rather than
+        // erroring, unlike `combine_ironwood_proof`.
+        let raw_again = z.extract_transparent_only_v6_tx().unwrap();
+        assert_eq!(raw, raw_again);
+
+        // zebra-chain independently decodes the tx and agrees: v6, zero Ironwood actions.
+        use zebra_chain::serialization::ZcashDeserialize;
+        use zebra_chain::transaction::Transaction as ZebraTx;
+        let zebra = ZebraTx::zcash_deserialize(&raw[..]).expect("zebra decodes v6 tx");
+        assert_eq!(zebra.version(), 6);
+        assert_eq!(zebra.ironwood_actions().count(), 0);
+    }
+
+    /// `sign_ironwood_v6` — the high-level signer behind the JS `sign()` call — must also work for
+    /// a transparent-only v6 PSBT: no `ovk`/`out_ciphertext` step applies (there is no PCZT), and
+    /// unlike the shielded case, the first signing round is not restricted to the user key, since
+    /// that restriction exists only to protect the `ovk` derivation.
+    #[test]
+    fn sign_ironwood_v6_signs_and_extracts_a_transparent_only_psbt() {
+        let seed = "v6_sign_transparent_only";
+        let secp = Secp256k1::new();
+        let wallet_keys = root_wallet_keys(seed);
+
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x55u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 199_900_000, &wallet_keys)
+            .unwrap();
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+        assert!(z.raw_ironwood_pczt_bytes().is_none());
+
+        // Bitgo signs *first* here — the opposite of the shielded-flow ordering requirement —
+        // which would be rejected outright on a PSBT with a shielded output.
+        let bitgo_xpriv = test_wallet_xpriv(seed, 2);
+        assert_eq!(
+            z.sign_ironwood_v6(&bitgo_xpriv, &wallet_keys, &secp)
+                .unwrap(),
+            vec![0]
+        );
+        let user_xpriv = test_wallet_xpriv(seed, 0);
+        assert_eq!(
+            z.sign_ironwood_v6(&user_xpriv, &wallet_keys, &secp)
+                .unwrap(),
+            vec![0]
+        );
+
+        let raw = z.extract_transparent_only_v6_tx().unwrap();
+        let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+        assert!(tx.ironwood_bundle.is_none());
+        assert!(!tx.transparent.input[0].script_sig.is_empty());
+    }
+
+    /// The no-PCZT extractor is only valid for a PSBT that never had a shielded output added — a
+    /// PSBT carrying one (even unsigned/unproven) must go through `combine_ironwood_proof`
+    /// instead, since its ZIP-244 digest already commits to real action data.
+    #[test]
+    fn extract_transparent_only_v6_tx_rejects_a_psbt_with_a_shielded_output() {
+        let z = build_shield_psbt("extract_transparent_only_rejects_shielded");
+        let err = z.extract_transparent_only_v6_tx().unwrap_err();
+        assert!(
+            err.contains("combine_ironwood_proof"),
+            "unexpected error: {err}"
         );
     }
 
@@ -2960,13 +3172,22 @@ mod ironwood_v6_tests {
 
         // Every operation that reads the shielded state now fails. (`combine_ironwood_proof` is not
         // listed because its transparent-signature check fires first on this unsigned PSBT; it reads
-        // the PCZT via the same `ironwood_pczt()` accessor as these.)
+        // the PCZT via the same `ironwood_pczt()` accessor as this.)
+        let err = z.ironwood_action_data().unwrap_err();
+        assert!(err.contains("no Ironwood PCZT"), "unexpected error: {err}");
+
+        // `v6_txid` and `v6_transparent_sighash` both check `require_no_shielded_output_ever_added`
+        // first (so they can compute a bundle-less digest for the transparent-only case), which
+        // surfaces the more specific "already extracted" error rather than the bare "no Ironwood
+        // PCZT" one.
         for err in [
             z.v6_txid().unwrap_err(),
             z.v6_transparent_sighash(0).unwrap_err(),
-            z.ironwood_action_data().unwrap_err(),
         ] {
-            assert!(err.contains("no Ironwood PCZT"), "unexpected error: {err}");
+            assert!(
+                err.contains("already been extracted"),
+                "unexpected error: {err}"
+            );
         }
 
         // The serialized bytes no longer carry a PCZT, and `deserialize` rejects that outright.
@@ -3011,8 +3232,9 @@ mod ironwood_v6_tests {
     }
 
     /// The counterpart to the extraction case above: a v6 PSBT that never had a shielded output
-    /// added at all must still work — `unsigned_v6_txid` computes the transparent-only txid, and
-    /// `ironwood_shielded_outputs_info` reports an empty Vec, neither erroring.
+    /// added at all must still work — `unsigned_v6_txid` and `v6_txid` both compute the
+    /// transparent-only txid (and agree with each other), and `ironwood_shielded_outputs_info`
+    /// reports an empty Vec, none of the three erroring.
     #[test]
     fn unsigned_v6_txid_and_shielded_output_info_handle_no_shielded_output_ever_added() {
         let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_never_shielded"));
@@ -3040,7 +3262,94 @@ mod ironwood_v6_tests {
         };
 
         assert!(z.unsigned_v6_txid().is_ok());
+        assert_eq!(
+            z.v6_txid().unwrap(),
+            z.unsigned_v6_txid().unwrap(),
+            "v6_txid must agree with unsigned_v6_txid for a transparent-only PSBT"
+        );
         assert!(z.ironwood_shielded_outputs_info().unwrap().is_empty());
+    }
+
+    /// `verify_v6_signature_with_pub`/`_with_xpub` on a transparent-only v6 PSBT (no shielded
+    /// output ever added): a PR review comment on the Ironwood transparent-only PSBT work noted
+    /// that `getId`/`verifySignature` still required a PCZT and would throw for a pure
+    /// transparent-to-transparent transaction. This is the fixed happy path — real signers verify
+    /// over the bundle-less ZIP-244 transparent sighash, others don't — mirroring
+    /// `verify_v6_signature_reports_real_signers_and_rejects_others`, but without ever adding a
+    /// shielded output.
+    #[test]
+    fn verify_v6_signature_handles_transparent_only_psbt() {
+        let seed = "v6_verify_transparent_only";
+        let secp = Secp256k1::new();
+        let wallet_keys = root_wallet_keys(seed);
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x55u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 199_900_000, &wallet_keys)
+            .unwrap();
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+
+        // `getId` (`v6_txid`) must be usable before any signature is collected, same as a shielded
+        // PSBT.
+        assert!(z.v6_txid().is_ok());
+
+        // Nothing collected yet: every key reports false (no error) — in particular, no
+        // `MissingIronwoodPczt` just because a shielded output was never added.
+        assert!(!z
+            .verify_v6_signature_with_xpub(&secp, 0, wallet_keys.user_key())
+            .unwrap());
+
+        // Sign user then bitgo — no `ovk`/`out_ciphertext` step applies here (there is no shielded
+        // output), so either key may open the first round.
+        z.sign_ironwood_v6(&test_wallet_xpriv(seed, 0), &wallet_keys, &secp)
+            .unwrap();
+        z.sign_ironwood_v6(&test_wallet_xpriv(seed, 2), &wallet_keys, &secp)
+            .unwrap();
+        assert_eq!(z.psbt.inputs[0].partial_sigs.len(), 2);
+
+        assert!(z
+            .verify_v6_signature_with_xpub(&secp, 0, wallet_keys.user_key())
+            .unwrap());
+        assert!(z
+            .verify_v6_signature_with_xpub(&secp, 0, wallet_keys.bitgo_key())
+            .unwrap());
+        // The backup key is not in this input's 2-of-3 redeem script (signer user, cosigner bitgo).
+        assert!(!z
+            .verify_v6_signature_with_xpub(&secp, 0, wallet_keys.backup_key())
+            .unwrap());
+
+        let user_pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &signing_secret_keys(seed, 0, 0)[0],
+        );
+        let backup_pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(
+            &secp,
+            &signing_secret_keys(seed, 0, 0)[1],
+        );
+        assert!(z.verify_v6_signature_with_pub(&secp, 0, &user_pk).unwrap());
+        assert!(!z
+            .verify_v6_signature_with_pub(&secp, 0, &backup_pk)
+            .unwrap());
+
+        // `getId` remains usable after signing, and the signed PSBT's txid still matches the
+        // unsigned one — v6/ZIP-244 txids do not commit to the transparent scriptSig.
+        assert_eq!(z.v6_txid().unwrap(), z.unsigned_v6_txid().unwrap());
     }
 
     /// A signature from a key outside the input's redeem script is rejected at ingest, rather than

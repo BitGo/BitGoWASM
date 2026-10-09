@@ -727,6 +727,22 @@ impl BitGoPsbt {
         Ok(tx)
     }
 
+    /// Transaction Extractor for a transparent-only v6 (Ironwood) PSBT: no shielded output was
+    /// ever added, so there is no PCZT and nothing to combine an external proof into. Returns
+    /// broadcast-ready v6 transaction bytes with an empty Ironwood bundle slot.
+    ///
+    /// Not terminal (unlike `combine_ironwood_proof`): there is no stored PCZT to drop, so
+    /// calling this more than once is safe.
+    ///
+    /// Errors if a shielded output was ever added to this PSBT, or if any transparent input is
+    /// missing a required signature. See
+    /// [`crate::fixed_script_wallet::bitgo_psbt::zcash_psbt::ZcashBitGoPsbt::extract_transparent_only_v6_tx`].
+    pub fn extract_transparent_only_v6_tx(&self) -> Result<Vec<u8>, WasmUtxoError> {
+        self.zcash()?
+            .extract_transparent_only_v6_tx()
+            .map_err(|e| WasmUtxoError::new(&e))
+    }
+
     /// The raw serialized orchard PCZT (Partially Created Zcash Transaction) bundle stored in
     /// this v6 (Ironwood) PSBT's proprietary key-value map, or `undefined` if none is present.
     ///

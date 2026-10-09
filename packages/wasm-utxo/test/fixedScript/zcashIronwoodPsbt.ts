@@ -945,6 +945,72 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
       assert.deepStrictEqual(psbt.sign(bitgoKey, signFlowWalletKeys), [0]);
     });
   });
+
+  describe("extractTransparentOnlyTransaction — transparent-only v6 (no shielded output)", function () {
+    // A v6 PSBT that never carries a shielded output (no `addShieldedOutput` call, so no PCZT)
+    // must still support the full sign → extract flow, going through `combine_ironwood_proof`'s simpler sibling
+    // instead (no proof, no PCZT).
+    const seed = "transparent-only";
+    const txOnlyWalletKeys = getWalletKeysForSeed(seed);
+    const [userKey, , bitgoKey] = getKeyTriple(seed);
+
+    function buildTransparentOnlyPsbt(): ZcashIronwoodBitGoPsbt {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", txOnlyWalletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput(
+        { txid: "33".repeat(32), vout: 0, value: 200_000_000n },
+        txOnlyWalletKeys,
+        { scriptId: SCRIPT_ID, signPath: { signer: "user", cosigner: "bitgo" } },
+      );
+      psbt.addWalletOutput(txOnlyWalletKeys, { chain: 1, index: 0, value: 199_900_000n });
+      return psbt;
+    }
+
+    it("rejects extraction before the transparent input has been signed", function () {
+      const psbt = buildTransparentOnlyPsbt();
+      assert.throws(
+        () => psbt.extractTransparentOnlyTransaction(),
+        /required signatures collected/,
+      );
+    });
+
+    it("rejects extraction for a PSBT that carries a shielded output", function () {
+      // The shielded-flow build from the top of this file: it has a PCZT, so the simpler
+      // transparent-only path must defer to `combineProof` instead.
+      const psbt = buildShieldPsbt();
+      assert.throws(
+        () => psbt.extractTransparentOnlyTransaction(),
+        /combine_ironwood_proof instead/,
+      );
+    });
+
+    it("signs with either key first — there is no ovk step to protect — then extracts a valid v6 tx", function () {
+      const psbt = buildTransparentOnlyPsbt();
+      assert.strictEqual(psbt.getPczt(), undefined, "never carried a PCZT");
+
+      // Bitgo opens the first round here, the opposite of the shielded flow's user-must-sign-first
+      // rule: there is no ovk derivation for that rule to protect when there's no shielded output.
+      assert.deepStrictEqual(
+        psbt.sign(bitgoKey, txOnlyWalletKeys),
+        [0],
+        "bitgo may sign first for a transparent-only PSBT",
+      );
+      assert.deepStrictEqual(psbt.sign(userKey, txOnlyWalletKeys), [0]);
+
+      const raw = psbt.extractTransparentOnlyTransaction();
+      assert.ok(raw.length > 0, "produced a broadcast-ready v6 transaction");
+
+      // Non-terminal (unlike combineProof): the PSBT instance remains usable afterwards.
+      const parsed = psbt.parseTransactionWithWalletKeys(txOnlyWalletKeys, {
+        replayProtection: { publicKeys: [] },
+      });
+      assert.strictEqual(parsed.outputs.length, 1);
+      assert.strictEqual(parsed.outputs[0].isShielded, false);
+      assert.strictEqual(parsed.minerFee, 100_000n);
+    });
+  });
+
   describe("verifySignature — ZIP-244 transparent sighash", function () {
     // Same build as the sign() block: `verifySignature` needs a signed input, which requires the
     // actual private keys.
