@@ -40,6 +40,31 @@ class ShieldedMerkleTreeTest {
    */
   private static final ShieldedCommitment CMX = ShieldedCommitment.of(HexFormat.of().parseHex(
       "0100000000000000000000000000000000000000000000000000000000000000"));
+  private static final ShieldedCommitment CMX_2 = ShieldedCommitment.of(HexFormat.of().parseHex(
+      "0200000000000000000000000000000000000000000000000000000000000000"));
+  private static final ShieldedCommitment CMX_3 = ShieldedCommitment.of(HexFormat.of().parseHex(
+      "0300000000000000000000000000000000000000000000000000000000000000"));
+
+  private static ShieldedRoot rootAfterAppend(long height, List<ShieldedCommitment> commitments) {
+    try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
+      return tree.appendCommitments(height, commitments, List.of(), null);
+    }
+  }
+
+  private static ShieldedRoot differentRoot(ShieldedRoot root) {
+    byte[] bytes = root.bytes();
+    bytes[0] ^= 1;
+    return ShieldedRoot.of(bytes);
+  }
+
+  private static void assertStateUnchanged(
+      ShieldedMerkleTree tree, TreeState before, MerkleTreeInfo beforeInfo) {
+    assertArrayEquals(before.bytes(), tree.save().bytes());
+    MerkleTreeInfo currentInfo = tree.getInfo();
+    assertEquals(beforeInfo.tipHeight, currentInfo.tipHeight);
+    assertEquals(beforeInfo.leafCount, currentInfo.leafCount);
+    assertEquals(beforeInfo.checkpointCount, currentInfo.checkpointCount);
+  }
   // -------------------------------------------------------------------------
   // ping
   // -------------------------------------------------------------------------
@@ -205,6 +230,35 @@ class ShieldedMerkleTreeTest {
     }
   }
 
+  @Test
+  void appendCommitments_staleEmptyBatchWithCurrentRoot_preservesState() {
+    try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
+      ShieldedRoot currentRoot = tree.appendCommitments(2L, List.of(CMX), List.of(), null);
+      TreeState before = tree.save();
+      MerkleTreeInfo beforeInfo = tree.getInfo();
+
+      WasmException ex = assertThrows(WasmException.class, () ->
+          tree.appendCommitments(1L, List.of(), List.of(), currentRoot));
+
+      assertEquals("CHECKPOINT_REJECTED", ex.getErrorCode());
+      assertStateUnchanged(tree, before, beforeInfo);
+    }
+  }
+
+  @Test
+  void appendCommitments_outOfOrderMultiLeafBatchWithoutExpectedRoot_preservesState() {
+    try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
+      tree.appendCommitments(2L, List.of(CMX), List.of(), null);
+      TreeState before = tree.save();
+      MerkleTreeInfo beforeInfo = tree.getInfo();
+
+      assertThrows(WasmException.class, () ->
+          tree.appendCommitments(1L, List.of(CMX_2, CMX_3), List.of(), null));
+
+      assertStateUnchanged(tree, before, beforeInfo);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // appendCommitments — with commitments
   // -------------------------------------------------------------------------
@@ -267,14 +321,66 @@ class ShieldedMerkleTreeTest {
   }
 
   @Test
-  void appendCommitments_wrongExpectedRoot_throwsRootMismatch() {
-    ShieldedRoot wrongRoot = ShieldedRoot.of(new byte[ShieldedRoot.SIZE]);
-    WasmException ex = assertThrows(WasmException.class, () -> {
-      try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
-        tree.appendCommitments(1L, List.of(CMX), List.of(), wrongRoot);
+  void appendCommitments_emptyWrongExpectedRoot_preservesStateAndAllowsRetry() {
+    ShieldedRoot correctRoot = rootAfterAppend(1L, List.of());
+    ShieldedRoot wrongRoot = differentRoot(correctRoot);
+    try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
+      TreeState before = tree.save();
+      MerkleTreeInfo beforeInfo = tree.getInfo();
+
+      WasmException ex = assertThrows(WasmException.class, () ->
+          tree.appendCommitments(1L, List.of(), List.of(), wrongRoot));
+
+      assertEquals("ROOT_MISMATCH", ex.getErrorCode());
+      assertStateUnchanged(tree, before, beforeInfo);
+
+      TreeState rejectedSnapshot = tree.save();
+      try (ShieldedMerkleTree restored = ShieldedMerkleTree.fromState(rejectedSnapshot)) {
+        assertArrayEquals(before.bytes(), restored.save().bytes());
+        assertEquals(correctRoot,
+            restored.appendCommitments(1L, List.of(), List.of(), correctRoot));
       }
-    });
-    assertEquals("ROOT_MISMATCH", ex.getErrorCode());
+      assertEquals(correctRoot,
+          tree.appendCommitments(1L, List.of(), List.of(), correctRoot));
+    }
+  }
+
+  @Test
+  void appendCommitments_wrongExpectedRoot_preservesStateAndAllowsRetry() {
+    ShieldedRoot correctRoot = rootAfterAppend(1L, List.of(CMX));
+    ShieldedRoot wrongRoot = differentRoot(correctRoot);
+    try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
+      TreeState before = tree.save();
+      MerkleTreeInfo beforeInfo = tree.getInfo();
+
+      WasmException ex = assertThrows(WasmException.class, () ->
+          tree.appendCommitments(1L, List.of(CMX), List.of(), wrongRoot));
+
+      assertEquals("ROOT_MISMATCH", ex.getErrorCode());
+      assertStateUnchanged(tree, before, beforeInfo);
+
+      TreeState rejectedSnapshot = tree.save();
+      try (ShieldedMerkleTree restored = ShieldedMerkleTree.fromState(rejectedSnapshot)) {
+        assertArrayEquals(before.bytes(), restored.save().bytes());
+        assertEquals(correctRoot,
+            restored.appendCommitments(1L, List.of(CMX), List.of(), correctRoot));
+      }
+      assertEquals(correctRoot,
+          tree.appendCommitments(1L, List.of(CMX), List.of(), correctRoot));
+    }
+  }
+
+  @Test
+  void appendCommitments_ownedLengthMismatch_preservesState() {
+    try (ShieldedMerkleTree tree = ShieldedMerkleTree.fromState(EMPTY_STATE)) {
+      TreeState before = tree.save();
+      MerkleTreeInfo beforeInfo = tree.getInfo();
+
+      assertThrows(WasmException.class, () ->
+          tree.appendCommitments(1L, List.of(CMX), List.of(true, false), null));
+
+      assertStateUnchanged(tree, before, beforeInfo);
+    }
   }
 
   @Test

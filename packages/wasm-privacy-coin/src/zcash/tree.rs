@@ -436,6 +436,10 @@ impl OwnedTree {
 
     /// Append raw 32-byte commitments, checkpoint at `block_height`, verify root.
     ///
+    /// Every update is staged and committed only after all appends succeed. When
+    /// `expected_root` is present, it must be 32 bytes and the computed root must match.
+    /// Any failure leaves this tree unchanged.
+    ///
     /// Returns the 32-byte root after appending.
     pub fn append_commitments(
         &mut self,
@@ -444,10 +448,49 @@ impl OwnedTree {
         owned: Vec<bool>,
         expected_root: Option<&[u8]>,
     ) -> Result<Vec<u8>, String> {
+        if let Some(expected) = expected_root {
+            if expected.len() != 32 {
+                return Err(format!(
+                    "INVALID_EXPECTED_ROOT: expected 32 bytes, got {}",
+                    expected.len()
+                ));
+            }
+        }
+
+        // Stage every append: a later shardtree operation can fail after earlier leaves
+        // were inserted, even when the caller did not request a root comparison.
+        let mut staged = Self::from_state(&self.save()?)?;
+        let root = staged.append_commitments_inner(block_height, commitments, owned)?;
+        if let Some(expected) = expected_root {
+            if root.as_slice() != expected {
+                return Err(format!(
+                    "ROOT_MISMATCH: computed {} but expected {}",
+                    hex::encode(&root),
+                    hex::encode(expected)
+                ));
+            }
+        }
+        *self = staged;
+        Ok(root)
+    }
+
+    fn append_commitments_inner(
+        &mut self,
+        block_height: u32,
+        commitments: Vec<Vec<u8>>,
+        owned: Vec<bool>,
+    ) -> Result<Vec<u8>, String> {
         if commitments.is_empty() {
-            self.tree
+            let checkpointed = self
+                .tree
                 .checkpoint(block_height)
                 .map_err(|e| format!("checkpoint error: {}", e))?;
+            if !checkpointed {
+                return Err(format!(
+                    "CHECKPOINT_REJECTED: checkpoint at block height {} was not added",
+                    block_height
+                ));
+            }
             self.tip_height = Some(block_height);
             if self.leaf_count == 0 {
                 let empty_root = MerkleHashOrchard::empty_root(Level::from(DEPTH));
@@ -496,20 +539,7 @@ impl OwnedTree {
         }
 
         self.tip_height = Some(block_height);
-
-        let root = get_checkpoint_root_bytes(&self.tree)?;
-
-        if let Some(expected) = expected_root {
-            if !expected.is_empty() && root != expected {
-                return Err(format!(
-                    "ROOT_MISMATCH: computed {} but expected {}",
-                    hex::encode(&root),
-                    hex::encode(expected)
-                ));
-            }
-        }
-
-        Ok(root)
+        get_checkpoint_root_bytes(&self.tree)
     }
 
     /// Roll back to the checkpoint at `block_height`.
@@ -641,11 +671,138 @@ mod tests {
     }
 
     #[test]
-    fn owned_length_mismatch_returns_err() {
+    fn owned_length_mismatch_returns_err_without_changing_state() {
         let mut tree = empty_tree();
+        let before = tree.save().unwrap();
         let result =
             tree.append_commitments(1, vec![cmx(1), cmx(2)], vec![true, false, true], None);
         assert!(result.is_err());
+        assert_eq!(tree.save().unwrap(), before);
+    }
+
+    #[test]
+    fn malformed_commitment_returns_err_without_changing_state() {
+        let mut tree = empty_tree();
+        tree.append_commitments(1, vec![cmx(1)], vec![], None)
+            .unwrap();
+        let before = tree.save().unwrap();
+
+        let result = tree.append_commitments(2, vec![cmx(2), vec![0; 31]], vec![], None);
+
+        assert!(result.is_err());
+        assert_eq!(tree.save().unwrap(), before);
+    }
+
+    #[test]
+    fn out_of_order_multi_leaf_append_without_expected_root_is_atomic() {
+        let mut tree = empty_tree();
+        tree.append_commitments(2, vec![cmx(1)], vec![], None)
+            .unwrap();
+        let before = tree.save().unwrap();
+        let before_info = tree.get_info().unwrap();
+
+        let error = tree
+            .append_commitments(1, vec![cmx(2), cmx(3)], vec![], None)
+            .unwrap_err();
+
+        assert!(error.starts_with("append error:"));
+        assert_eq!(tree.save().unwrap(), before);
+        assert_eq!(tree.get_info().unwrap(), before_info);
+    }
+
+    #[test]
+    fn expected_root_mismatch_on_empty_batch_is_atomic_and_retryable() {
+        let mut tree = empty_tree();
+        let before = tree.save().unwrap();
+        let before_info = tree.get_info().unwrap();
+        let correct_root = MerkleHashOrchard::empty_root(Level::from(DEPTH))
+            .to_bytes()
+            .to_vec();
+        let mut wrong_root = correct_root.clone();
+        wrong_root[0] ^= 1;
+
+        let error = tree
+            .append_commitments(1, vec![], vec![], Some(&wrong_root))
+            .unwrap_err();
+
+        assert!(error.starts_with("ROOT_MISMATCH:"));
+        assert_eq!(tree.save().unwrap(), before);
+        assert_eq!(tree.get_info().unwrap(), before_info);
+        assert_eq!(
+            tree.append_commitments(1, vec![], vec![], Some(&correct_root))
+                .unwrap(),
+            correct_root
+        );
+
+        let saved = tree.save().unwrap();
+        let restored = OwnedTree::from_state(&saved).unwrap();
+        assert_eq!(restored.save().unwrap(), saved);
+        assert_eq!(restored.get_info().unwrap(), tree.get_info().unwrap());
+    }
+
+    #[test]
+    fn expected_root_mismatch_on_nonempty_batch_is_atomic_and_retryable() {
+        let mut tree = empty_tree();
+        tree.append_commitments(1, vec![cmx(1)], vec![], None)
+            .unwrap();
+        let before = tree.save().unwrap();
+        let before_info = tree.get_info().unwrap();
+
+        let mut candidate = OwnedTree::from_state(&before).unwrap();
+        let correct_root = candidate
+            .append_commitments(2, vec![cmx(2)], vec![], None)
+            .unwrap();
+        let mut wrong_root = correct_root.clone();
+        wrong_root[0] ^= 1;
+
+        let error = tree
+            .append_commitments(2, vec![cmx(2)], vec![], Some(&wrong_root))
+            .unwrap_err();
+
+        assert!(error.starts_with("ROOT_MISMATCH:"));
+        assert_eq!(tree.save().unwrap(), before);
+        assert_eq!(tree.get_info().unwrap(), before_info);
+        assert_eq!(
+            tree.append_commitments(2, vec![cmx(2)], vec![], Some(&correct_root))
+                .unwrap(),
+            correct_root
+        );
+
+        let saved = tree.save().unwrap();
+        let restored = OwnedTree::from_state(&saved).unwrap();
+        assert_eq!(restored.save().unwrap(), saved);
+        assert_eq!(restored.get_info().unwrap(), tree.get_info().unwrap());
+    }
+
+    #[test]
+    fn expected_root_must_be_32_bytes_and_rejection_preserves_state() {
+        let mut tree = empty_tree();
+        let before = tree.save().unwrap();
+
+        let error = tree
+            .append_commitments(1, vec![], vec![], Some(&[]))
+            .unwrap_err();
+
+        assert!(error.starts_with("INVALID_EXPECTED_ROOT:"));
+        assert_eq!(tree.save().unwrap(), before);
+    }
+
+    #[test]
+    fn stale_empty_checkpoint_rejection_preserves_state() {
+        let mut tree = empty_tree();
+        let current_root = tree
+            .append_commitments(2, vec![cmx(1)], vec![], None)
+            .unwrap();
+        let before = tree.save().unwrap();
+        let before_info = tree.get_info().unwrap();
+
+        let error = tree
+            .append_commitments(1, vec![], vec![], Some(&current_root))
+            .unwrap_err();
+
+        assert!(error.starts_with("CHECKPOINT_REJECTED:"));
+        assert_eq!(tree.save().unwrap(), before);
+        assert_eq!(tree.get_info().unwrap(), before_info);
     }
 
     // -------------------------------------------------------------------------
