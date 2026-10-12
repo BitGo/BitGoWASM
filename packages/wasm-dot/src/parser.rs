@@ -8,7 +8,7 @@
 use crate::address::encode_ss58;
 use crate::error::WasmDotError;
 use crate::transaction::Transaction;
-use crate::types::{AddressFormat, Era, ParseContext};
+use crate::types::{Era, ParseContext};
 use serde::{Deserialize, Serialize};
 
 /// Maximum nesting depth for batch/proxy recursive parsing.
@@ -69,8 +69,9 @@ pub fn parse_transaction(
     // This avoids cloning the entire context (which contains megabytes of metadata hex).
     let prefix = context
         .as_ref()
-        .map(|ctx| AddressFormat::from_chain_name(&ctx.material.chain_name).prefix())
-        .unwrap_or(42); // Default to Substrate generic
+        .map(|ctx| ctx.material.address_policy().map(|policy| policy.prefix))
+        .transpose()?
+        .unwrap_or(42); // No context: default to Substrate generic
 
     let metadata = context
         .as_ref()
@@ -90,7 +91,8 @@ pub fn parse_from_transaction(
     context: Option<&ParseContext>,
 ) -> Result<ParsedTransaction, WasmDotError> {
     let prefix = context
-        .map(|ctx| AddressFormat::from_chain_name(&ctx.material.chain_name).prefix())
+        .map(|ctx| ctx.material.address_policy().map(|policy| policy.prefix))
+        .transpose()?
         .unwrap_or(42);
 
     let metadata = context.and_then(|ctx| decode_metadata(&ctx.material.metadata).ok());

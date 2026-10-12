@@ -8,6 +8,7 @@
 use crate::address::decode_ss58;
 use crate::builder::types::{intent_to_calls, CallIntent, StakePayee, TransactionIntent};
 use crate::error::WasmDotError;
+use crate::types::Ss58AddressPolicy;
 use subxt_core::{
     ext::scale_value::{Composite, Value},
     metadata::Metadata,
@@ -22,6 +23,7 @@ pub fn encode_intent(
     intent: &TransactionIntent,
     sender: &str,
     metadata: &Metadata,
+    policy: Ss58AddressPolicy,
 ) -> Result<Vec<u8>, WasmDotError> {
     let calls = intent_to_calls(intent, sender)?;
 
@@ -29,13 +31,17 @@ pub fn encode_intent(
         0 => Err(WasmDotError::InvalidInput(
             "Intent produced no calls".to_string(),
         )),
-        1 => encode_call(&calls[0], metadata),
-        _ => encode_batch(&calls, metadata),
+        1 => encode_call(&calls[0], metadata, policy),
+        _ => encode_batch(&calls, metadata, policy),
     }
 }
 
 /// Encode a single call-level intent to call data bytes.
-fn encode_call(call: &CallIntent, metadata: &Metadata) -> Result<Vec<u8>, WasmDotError> {
+fn encode_call(
+    call: &CallIntent,
+    metadata: &Metadata,
+    policy: Ss58AddressPolicy,
+) -> Result<Vec<u8>, WasmDotError> {
     let payload = match call {
         CallIntent::Transfer {
             to,
@@ -47,10 +53,10 @@ fn encode_call(call: &CallIntent, metadata: &Metadata) -> Result<Vec<u8>, WasmDo
             } else {
                 "transfer_allow_death"
             };
-            balances(method, to, *amount)?
+            balances(method, to, *amount, policy)?
         }
-        CallIntent::TransferAll { to, keep_alive } => transfer_all(to, *keep_alive)?,
-        CallIntent::Bond { amount, payee } => staking_bond(*amount, payee)?,
+        CallIntent::TransferAll { to, keep_alive } => transfer_all(to, *keep_alive, policy)?,
+        CallIntent::Bond { amount, payee } => staking_bond(*amount, payee, policy)?,
         CallIntent::BondExtra { amount } => staking_bond_extra(*amount),
         CallIntent::Unbond { amount } => staking_unbond(*amount),
         CallIntent::WithdrawUnbonded { slashing_spans } => {
@@ -61,12 +67,12 @@ fn encode_call(call: &CallIntent, metadata: &Metadata) -> Result<Vec<u8>, WasmDo
             delegate,
             proxy_type,
             delay,
-        } => proxy_add(delegate, proxy_type, *delay)?,
+        } => proxy_add(delegate, proxy_type, *delay, policy)?,
         CallIntent::RemoveProxy {
             delegate,
             proxy_type,
             delay,
-        } => proxy_remove(delegate, proxy_type, *delay)?,
+        } => proxy_remove(delegate, proxy_type, *delay, policy)?,
     };
 
     payload
@@ -82,12 +88,13 @@ fn balances(
     method: &str,
     to: &str,
     amount: u64,
+    policy: Ss58AddressPolicy,
 ) -> Result<subxt_core::tx::payload::DynamicPayload, WasmDotError> {
     Ok(dynamic(
         "Balances",
         method,
         named([
-            ("dest", multi_address(to)?),
+            ("dest", multi_address(to, policy)?),
             ("value", Value::u128(amount as u128)),
         ]),
     ))
@@ -96,12 +103,13 @@ fn balances(
 fn transfer_all(
     to: &str,
     keep_alive: bool,
+    policy: Ss58AddressPolicy,
 ) -> Result<subxt_core::tx::payload::DynamicPayload, WasmDotError> {
     Ok(dynamic(
         "Balances",
         "transfer_all",
         named([
-            ("dest", multi_address(to)?),
+            ("dest", multi_address(to, policy)?),
             ("keep_alive", Value::bool(keep_alive)),
         ]),
     ))
@@ -114,13 +122,14 @@ fn transfer_all(
 fn staking_bond(
     amount: u64,
     payee: &StakePayee,
+    policy: Ss58AddressPolicy,
 ) -> Result<subxt_core::tx::payload::DynamicPayload, WasmDotError> {
     let payee_value = match payee {
         StakePayee::Staked => Value::unnamed_variant("Staked", []),
         StakePayee::Stash => Value::unnamed_variant("Stash", []),
         StakePayee::Controller => Value::unnamed_variant("Controller", []),
         StakePayee::Account { address } => {
-            Value::unnamed_variant("Account", [account_id(address)?])
+            Value::unnamed_variant("Account", [account_id(address, policy)?])
         }
     };
 
@@ -173,12 +182,13 @@ fn proxy_add(
     delegate: &str,
     proxy_type: &str,
     delay: u32,
+    policy: Ss58AddressPolicy,
 ) -> Result<subxt_core::tx::payload::DynamicPayload, WasmDotError> {
     Ok(dynamic(
         "Proxy",
         "add_proxy",
         named([
-            ("delegate", multi_address(delegate)?),
+            ("delegate", multi_address(delegate, policy)?),
             ("proxy_type", Value::unnamed_variant(proxy_type, [])),
             ("delay", Value::u128(delay as u128)),
         ]),
@@ -189,12 +199,13 @@ fn proxy_remove(
     delegate: &str,
     proxy_type: &str,
     delay: u32,
+    policy: Ss58AddressPolicy,
 ) -> Result<subxt_core::tx::payload::DynamicPayload, WasmDotError> {
     Ok(dynamic(
         "Proxy",
         "remove_proxy",
         named([
-            ("delegate", multi_address(delegate)?),
+            ("delegate", multi_address(delegate, policy)?),
             ("proxy_type", Value::unnamed_variant(proxy_type, [])),
             ("delay", Value::u128(delay as u128)),
         ]),
@@ -206,12 +217,16 @@ fn proxy_remove(
 // =============================================================================
 
 /// Encode multiple calls as a batchAll (atomic batch).
-fn encode_batch(calls: &[CallIntent], metadata: &Metadata) -> Result<Vec<u8>, WasmDotError> {
+fn encode_batch(
+    calls: &[CallIntent],
+    metadata: &Metadata,
+    policy: Ss58AddressPolicy,
+) -> Result<Vec<u8>, WasmDotError> {
     use parity_scale_codec::{Compact, Encode};
 
     let encoded_calls: Result<Vec<_>, _> = calls
         .iter()
-        .map(|call| encode_call(call, metadata))
+        .map(|call| encode_call(call, metadata, policy))
         .collect();
     let encoded_calls = encoded_calls?;
 
@@ -255,13 +270,19 @@ fn named<const N: usize>(fields: [(&str, Value<()>); N]) -> Composite<()> {
 }
 
 /// Convert SS58 address to MultiAddress::Id value
-fn multi_address(address: &str) -> Result<Value<()>, WasmDotError> {
-    Ok(Value::unnamed_variant("Id", [account_id(address)?]))
+fn multi_address(address: &str, policy: Ss58AddressPolicy) -> Result<Value<()>, WasmDotError> {
+    Ok(Value::unnamed_variant("Id", [account_id(address, policy)?]))
 }
 
 /// Convert SS58 address to AccountId32 bytes value
-fn account_id(address: &str) -> Result<Value<()>, WasmDotError> {
-    let (pubkey, _) = decode_ss58(address)?;
+fn account_id(address: &str, policy: Ss58AddressPolicy) -> Result<Value<()>, WasmDotError> {
+    let (pubkey, prefix) = decode_ss58(address)?;
+    if prefix != policy.prefix && !(policy.allow_generic && prefix == 42) {
+        return Err(WasmDotError::WrongNetwork {
+            actual: prefix,
+            expected: policy.prefix,
+        });
+    }
     let bytes: [u8; 32] = pubkey.try_into().map_err(|v: Vec<u8>| {
         WasmDotError::InvalidInput(format!(
             "Invalid pubkey length: expected 32, got {}",
@@ -289,9 +310,38 @@ mod tests {
     }
 
     #[test]
-    fn test_account_id() {
-        // Valid SS58 address
-        let result = account_id("5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty");
-        assert!(result.is_ok());
+    fn test_account_id_network_binding() {
+        let pubkey = [7u8; 32];
+        let polkadot = crate::address::encode_ss58(&pubkey, 0).unwrap();
+        let kusama = crate::address::encode_ss58(&pubkey, 2).unwrap();
+        let generic = crate::address::encode_ss58(&pubkey, 42).unwrap();
+
+        for (expected, accepted) in [(0, &polkadot), (2, &kusama), (42, &generic)] {
+            let policy = Ss58AddressPolicy { prefix: expected, allow_generic: false };
+            assert!(account_id(accepted, policy).is_ok());
+            for (actual, address) in [(0, &polkadot), (2, &kusama), (42, &generic)] {
+                if actual != expected {
+                    assert!(matches!(
+                        account_id(address, policy),
+                        Err(WasmDotError::WrongNetwork { actual: found, expected: wanted })
+                            if found == actual && wanted == expected
+                    ));
+                }
+            }
+        }
+
+        let allow_generic = Ss58AddressPolicy { prefix: 0, allow_generic: true };
+        assert!(account_id(&generic, allow_generic).is_ok());
+        assert!(matches!(
+            account_id(&kusama, allow_generic),
+            Err(WasmDotError::WrongNetwork { actual: 2, expected: 0 })
+        ));
+
+        let mut malformed = generic.into_bytes();
+        malformed[0] = b'!';
+        assert!(matches!(
+            account_id(std::str::from_utf8(&malformed).unwrap(), allow_generic),
+            Err(WasmDotError::InvalidAddress(_))
+        ));
     }
 }

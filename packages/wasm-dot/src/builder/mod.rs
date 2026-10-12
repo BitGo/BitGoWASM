@@ -22,11 +22,12 @@ pub fn build_transaction(
     intent: TransactionIntent,
     context: BuildContext,
 ) -> Result<Transaction, WasmDotError> {
-    // Decode metadata once
+    // Resolve the address domain before any destination becomes AccountId32.
+    let address_policy = context.material.address_policy()?;
     let metadata = decode_metadata(&context.material.metadata)?;
 
     // Compose intent into calls and encode (batching if needed)
-    let call_data = encode_intent(&intent, &context.sender, &metadata)?;
+    let call_data = encode_intent(&intent, &context.sender, &metadata, address_policy)?;
 
     // Calculate era from validity
     let era = compute_era(&context.validity);
