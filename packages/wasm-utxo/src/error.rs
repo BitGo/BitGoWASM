@@ -2,6 +2,8 @@ use core::fmt;
 
 use crate::fixed_script_wallet::bitgo_psbt::zcash_psbt::VerifyV6SignatureError;
 use crate::fixed_script_wallet::bitgo_psbt::ParseTransactionError;
+use crate::fixed_script_wallet::wallet_scripts::BitGoMusigError;
+use crate::fixed_script_wallet::WalletKeyError;
 
 pub trait WasmErrorCode {
     fn code(&self) -> String;
@@ -28,6 +30,8 @@ pub enum WasmUtxoError {
     ZcashV6(crate::zcash::v6::ZcashV6Error),
     Ironwood(crate::zcash::ironwood_build::IronwoodBuildError),
     VerifyV6Signature(VerifyV6SignatureError),
+    WalletKey(WalletKeyError),
+    BitGoMusig(BitGoMusigError),
 }
 
 impl std::error::Error for WasmUtxoError {}
@@ -41,6 +45,8 @@ impl fmt::Display for WasmUtxoError {
             WasmUtxoError::ZcashV6(e) => write!(f, "{}", e),
             WasmUtxoError::Ironwood(e) => write!(f, "{}", e),
             WasmUtxoError::VerifyV6Signature(e) => write!(f, "{}", e),
+            WasmUtxoError::WalletKey(e) => write!(f, "{}", e),
+            WasmUtxoError::BitGoMusig(e) => write!(f, "{}", e),
         }
     }
 }
@@ -54,6 +60,8 @@ impl WasmErrorCode for WasmUtxoError {
             WasmUtxoError::ZcashV6(e) => e.code(),
             WasmUtxoError::Ironwood(e) => e.code(),
             WasmUtxoError::VerifyV6Signature(e) => e.code(),
+            WasmUtxoError::WalletKey(e) => e.code(),
+            WasmUtxoError::BitGoMusig(e) => e.code(),
         }
     }
 }
@@ -114,6 +122,18 @@ impl From<crate::zcash::ironwood_build::IronwoodBuildError> for WasmUtxoError {
 impl From<VerifyV6SignatureError> for WasmUtxoError {
     fn from(err: VerifyV6SignatureError) -> Self {
         WasmUtxoError::VerifyV6Signature(err)
+    }
+}
+
+impl From<WalletKeyError> for WasmUtxoError {
+    fn from(err: WalletKeyError) -> Self {
+        WasmUtxoError::WalletKey(err)
+    }
+}
+
+impl From<BitGoMusigError> for WasmUtxoError {
+    fn from(err: BitGoMusigError) -> Self {
+        WasmUtxoError::BitGoMusig(err)
     }
 }
 

@@ -84,6 +84,7 @@ impl XprvTriple {
     pub fn to_root_wallet_keys(&self) -> RootWalletKeys {
         let secp = crate::bitcoin::secp256k1::Secp256k1::new();
         RootWalletKeys::new(self.0.map(|x| Xpub::from_priv(&secp, &x)))
+            .expect("fixture wallet xpubs are distinct")
     }
 }
 

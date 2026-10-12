@@ -14,7 +14,7 @@ use crate::bitcoin::hashes::{sha256, Hash, HashEngine};
 use crate::bitcoin::secp256k1::{Parity, PublicKey, Scalar, Secp256k1, XOnlyPublicKey};
 
 /// Error types for BitGo MuSig2 operations
-#[derive(Debug)]
+#[derive(Debug, strum::IntoStaticStr)]
 pub enum BitGoMusigError {
     InvalidPubkeyCount(String),
     InvalidPubkey(String),
@@ -32,6 +32,7 @@ impl std::fmt::Display for BitGoMusigError {
 }
 
 impl std::error::Error for BitGoMusigError {}
+crate::impl_wasm_error_code!(BitGoMusigError);
 
 /// BIP340-style tagged hash
 fn tagged_hash(tag: &str, msg: &[u8]) -> [u8; 32] {
