@@ -125,6 +125,7 @@ pub struct StakingActivateParams {
     pub amount: u64,
     pub validator: String,
     pub staking_type: crate::intent::StakingType,
+    pub lockup: StakeLockupParams,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +157,14 @@ pub struct StakingAuthorizeParams {
     pub custodian_address: Option<String>,
 }
 
+/// Lockup terms stored by the Stake Program.
+#[derive(Debug, Clone)]
+pub struct StakeLockupParams {
+    pub unix_timestamp: i64,
+    pub epoch: u64,
+    pub custodian: String,
+}
+
 /// Intermediate type for StakeInstruction::Initialize
 /// Will be combined with CreateAccount + DelegateStake to form StakingActivate
 #[derive(Debug, Clone)]
@@ -163,6 +172,7 @@ pub struct StakeInitializeParams {
     pub staking_address: String,
     pub staker: String,
     pub withdrawer: String,
+    pub lockup: StakeLockupParams,
 }
 
 // =============================================================================

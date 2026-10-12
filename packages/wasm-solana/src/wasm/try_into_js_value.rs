@@ -73,6 +73,12 @@ impl TryIntoJsValue for u64 {
     }
 }
 
+impl TryIntoJsValue for i64 {
+    fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
+        Ok(js_sys::BigInt::from(*self).into())
+    }
+}
+
 impl TryIntoJsValue for bool {
     fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
         Ok(JsValue::from_bool(*self))

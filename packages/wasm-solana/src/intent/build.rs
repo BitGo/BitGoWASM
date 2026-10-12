@@ -1311,6 +1311,15 @@ mod tests {
             result.generated_keypairs[0].purpose,
             KeypairPurpose::StakeAccount
         );
+        let initialize = &result.transaction.message().instructions[1];
+        let solana_stake_interface::instruction::StakeInstruction::Initialize(_, lockup) =
+            bincode::deserialize(&initialize.data).unwrap()
+        else {
+            panic!("Expected StakeInstruction::Initialize");
+        };
+        assert_eq!(lockup.unix_timestamp, 0);
+        assert_eq!(lockup.epoch, 0);
+        assert_eq!(lockup.custodian, Pubkey::default());
     }
 
     #[test]
@@ -1471,6 +1480,15 @@ mod tests {
             2,
             "Marinade stake should have exactly 2 instructions (CreateAccount + Initialize)"
         );
+        let initialize = &msg.instructions[1];
+        let solana_stake_interface::instruction::StakeInstruction::Initialize(_, lockup) =
+            bincode::deserialize(&initialize.data).unwrap()
+        else {
+            panic!("Expected StakeInstruction::Initialize");
+        };
+        assert_eq!(lockup.unix_timestamp, 0);
+        assert_eq!(lockup.epoch, 0);
+        assert_eq!(lockup.custodian, Pubkey::default());
     }
 
     #[test]

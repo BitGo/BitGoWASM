@@ -141,6 +141,11 @@ describe("buildFromIntent", function () {
 
       const stakeInit = parsed.instructionsData.find((i: any) => i.type === "StakeInitialize");
       assert(stakeInit, "Should have StakeInitialize instruction");
+      assert.deepStrictEqual((stakeInit as any).lockup, {
+        unixTimestamp: 0n,
+        epoch: 0n,
+        custodian: "11111111111111111111111111111111",
+      });
 
       const stakeDelegate = parsed.instructionsData.find((i: any) => i.type === "StakingDelegate");
       assert(stakeDelegate, "Should have StakingDelegate instruction");
