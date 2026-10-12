@@ -27,6 +27,7 @@ export { buildFromIntent, buildFromIntent as buildTransactionFromIntent } from "
 export type {
   BaseIntent,
   PaymentIntent,
+  GoUnstakeIntent,
   StakeIntent,
   UnstakeIntent,
   ClaimIntent,
