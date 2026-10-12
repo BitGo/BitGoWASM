@@ -90,6 +90,7 @@ export type {
   SetPriorityFeeParams,
   TokenTransferParams,
   CreateAtaParams,
+  RecoverNestedAtaParams,
   CloseAtaParams,
   MemoParams,
   StakePoolDepositSolParams,
