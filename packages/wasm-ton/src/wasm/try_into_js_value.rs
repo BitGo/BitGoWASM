@@ -116,7 +116,15 @@ pub use js_obj;
 // TryIntoJsValue implementations for parser types
 // ============================================================================
 
-use crate::parser::{JettonTransferFields, ParsedSendAction, ParsedTransaction, TransactionType};
+use crate::parser::{
+    EffectiveAmountKind, JettonTransferFields, ParsedSendAction, ParsedTransaction, TransactionType,
+};
+
+impl TryIntoJsValue for EffectiveAmountKind {
+    fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
+        Ok(JsValue::from_str(self.as_str()))
+    }
+}
 
 impl TryIntoJsValue for TransactionType {
     fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
@@ -163,10 +171,59 @@ impl TryIntoJsValue for ParsedSendAction {
 
         js_sys::Reflect::set(
             &obj,
-            &JsValue::from_str("amount"),
-            &TryIntoJsValue::try_to_js_value(&self.amount)?,
+            &JsValue::from_str("nominalAmount"),
+            &TryIntoJsValue::try_to_js_value(&self.nominal_amount)?,
         )
-        .map_err(|_| JsConversionError::new("Failed to set amount"))?;
+        .map_err(|_| JsConversionError::new("Failed to set nominalAmount"))?;
+
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("effectiveAmountKind"),
+            &TryIntoJsValue::try_to_js_value(&self.effective_amount_kind)?,
+        )
+        .map_err(|_| JsConversionError::new("Failed to set effectiveAmountKind"))?;
+
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("payFeesSeparately"),
+            &TryIntoJsValue::try_to_js_value(&self.pay_fees_separately)?,
+        )
+        .map_err(|_| JsConversionError::new("Failed to set payFeesSeparately"))?;
+
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("ignoreActionErrors"),
+            &TryIntoJsValue::try_to_js_value(&self.ignore_action_errors)?,
+        )
+        .map_err(|_| JsConversionError::new("Failed to set ignoreActionErrors"))?;
+
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("bounceOnActionFail"),
+            &TryIntoJsValue::try_to_js_value(&self.bounce_on_action_fail)?,
+        )
+        .map_err(|_| JsConversionError::new("Failed to set bounceOnActionFail"))?;
+
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("carriesInboundValue"),
+            &TryIntoJsValue::try_to_js_value(&self.carries_inbound_value)?,
+        )
+        .map_err(|_| JsConversionError::new("Failed to set carriesInboundValue"))?;
+
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("carriesAllBalance"),
+            &TryIntoJsValue::try_to_js_value(&self.carries_all_balance)?,
+        )
+        .map_err(|_| JsConversionError::new("Failed to set carriesAllBalance"))?;
+
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("destroyAccountIfZero"),
+            &TryIntoJsValue::try_to_js_value(&self.destroy_account_if_zero)?,
+        )
+        .map_err(|_| JsConversionError::new("Failed to set destroyAccountIfZero"))?;
 
         js_sys::Reflect::set(
             &obj,
@@ -219,6 +276,77 @@ impl TryIntoJsValue for ParsedSendAction {
         }
 
         Ok(obj.into())
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn send_action(mode: u8) -> ParsedSendAction {
+        ParsedSendAction {
+            mode,
+            nominal_amount: 7,
+            effective_amount_kind: EffectiveAmountKind::AllRemainingBalance,
+            pay_fees_separately: false,
+            ignore_action_errors: false,
+            bounce_on_action_fail: false,
+            carries_inbound_value: false,
+            carries_all_balance: true,
+            destroy_account_if_zero: mode & 32 != 0,
+            destination: "destination".to_string(),
+            destination_bounceable: "destination".to_string(),
+            bounce: true,
+            body_opcode: None,
+            state_init: false,
+            memo: None,
+            jetton_transfer: None,
+            withdraw_amount: None,
+        }
+    }
+
+    fn property(value: &JsValue, name: &str) -> JsValue {
+        js_sys::Reflect::get(value, &JsValue::from_str(name)).unwrap()
+    }
+
+    #[wasm_bindgen_test]
+    fn send_mode_semantics_survive_javascript_conversion() {
+        for (mode, destroy_account_if_zero) in [(128, false), (160, true)] {
+            let value = send_action(mode).try_to_js_value().unwrap();
+            assert_eq!(property(&value, "mode").as_f64(), Some(mode as f64));
+            let amount: JsValue = js_sys::BigInt::from(7u64).into();
+            assert!(js_sys::Object::is(
+                &property(&value, "nominalAmount"),
+                &amount
+            ));
+            assert_eq!(
+                property(&value, "effectiveAmountKind")
+                    .as_string()
+                    .as_deref(),
+                Some("AllRemainingBalance")
+            );
+            assert_eq!(property(&value, "payFeesSeparately").as_bool(), Some(false));
+            assert_eq!(
+                property(&value, "ignoreActionErrors").as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                property(&value, "bounceOnActionFail").as_bool(),
+                Some(false)
+            );
+            assert_eq!(
+                property(&value, "carriesInboundValue").as_bool(),
+                Some(false)
+            );
+            assert_eq!(property(&value, "carriesAllBalance").as_bool(), Some(true));
+            assert_eq!(
+                property(&value, "destroyAccountIfZero").as_bool(),
+                Some(destroy_account_if_zero)
+            );
+            assert_eq!(property(&value, "bounce").as_bool(), Some(true));
+            assert!(!js_sys::Reflect::has(&value, &JsValue::from_str("amount")).unwrap());
+        }
     }
 }
 

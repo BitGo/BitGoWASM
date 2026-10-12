@@ -35,6 +35,8 @@
   "scripts": {
     "test": "npm run test:mocha",
     "test:mocha": "mocha --recursive test",
+    "test:wasm-pack-node": "wasm-pack test --node",
+    "test:wasm-pack-chrome": "wasm-pack test --headless --chrome",
     "build:wasm": "make js/wasm && make dist/esm/js/wasm && make dist/cjs/js/wasm",
     "build:ts-esm": "tsc",
     "build:ts-cjs": "tsc --project tsconfig.cjs.json",
