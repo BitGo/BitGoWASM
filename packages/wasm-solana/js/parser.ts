@@ -85,6 +85,7 @@ export interface StakingWithdrawParams {
   type: "StakingWithdraw";
   fromAddress: string;
   stakingAddress: string;
+  toAddress: string;
   amount: bigint;
 }
 

@@ -143,6 +143,7 @@ impl TryIntoJsValue for StakingWithdrawParams {
             "type" => "StakingWithdraw",
             "fromAddress" => self.from_address,
             "stakingAddress" => self.staking_address,
+            "toAddress" => self.to_address,
             "amount" => self.amount
         )
     }
