@@ -242,6 +242,60 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_v0_static_account_stake_split() {
+        use solana_sdk::hash::Hash;
+        use solana_sdk::instruction::{AccountMeta, Instruction};
+        use solana_sdk::pubkey::Pubkey;
+        use solana_stake_interface::instruction::StakeInstruction;
+
+        let source = Pubkey::new_unique();
+        let destination = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let amount = 987_654_321;
+        let instruction = Instruction::new_with_bincode(
+            solana_stake_interface::program::ID,
+            &StakeInstruction::Split(amount),
+            vec![
+                AccountMeta::new(source, false),
+                AccountMeta::new(destination, true),
+                AccountMeta::new_readonly(authority, true),
+            ],
+        );
+        let message = solana_message::v0::Message::try_compile(
+            &authority,
+            &[instruction],
+            &[],
+            Hash::default(),
+        )
+        .unwrap();
+        assert!(message.address_table_lookups.is_empty());
+        assert!(message.account_keys.contains(&source));
+        assert!(message.account_keys.contains(&destination));
+        assert!(message.account_keys.contains(&authority));
+
+        let transaction = VersionedTransaction {
+            signatures: vec![
+                solana_signature::Signature::default();
+                message.header.num_required_signatures as usize
+            ],
+            message: VersionedMessage::V0(message),
+        };
+        let bytes = bincode::serialize(&transaction).unwrap();
+        let parsed = parse_transaction(&bytes).unwrap();
+
+        assert_eq!(parsed.instructions_data.len(), 1);
+        match &parsed.instructions_data[0] {
+            ParsedInstruction::StakingSplit(params) => {
+                assert_eq!(params.staking_address, source.to_string());
+                assert_eq!(params.destination_staking_address, destination.to_string());
+                assert_eq!(params.from_address, authority.to_string());
+                assert_eq!(params.amount, amount);
+            }
+            _ => panic!("Expected StakingSplit"),
+        }
+    }
+
+    #[test]
     fn test_parse_invalid_bytes() {
         let result = parse_transaction(&[0, 1, 2, 3]);
         assert!(result.is_err());
