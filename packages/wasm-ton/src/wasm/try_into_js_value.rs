@@ -1,7 +1,8 @@
 //! Trait for converting Rust types to JavaScript values.
 //!
-//! This module provides proper BigInt handling for u64 amounts.
+//! This module converts monetary amounts to JavaScript BigInt values.
 
+use num_bigint::BigUint;
 use wasm_bindgen::JsValue;
 
 /// Error type for JS value conversion failures.
@@ -64,6 +65,15 @@ impl TryIntoJsValue for u32 {
 impl TryIntoJsValue for u64 {
     fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
         Ok(js_sys::BigInt::from(*self).into())
+    }
+}
+
+impl TryIntoJsValue for BigUint {
+    fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
+        let decimal = self.to_str_radix(10);
+        js_sys::BigInt::new(&JsValue::from_str(&decimal))
+            .map(|bigint| bigint.into())
+            .map_err(|_| JsConversionError::new("Failed to create BigInt"))
     }
 }
 
@@ -209,11 +219,11 @@ impl TryIntoJsValue for ParsedSendAction {
             .map_err(|_| JsConversionError::new("Failed to set jettonTransfer"))?;
         }
 
-        if let Some(withdraw_amount) = self.withdraw_amount {
+        if let Some(withdraw_amount) = &self.withdraw_amount {
             js_sys::Reflect::set(
                 &obj,
                 &JsValue::from_str("withdrawAmount"),
-                &TryIntoJsValue::try_to_js_value(&withdraw_amount)?,
+                &TryIntoJsValue::try_to_js_value(withdraw_amount)?,
             )
             .map_err(|_| JsConversionError::new("Failed to set withdrawAmount"))?;
         }
@@ -233,5 +243,27 @@ impl TryIntoJsValue for ParsedTransaction {
             "signature" => self.signature,
             "sendActions" => self.send_actions
         )
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn biguint_conversion_preserves_values_above_u64() {
+        for decimal in [
+            "18446744073709551616",
+            "100000000000000000000",
+            "1329227995784915872903807060280344575",
+        ] {
+            let amount = BigUint::parse_bytes(decimal.as_bytes(), 10).unwrap();
+            let actual = amount.try_to_js_value().unwrap();
+            let expected: JsValue = js_sys::BigInt::new(&JsValue::from_str(decimal))
+                .unwrap()
+                .into();
+            assert!(js_sys::Object::is(&actual, &expected));
+        }
     }
 }
