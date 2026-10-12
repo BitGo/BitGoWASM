@@ -47,6 +47,7 @@ export interface ParsedTransaction {
  *
  * @param tx - A Transaction instance
  * @returns A ParsedTransaction with decoded actions
+ * @throws when a Jetton payload is malformed or its semantics are unsupported
  */
 export function parseTransaction(tx: Transaction): ParsedTransaction {
   return ParserNamespace.parseFromTransaction(tx.wasm) as ParsedTransaction;
