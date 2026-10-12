@@ -32,7 +32,7 @@ pub struct Material {
 pub struct Validity {
     /// Block number when transaction becomes valid
     pub first_valid: u32,
-    /// Maximum duration in blocks (default: 2400, ~4 hours)
+    /// Maximum duration in blocks (0 for immortal, 4..=65,536 for mortal; default: 2400)
     #[serde(default = "default_max_duration")]
     pub max_duration: u32,
 }
