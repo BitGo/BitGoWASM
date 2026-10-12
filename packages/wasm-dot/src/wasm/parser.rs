@@ -52,20 +52,13 @@ impl ParserNamespace {
 
     /// Parse a pre-deserialized Transaction into structured data.
     ///
-    /// Same as `parseTransaction(bytes)` but accepts an already-deserialized
-    /// WasmTransaction, avoiding double deserialization when the caller already
-    /// has a DotTransaction from `fromBytes()`.
+    /// Parse a pre-deserialized transaction using its stored runtime material.
     ///
-    /// @param tx - A WasmTransaction instance
-    /// @param context - Optional parsing context with chain material
+    /// @param tx - A WasmTransaction instance with material from deserialization
     /// @returns Parsed transaction as JSON-compatible JS object
     #[wasm_bindgen(js_name = parseFromTransaction)]
-    pub fn parse_from_transaction_wasm(
-        tx: &WasmTransaction,
-        context: Option<ParseContextJs>,
-    ) -> Result<JsValue, JsValue> {
-        let ctx = context.map(|c| c.into_inner());
-        let parsed = parse_from_transaction(tx.inner(), ctx.as_ref())?;
+    pub fn parse_from_transaction_wasm(tx: &WasmTransaction) -> Result<JsValue, JsValue> {
+        let parsed = parse_from_transaction(tx.inner())?;
         to_js_value(&parsed)
     }
 

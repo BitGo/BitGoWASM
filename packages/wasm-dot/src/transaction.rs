@@ -148,31 +148,55 @@ impl Transaction {
         }
     }
 
+    /// Create a new transaction already bound to its runtime material.
+    pub(crate) fn new_with_context(
+        call_data: Vec<u8>,
+        era: Era,
+        nonce: u32,
+        tip: u128,
+        material: Material,
+        metadata: Metadata,
+        validity: Validity,
+        reference_block: &str,
+    ) -> Result<Self, WasmDotError> {
+        let reference_block = parse_hex_hash(reference_block)?;
+        let mut tx = Self::new(call_data, era, nonce, tip);
+        tx.context = Some(TransactionContext {
+            material,
+            validity,
+            reference_block,
+            metadata: Some(metadata),
+        });
+        Ok(tx)
+    }
+
     /// Create a transaction from raw bytes
     ///
     /// # Arguments
     /// * `bytes` - Raw extrinsic bytes
     /// * `context` - Optional parsing context with chain material
-    pub fn from_bytes(
-        bytes: &[u8],
-        context: Option<ParseContext>,
-        metadata: Option<&Metadata>,
-    ) -> Result<Self, WasmDotError> {
+    pub fn from_bytes(bytes: &[u8], context: Option<ParseContext>) -> Result<Self, WasmDotError> {
         if bytes.is_empty() {
             return Err(WasmDotError::InvalidTransaction(
                 "Empty transaction".to_string(),
             ));
         }
 
+        // Decode the same metadata that is retained for parsing and signing.
+        let metadata = context
+            .as_ref()
+            .map(|ctx| decode_metadata(&ctx.material.metadata))
+            .transpose()?;
+
         // Parse the extrinsic (metadata-aware for signed extension handling)
         let (is_signed, signer, signature, era, nonce, tip, call_data) =
-            parse_extrinsic(bytes, metadata)?;
+            parse_extrinsic(bytes, metadata.as_ref())?;
 
         let tx_context = context.map(|ctx| TransactionContext {
             material: ctx.material,
             validity: Validity::default(),
             reference_block: [0u8; 32], // Unknown from bytes alone
-            metadata: None,
+            metadata,
         });
 
         Ok(Transaction {
@@ -400,7 +424,22 @@ impl Transaction {
         &self.call_data
     }
 
-    /// Set context for the transaction
+    /// Get the runtime material associated with this transaction.
+    pub(crate) fn material(&self) -> Option<&Material> {
+        self.context.as_ref().map(|context| &context.material)
+    }
+
+    /// Get the decoded runtime metadata associated with this transaction.
+    pub(crate) fn metadata(&self) -> Option<&Metadata> {
+        self.context
+            .as_ref()
+            .and_then(|context| context.metadata.as_ref())
+    }
+
+    /// Update signing context without rebinding established runtime material.
+    ///
+    /// Material must already be attached and must match exactly. Only validity
+    /// and reference block can change.
     pub fn set_context(
         &mut self,
         material: Material,
@@ -408,12 +447,18 @@ impl Transaction {
         reference_block: &str,
     ) -> Result<(), WasmDotError> {
         let block_hash = parse_hex_hash(reference_block)?;
-        self.context = Some(TransactionContext {
-            material,
-            validity,
-            reference_block: block_hash,
-            metadata: None,
-        });
+        let context = self.context.as_mut().ok_or_else(|| {
+            WasmDotError::MissingContext(
+                "Runtime material must be attached when call data is created".to_string(),
+            )
+        })?;
+        if context.material != material {
+            return Err(WasmDotError::InvalidTransaction(
+                "Runtime material cannot be changed after call data is established".to_string(),
+            ));
+        }
+        context.validity = validity;
+        context.reference_block = block_hash;
         Ok(())
     }
 
@@ -848,5 +893,51 @@ mod tests {
         let mortal_bytes = encode_era(&mortal);
         let (decoded, _) = decode_era_bytes(&mortal_bytes).unwrap();
         assert!(!decoded.is_immortal());
+    }
+
+    #[test]
+    fn test_from_bytes_decodes_metadata_from_stored_material() {
+        let context = ParseContext {
+            material: Material {
+                genesis_hash: "0x00".to_string(),
+                chain_name: "Westend".to_string(),
+                spec_name: "westend".to_string(),
+                spec_version: 1,
+                tx_version: 1,
+                metadata: "0x00".to_string(),
+            },
+            sender: None,
+        };
+
+        let error = Transaction::from_bytes(&[0x00], Some(context)).unwrap_err();
+
+        assert!(
+            matches!(error, WasmDotError::InvalidInput(message) if message.contains("Failed to decode metadata"))
+        );
+    }
+
+    #[test]
+    fn test_set_context_cannot_attach_material_after_call_data_creation() {
+        let material = Material {
+            genesis_hash: "0x00".to_string(),
+            chain_name: "Westend".to_string(),
+            spec_name: "westend".to_string(),
+            spec_version: 1,
+            tx_version: 1,
+            metadata: "0x00".to_string(),
+        };
+        let nonce = std::process::id();
+        let mut tx = Transaction::new(vec![1, 2], Era::Immortal, nonce, 0);
+
+        let error = tx
+            .set_context(
+                material,
+                Validity::default(),
+                &format!("0x{}", "00".repeat(32)),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, WasmDotError::MissingContext(_)));
+        assert!(tx.material().is_none());
     }
 }

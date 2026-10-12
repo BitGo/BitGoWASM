@@ -7,9 +7,9 @@
  * Use parseTransaction() when you need decoded data.
  */
 
-import { ParserNamespace, MaterialJs, ParseContextJs } from "./wasm/wasm_dot.js";
+import { ParserNamespace } from "./wasm/wasm_dot.js";
 import type { DotTransaction } from "./transaction.js";
-import type { ParseContext, ParsedTransaction } from "./types.js";
+import type { ParsedTransaction } from "./types.js";
 
 /**
  * Parse a DOT transaction into structured data.
@@ -20,23 +20,21 @@ import type { ParseContext, ParsedTransaction } from "./types.js";
  * Returns a plain `ParsedTransaction` object with decoded pallet, method,
  * args, nonce, tip, era, etc.
  *
- * @param tx - A DotTransaction instance (from DotTransaction.fromBytes())
- * @param context - Parsing context with chain material (required for decoding)
+ * @param tx - A DotTransaction instance with stored runtime material
  * @returns Parsed transaction data
  *
  * @example
  * ```typescript
  * import { DotTransaction, parseTransaction } from '@bitgo/wasm-dot';
  *
- * const tx = DotTransaction.fromBytes(txBytes, context);
- * const parsed = parseTransaction(tx, { material });
+ * const tx = DotTransaction.fromBytes(txBytes, material);
+ * const parsed = parseTransaction(tx);
  * console.log(parsed.method.pallet); // "balances"
  * console.log(parsed.method.name);   // "transferKeepAlive"
  * ```
  */
-export function parseTransaction(tx: DotTransaction, context?: ParseContext): ParsedTransaction {
-  const ctx = context ? createParseContext(context) : undefined;
-  return ParserNamespace.parseFromTransaction(tx.wasm, ctx) as ParsedTransaction;
+export function parseTransaction(tx: DotTransaction): ParsedTransaction {
+  return ParserNamespace.parseFromTransaction(tx.wasm) as ParsedTransaction;
 }
 
 /**
@@ -53,19 +51,4 @@ export function parseTransaction(tx: DotTransaction, context?: ParseContext): Pa
  */
 export function getProxyDepositCost(metadataHex: string): bigint {
   return BigInt(ParserNamespace.getProxyDepositCost(metadataHex));
-}
-
-/**
- * Create a ParseContextJs from ParseContext
- */
-function createParseContext(ctx: ParseContext): ParseContextJs {
-  const material = new MaterialJs(
-    ctx.material.genesisHash,
-    ctx.material.chainName,
-    ctx.material.specName,
-    ctx.material.specVersion,
-    ctx.material.txVersion,
-    ctx.material.metadata,
-  );
-  return new ParseContextJs(material, ctx.sender ?? null);
 }
