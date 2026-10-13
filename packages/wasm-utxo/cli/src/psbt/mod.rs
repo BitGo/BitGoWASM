@@ -11,6 +11,7 @@ mod combine_ironwood_proof;
 mod common;
 mod create;
 mod create_zcash_v6;
+mod extract_transparent_only;
 mod parse;
 mod sign;
 mod sign_v6_input;
@@ -174,6 +175,16 @@ pub enum PsbtCommand {
         #[arg(long)]
         local_proof: bool,
     },
+    /// Finalize transparent inputs and extract the broadcast-ready v6 transaction for a PSBT
+    /// that has **no shielded output** (no PCZT). This is the transparent-only v6 counterpart
+    /// of `combine-ironwood-proof`. Prints the raw transaction as hex to stdout.
+    ExtractTransparentOnly {
+        /// Path to the PSBT file (use '-' to read from stdin)
+        path: PathBuf,
+        /// Network (must be zec or tzec)
+        #[arg(long, short, value_enum)]
+        network: NetworkArg,
+    },
     /// Sign all inputs with a single private key, then finalize and extract. The sighash
     /// algorithm is selected by --network: plain for BTC-like networks, FORKID for the
     /// BCH family, or Zcash ZIP-243. Prints the signed wire hex to stdout (overwintered
@@ -277,6 +288,9 @@ pub fn handle_command(command: PsbtCommand) -> Result<()> {
             proof,
             local_proof,
         ),
+        PsbtCommand::ExtractTransparentOnly { path, network } => {
+            extract_transparent_only::handle_extract_transparent_only_command(path, network.into())
+        }
         PsbtCommand::Sign {
             path,
             network,
