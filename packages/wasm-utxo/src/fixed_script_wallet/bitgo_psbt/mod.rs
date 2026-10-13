@@ -3945,6 +3945,70 @@ mod tests {
         );
     }
 
+    /// Regression test for SPT-483: before this guard, a testnet build at a post-NU7 height
+    /// produced a version 4 transaction carrying the NU7 branch id. It signed and queued fine,
+    /// then every broadcast was rejected with "transaction version 4 not supported by the
+    /// network upgrade Nu7" and retried forever. Fail at build time instead.
+    #[test]
+    fn test_new_zcash_at_height_rejects_v4_after_nu7_on_testnet() {
+        use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
+        use crate::zcash::NetworkUpgrade;
+
+        let keys = RootWalletKeys::new(get_test_wallet_keys("test_zcash_nu7"));
+        let nu7_height = NetworkUpgrade::Nu7.testnet_activation_height();
+
+        // The last pre-NU7 block still builds v4 — the cutover is exact, not approximate.
+        let result = BitGoPsbt::new_zcash_at_height(
+            Network::ZcashTestnet,
+            &keys,
+            nu7_height - 1,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_ok(), "v4 is still valid on the block before NU7");
+
+        // At activation and beyond, a v4 build is refused.
+        for height in [nu7_height, nu7_height + 10_000] {
+            let err = BitGoPsbt::new_zcash_at_height(
+                Network::ZcashTestnet,
+                &keys,
+                height,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect_err("v4 must be refused at or after NU7 activation");
+            assert!(
+                err.contains("NU7") && err.contains("version 4"),
+                "error should name NU7 and the invalid version, got: {err}"
+            );
+        }
+
+        // Mainnet has no assigned NU7 height yet (u32::MAX sentinel), so the same
+        // height stays buildable there.
+        assert_eq!(
+            NetworkUpgrade::Nu7.mainnet_activation_height(),
+            u32::MAX,
+            "this test assumes NU7 mainnet activation is still unassigned (u32::MAX)"
+        );
+        let result = BitGoPsbt::new_zcash_at_height(
+            Network::Zcash,
+            &keys,
+            nu7_height,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "mainnet is unaffected until NU7 is scheduled"
+        );
+    }
+
     fn test_round_trip_with_format(format: fixtures::TxFormat, network: Network) {
         let fixture = fixtures::load_psbt_fixture_with_format_and_namespace(
             network.to_utxolib_name(),

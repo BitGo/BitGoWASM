@@ -32,12 +32,16 @@ pub enum NetworkUpgrade {
     Nu6_1,
     Nu6_2,
     Nu6_3,
+    Nu7,
 }
 
 /// Parameters for a single network upgrade
 #[derive(Debug, Clone, Copy)]
 pub struct UpgradeParams {
     pub branch_id: u32,
+    /// Mainnet activation height. Set to `u32::MAX` when the upgrade has no assigned mainnet
+    /// height yet (NU7 — ZIP-259 lists it as TBD). A `u32::MAX` height is unreachable in
+    /// practice, so mainnet stays on the previous upgrade's rules until a real height is set.
     pub mainnet_activation_height: u32,
     pub testnet_activation_height: u32,
 }
@@ -55,6 +59,7 @@ impl NetworkUpgrade {
         NetworkUpgrade::Nu6_1,
         NetworkUpgrade::Nu6_2,
         NetworkUpgrade::Nu6_3,
+        NetworkUpgrade::Nu7,
     ];
 
     /// Get the parameters for this network upgrade
@@ -115,6 +120,16 @@ impl NetworkUpgrade {
                 mainnet_activation_height: 3428143,
                 testnet_activation_height: 4134000,
             },
+            // https://zips.z.cash/zip-0259 — NU7. Per ZIP-2003 version 4 transactions become
+            // invalid once NU7 activates; only v5 (ZIP-225) and v6 (ZIP-229) stay valid. The
+            // mainnet activation height is still TBD in ZIP-259; u32::MAX prevents accidental
+            // activation on mainnet until a real height is published.
+            // CSHLD:788
+            NetworkUpgrade::Nu7 => UpgradeParams {
+                branch_id: 0x77190ad9,
+                mainnet_activation_height: u32::MAX,
+                testnet_activation_height: 4465026,
+            },
         }
     }
 
@@ -168,13 +183,25 @@ mod tests {
 
     #[test]
     fn test_upgrade_ordering() {
-        // Verify chronological ordering
+        // Verify chronological ordering on mainnet (u32::MAX sentinels sort last).
         for i in 1..NetworkUpgrade::ALL.len() {
             let prev = NetworkUpgrade::ALL[i - 1];
             let curr = NetworkUpgrade::ALL[i];
             assert!(
                 prev.mainnet_activation_height() < curr.mainnet_activation_height(),
                 "{:?} should activate before {:?} on mainnet",
+                prev,
+                curr
+            );
+        }
+
+        // Testnet: every upgrade has a real assigned height.
+        for i in 1..NetworkUpgrade::ALL.len() {
+            let prev = NetworkUpgrade::ALL[i - 1];
+            let curr = NetworkUpgrade::ALL[i];
+            assert!(
+                prev.testnet_activation_height() < curr.testnet_activation_height(),
+                "{:?} should activate before {:?} on testnet",
                 prev,
                 curr
             );
@@ -205,6 +232,7 @@ mod tests {
                 NetworkUpgrade::Nu6_1 => ZebraNetworkUpgrade::Nu6_1,
                 NetworkUpgrade::Nu6_2 => ZebraNetworkUpgrade::Nu6_2,
                 NetworkUpgrade::Nu6_3 => ZebraNetworkUpgrade::Nu6_3,
+                NetworkUpgrade::Nu7 => ZebraNetworkUpgrade::Nu7,
             }
         }
 
@@ -224,8 +252,7 @@ mod tests {
                 ZebraNetworkUpgrade::Nu6_1 => Some(NetworkUpgrade::Nu6_1),
                 ZebraNetworkUpgrade::Nu6_2 => Some(NetworkUpgrade::Nu6_2),
                 ZebraNetworkUpgrade::Nu6_3 => Some(NetworkUpgrade::Nu6_3),
-                #[cfg(any(test, feature = "zebra-test"))]
-                ZebraNetworkUpgrade::Nu7 => None,
+                ZebraNetworkUpgrade::Nu7 => Some(NetworkUpgrade::Nu7),
                 #[cfg(zcash_unstable = "zfuture")]
                 ZebraNetworkUpgrade::ZFuture => None,
             }
@@ -240,11 +267,6 @@ mod tests {
                     continue;
                 }
 
-                // Skip test-only upgrades
-                #[cfg(any(test, feature = "zebra-test"))]
-                if matches!(zebra_upgrade, ZebraNetworkUpgrade::Nu7) {
-                    continue;
-                }
                 #[cfg(zcash_unstable = "zfuture")]
                 if matches!(zebra_upgrade, ZebraNetworkUpgrade::ZFuture) {
                     continue;
@@ -301,20 +323,29 @@ mod tests {
         fn test_mainnet_heights_match_zebra() {
             let network = ZebraNetwork::Mainnet;
             for &upgrade in NetworkUpgrade::ALL {
-                let zebra_upgrade = to_zebra_upgrade(upgrade);
-                let expected = zebra_upgrade
+                let zebra_height = to_zebra_upgrade(upgrade)
                     .activation_height(&network)
-                    .map(|h| h.0)
-                    .expect("upgrade should have mainnet activation height");
+                    .map(|h| h.0);
 
-                assert_eq!(
-                    upgrade.mainnet_activation_height(),
-                    expected,
-                    "{:?} mainnet activation height mismatch: ours={}, zebra={}",
-                    upgrade,
-                    upgrade.mainnet_activation_height(),
-                    expected
-                );
+                // For upgrades with no assigned zebra mainnet height (NU7 — TBD in
+                // ZIP-259), we use u32::MAX as a sentinel. When zebra publishes a real
+                // mainnet height this test will fail, prompting us to update ours.
+                match zebra_height {
+                    Some(expected) => assert_eq!(
+                        upgrade.mainnet_activation_height(),
+                        expected,
+                        "{:?} mainnet activation height mismatch: ours={}, zebra={}",
+                        upgrade,
+                        upgrade.mainnet_activation_height(),
+                        expected
+                    ),
+                    None => assert_eq!(
+                        upgrade.mainnet_activation_height(),
+                        u32::MAX,
+                        "{:?} has no zebra mainnet height, expected u32::MAX sentinel",
+                        upgrade
+                    ),
+                }
             }
         }
 
