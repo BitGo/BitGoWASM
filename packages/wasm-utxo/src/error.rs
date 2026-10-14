@@ -27,6 +27,7 @@ pub enum WasmUtxoError {
     UnifiedAddress(crate::zcash::unified_address::UnifiedAddressError),
     ZcashV6(crate::zcash::v6::ZcashV6Error),
     Ironwood(crate::zcash::ironwood_build::IronwoodBuildError),
+    Zip317(crate::zcash::zip317::Zip317Error),
     VerifyV6Signature(VerifyV6SignatureError),
 }
 
@@ -40,6 +41,7 @@ impl fmt::Display for WasmUtxoError {
             WasmUtxoError::UnifiedAddress(e) => write!(f, "{}", e),
             WasmUtxoError::ZcashV6(e) => write!(f, "{}", e),
             WasmUtxoError::Ironwood(e) => write!(f, "{}", e),
+            WasmUtxoError::Zip317(e) => write!(f, "{}", e),
             WasmUtxoError::VerifyV6Signature(e) => write!(f, "{}", e),
         }
     }
@@ -53,6 +55,7 @@ impl WasmErrorCode for WasmUtxoError {
             WasmUtxoError::UnifiedAddress(e) => e.code(),
             WasmUtxoError::ZcashV6(e) => e.code(),
             WasmUtxoError::Ironwood(e) => e.code(),
+            WasmUtxoError::Zip317(e) => e.code(),
             WasmUtxoError::VerifyV6Signature(e) => e.code(),
         }
     }
@@ -109,6 +112,11 @@ impl From<crate::zcash::v6::ZcashV6Error> for WasmUtxoError {
 impl From<crate::zcash::ironwood_build::IronwoodBuildError> for WasmUtxoError {
     fn from(err: crate::zcash::ironwood_build::IronwoodBuildError) -> Self {
         WasmUtxoError::Ironwood(err)
+    }
+}
+impl From<crate::zcash::zip317::Zip317Error> for WasmUtxoError {
+    fn from(err: crate::zcash::zip317::Zip317Error) -> Self {
+        WasmUtxoError::Zip317(err)
     }
 }
 impl From<VerifyV6SignatureError> for WasmUtxoError {

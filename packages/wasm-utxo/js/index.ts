@@ -24,6 +24,11 @@ export { BIP32 } from "./bip32.js";
 export { Dimensions } from "./fixedScriptWallet/Dimensions.js";
 export { ZcashDimensions } from "./fixedScriptWallet/ZcashDimensions.js";
 export {
+  Zip317Dimensions,
+  Zip317InputScriptType,
+  type Zip317FromOutputOptions,
+} from "./fixedScriptWallet/Zip317Dimensions.js";
+export {
   ZcashBitGoPsbt,
   ZcashPsbt,
   ZcashIronwoodBitGoPsbt,
