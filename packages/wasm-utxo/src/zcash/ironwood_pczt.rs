@@ -50,6 +50,14 @@ pub enum IronwoodPcztError {
     BadFieldEncoding(&'static str),
     /// orchard rejected the reconstructed bundle.
     Parse(String),
+    /// Two spends in the bundle carry the same nullifier — orchard does not check this, and
+    /// consensus rejects a transaction with a repeated nullifier. The deserialize-time guard
+    /// covers PCZTs that arrive over the wire (a proof-service response, a stored PSBT), not
+    /// just ones built here.
+    DuplicateNullifier {
+        /// The later action whose nullifier repeats an earlier spend's.
+        action_index: usize,
+    },
 }
 
 impl core::fmt::Display for IronwoodPcztError {
@@ -76,6 +84,11 @@ impl core::fmt::Display for IronwoodPcztError {
                 write!(f, "ironwood-pczt: invalid encoding for {field}")
             }
             Self::Parse(e) => write!(f, "ironwood-pczt: orchard rejected the bundle: {e}"),
+            Self::DuplicateNullifier { action_index } => write!(
+                f,
+                "ironwood-pczt: duplicate nullifier across spend actions (action {action_index} \
+                 repeats an earlier spend's nullifier)"
+            ),
         }
     }
 }
@@ -270,6 +283,27 @@ pub fn with_spend_value(
             .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
             .spend
             .value = Some(value);
+        Ok(())
+    })
+}
+
+/// Install the spending FVK on every real spend (dummy spends keep their fabricating FVK —
+/// the IO Finalizer signs them with it).
+///
+/// The local prover derives `ak`/`nk` for the circuit from the FVK (`ProverError::
+/// MissingFullViewingKey` otherwise), and real spends had it scrubbed at construction ("the
+/// FVK never leaves its holder" — here the holder is the caller, which owns the notes and is
+/// proving locally). Transient: the result is consumed in-memory and never stored back.
+pub fn with_spend_fvk_on_real_spends(
+    bytes: &[u8],
+    fvk: super::ironwood_build::FvkBytes,
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        for action in wire.actions.iter_mut() {
+            if action.spend.dummy_sk.is_none() {
+                action.spend.fvk = Some(fvk.to_vec());
+            }
+        }
         Ok(())
     })
 }
@@ -469,7 +503,7 @@ fn wire_to_bundle(w: BundleWire) -> Result<PcztBundle, IronwoodPcztError> {
         .map(|a| wire_to_action(a, note_version))
         .collect::<Result<Vec<_>, _>>()?;
 
-    PcztBundle::parse(
+    let bundle = PcztBundle::parse(
         actions,
         w.flags,
         bundle_version,
@@ -478,7 +512,30 @@ fn wire_to_bundle(w: BundleWire) -> Result<PcztBundle, IronwoodPcztError> {
         w.zkproof,
         w.bsk,
     )
-    .map_err(|e| IronwoodPcztError::Parse(format!("{e:?}")))
+    .map_err(|e| IronwoodPcztError::Parse(format!("{e:?}")))?;
+
+    // Ingestion guard: two spends deriving the same nullifier are consensus-invalid (orchard
+    // does not check this), and PCZTs arrive over the wire from elsewhere, so this cannot live
+    // only at construction.
+    if let Some(action_index) = duplicate_nullifier_index(&bundle) {
+        return Err(IronwoodPcztError::DuplicateNullifier { action_index });
+    }
+    Ok(bundle)
+}
+
+/// Index of the later action whose nullifier repeats an earlier spend's, if any.
+///
+/// Orchard does not check this, and consensus rejects a transaction with a repeated nullifier.
+/// Both the construction-time verifier (which returns the build-layer error) and the
+/// deserialize-time ingestion guard (the wire-layer error) share this scan.
+pub(crate) fn duplicate_nullifier_index(bundle: &PcztBundle) -> Option<usize> {
+    let mut seen = std::collections::HashSet::new();
+    for (i, action) in bundle.actions().iter().enumerate() {
+        if !seen.insert(action.spend().nullifier().to_bytes()) {
+            return Some(i);
+        }
+    }
+    None
 }
 
 fn wire_to_action(
@@ -765,6 +822,53 @@ mod tests {
                 .map(<[u8; 64]>::from),
             Some(sig)
         );
+    }
+
+    #[test]
+    fn deserialize_rejects_duplicate_nullifiers() {
+        // Ingestion guard: construction-time checking alone does not cover PCZTs that arrive
+        // over the wire (a proof-service response, a stored PSBT), so the duplicate-nullifier
+        // check runs at deserialize too. Two dummy-spend actions, nullifiers forced equal.
+        let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([7u8; 32])).unwrap();
+        let fvk = FullViewingKey::from(&sk);
+        let bundle_version = BundleVersion::ironwood_v3();
+        let mut builder = Builder::new(
+            BundleType::UNPADDED,
+            bundle_version,
+            bundle_version.default_flags(),
+            Anchor::empty_tree(),
+        )
+        .unwrap();
+        builder
+            .add_output(
+                None,
+                fvk.address_at(0u32, Scope::External),
+                NoteValue::from_raw(100_000_000),
+                [0u8; 512],
+            )
+            .unwrap();
+        builder
+            .add_output(
+                None,
+                fvk.address_at(1u32, Scope::External),
+                NoteValue::from_raw(90_000_000),
+                [0u8; 512],
+            )
+            .unwrap();
+        let bundle = builder.build_for_pczt(OsRng).unwrap().0;
+        let bytes = serialize_pczt(&bundle).unwrap();
+        deserialize_pczt(&bytes).expect("the honest bundle decodes");
+
+        let patched = with_patched_wire(&bytes, |wire| {
+            let nf = wire.actions[0].spend.nullifier;
+            wire.actions[1].spend.nullifier = nf;
+            Ok(())
+        })
+        .unwrap();
+        assert!(matches!(
+            deserialize_pczt(&patched),
+            Err(IronwoodPcztError::DuplicateNullifier { action_index: 1 })
+        ));
     }
 
     #[test]

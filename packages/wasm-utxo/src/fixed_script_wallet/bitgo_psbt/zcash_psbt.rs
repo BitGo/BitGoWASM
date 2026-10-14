@@ -916,8 +916,8 @@ impl ZcashBitGoPsbt {
         if requests.is_empty() {
             return Err("at least one Ironwood output is required".to_string());
         }
-        let (_, output_indices) = self.add_ironwood_actions(&[], requests, anchor, rng)?;
-        Ok(output_indices)
+        let action_map = self.add_ironwood_actions(&[], requests, anchor, rng)?;
+        Ok(action_map.output_action_indices().to_vec())
     }
 
     /// Constructor role: build a single shielded output as an orchard PCZT and store it in the
@@ -934,7 +934,7 @@ impl ZcashBitGoPsbt {
         unified_address: Option<&str>,
         rng: R,
     ) -> Result<usize, String> {
-        let action_indices = self.add_ironwood_outputs(
+        let output_indices = self.add_ironwood_outputs(
             &[IronwoodOutputRequest {
                 recipient: *recipient,
                 amount,
@@ -945,7 +945,7 @@ impl ZcashBitGoPsbt {
             anchor,
             rng,
         )?;
-        Ok(action_indices[0])
+        Ok(output_indices[0])
     }
 
     /// Constructor role: build an orchard PCZT from real Ironwood spends and/or requested shielded
@@ -958,8 +958,9 @@ impl ZcashBitGoPsbt {
     /// first batch (whose value the transparent side would still be funding). Multiple spends and
     /// outputs in one transaction must all be passed in this single call.
     ///
-    /// The returned index vectors give, for each `spends[i]`/`outputs[i]`, the action index it
-    /// landed at in the bundle — the orchard builder reorders actions (see
+    /// The returned [`IronwoodActionMap`](crate::zcash::ironwood_build::IronwoodActionMap) gives,
+    /// for each `spends[i]`/`outputs[i]`, the action index it landed at in the bundle — the
+    /// orchard builder reorders actions (see
     /// [`crate::zcash::ironwood_build::construct_spend_pczt_multi`]), so request order does not
     /// equal action order.
     ///
@@ -970,7 +971,7 @@ impl ZcashBitGoPsbt {
         outputs: &[IronwoodOutputRequest],
         anchor: &crate::zcash::ironwood_build::AnchorBytes,
         rng: R,
-    ) -> Result<(Vec<usize>, Vec<usize>), String> {
+    ) -> Result<crate::zcash::ironwood_build::IronwoodActionMap, String> {
         use crate::zcash::{ironwood_build, ironwood_pczt};
 
         if super::propkv::get_ironwood_pczt(&self.psbt).is_some() {
@@ -1018,7 +1019,7 @@ impl ZcashBitGoPsbt {
                 memo: req.memo,
             })
             .collect();
-        let (pczt, spend_indices, output_indices) =
+        let (pczt, action_map) =
             ironwood_build::construct_spend_pczt_multi(&spend_specs, &output_specs, anchor, rng)
                 .map_err(|e| e.to_string())?;
         let bytes = ironwood_pczt::serialize_pczt(&pczt).map_err(|e| e.to_string())?;
@@ -1028,12 +1029,15 @@ impl ZcashBitGoPsbt {
         // PCZT key, not these) before writing the new batch's, so a since-gone action index's
         // stale UA can never be silently misattributed to a different recipient in the new bundle.
         super::propkv::clear_ironwood_unified_addresses(&mut self.psbt);
-        for (req, &action_index) in outputs.iter().zip(output_indices.iter()) {
+        for (i, req) in outputs.iter().enumerate() {
             if let Some(ua) = &req.unified_address {
+                let action_index = action_map
+                    .output_action_index(i)
+                    .ok_or_else(|| format!("output {i}: no action index"))?;
                 super::propkv::set_ironwood_unified_address(&mut self.psbt, action_index, ua);
             }
         }
-        Ok((spend_indices, output_indices))
+        Ok(action_map)
     }
 
     /// Reject a caller-supplied Unified Address whose Orchard receiver is not exactly `recipient`:
@@ -1071,8 +1075,8 @@ impl ZcashBitGoPsbt {
         if requests.is_empty() {
             return Err("at least one Ironwood spend is required".to_string());
         }
-        let (spend_indices, _) = self.add_ironwood_actions(requests, &[], anchor, rng)?;
-        Ok(spend_indices)
+        let action_map = self.add_ironwood_actions(requests, &[], anchor, rng)?;
+        Ok(action_map.spend_action_indices().to_vec())
     }
 
     /// Add a plain transparent output. Just `script`/`value` (`unified_address: None`) is exactly
@@ -2247,17 +2251,21 @@ impl ZcashBitGoPsbt {
         self,
         rng: R,
     ) -> Result<Vec<u8>, String> {
-        self.combine_ironwood_proof_locally_with_alphas(&[], rng)
+        self.combine_ironwood_proof_locally_with_alphas(&[], None, rng)
     }
 
     /// Spend-bundle variant of [`Self::combine_ironwood_proof_locally`]: the Prover role derives
     /// `rk` inside the circuit from `ak` + `alpha`, so proving a bundle with real spends requires
-    /// each spend's `alpha` — delivered here as `(action_index, alpha)` pairs. The alphas are
-    /// patched into the in-memory PCZT only and never reach the PSBT or the produced transaction.
+    /// each spend's `alpha` — delivered here as `(action_index, alpha)` pairs — and the spending
+    /// FVK, which the Constructor scrubbed from the stored PCZT ("the FVK never leaves its
+    /// holder": the local prover *is* the holder, so it passes its own FVK here; the KMS keyed
+    /// prover supplies the equivalent out-of-band). Both are patched into the in-memory PCZT
+    /// only and never reach the PSBT or the produced transaction.
     #[cfg(feature = "orchard-proving")]
     pub fn combine_ironwood_proof_locally_with_alphas<R: rand::RngCore + rand::CryptoRng>(
         self,
         alphas: &[(usize, [u8; 32])],
+        spending_fvk: Option<&crate::zcash::ironwood_build::FvkBytes>,
         mut rng: R,
     ) -> Result<Vec<u8>, String> {
         use crate::zcash::{ironwood_build, ironwood_pczt};
@@ -2279,6 +2287,12 @@ impl ZcashBitGoPsbt {
             .ok_or_else(|| "no Ironwood PCZT stored in PSBT".to_string())?;
         for (action_index, alpha) in alphas {
             bytes = ironwood_pczt::with_spend_alpha(&bytes, *action_index, Some(*alpha))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(fvk) = spending_fvk {
+            // The prover needs the FVK on every real spend to derive `ak`/`nk`; dummy spends
+            // keep their fabricating FVK (the IO Finalizer signs them with it).
+            bytes = ironwood_pczt::with_spend_fvk_on_real_spends(&bytes, *fvk)
                 .map_err(|e| e.to_string())?;
         }
         let mut pczt = ironwood_pczt::deserialize_pczt(&bytes).map_err(|e| e.to_string())?;
@@ -5649,6 +5663,242 @@ mod ironwood_v6_tests {
         );
     }
 
+    /// Fixture bundle of [`build_signed_multi_spend_psbt`], factored out for clippy's
+    /// `type_complexity`.
+    type SignedMultiSpendFixture = (
+        ZcashBitGoPsbt,
+        [(usize, [u8; 32]); 2],
+        [[u8; 32]; 2],
+        crate::zcash::ironwood_build::FvkBytes,
+    );
+
+    /// B3/B5 shared fixture: a 2-spend/2-output Ironwood bundle built against a real 2-leaf
+    /// Orchard tree, with both placeholder rks replaced (FROST stand-in: `rk = ak.randomize
+    /// (alpha)`), the transparent side signed, and both spend-auth signatures applied. Returns
+    /// the PSBT, the `(action_index, alpha)` pairs the local prover needs, each action's
+    /// randomized `rk`, and the spending FVK.
+    fn build_signed_multi_spend_psbt(seed: &str) -> SignedMultiSpendFixture {
+        use crate::zcash::ironwood_build::test_util::{real_two_leaf_tree, RealLeaf};
+        use ff::PrimeField;
+
+        let secp = Secp256k1::new();
+        let wallet_keys = root_wallet_keys(seed);
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x77u8; 32]),
+            0,
+            300_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        // Accounting: 300M transparent in + 180M shielded in (the two spends); 279_999_000
+        // transparent out + 200M shielded out (the two payments) ⇒ exactly 1_000 zatoshi fee
+        // (value_balance is -20M: the transparent side funds 20M into the shielded pool).
+        psbt.add_wallet_output(0, 1, 279_999_000, &wallet_keys)
+            .unwrap();
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+
+        let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([7u8; 32])).unwrap();
+        let fvk = FullViewingKey::from(&sk);
+        let (anchor, leaves) = real_two_leaf_tree(
+            &fvk,
+            [
+                (100_000_000u64, field_bytes(200), [52u8; 32]),
+                (80_000_000u64, field_bytes(201), [53u8; 32]),
+            ],
+        );
+        let req = |leaf: &RealLeaf| IronwoodSpendRequest {
+            fvk: fvk.to_bytes(),
+            recipient: leaf.recipient,
+            value: leaf.value,
+            rho: leaf.rho,
+            rseed: leaf.rseed,
+            cmx: leaf.cmx,
+            witness: leaf.witness,
+        };
+        let spends = [req(&leaves[0]), req(&leaves[1])];
+        // Shielded self-payments back to this wallet's two addresses.
+        let outputs = [
+            IronwoodOutputRequest {
+                recipient: spends[0].recipient,
+                amount: 100_000_000,
+                ovk: None,
+                memo: [0u8; 512],
+                unified_address: None,
+            },
+            IronwoodOutputRequest {
+                recipient: spends[1].recipient,
+                amount: 100_000_000,
+                ovk: None,
+                memo: [0u8; 512],
+                unified_address: None,
+            },
+        ];
+        let action_map = z
+            .add_ironwood_actions(&spends, &outputs, &anchor, OsRng)
+            .unwrap();
+        let ask = SpendAuthorizingKey::from(&sk);
+        let mut pairs = [(0usize, [0u8; 32]); 2];
+        let mut rks = [[0u8; 32]; 2];
+        for (i, action_index) in action_map.spend_action_indices().iter().enumerate() {
+            let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng);
+            let rsk = ask.randomize(&alpha);
+            let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&rsk));
+            z.replace_ironwood_spend_rk(*action_index, rk).unwrap();
+            pairs[i] = (*action_index, alpha.to_repr());
+            rks[i] = rk;
+        }
+
+        // The transparent side: real-spend bundles skip the client-ovk round, so either key
+        // may open; sign user-then-bitgo like the shielding flow.
+        z.sign_ironwood_v6(&test_wallet_xpriv(seed, 0), &wallet_keys, &secp)
+            .unwrap();
+        z.sign_ironwood_v6(&test_wallet_xpriv(seed, 2), &wallet_keys, &secp)
+            .unwrap();
+
+        let sighash = z.v6_sig_digest().unwrap();
+        for (i, action_index) in action_map.spend_action_indices().iter().enumerate() {
+            let alpha = pasta_curves::pallas::Scalar::from_repr(pairs[i].1).unwrap();
+            let rsk = ask.randomize(&alpha);
+            let sig = rsk.sign(OsRng, &sighash);
+            z.apply_ironwood_spend_signature(*action_index, <[u8; 64]>::from(&sig))
+                .unwrap();
+        }
+        (z, pairs, rks, fvk.to_bytes())
+    }
+
+    /// B3: a 2-spend/2-output bundle signs and combines end-to-end with a proof sized for its
+    /// action count, and zebra independently decodes the result.
+    #[test]
+    fn multi_spend_multi_output_round_trips() {
+        let (z, pairs, rks, _fvk) =
+            build_signed_multi_spend_psbt("ironwood_v6_multi_spend_multi_out");
+        let raw = z
+            .combine_ironwood_proof(vec![0u8; Proof::expected_proof_size(2)], OsRng)
+            .unwrap();
+        let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+        let bundle = tx.ironwood_bundle.as_ref().unwrap();
+        assert_eq!(bundle.actions.len(), 2);
+        assert_eq!(bundle.proof.len(), Proof::expected_proof_size(2));
+        assert_eq!(bundle.spend_auth_sigs.len(), 2);
+
+        use zebra_chain::serialization::ZcashDeserialize;
+        use zebra_chain::transaction::Transaction as ZebraTx;
+        let zebra = ZebraTx::zcash_deserialize(&raw[..]).expect("zebra decodes the tx");
+        assert_eq!(zebra.version(), 6);
+        assert_eq!(zebra.ironwood_actions().count(), 2);
+        // Each action carries exactly the randomized rk installed for its request — the map's
+        // action routing survives the builder's reordering all the way to the wire.
+        for (i, (action_index, _alpha)) in pairs.iter().enumerate() {
+            assert_eq!(
+                bundle.actions[*action_index].rk, rks[i],
+                "action {action_index} must carry spend {i}'s randomized rk"
+            );
+        }
+    }
+
+    /// B3: the Transaction Extractor rejects a proof sized for the wrong action count.
+    #[test]
+    fn combine_rejects_a_proof_sized_for_a_different_action_count() {
+        let (z, _pairs, _rks, _fvk) = build_signed_multi_spend_psbt("ironwood_v6_wrong_size_proof");
+        let err = z
+            .combine_ironwood_proof(vec![0u8; Proof::expected_proof_size(1)], OsRng)
+            .unwrap_err();
+        assert!(
+            err.contains("non-canonical length"),
+            "expected a proof-size rejection, got: {err}"
+        );
+    }
+
+    /// PR-4 end-to-end under the proving feature: construct (placeholder rk) -> install real
+    /// alphas/rks -> sign -> finalize IO -> prove LOCALLY -> extract -> verify the proof with
+    /// orchard's own verifier — with the spending FVK supplied by the local prover (the holder).
+    #[cfg(feature = "orchard-proving")]
+    #[test]
+    fn multi_spend_multi_output_proves_and_verifies_locally() {
+        use nonempty::NonEmpty;
+        use orchard::bundle::{Authorized, Bundle as OrchardBundle, BundleVersion};
+        use orchard::circuit::{OrchardCircuitVersion, VerifyingKey};
+        use orchard::note::{ExtractedNoteCommitment, Nullifier, TransmittedNoteCiphertext};
+        use orchard::primitives::redpallas::{Binding, Signature, SpendAuth, VerificationKey};
+        use orchard::value::ValueCommitment;
+        use orchard::{Action as OrchardAction, Proof};
+
+        let (z, pairs, _rks, fvk_bytes) =
+            build_signed_multi_spend_psbt("ironwood_v6_multi_local_proof");
+        let raw = z
+            .combine_ironwood_proof_locally_with_alphas(&pairs, Some(&fvk_bytes), OsRng)
+            .unwrap();
+        let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+        let bundle = tx.ironwood_bundle.as_ref().unwrap();
+        assert_eq!(bundle.actions.len(), 2);
+        assert_eq!(bundle.proof.len(), Proof::expected_proof_size(2));
+
+        use zebra_chain::serialization::ZcashDeserialize;
+        use zebra_chain::transaction::Transaction as ZebraTx;
+        let zebra = ZebraTx::zcash_deserialize(&raw[..]).expect("zebra decodes the tx");
+        assert_eq!(zebra.ironwood_actions().count(), 2);
+
+        // Reconstruct the fully-authorized orchard bundle from the on-wire action data and ask
+        // orchard itself to verify the proof against a freshly-built verifying key.
+        let actions = bundle
+            .actions
+            .iter()
+            .zip(&bundle.spend_auth_sigs)
+            .map(|(a, sig)| {
+                let cv_net =
+                    Option::from(ValueCommitment::from_bytes(&a.cv)).expect("valid cv_net");
+                let rk = VerificationKey::<SpendAuth>::try_from(a.rk).expect("valid rk");
+                let cmx =
+                    Option::from(ExtractedNoteCommitment::from_bytes(&a.cmx)).expect("valid cmx");
+                let nf = Option::from(Nullifier::from_bytes(&a.nullifier)).expect("valid nf");
+                let encrypted_note = TransmittedNoteCiphertext {
+                    epk_bytes: a.ephemeral_key,
+                    enc_ciphertext: a.enc_ciphertext,
+                    out_ciphertext: a.out_ciphertext,
+                };
+                OrchardAction::from_parts(
+                    nf,
+                    rk,
+                    cmx,
+                    encrypted_note,
+                    cv_net,
+                    Signature::<SpendAuth>::from(*sig),
+                )
+                .expect("valid action")
+            })
+            .collect::<Vec<_>>();
+        let actions = NonEmpty::from_vec(actions).expect("at least one action");
+        let authorization = Authorized::from_parts(
+            Proof::new(bundle.proof.clone()),
+            Signature::<Binding>::from(bundle.binding_sig),
+        );
+        let orchard_bundle = OrchardBundle::<Authorized, i64>::try_from_parts(
+            actions,
+            BundleVersion::ironwood_v3().default_flags(),
+            bundle.value_balance,
+            Option::from(orchard::tree::Anchor::from_bytes(bundle.anchor)).expect("valid anchor"),
+            authorization,
+            BundleVersion::ironwood_v3(),
+        )
+        .expect("valid authorized bundle");
+        let vk = VerifyingKey::build(OrchardCircuitVersion::PostNu6_3);
+        orchard_bundle
+            .verify_proof(&vk)
+            .expect("locally-produced 2-action proof verifies");
+    }
+
     #[cfg(feature = "orchard-proving")]
     #[test]
     fn combine_ironwood_proof_locally_rejects_a_transaction_that_does_not_conserve_value() {
@@ -5714,8 +5964,8 @@ mod ironwood_v6_tests {
         )
         .unwrap();
         let (req, anchor, ask) = test_spend_request();
-        let (spend_indices, _out) = z.add_ironwood_actions(&[req], &[], &anchor, OsRng).unwrap();
-        assert_eq!(spend_indices, vec![0]);
+        let action_map = z.add_ironwood_actions(&[req], &[], &anchor, OsRng).unwrap();
+        assert_eq!(action_map.spend_action_indices(), &[0]);
 
         // rk before any transparent signature (the replace guard enforces the ordering).
         let mut rng = OsRng;

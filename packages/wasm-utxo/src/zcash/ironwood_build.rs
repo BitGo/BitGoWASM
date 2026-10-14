@@ -197,6 +197,13 @@ pub enum IronwoodBuildError {
     /// The bundle's spends use more than one full viewing key; one wallet (one FVK) per bundle,
     /// because the output `ovk` defaults to the spending FVK's own.
     MixedSpendingFvks,
+    /// Two of the bundle's spends derive the same nullifier. Orchard does not check this, and
+    /// consensus rejects a transaction with a repeated nullifier, so the duplicate must be caught
+    /// at construction instead of dying on-chain.
+    DuplicateNullifier {
+        /// The later action whose nullifier repeats an earlier spend's.
+        action_index: usize,
+    },
     /// The orchard PCZT Updater role rejected an update (e.g. an action index out of range).
     Updater(String),
     /// The PCZT wire round-trip (serialize/patch/deserialize) failed.
@@ -265,6 +272,11 @@ impl core::fmt::Display for IronwoodBuildError {
                 "ironwood-build: cap does not have enough detail to compute a sibling root"
             ),
             Self::BadFvk => write!(f, "ironwood-build: invalid full viewing key bytes"),
+            Self::DuplicateNullifier { action_index } => write!(
+                f,
+                "ironwood-build: duplicate nullifier across spend actions (action {action_index} \
+                 repeats an earlier spend's nullifier)"
+            ),
             Self::MixedSpendingFvks => write!(
                 f,
                 "ironwood-build: all spends in one bundle must share one full viewing key"
@@ -320,6 +332,38 @@ pub struct IronwoodSpendSpec {
     pub witness: IronwoodWitness,
 }
 
+/// Maps each caller-supplied spend/output position to the action index it landed at in the
+/// constructed bundle. The builder reorders actions (see `orchard::builder::BundleMetadata`), so
+/// callers that associate per-spend or per-output data with an action must go through this
+/// mapping rather than assuming index `i`.
+#[derive(Clone, Debug)]
+pub struct IronwoodActionMap {
+    spend_action_indices: Vec<usize>,
+    output_action_indices: Vec<usize>,
+}
+
+impl IronwoodActionMap {
+    /// The action index `spends[i]` landed at.
+    pub fn spend_action_index(&self, i: usize) -> Option<usize> {
+        self.spend_action_indices.get(i).copied()
+    }
+
+    /// The action index `outputs[i]` landed at.
+    pub fn output_action_index(&self, i: usize) -> Option<usize> {
+        self.output_action_indices.get(i).copied()
+    }
+
+    /// The action index of every requested spend, in request order.
+    pub fn spend_action_indices(&self) -> &[usize] {
+        &self.spend_action_indices
+    }
+
+    /// The action index of every requested output, in request order.
+    pub fn output_action_indices(&self) -> &[usize] {
+        &self.output_action_indices
+    }
+}
+
 /// Constructor: build an Ironwood bundle as an orchard PCZT from real spends and/or requested
 /// outputs — the general Constructor for the shielding (outputs only), unshielding (spends only),
 /// and shielded-transfer flows.
@@ -338,10 +382,10 @@ pub struct IronwoodSpendSpec {
 /// `rng` must be a CSPRNG — it seeds the builder's internal randomness.
 ///
 /// Actions are randomized (reordered) relative to the `spends`/`outputs` order (see
-/// `orchard::builder::BundleMetadata`), so the returned index vectors give, for each
+/// `orchard::builder::BundleMetadata`), so the returned [`IronwoodActionMap`] gives, for each
 /// `spends[i]`/`outputs[i]`, the action index it landed at in the bundle — callers that need to
-/// associate per-spend or per-output data with the right action must go through these mappings
-/// rather than assuming index `i`.
+/// associate per-spend or per-output data with the right action must go through the map rather
+/// than assuming index `i`.
 ///
 /// The returned PCZT carries no signatures or proof yet. Real spends carry the note plaintext
 /// (recipient/value/rho/rseed/witness) but no FVK, only a placeholder `rk` (the spend's `ak`), and
@@ -352,7 +396,7 @@ pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
     outputs: &[IronwoodOutputSpec],
     anchor: &AnchorBytes,
     mut rng: R,
-) -> Result<(PcztBundle, Vec<usize>, Vec<usize>), IronwoodBuildError> {
+) -> Result<(PcztBundle, IronwoodActionMap), IronwoodBuildError> {
     if spends.is_empty() && outputs.is_empty() {
         return Err(IronwoodBuildError::EmptyBundle);
     }
@@ -417,22 +461,30 @@ pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
     let (bundle, meta) = builder
         .build_for_pczt(&mut rng)
         .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
-    let spend_indices = (0..spends.len())
-        .map(|i| {
-            meta.spend_action_index(i)
-                .ok_or(IronwoodBuildError::ActionIndexOutOfRange)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let output_indices = (0..outputs.len())
-        .map(|i| {
-            meta.output_action_index(i)
-                .ok_or(IronwoodBuildError::ActionIndexOutOfRange)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let action_map = IronwoodActionMap {
+        spend_action_indices: (0..spends.len())
+            .map(|i| {
+                meta.spend_action_index(i)
+                    .ok_or(IronwoodBuildError::ActionIndexOutOfRange)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        output_action_indices: (0..outputs.len())
+            .map(|i| {
+                meta.output_action_index(i)
+                    .ok_or(IronwoodBuildError::ActionIndexOutOfRange)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
 
     // Validate FVK-dependent invariants while the constructor still has the transient FVKs.
     verify_spend_pczt(&bundle)?;
-    validate_constructed_out_ciphertexts(&bundle, outputs, &output_indices, default_ovk, &mut rng)?;
+    validate_constructed_out_ciphertexts(
+        &bundle,
+        outputs,
+        action_map.output_action_indices(),
+        default_ovk,
+        &mut rng,
+    )?;
 
     // Record each spent note's cmx for reconciliation, then strip what the signing service owns:
     // the builder bakes a random `alpha` and a randomized `rk` into every real spend at build time,
@@ -441,7 +493,10 @@ pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
     // Finalizer signs them from their stored alpha/dummy_sk).
     let mut bundle = bundle;
     for (i, spec) in spends.iter().enumerate() {
-        let idx = spend_indices[i];
+        // The map covers every requested spend by construction (it was built from the same len).
+        let idx = action_map
+            .spend_action_index(i)
+            .expect("map covers every requested spend");
         bundle
             .update_with(|mut u| {
                 u.update_action_with(idx, |mut a| {
@@ -451,8 +506,9 @@ pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
             })
             .map_err(|e| IronwoodBuildError::Updater(e.to_string()))?;
     }
-    let bundle = scrub_spend_randomizers(&bundle, &spend_indices, &spend_ak_bytes)?;
-    Ok((bundle, spend_indices, output_indices))
+    let bundle =
+        scrub_spend_randomizers(&bundle, action_map.spend_action_indices(), &spend_ak_bytes)?;
+    Ok((bundle, action_map))
 }
 
 /// Check that every real output whose `ovk` is known at construction time (an explicit one, or the
@@ -493,10 +549,8 @@ pub fn construct_shield_pczt_multi<R: RngCore + CryptoRng>(
     outputs: &[IronwoodOutputSpec],
     anchor: &AnchorBytes,
     rng: R,
-) -> Result<(PcztBundle, Vec<usize>), IronwoodBuildError> {
-    let (bundle, _spend_indices, action_indices) =
-        construct_spend_pczt_multi(&[], outputs, anchor, rng)?;
-    Ok((bundle, action_indices))
+) -> Result<(PcztBundle, IronwoodActionMap), IronwoodBuildError> {
+    construct_spend_pczt_multi(&[], outputs, anchor, rng)
 }
 
 /// The parsed-and-validated values one real spend contributes to the builder.
@@ -591,13 +645,18 @@ fn scrub_spend_randomizers(
 ///
 /// - spends with an FVK — re-derive and check the note nullifier;
 /// - outputs with a recipient — verify the note commitment;
-/// - actions with both sides' fields present — verify the value commitment.
+/// - actions with both sides' fields present — verify the value commitment;
+/// - every spend's nullifier is unique across the bundle (orchard does not check this; consensus
+///   rejects a transaction with a repeated nullifier).
 ///
 /// `verify_rk` is deliberately skipped: it requires `alpha`, which real spends do not carry.
 pub fn verify_spend_pczt(bundle: &PcztBundle) -> Result<(), IronwoodBuildError> {
     bundle
         .verify_cross_address_restriction()
         .map_err(|e| IronwoodBuildError::Verify(e.to_string()))?;
+    if let Some(action_index) = super::ironwood_pczt::duplicate_nullifier_index(bundle) {
+        return Err(IronwoodBuildError::DuplicateNullifier { action_index });
+    }
     for (i, action) in bundle.actions().iter().enumerate() {
         let spend = action.spend();
         let output = action.output();
@@ -631,7 +690,7 @@ pub fn construct_shield_pczt<R: RngCore + CryptoRng>(
     memo: &MemoBytes,
     rng: R,
 ) -> Result<PcztBundle, IronwoodBuildError> {
-    let (bundle, _action_indices) = construct_shield_pczt_multi(
+    let (bundle, _) = construct_shield_pczt_multi(
         &[IronwoodOutputSpec {
             recipient: *recipient,
             amount,
@@ -2372,10 +2431,14 @@ mod tests {
     #[test]
     fn construct_spend_pczt_builds_a_real_spend_bundle() {
         let (spec, anchor) = test_spend_spec();
-        let (bundle, spend_indices, output_indices) =
+        let (bundle, action_map) =
             construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
-        assert_eq!(spend_indices, vec![0], "one spend ⇒ one action");
-        assert!(output_indices.is_empty());
+        assert_eq!(
+            action_map.spend_action_indices(),
+            &[0],
+            "one spend ⇒ one action"
+        );
+        assert!(action_map.output_action_indices().is_empty());
 
         let spend = bundle.actions()[0].spend();
         let fvk = FullViewingKey::from_bytes(&spec.fvk).unwrap();
@@ -2435,7 +2498,7 @@ mod tests {
     #[test]
     fn construct_spend_pczt_defaults_output_ovk_to_the_spending_fvk() {
         let (spec, anchor) = test_spend_spec();
-        let (bundle, _spend_indices, output_indices) = construct_spend_pczt_multi(
+        let (bundle, action_map) = construct_spend_pczt_multi(
             &[spec],
             &[IronwoodOutputSpec {
                 recipient: test_recipient(),
@@ -2447,7 +2510,7 @@ mod tests {
             OsRng,
         )
         .unwrap();
-        let out_idx = output_indices[0];
+        let out_idx = action_map.output_action_index(0).unwrap();
         let output = bundle.actions()[out_idx].output();
         assert!(output.recipient().is_some(), "real output, not a dummy");
 
@@ -2549,7 +2612,7 @@ mod tests {
         ));
 
         // Shielding (no spends) still builds keyless with ovk None.
-        let (_, _, out_idx) = construct_spend_pczt_multi(
+        let (_, action_map) = construct_spend_pczt_multi(
             &[],
             &[IronwoodOutputSpec {
                 recipient: test_recipient(),
@@ -2561,18 +2624,18 @@ mod tests {
             OsRng,
         )
         .unwrap();
-        assert_eq!(out_idx.len(), 1);
+        assert_eq!(action_map.output_action_indices().len(), 1);
     }
 
     #[test]
     fn verify_spend_pczt_accepts_constructed_bundles() {
         let (spec, anchor) = test_spend_spec();
-        let (bundle, _, _) = construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
+        let (bundle, _) = construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
         verify_spend_pczt(&bundle).unwrap();
 
         // The Constructor ran nullifier, note-commitment, and cv_net checks before serializing; the
         // returned PCZT intentionally no longer carries the FVK needed to repeat spend checks.
-        let (bundle, _, _) = construct_spend_pczt_multi(
+        let (bundle, _) = construct_spend_pczt_multi(
             &[spec],
             &[IronwoodOutputSpec {
                 recipient: test_recipient(),
@@ -2597,7 +2660,7 @@ mod tests {
     #[test]
     fn verify_spend_pczt_rejects_a_tampered_output_note() {
         let (spec, anchor) = test_spend_spec();
-        let (bundle, _, output_indices) = construct_spend_pczt_multi(
+        let (bundle, action_map) = construct_spend_pczt_multi(
             &[spec],
             &[IronwoodOutputSpec {
                 recipient: test_recipient(),
@@ -2610,11 +2673,249 @@ mod tests {
         )
         .unwrap();
         let bytes = serialize_pczt(&bundle).unwrap();
-        let tampered = with_output_rseed_for_test(&bytes, output_indices[0], [9u8; 32]).unwrap();
+        let tampered = with_output_rseed_for_test(
+            &bytes,
+            action_map.output_action_index(0).unwrap(),
+            [9u8; 32],
+        )
+        .unwrap();
         let msg = match verify_spend_pczt(&deserialize_pczt(&tampered).unwrap()) {
             Err(IronwoodBuildError::Verify(msg)) => msg,
             other => panic!("expected a Verify error, got {other:?}"),
         };
         assert!(msg.contains("cmx"), "got {msg:?}");
+    }
+
+    /// Gap 13: a spend validated against a **real** note-commitment tree — real commitment
+    /// leaves folded with `MerkleHashOrchard::combine` and real empty-leaf subtrees — not the
+    /// self-consistent synthetic fixtures (arbitrary field bytes keyed off their own anchor).
+    #[test]
+    fn construct_witnesses_against_a_real_tree() {
+        let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([7u8; 32])).unwrap();
+        let fvk = FullViewingKey::from(&sk);
+        let (anchor, leaves) = super::test_util::real_two_leaf_tree(
+            &fvk,
+            [
+                (100_000_000u64, field_bytes(200), [52u8; 32]),
+                (80_000_000u64, field_bytes(201), [53u8; 32]),
+            ],
+        );
+        let spec = |leaf: &super::test_util::RealLeaf| IronwoodSpendSpec {
+            fvk: fvk.to_bytes(),
+            recipient: leaf.recipient,
+            value: leaf.value,
+            rho: leaf.rho,
+            rseed: leaf.rseed,
+            cmx: leaf.cmx,
+            witness: leaf.witness,
+        };
+
+        // Positive: both leaves' witnesses recompute to the shared real root.
+        let specs = [spec(&leaves[0]), spec(&leaves[1])];
+        let (bundle, map) = construct_spend_pczt_multi(&specs, &[], &anchor, OsRng).unwrap();
+        assert_eq!(bundle.actions().len(), 2);
+        assert_eq!(map.spend_action_indices().len(), 2);
+
+        // Negative: a witness recomputed for the WRONG leaf does not fold to the anchor — a
+        // real tree distinguishes its leaves, so a spend cannot ride another note's witness.
+        let wrong = IronwoodSpendSpec {
+            witness: leaves[1].witness,
+            ..spec(&leaves[0])
+        };
+        let err = construct_spend_pczt_multi(&[wrong], &[], &anchor, OsRng).unwrap_err();
+        assert!(
+            matches!(err, IronwoodBuildError::WitnessAnchorMismatch),
+            "unexpected: {err:?}"
+        );
+    }
+
+    /// Invariant 5: two spends deriving the same nullifier are rejected at construction —
+    /// orchard does not check this, and consensus rejects a transaction with a repeated
+    /// nullifier.
+    #[test]
+    fn construct_rejects_duplicate_nullifiers() {
+        // The nullifier derives from (nk, rho) alone, so the SAME note spent twice in one
+        // bundle collides regardless of anything else.
+        let (spec, anchor) = test_spend_spec();
+        let err = construct_spend_pczt_multi(&[spec, spec], &[], &anchor, OsRng).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                IronwoodBuildError::DuplicateNullifier { action_index: 1 }
+            ),
+            "unexpected: {err:?}"
+        );
+    }
+
+    /// B5: the builder reorders actions, so the returned map — not the request index — must
+    /// route per-spend/per-output data to the action that actually carries it.
+    #[test]
+    fn action_map_pins_the_reordered_action_positions() {
+        let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([7u8; 32])).unwrap();
+        let fvk = FullViewingKey::from(&sk);
+        let (anchor, leaves) = super::test_util::real_two_leaf_tree(
+            &fvk,
+            [
+                (100_000_000u64, field_bytes(200), [52u8; 32]),
+                (80_000_000u64, field_bytes(201), [53u8; 32]),
+            ],
+        );
+        let spec = |leaf: &super::test_util::RealLeaf| IronwoodSpendSpec {
+            fvk: fvk.to_bytes(),
+            recipient: leaf.recipient,
+            value: leaf.value,
+            rho: leaf.rho,
+            rseed: leaf.rseed,
+            cmx: leaf.cmx,
+            witness: leaf.witness,
+        };
+        let specs = [spec(&leaves[0]), spec(&leaves[1])];
+        let outputs = [
+            IronwoodOutputSpec {
+                recipient: fvk
+                    .address_at(10u32, Scope::External)
+                    .to_raw_address_bytes(),
+                amount: 30_000_000,
+                ovk: None,
+                memo: [0u8; 512],
+            },
+            IronwoodOutputSpec {
+                recipient: fvk
+                    .address_at(11u32, Scope::External)
+                    .to_raw_address_bytes(),
+                amount: 20_000_000,
+                ovk: None,
+                memo: [0u8; 512],
+            },
+        ];
+        let (bundle, map) = construct_spend_pczt_multi(&specs, &outputs, &anchor, OsRng).unwrap();
+        assert_eq!(bundle.actions().len(), 2, "UNPADDED 2+2 => 2 actions");
+
+        for (i, s) in specs.iter().enumerate() {
+            let idx = map.spend_action_index(i).expect("map covers every spend");
+            let recorded = bundle.actions()[idx]
+                .spend()
+                .proprietary()
+                .get(CMX_PROPRIETARY_KEY)
+                .expect("the Constructor recorded the spend's cmx")
+                .clone();
+            assert_eq!(
+                recorded.as_slice(),
+                s.cmx,
+                "spend {i} maps to the action carrying its cmx"
+            );
+        }
+        for (i, o) in outputs.iter().enumerate() {
+            let idx = map.output_action_index(i).expect("map covers every output");
+            let recipient = bundle.actions()[idx]
+                .output()
+                .recipient()
+                .expect("real output carries its recipient")
+                .to_raw_address_bytes();
+            assert_eq!(recipient, o.recipient, "output {i} maps to its own action");
+        }
+    }
+}
+
+/// Test-only fixtures shared across modules (the `zcash_psbt` tests build multi-spend flows on
+/// the same tree). Not compiled outside `cargo test`.
+#[cfg(test)]
+pub(crate) mod test_util {
+    use super::*;
+
+    /// One leaf of the fixture tree: everything needed to spend the note, plus the witness that
+    /// proves it against the shared root.
+    pub(crate) struct RealLeaf {
+        pub recipient: OrchardAddressBytes,
+        pub value: u64,
+        pub rho: [u8; 32],
+        pub rseed: [u8; 32],
+        pub cmx: [u8; 32],
+        pub witness: IronwoodWitness,
+    }
+
+    /// Build a real, internally consistent 2-leaf Orchard note-commitment tree over two notes
+    /// owned by `fvk` — `(value, rho, rseed)` per leaf, recipients `fvk.address_at(i)`. Leaves
+    /// are real commitments, the level-1 parent folds them with `MerkleHashOrchard::combine`,
+    /// and every empty subtree is the real `empty_leaf` hash, so each leaf's witness recomputes
+    /// to the shared root exactly as it would against a live tree.
+    pub(crate) fn real_two_leaf_tree(
+        fvk: &FullViewingKey,
+        notes: [(u64, [u8; 32], [u8; 32]); 2],
+    ) -> (AnchorBytes, [RealLeaf; 2]) {
+        let note_version = BundleVersion::ironwood_v3().note_version();
+        let mut cmxs = [[0u8; 32]; 2];
+        let mut parts = Vec::with_capacity(2);
+        for (i, (value, rho_bytes, rseed_bytes)) in notes.iter().enumerate() {
+            let recipient = fvk
+                .address_at(i as u32, Scope::External)
+                .to_raw_address_bytes();
+            let address =
+                Option::<Address>::from(Address::from_raw_address_bytes(&recipient)).unwrap();
+            let rho = Option::<Rho>::from(Rho::from_bytes(rho_bytes)).unwrap();
+            let rseed =
+                Option::<RandomSeed>::from(RandomSeed::from_bytes(*rseed_bytes, &rho)).unwrap();
+            let note = Option::<Note>::from(Note::from_parts(
+                address,
+                NoteValue::from_raw(*value),
+                rho,
+                rseed,
+                note_version,
+            ))
+            .unwrap();
+            cmxs[i] = ExtractedNoteCommitment::from(note.commitment()).to_bytes();
+            parts.push((recipient, *value, *rho_bytes, *rseed_bytes));
+        }
+
+        let leaf = |bytes: &[u8; 32]| {
+            MerkleHashOrchard::from_cmx(
+                &Option::<ExtractedNoteCommitment>::from(ExtractedNoteCommitment::from_bytes(
+                    bytes,
+                ))
+                .unwrap(),
+            )
+        };
+        let (leaf0, leaf1) = (leaf(&cmxs[0]), leaf(&cmxs[1]));
+        let empty = MerkleHashOrchard::empty_leaf();
+        // Fold a leaf up to the root through `siblings[d]` (its sibling at depth `d`).
+        // Orchard's `combine` takes the CHILDREN's level: leaves combine at level 0.
+        let fold = |start: MerkleHashOrchard,
+                    index: u64,
+                    siblings: &[MerkleHashOrchard; IRONWOOD_MERKLE_DEPTH]| {
+            let mut node = start;
+            for (d, sibling) in siblings.iter().enumerate() {
+                node = if index & (1 << d) == 0 {
+                    MerkleHashOrchard::combine(Level::new(d as u8), &node, sibling)
+                } else {
+                    MerkleHashOrchard::combine(Level::new(d as u8), sibling, &node)
+                };
+            }
+            node
+        };
+        let mut sibs0 = [empty; IRONWOOD_MERKLE_DEPTH];
+        sibs0[0] = leaf1;
+        let mut sibs1 = [empty; IRONWOOD_MERKLE_DEPTH];
+        sibs1[0] = leaf0;
+        let root0 = fold(leaf0, 0, &sibs0);
+        let root1 = fold(leaf1, 1, &sibs1);
+        assert_eq!(root0, root1, "both leaves fold to the same root");
+        let to_path = |s: &[MerkleHashOrchard; IRONWOOD_MERKLE_DEPTH]| {
+            std::array::from_fn(|i| s[i].to_bytes())
+        };
+        let mk_leaf = |i: usize, siblings: &[MerkleHashOrchard; IRONWOOD_MERKLE_DEPTH]| {
+            let (recipient, value, rho, rseed) = parts[i];
+            RealLeaf {
+                recipient,
+                value,
+                rho,
+                rseed,
+                cmx: cmxs[i],
+                witness: IronwoodWitness {
+                    position: i as u32,
+                    auth_path: to_path(siblings),
+                },
+            }
+        };
+        (root0.to_bytes(), [mk_leaf(0, &sibs0), mk_leaf(1, &sibs1)])
     }
 }
