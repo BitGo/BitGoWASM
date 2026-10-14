@@ -664,7 +664,8 @@ fn transparent_signing_state(inputs: &[crate::bitcoin::psbt::Input]) -> &'static
     "half_signed"
 }
 
-/// The `ironwood` node: every shielded output's value/recipient (one per action) and the bundle's
+/// The `ironwood` node: every real shielded output's value/recipient, every real shielded spend's
+/// value/nullifier (when the bundle spends notes), and the bundle's
 /// action-data (commitments, ciphertexts, flags, value balance, anchor) read from the PCZT stored
 /// in the proprietary map. Reports an error message inline rather than aborting the whole parse if
 /// the PCZT is malformed or missing (e.g. a v6 PSBT that had `add_ironwood_output`/
@@ -698,6 +699,31 @@ fn ironwood_shielded_state_to_node(zcash_psbt: &ZcashBitGoPsbt) -> Node {
         }
         Err(e) => {
             node.add_child(Node::new("shielded_output_error", Primitive::String(e)));
+        }
+    }
+
+    // Only rendered for bundles that spend real notes, so shielding-only output is unchanged.
+    match zcash_psbt.ironwood_shielded_spends_info() {
+        Ok(spends) if spends.is_empty() => {}
+        Ok(spends) => {
+            let mut spends_node = Node::new("shielded_spends", Primitive::None);
+            for spend in spends {
+                let mut spend_node = Node::new("shielded_spend", Primitive::None);
+                spend_node.add_child(Node::new(
+                    "action_index",
+                    Primitive::U64(spend.action_index as u64),
+                ));
+                spend_node.add_child(Node::new("value", Primitive::U64(spend.value)));
+                spend_node.add_child(Node::new(
+                    "nullifier",
+                    Primitive::Buffer(spend.nullifier.to_vec()),
+                ));
+                spends_node.add_child(spend_node);
+            }
+            node.add_child(spends_node);
+        }
+        Err(e) => {
+            node.add_child(Node::new("shielded_spend_error", Primitive::String(e)));
         }
     }
 
