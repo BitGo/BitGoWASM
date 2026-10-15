@@ -1167,6 +1167,40 @@ impl ZcashBitGoPsbt {
         super::propkv::get_ironwood_pczt(&self.psbt)
     }
 
+    /// The number of real (non-dummy) Ironwood spends and outputs in the stored PCZT; `(0, 0)`
+    /// when no shielded spend or output was ever added.
+    ///
+    /// The Constructor builds `BundleType::UNPADDED` bundles, so the action count is
+    /// `max(spends, outputs)`. Once the PCZT has been extracted (see
+    /// [`Self::mark_ironwood_extracted`]) the counts recorded at extraction are returned, so a
+    /// finalized PSBT still reports its actions.
+    pub fn ironwood_real_spend_and_output_counts(&self) -> Result<(usize, usize), String> {
+        if !super::propkv::has_ironwood_pczt(&self.psbt)
+            && super::propkv::is_ironwood_extracted(&self.psbt)
+        {
+            let (spends, outputs) = super::propkv::get_ironwood_extracted_counts(&self.psbt)
+                .ok_or_else(|| {
+                    "this PSBT's Ironwood PCZT was extracted without recording its action counts"
+                        .to_string()
+                })?;
+            return Ok((spends as usize, outputs as usize));
+        }
+        if self.require_no_shielded_output_ever_added()? {
+            return Ok((0, 0));
+        }
+        let pczt = self.ironwood_pczt()?;
+        Self::pczt_real_spend_and_output_counts(&pczt)
+    }
+
+    fn pczt_real_spend_and_output_counts(
+        pczt: &orchard::pczt::Bundle,
+    ) -> Result<(usize, usize), String> {
+        Ok((
+            Self::bundle_real_spends(pczt)?.len(),
+            Self::bundle_real_outputs(pczt)?.len(),
+        ))
+    }
+
     /// Client-managed `ovk`, raw-key form: re-encrypt the Ironwood output's `out_ciphertext` under
     /// an `ovk` derived as the ECDH agreement of `bitgo_pubkey` and `user_privkey`. The `ovk` never
     /// leaves this call — it is not returned and not persisted anywhere.
@@ -1799,6 +1833,53 @@ impl ZcashBitGoPsbt {
         Ok(())
     }
 
+    /// The ZIP-317 transparent terms `(tx_in_total_size, tx_out_total_size)`: the estimated
+    /// **final** serialized sizes of the transparent inputs (each carrying the scriptSig the
+    /// PSBT's scripts will produce, see [`estimated_script_sig_len`]) and the exact serialized
+    /// sizes of the transparent outputs.
+    pub fn zip317_transparent_sizes(&self) -> (u64, u64) {
+        let tx_in_total_size = self
+            .psbt
+            .inputs
+            .iter()
+            .map(|input| {
+                crate::zcash::zip317::transparent_input_size(estimated_script_sig_len(input))
+            })
+            .sum();
+        let tx_out_total_size = self
+            .psbt
+            .unsigned_tx
+            .output
+            .iter()
+            .map(|output| crate::zcash::zip317::transparent_output_size(output.script_pubkey.len()))
+            .sum();
+        (tx_in_total_size, tx_out_total_size)
+    }
+
+    /// The ZIP-317 logical-action counts for this PSBT — see [`crate::zcash::zip317`].
+    ///
+    /// The transparent terms come from [`Self::zip317_transparent_sizes`]. The shielded term is
+    /// the Ironwood action count, `max(real spends, real outputs)` of the stored PCZT (zero when
+    /// none is stored); v6 transactions have no Sapling or JoinSplit components.
+    pub fn zip317_action_counts(&self) -> Result<crate::zcash::zip317::Zip317ActionCounts, String> {
+        let (tx_in_total_size, tx_out_total_size) = self.zip317_transparent_sizes();
+        let (spends, outputs) = self.ironwood_real_spend_and_output_counts()?;
+        Ok(crate::zcash::zip317::Zip317ActionCounts {
+            tx_in_total_size,
+            tx_out_total_size,
+            n_actions_ironwood: spends.max(outputs) as u64,
+            ..Default::default()
+        })
+    }
+
+    /// The ZIP-317 conventional fee (zatoshi) for this PSBT's shape. Opt-in: nothing in the
+    /// transparent-only fee path calls it.
+    pub fn zip317_conventional_fee(&self) -> Result<u64, String> {
+        Ok(crate::zcash::zip317::conventional_fee(
+            &self.zip317_action_counts()?,
+        ))
+    }
+
     /// The spent-output value (zatoshi, as i64) and scriptPubKey of every transparent input, in
     /// input order — the amounts/scripts ZIP-244 commits to.
     fn transparent_input_amounts_and_scripts(
@@ -2313,8 +2394,21 @@ impl ZcashBitGoPsbt {
     /// instead of silently re-running against already-extracted state — and because the PCZT is
     /// gone from the bytes too, that holds across a `serialize`/`deserialize` round-trip.
     ///
+    /// The PCZT's real spend/output counts are recorded first, so ZIP-317 fee estimation
+    /// ([`Self::zip317_action_counts`]) keeps working on the extracted PSBT.
+    ///
     /// Returns whether a PCZT was present.
     pub fn mark_ironwood_extracted(&mut self) -> bool {
+        if let Ok((spends, outputs)) = self
+            .ironwood_pczt()
+            .and_then(|pczt| Self::pczt_real_spend_and_output_counts(&pczt))
+        {
+            super::propkv::set_ironwood_extracted_counts(
+                &mut self.psbt,
+                spends as u32,
+                outputs as u32,
+            );
+        }
         super::propkv::take_ironwood_pczt(&mut self.psbt)
     }
 
@@ -5640,6 +5734,105 @@ mod ironwood_v6_tests {
     }
 
     #[test]
+    fn zip317_counts_and_fee() {
+        let (z, _keys) = build_unshield_psbt("ironwood_v6_zip317");
+
+        // The fixture has NO transparent input (spend + transparent output only): the input
+        // term is 0. The single transparent output (5-byte script): 8 + 1 + 5 = 14. One
+        // Ironwood action from the stored PCZT.
+        let counts = z.zip317_action_counts().unwrap();
+        assert_eq!(counts.tx_in_total_size, 0);
+        assert_eq!(counts.tx_out_total_size, 14);
+        assert_eq!(counts.n_actions_ironwood, 1);
+        assert_eq!(z.ironwood_real_spend_and_output_counts().unwrap(), (1, 0));
+        // logical_actions = max(0, ceil(14/34) = 1) + 1 = 2 ⇒ 10_000 zatoshi.
+        assert_eq!(z.zip317_conventional_fee().unwrap(), 10_000);
+
+        // A PSBT with no stored PCZT has no Ironwood term.
+        let mut fresh = {
+            let psbt = BitGoPsbt::new_zcash_v6_at_height(
+                Network::ZcashTestnet,
+                &root_wallet_keys("ironwood_v6_zip317_fresh"),
+                NetworkUpgrade::Nu6_3.testnet_activation_height(),
+                None,
+                None,
+            )
+            .unwrap();
+            match psbt {
+                BitGoPsbt::Zcash(z, _) => z,
+                _ => panic!("expected Zcash PSBT"),
+            }
+        };
+        fresh
+            .add_transparent_output(
+                miniscript::bitcoin::ScriptBuf::from(vec![0x76u8, 0xa9, 0x14, 0x88, 0xac]),
+                99_999_000,
+                None,
+            )
+            .unwrap();
+        let fresh_counts = fresh.zip317_action_counts().unwrap();
+        assert_eq!(fresh_counts.n_actions_ironwood, 0);
+        assert_eq!(
+            fresh.ironwood_real_spend_and_output_counts().unwrap(),
+            (0, 0)
+        );
+    }
+
+    /// Extraction drops the PCZT, but the ZIP-317 counts (and fee) must survive it: they are
+    /// recorded by `mark_ironwood_extracted`.
+    #[test]
+    fn zip317_counts_survive_extraction() {
+        let mut shield = build_shield_psbt_multi("zip317_extract_shield", &[test_recipient(); 2]);
+        let (mut unshield, _keys) = build_unshield_psbt("zip317_extract_unshield");
+        for z in [&mut shield, &mut unshield] {
+            let counts = z.zip317_action_counts().unwrap();
+            let spends_and_outputs = z.ironwood_real_spend_and_output_counts().unwrap();
+            assert!(z.mark_ironwood_extracted());
+            assert!(z.raw_ironwood_pczt_bytes().is_none());
+            assert_eq!(
+                z.ironwood_real_spend_and_output_counts().unwrap(),
+                spends_and_outputs
+            );
+            assert_eq!(z.zip317_action_counts().unwrap(), counts);
+            assert_eq!(
+                z.zip317_conventional_fee().unwrap(),
+                crate::zcash::zip317::conventional_fee(&counts)
+            );
+        }
+        assert_eq!(
+            shield.ironwood_real_spend_and_output_counts().unwrap(),
+            (0, 2)
+        );
+        assert_eq!(
+            unshield.ironwood_real_spend_and_output_counts().unwrap(),
+            (1, 0)
+        );
+
+        // A PCZT dropped without recording counts errors instead of reporting no actions.
+        let mut legacy = build_shield_psbt("zip317_extract_legacy");
+        assert!(super::super::propkv::take_ironwood_pczt(&mut legacy.psbt));
+        let err = legacy.zip317_action_counts().unwrap_err();
+        assert!(err.contains("without recording"), "unexpected: {err}");
+    }
+
+    /// `max(real spends, real outputs)` is the stored bundle's action count: the Constructor
+    /// builds UNPADDED bundles, pairing each real side with a dummy where the other is missing.
+    #[test]
+    fn zip317_ironwood_term_matches_the_stored_action_count() {
+        let shield = build_shield_psbt_multi("zip317_shield_multi", &[test_recipient(); 3]);
+        let (unshield, _keys) = build_unshield_psbt("zip317_unshield");
+        for (z, expected) in [(shield, (0, 3)), (unshield, (1, 0))] {
+            let (spends, outputs) = z.ironwood_real_spend_and_output_counts().unwrap();
+            assert_eq!((spends, outputs), expected);
+            let pczt = crate::zcash::ironwood_pczt::deserialize_pczt(
+                &z.raw_ironwood_pczt_bytes().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(spends.max(outputs), pczt.actions().len());
+        }
+    }
+
+    #[test]
     fn ironwood_bundle_info_rejects_a_tampered_plaintext_value() {
         // The spend's plaintext value is not bound by the proofs (only `cv_net`/`cm` are), so a
         // plaintext that disagrees with the bundle's committed `value_sum` must be caught by the
@@ -6102,5 +6295,179 @@ mod ironwood_v6_tests {
             assert!(err.contains("spend-auth signature"), "unexpected: {err}");
         }
         assert_eq!(z.v6_sig_digest().unwrap(), sighash, "digest unchanged");
+    }
+
+    /// Existing wallets: a transparent-only v6 PSBT (no Ironwood bundle) must keep the
+    /// bitcoin-weight virtual size and must not see the shielded fee path.
+    #[test]
+    fn transparent_only_v6_keeps_the_bitcoin_weight_virtual_size() {
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_transparent_vsize"));
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x45u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 199_900_000, &wallet_keys)
+            .unwrap();
+        let weight_vsize = match &psbt {
+            BitGoPsbt::Zcash(z, _) => {
+                assert!(z.is_ironwood_v6());
+                assert!(z.raw_ironwood_pczt_bytes().is_none());
+                z.psbt.unsigned_tx.weight().to_vbytes_ceil()
+            }
+            _ => panic!("expected Zcash PSBT"),
+        };
+        let parsed = psbt
+            .parse_transaction_with_wallet_keys(
+                &wallet_keys,
+                &crate::fixed_script_wallet::ReplayProtection::new(vec![]),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(parsed.virtual_size as u64, weight_vsize);
+    }
+
+    /// The shielding flow (transparent inputs → Ironwood output) carries a PCZT, but its actions
+    /// pair dummy spends with the real outputs: it must keep the bitcoin-weight virtual size the
+    /// indexer's fee selection and fee-rate checks already use.
+    #[test]
+    fn shielding_v6_keeps_the_bitcoin_weight_virtual_size() {
+        let seed = "v6_shield_vsize";
+        let z = build_shield_psbt(seed);
+        assert!(z.raw_ironwood_pczt_bytes().is_some());
+        let weight_vsize = z.psbt.unsigned_tx.weight().to_vbytes_ceil();
+
+        let parsed = BitGoPsbt::Zcash(z, Network::ZcashTestnet)
+            .parse_transaction_with_wallet_keys(
+                &RootWalletKeys::new(get_test_wallet_keys(seed)),
+                &crate::fixed_script_wallet::ReplayProtection::new(vec![]),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(parsed.virtual_size as u64, weight_vsize);
+    }
+
+    /// The ZIP-317 input-size estimate for a P2SH 2-of-3 wallet input must cover the real
+    /// finalized scriptSig (`OP_0 <sig> <sig> <redeemScript>`), never undercount it.
+    #[test]
+    fn estimated_script_sig_len_covers_a_finalized_multisig_input() {
+        let seed = "v6_script_sig_estimate";
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            Network::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x46u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+        let estimate = estimated_script_sig_len(&z.psbt.inputs[0]);
+
+        let secp = Secp256k1::new();
+        let msg = Message::from_digest(z.v6_transparent_sighash(0).unwrap());
+        for sk in signing_secret_keys(seed, 0, 0).iter().take(2) {
+            let pk = crate::bitcoin::secp256k1::PublicKey::from_secret_key(&secp, sk);
+            let pubkey = PublicKey::from(CompressedPublicKey(pk));
+            let mut der = secp.sign_ecdsa(&msg, sk).serialize_der().to_vec();
+            der.push(0x01);
+            z.add_v6_transparent_signature(0, pubkey, &der).unwrap();
+        }
+        let counts = z.zip317_action_counts().unwrap();
+        let tx = z.finalized_transparent_tx().unwrap();
+        let actual = tx.input[0].script_sig.len();
+        assert!(
+            estimate >= actual && estimate - actual <= 4,
+            "estimate {estimate} must cover and tightly bound the real scriptSig {actual}"
+        );
+
+        // The ZIP-317 input term is the whole serialized input — outpoint (36), scriptSig with
+        // its CompactSize, sequence (4) — and must cover the real finalized input too.
+        let actual_input = crate::bitcoin::consensus::serialize(&tx.input[0]).len() as u64;
+        assert!(
+            counts.tx_in_total_size >= actual_input && counts.tx_in_total_size - actual_input <= 4,
+            "ZIP-317 input size {} must cover and tightly bound the real input {actual_input}",
+            counts.tx_in_total_size
+        );
+    }
+
+    /// A finalized input is sized from its real scriptSig, even though the finalizer cleared
+    /// its redeem script (which would otherwise fall through to the P2PKH estimate).
+    #[test]
+    fn estimated_script_sig_len_uses_a_finalized_script_sig() {
+        let script_sig = miniscript::bitcoin::ScriptBuf::from(vec![0u8; 253]);
+        let input = crate::bitcoin::psbt::Input {
+            final_script_sig: Some(script_sig.clone()),
+            ..Default::default()
+        };
+        assert_eq!(estimated_script_sig_len(&input), 253);
+    }
+
+    /// A P2SH-P2PK replay-protection input's scriptSig is `<sig> <redeemScript>`, not the 2-of-3
+    /// multisig form.
+    #[test]
+    fn estimated_script_sig_len_sizes_a_replay_protection_input() {
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&[0x11u8; 32]).unwrap();
+        let pubkey = PublicKey::from(CompressedPublicKey(
+            crate::bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk),
+        ));
+        let redeem = miniscript::bitcoin::script::Builder::new()
+            .push_key(&pubkey)
+            .push_opcode(miniscript::bitcoin::opcodes::all::OP_CHECKSIG)
+            .into_script();
+        let input = crate::bitcoin::psbt::Input {
+            redeem_script: Some(redeem.clone()),
+            ..Default::default()
+        };
+        // push(73-byte max sig) + push(35-byte redeem script)
+        assert_eq!(estimated_script_sig_len(&input), 74 + 1 + redeem.len());
+    }
+}
+
+/// The estimated length of the FINAL scriptSig a transparent input will carry, for ZIP-317's
+/// size-based input accounting — exact once the input is finalized.
+///
+/// BitGo wallet inputs are P2SH 2-of-3 multisig: the scriptSig is
+/// `OP_0 <sig> <sig> <redeemScript>`, so it is sized from the actual redeem script. A P2SH-P2PK
+/// replay-protection input (redeem script `<pubkey> OP_CHECKSIG`) carries `<sig> <redeemScript>`
+/// instead. See [`crate::zcash::zip317`] for the signature-size convention.
+fn estimated_script_sig_len(input: &crate::bitcoin::psbt::Input) -> usize {
+    use crate::zcash::zip317;
+    // A finalized input carries its real scriptSig (and the finalizer clears `redeem_script`).
+    if let Some(script_sig) = &input.final_script_sig {
+        return script_sig.len();
+    }
+    match &input.redeem_script {
+        Some(redeem)
+            if super::BitGoPsbt::extract_pubkey_from_p2pk_redeem_script(redeem).is_ok() =>
+        {
+            zip317::p2sh_p2pk_script_sig_len(redeem.len())
+        }
+        Some(redeem) => zip317::p2sh_multisig_script_sig_len(redeem.len()),
+        None => zip317::p2pkh_script_sig_len(),
     }
 }

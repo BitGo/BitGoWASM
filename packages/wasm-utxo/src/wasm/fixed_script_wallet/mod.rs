@@ -1,4 +1,5 @@
 mod dimensions;
+mod zip317_dimensions;
 
 pub use dimensions::WasmDimensions;
 

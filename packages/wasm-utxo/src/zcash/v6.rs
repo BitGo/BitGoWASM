@@ -737,6 +737,19 @@ pub fn decode_v6_transaction(bytes: &[u8]) -> Result<ZcashV6Transaction, ZcashV6
     })
 }
 
+/// The serialized length of a CompactSize encoding of `value`.
+pub(crate) fn compact_size_len(value: usize) -> usize {
+    if value < 253 {
+        1
+    } else if value <= u16::MAX as usize {
+        3
+    } else if value <= u32::MAX as usize {
+        5
+    } else {
+        9
+    }
+}
+
 /// Encode a v6 (Ironwood) transaction back to its raw wire bytes.
 pub fn encode_v6_transaction(tx: &ZcashV6Transaction) -> Result<Vec<u8>, ZcashV6Error> {
     if tx.sapling_value_balance != 0 {

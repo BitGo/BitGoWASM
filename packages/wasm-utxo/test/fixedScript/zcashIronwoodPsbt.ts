@@ -14,6 +14,7 @@ import {
   type ZcashParsedOutput,
 } from "../../js/fixedScriptWallet/ZcashBitGoPsbt.js";
 import type { ParsedTransaction } from "../../js/fixedScriptWallet/BitGoPsbt.js";
+import { Dimensions } from "../../js/fixedScriptWallet/Dimensions.js";
 import { getKeyTriple, getWalletKeysForSeed } from "../../js/testutils/index.js";
 import { ZcashUnifiedAddress } from "../../js/fixedScriptWallet/ZcashUnifiedAddress.js";
 
@@ -191,6 +192,34 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
       assert.strictEqual(parsed.minerFee, 100_000n);
       // The shielded note counts as an external spend, same as any other non-wallet output.
       assert.strictEqual(parsed.spendAmount, 100_000_000n);
+    });
+
+    // The shielding flow is funded by transparent inputs, so it keeps the transparent-skeleton
+    // fee estimate (`Dimensions.fromPsbt` and `virtualSize`) the indexer's fee-rate checks use:
+    // adding the shielded output does not change either.
+    it("sizes a shielding PSBT from its transparent skeleton alone", function () {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput({ txid: "11".repeat(32), vout: 0, value: 200_000_000n }, walletKeys, {
+        scriptId: SCRIPT_ID,
+        signPath: { signer: "user", cosigner: "bitgo" },
+      });
+      psbt.addWalletOutput(walletKeys, { chain: 1, index: 0, value: 99_900_000n });
+      const parseOptions = { replayProtection: { publicKeys: [] } };
+      const transparentVSize = Dimensions.fromPsbt(psbt).getVSize("max");
+      const transparentVirtualSize = psbt.parseTransactionWithWalletKeys(
+        walletKeys,
+        parseOptions,
+      ).virtualSize;
+
+      psbt.addShieldedOutput(RECIPIENT, 100_000_000n, { anchor: new Uint8Array(32) });
+
+      assert.strictEqual(Dimensions.fromPsbt(psbt).getVSize("max"), transparentVSize);
+      assert.strictEqual(
+        psbt.parseTransactionWithWalletKeys(walletKeys, parseOptions).virtualSize,
+        transparentVirtualSize,
+      );
     });
 
     it("omits the shielded entry for a v6 PSBT with no shielded output yet", function () {

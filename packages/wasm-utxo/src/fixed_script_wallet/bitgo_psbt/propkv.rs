@@ -286,6 +286,10 @@ pub enum ZecV6KeySubtype {
     /// from the scriptPubKey) — kept so output parsing can hand back the exact UA the caller
     /// passed, not one reconstructed as a bare transparent address.
     TransparentUnifiedAddress = 0x06,
+    /// The real (non-dummy) Ironwood spend and output counts of the PCZT dropped by
+    /// [`take_ironwood_pczt`], as two little-endian `u32`s. Written alongside `IronwoodExtracted`
+    /// so ZIP-317 fee estimation still sees the bundle's actions once the PCZT itself is gone.
+    IronwoodExtractedCounts = 0x07,
 }
 
 fn set_zec_v6(
@@ -384,6 +388,29 @@ fn set_ironwood_extracted(psbt: &mut miniscript::bitcoin::psbt::Psbt) {
 /// Whether the PSBT's Ironwood PCZT has been extracted (dropped by [`take_ironwood_pczt`]).
 pub fn is_ironwood_extracted(psbt: &miniscript::bitcoin::psbt::Psbt) -> bool {
     get_zec_v6(psbt, ZecV6KeySubtype::IronwoodExtracted).is_some()
+}
+
+/// Record the real Ironwood spend/output counts of a PCZT about to be dropped by
+/// [`take_ironwood_pczt`] (see [`ZecV6KeySubtype::IronwoodExtractedCounts`]).
+pub fn set_ironwood_extracted_counts(
+    psbt: &mut miniscript::bitcoin::psbt::Psbt,
+    spends: u32,
+    outputs: u32,
+) {
+    let mut value = spends.to_le_bytes().to_vec();
+    value.extend_from_slice(&outputs.to_le_bytes());
+    set_zec_v6(psbt, ZecV6KeySubtype::IronwoodExtractedCounts, value);
+}
+
+/// The `(spends, outputs)` recorded by [`set_ironwood_extracted_counts`], or `None` if absent or
+/// malformed.
+pub fn get_ironwood_extracted_counts(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<(u32, u32)> {
+    let value = get_zec_v6(psbt, ZecV6KeySubtype::IronwoodExtractedCounts)?;
+    let (spends, outputs) = value.as_slice().split_at_checked(4)?;
+    Some((
+        u32::from_le_bytes(spends.try_into().ok()?),
+        u32::from_le_bytes(outputs.try_into().ok()?),
+    ))
 }
 
 /// Store the Zcash v6 (Ironwood) header params — `version_group_id` and `expiry_height` — under the
