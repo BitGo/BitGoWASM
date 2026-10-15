@@ -308,13 +308,34 @@ pub fn with_spend_fvk_on_real_spends(
     })
 }
 
+/// Install one action spend's `fvk` in an already-serialized PCZT.
+///
+/// The per-action counterpart of [`with_spend_fvk_on_real_spends`] and the inverse of
+/// [`with_spend_fvk_cleared`]: the FVK holder fills the FVK in so the Prover and Verifier can
+/// use it. The length is fixed by the type; the parsed spend validates the bytes on
+/// deserialize.
+pub fn with_spend_fvk(
+    bytes: &[u8],
+    action_index: usize,
+    fvk: super::ironwood_build::FvkBytes,
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        wire.actions
+            .get_mut(action_index)
+            .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
+            .spend
+            .fvk = Some(fvk.to_vec());
+        Ok(())
+    })
+}
+
 /// Clear one action spend's `fvk` in an already-serialized PCZT.
 ///
 /// The Constructor role's real spends are built with the full viewing key held
 /// transiently (the caller supplied it), so `bundle_to_wire` serializes it —
 /// but the serialized PCZT the Constructor hands on must be keyless: the FVK
-/// never leaves its holder (the client in the keyless flow, KMS in the keyed
-/// flow). `scrub_spend_randomizers` clears it for every real spend, next to
+/// never leaves its holder (the client in the keyless flow, the keyed prover in
+/// the keyed flow). `scrub_spend_randomizers` clears it for every real spend, next to
 /// the `alpha`/`rk` scrub. Dummy spends (shielding builds) keep their wire
 /// `fvk`: it is the fabricating builder's random key, and `create_proof`
 /// requires an fvk on every spend.
@@ -536,6 +557,22 @@ pub(crate) fn duplicate_nullifier_index(bundle: &PcztBundle) -> Option<usize> {
         }
     }
     None
+}
+
+/// Whether a spend's `rk` has been replaced by the signer (the wire marker).
+///
+/// `None`/`[0]` mean the Constructor's placeholder (`rk` = the spend's `ak`) is still installed;
+/// any other marker value is a wire inconsistency, not a state.
+pub(crate) fn spend_rk_replaced(spend: &PcztSpend) -> Result<bool, String> {
+    match spend
+        .proprietary()
+        .get(SPEND_RK_STATE_PROPRIETARY_KEY)
+        .map(|state| state.as_slice())
+    {
+        Some([1]) => Ok(true),
+        Some([0]) | None => Ok(false),
+        Some(_) => Err("invalid Ironwood spend rk state marker".to_string()),
+    }
 }
 
 fn wire_to_action(
