@@ -69,7 +69,7 @@ The indexer's build flow (`@ims-utxo/utxo-core/buildTransaction` →
    already handles must sign the v6 sighash (which includes `ironwood_digest`), not
    ZIP-243. This is the true next milestone for shielding.
 4. **Ironwood bundle attach (T3)** — `set_ironwood_bundle` / `finalize_ironwood_bundle`
-   apply the server (KMS) proof + actions before final serialize.
+   apply the server proof + actions before final serialize.
 
 The shielded recipient itself is resolved with `ZcashUnifiedAddress` (its Orchard
 receiver), and its value becomes `valueBalanceIronwood` rather than a transparent
