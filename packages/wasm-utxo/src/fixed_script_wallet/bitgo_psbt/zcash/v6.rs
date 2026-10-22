@@ -807,6 +807,27 @@ impl ZcashBitGoPsbt {
                 "v6 PSBT is missing its Ironwood PCZT after extraction".to_string(),
             ));
         }
+        // Rule 0 (plan §3): a v6 PSBT carries either transparent inputs or shielded spends,
+        // never both. The shielded side of the rule lives in
+        // `add_shielded_spends` (transparent-input check) and the generic input adders'
+        // Zcash arms; this closes the deserialize hole a PSBT could be edited through.
+        if !psbt.inputs.is_empty() {
+            if let Some(pczt_bytes) = super::propkv::get_ironwood_pczt(&psbt) {
+                let pczt =
+                    crate::zcash::ironwood_pczt::deserialize_pczt(&pczt_bytes).map_err(|e| {
+                        super::DeserializeError::Network(format!(
+                            "v6 PSBT's Ironwood PCZT is invalid: {e}"
+                        ))
+                    })?;
+                if Self::bundle_has_real_spends(&pczt) {
+                    return Err(super::DeserializeError::Network(
+                        "v6 PSBT mixes transparent inputs with shielded spends (one input \
+                         kind per transaction)"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
         Ok(ZcashBitGoPsbt {
             psbt,
             network,

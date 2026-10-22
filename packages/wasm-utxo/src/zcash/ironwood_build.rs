@@ -33,8 +33,12 @@ use rand::{CryptoRng, RngCore};
 
 use orchard::builder::{Builder, BundleType};
 use orchard::bundle::BundleVersion;
-use orchard::keys::{FullViewingKey, OutgoingViewingKey, Scope};
-use orchard::note::{ExtractedNoteCommitment, Note, NoteVersion, RandomSeed, Rho};
+#[cfg(any(test, feature = "orchard-proving"))]
+use orchard::keys::Scope;
+use orchard::keys::{FullViewingKey, OutgoingViewingKey};
+use orchard::note::ExtractedNoteCommitment;
+#[cfg(any(test, feature = "orchard-proving"))]
+use orchard::note::{Note, NoteVersion, RandomSeed, Rho};
 use orchard::pczt::Bundle as PcztBundle;
 use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath};
 use orchard::value::NoteValue;
@@ -239,6 +243,34 @@ pub enum IronwoodBuildError {
     /// the Constructor's placeholder (the spend's `ak`). Marking that `rk` as replaced would let
     /// a linkable `rk` past the [`PlaceholderRkNotReplaced`](Self::PlaceholderRkNotReplaced) gate.
     UnrandomizedRk,
+    /// The keyless spend constructor was called without any real spend (plan §4 invariant 6):
+    /// an output-only bundle is a *shielding* build — use [`construct_shield_pczt_multi`]
+    /// for it.
+    NoSpends,
+    /// An output passed to the keyless spend constructor carried an explicit `ovk` (plan §4
+    /// invariant 7): in the spend flow KMS owns encryption, so the PSBT side may not choose
+    /// one. The placeholder `out_ciphertext` the constructor installs is replaced by KMS's
+    /// `out_ciphertext` later.
+    OvkNotAllowed {
+        /// The offending output's position in the `outputs` slice.
+        output_index: usize,
+    },
+    /// The spend-validating key bytes are not a canonical, non-identity RedPallas
+    /// verification key (plan §4 invariant 5): the placeholder `rk` must be a key the
+    /// signer's `ak.randomize(alpha)` can replace.
+    BadSpendValidatingKey,
+    /// A keyless spend's caller-supplied nullifier is not a canonical Pallas base-field
+    /// encoding. The nullifier is installed verbatim and keys the paired output note's `rho`.
+    BadNullifier {
+        /// The offending spend's position in the `spends` slice.
+        spend_index: usize,
+    },
+    /// A note or output value, or the spend/output total, exceeds Zcash `MAX_MONEY`
+    /// (21 000 000 ZEC): no such value can appear in a valid transaction.
+    ValueOutOfRange,
+    /// The keyless spend constructor's own output failed the key-free verifier (plan §4 step
+    /// 4) — an internal inconsistency; the wrapped error names the failing check.
+    SelfCheck(IronwoodVerifyError),
 }
 
 /// Which Verifier check failed — its name is the error code callers key their diagnostics on
@@ -456,6 +488,34 @@ impl core::fmt::Display for IronwoodBuildError {
                 "ironwood-build: the spend randomizer must randomize rk (alpha is zero or rk is \
                  the placeholder ak)"
             ),
+            Self::NoSpends => write!(
+                f,
+                "ironwood-build: a spend bundle needs at least one real spend; outputs-only \
+                 bundles are shielding builds"
+            ),
+            Self::OvkNotAllowed { output_index } => write!(
+                f,
+                "ironwood-build: output {output_index} carries an explicit ovk; the keyless \
+                 spend constructor leaves encryption to the KMS"
+            ),
+            Self::BadSpendValidatingKey => write!(
+                f,
+                "ironwood-build: the spend-validating key is not a canonical RedPallas \
+                 verification key"
+            ),
+            Self::BadNullifier { spend_index } => write!(
+                f,
+                "ironwood-build: spend {spend_index}'s nullifier is not a canonical field \
+                 element"
+            ),
+            Self::ValueOutOfRange => write!(
+                f,
+                "ironwood-build: a value or the spend/output total exceeds MAX_MONEY"
+            ),
+            Self::SelfCheck(e) => write!(
+                f,
+                "ironwood-build: the constructed bundle failed its key-free self-check: {e}"
+            ),
         }
     }
 }
@@ -484,6 +544,11 @@ pub struct IronwoodOutputSpec {
 /// recompute to the bundle's anchor. The FVK is used only during construction (ownership check,
 /// nullifier derivation, and the construction-time verifier) and is omitted from the serialized
 /// PCZT; its public `ak` doubles as the placeholder `rk` until the signer replaces it.
+///
+/// The keyed (FVK-carrying) spend spec — the **test oracle** for the keyless constructor
+/// (`ironwood_construct::construct_spend_pczt_keyless`). Production builds never see the FVK:
+/// the build service is keyless, and the shipped WASM must not carry this path.
+#[cfg(any(test, feature = "orchard-proving"))]
 #[derive(Clone, Copy, Debug)]
 pub struct IronwoodSpendSpec {
     /// Raw full viewing key, 96 bytes: `ak ‖ nk ‖ rivk` (orchard's `FullViewingKey::to_bytes`
@@ -536,6 +601,20 @@ impl IronwoodActionMap {
     }
 }
 
+impl IronwoodActionMap {
+    /// Assemble a map from already-shuffled action indices — the keyless spend
+    /// constructor's shuffle (plan §4) produces them directly, without a builder.
+    pub(crate) fn from_parts(
+        spend_action_indices: Vec<usize>,
+        output_action_indices: Vec<usize>,
+    ) -> Self {
+        Self {
+            spend_action_indices,
+            output_action_indices,
+        }
+    }
+}
+
 /// Constructor: build an Ironwood bundle as an orchard PCZT from real spends and/or requested
 /// outputs — the general Constructor for the shielding (outputs only), unshielding (spends only),
 /// and shielded-transfer flows.
@@ -562,7 +641,12 @@ impl IronwoodActionMap {
 /// The returned PCZT carries no signatures or proof yet. Real spends carry the note plaintext
 /// (recipient/value/rho/rseed/witness) but no FVK, only a placeholder `rk` (the spend's `ak`), and
 /// no `alpha`; see [`scrub_spend_randomizers`]. Run [`finalize_shield_io`] once the sighash is
-/// known, then hand the PCZT to the prover and[`combine`].
+/// known, then hand the PCZT to the prover and [`combine`].
+///
+/// This is the oracle path: keyed construction through the orchard `Builder`, available only
+/// under `test` / `orchard-proving` (plan PR 5). The production deshield/shielded→shielded
+/// Constructor is [`crate::zcash::ironwood_construct::construct_spend_pczt_keyless`].
+#[cfg(any(test, feature = "orchard-proving"))]
 pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
     spends: &[IronwoodSpendSpec],
     outputs: &[IronwoodOutputSpec],
@@ -718,17 +802,70 @@ fn validate_constructed_out_ciphertexts<R: RngCore + CryptoRng>(
 }
 
 /// Constructor: build a transparent → Ironwood shielding bundle (no real spends) as an orchard
-/// PCZT, for one or more outputs. A thin wrapper over [`construct_spend_pczt_multi`]; see it for
-/// the general (and multi-output) contract.
+/// PCZT, for one or more outputs. Each output rides an orchard-`Builder`-fabricated dummy spend
+/// (`BundleType::UNPADDED`, so exactly one action per output); no key is needed.
+///
+/// Also the dummy-spend fabricator the keyless spend constructor
+/// ([`crate::zcash::ironwood_construct::construct_spend_pczt_keyless`]) reuses for surplus
+/// outputs: it moves the fabricated actions into its own bundle through the wire form.
 pub fn construct_shield_pczt_multi<R: RngCore + CryptoRng>(
     outputs: &[IronwoodOutputSpec],
     anchor: &AnchorBytes,
-    rng: R,
+    mut rng: R,
 ) -> Result<(PcztBundle, IronwoodActionMap), IronwoodBuildError> {
-    construct_spend_pczt_multi(&[], outputs, anchor, rng)
+    if outputs.is_empty() {
+        return Err(IronwoodBuildError::EmptyBundle);
+    }
+    let anchor_root =
+        Option::from(Anchor::from_bytes(*anchor)).ok_or(IronwoodBuildError::BadAnchor)?;
+    let bundle_version = BundleVersion::ironwood_v3();
+    let mut builder = Builder::new(
+        BundleType::UNPADDED,
+        bundle_version,
+        bundle_version.default_flags(),
+        anchor_root,
+    )
+    .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
+    for (output_index, spec) in outputs.iter().enumerate() {
+        if spec.amount == 0 {
+            return Err(IronwoodBuildError::ZeroValueOutput { output_index });
+        }
+        let recipient = Option::from(Address::from_raw_address_bytes(&spec.recipient))
+            .ok_or(IronwoodBuildError::BadRecipient)?;
+        builder
+            .add_output(
+                spec.ovk.map(OutgoingViewingKey::from),
+                recipient,
+                NoteValue::from_raw(spec.amount),
+                spec.memo,
+            )
+            .map_err(|e| IronwoodBuildError::Output(e.to_string()))?;
+    }
+    let (bundle, meta) = builder
+        .build_for_pczt(&mut rng)
+        .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
+    let action_map = IronwoodActionMap::from_parts(
+        Vec::new(),
+        (0..outputs.len())
+            .map(|i| {
+                meta.output_action_index(i)
+                    .ok_or(IronwoodBuildError::ActionIndexOutOfRange)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    verify_spend_pczt(&bundle)?;
+    validate_constructed_out_ciphertexts(
+        &bundle,
+        outputs,
+        action_map.output_action_indices(),
+        None,
+        &mut rng,
+    )?;
+    Ok((bundle, action_map))
 }
 
 /// The parsed-and-validated values one real spend contributes to the builder.
+#[cfg(any(test, feature = "orchard-proving"))]
 struct ParsedSpend {
     fvk: FullViewingKey,
     note: Note,
@@ -745,6 +882,7 @@ struct ParsedSpend {
 ///   ([`IronwoodBuildError::InvalidNote`]) and must commit to exactly `spec.cmx`
 ///   ([`IronwoodBuildError::NoteCommitmentMismatch`]);
 /// - the witness must recompute to the bundle's anchor (the `build_ironwood_witness` errors).
+#[cfg(any(test, feature = "orchard-proving"))]
 fn parse_spend_spec(
     spec: &IronwoodSpendSpec,
     anchor: &AnchorBytes,
@@ -790,6 +928,7 @@ fn parse_spend_spec(
 /// (the only place a built PCZT's `alpha`/`rk` are writable): clear `alpha`, install the spend's
 /// `ak` as a valid placeholder `rk`, and mark it for later signer replacement. Dummy spends are
 /// untouched: their stored `alpha`/`dummy_sk` are what the IO Finalizer signs with.
+#[cfg(any(test, feature = "orchard-proving"))]
 fn scrub_spend_randomizers(
     bundle: &PcztBundle,
     spend_indices: &[usize],

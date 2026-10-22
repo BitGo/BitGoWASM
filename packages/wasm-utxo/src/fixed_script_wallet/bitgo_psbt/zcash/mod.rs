@@ -12,14 +12,17 @@ pub use crate::zcash::transaction::{
     decode_zcash_transaction_meta, ZcashTransactionMeta, ZCASH_SAPLING_VERSION_GROUP_ID,
 };
 
+pub(crate) mod error;
 pub(crate) mod ironwood;
+pub(crate) mod ironwood_spend;
 pub(crate) mod parse;
 pub(crate) mod propkv;
 pub(crate) mod v6;
 
-pub use ironwood::{
-    IronwoodBundleInfo, IronwoodOutputRequest, IronwoodSpendInfo, IronwoodSpendRequest,
-};
+pub use error::IronwoodPsbtError;
+#[cfg(any(test, feature = "orchard-proving"))]
+pub use ironwood::IronwoodSpendRequest;
+pub use ironwood::{IronwoodBundleInfo, IronwoodOutputRequest, IronwoodSpendInfo};
 pub use v6::VerifyV6SignatureError;
 
 use super::{psbt_wallet_input, BitGoPsbt, DeserializeError};

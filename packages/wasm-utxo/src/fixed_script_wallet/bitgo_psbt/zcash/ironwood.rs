@@ -40,6 +40,10 @@ pub struct IronwoodOutputRequest {
 /// (to check note ownership and derive the nullifier) and omitted from the serialized PCZT; its
 /// `ak` is used as the placeholder `rk` until the signer delivers the randomized one
 /// (see [`ZcashBitGoPsbt::replace_ironwood_spend_rk`]).
+///
+/// Oracle-only: production spends go through
+/// [`crate::zcash::ironwood_construct::IronwoodKeylessSpendSpec`] (plan PR 5).
+#[cfg(any(test, feature = "orchard-proving"))]
 #[derive(Clone)]
 pub struct IronwoodSpendRequest {
     /// Raw full viewing key, 96 bytes: `ak ‖ nk ‖ rivk` (orchard's `FullViewingKey::to_bytes`
@@ -151,7 +155,7 @@ impl ZcashBitGoPsbt {
         if requests.is_empty() {
             return Err("at least one Ironwood output is required".to_string());
         }
-        let action_map = self.add_ironwood_actions(&[], requests, anchor, rng)?;
+        let action_map = self.add_ironwood_output_actions(requests, anchor, rng)?;
         Ok(action_map.output_action_indices().to_vec())
     }
 
@@ -183,6 +187,82 @@ impl ZcashBitGoPsbt {
         Ok(output_indices[0])
     }
 
+    /// The outputs-only Constructor + store path behind [`Self::add_ironwood_outputs`]: build
+    /// the shielded outputs as a single keyless orchard PCZT (the shielding flow — no real
+    /// spends, no FVK) and store it with the per-output Unified Addresses.
+    fn add_ironwood_output_actions<R: rand::RngCore + rand::CryptoRng>(
+        &mut self,
+        outputs: &[IronwoodOutputRequest],
+        anchor: &crate::zcash::ironwood_build::AnchorBytes,
+        rng: R,
+    ) -> Result<crate::zcash::ironwood_build::IronwoodActionMap, String> {
+        use crate::zcash::ironwood_build;
+
+        if super::propkv::get_ironwood_pczt(&self.psbt).is_some() {
+            return Err(
+                "an Ironwood PCZT is already present; only one call is supported".to_string(),
+            );
+        }
+        for req in outputs {
+            if let Some(ua) = &req.unified_address {
+                self.check_unified_address_matches_recipient(ua, &req.recipient)?;
+            }
+        }
+        let output_specs: Vec<ironwood_build::IronwoodOutputSpec> = outputs
+            .iter()
+            .map(|req| ironwood_build::IronwoodOutputSpec {
+                recipient: req.recipient,
+                amount: req.amount,
+                ovk: req.ovk,
+                memo: req.memo,
+            })
+            .collect();
+        let (pczt, action_map) =
+            ironwood_build::construct_shield_pczt_multi(&output_specs, anchor, rng)
+                .map_err(|e| e.to_string())?;
+        self.store_ironwood_pczt_and_unified_addresses(pczt, action_map, outputs)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The shared Constructor tail: serialize the constructed PCZT, store it, and install the
+    /// per-output Unified Addresses keyed by action index (clearing any stale ones first —
+    /// see [`super::propkv::clear_ironwood_unified_addresses`]).
+    pub(crate) fn store_ironwood_pczt_and_unified_addresses(
+        &mut self,
+        pczt: orchard::pczt::Bundle,
+        action_map: crate::zcash::ironwood_build::IronwoodActionMap,
+        outputs: &[IronwoodOutputRequest],
+    ) -> Result<crate::zcash::ironwood_build::IronwoodActionMap, super::error::IronwoodPsbtError>
+    {
+        use crate::zcash::ironwood_pczt;
+
+        // Everything fallible happens before the first write, so a failure leaves the PSBT
+        // untouched.
+        let bytes = ironwood_pczt::serialize_pczt(&pczt)?;
+        let unified_addresses = outputs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, req)| req.unified_address.as_ref().map(|ua| (i, ua)))
+            .map(|(i, ua)| {
+                action_map
+                    .output_action_index(i)
+                    .map(|action_index| (action_index, ua))
+                    .ok_or(crate::zcash::ironwood_build::IronwoodBuildError::ActionIndexOutOfRange)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        super::propkv::set_ironwood_pczt(&mut self.psbt, bytes);
+        // Clear any UAs left over from a previous batch (this can run again on a PSBT whose PCZT
+        // was previously extracted — mark_ironwood_extracted/take_ironwood_pczt drop only the
+        // PCZT key, not these) before writing the new batch's, so a since-gone action index's
+        // stale UA can never be silently misattributed to a different recipient in the new bundle.
+        super::propkv::clear_ironwood_unified_addresses(&mut self.psbt);
+        for (action_index, ua) in unified_addresses {
+            super::propkv::set_ironwood_unified_address(&mut self.psbt, action_index, ua);
+        }
+        Ok(action_map)
+    }
+
     /// Constructor role: build an orchard PCZT from real Ironwood spends and/or requested shielded
     /// outputs, and store it in the PSBT — the general form of [`Self::add_ironwood_outputs`],
     /// covering unshielding (spends only), shielded-to-shielded transfer, and shielding (outputs
@@ -200,6 +280,11 @@ impl ZcashBitGoPsbt {
     /// equal action order.
     ///
     /// Real spends leave the placeholder `rk` (= the spend's `ak`) in the stored PCZT.
+    ///
+    /// Oracle-only (plan PR 5): production spends go through
+    /// [`Self::add_shielded_spends`], the keyless Constructor. This keyed path needs the FVK
+    /// on the PSBT side and is compiled only under `test` / `orchard-proving`.
+    #[cfg(any(test, feature = "orchard-proving"))]
     pub fn add_ironwood_actions<R: rand::RngCore + rand::CryptoRng>(
         &mut self,
         spends: &[IronwoodSpendRequest],
@@ -207,7 +292,7 @@ impl ZcashBitGoPsbt {
         anchor: &crate::zcash::ironwood_build::AnchorBytes,
         rng: R,
     ) -> Result<crate::zcash::ironwood_build::IronwoodActionMap, String> {
-        use crate::zcash::{ironwood_build, ironwood_pczt};
+        use crate::zcash::ironwood_build;
 
         if super::propkv::get_ironwood_pczt(&self.psbt).is_some() {
             return Err(
@@ -257,27 +342,13 @@ impl ZcashBitGoPsbt {
         let (pczt, action_map) =
             ironwood_build::construct_spend_pczt_multi(&spend_specs, &output_specs, anchor, rng)
                 .map_err(|e| e.to_string())?;
-        let bytes = ironwood_pczt::serialize_pczt(&pczt).map_err(|e| e.to_string())?;
-        super::propkv::set_ironwood_pczt(&mut self.psbt, bytes);
-        // Clear any UAs left over from a previous batch (this can run again on a PSBT whose PCZT
-        // was previously extracted — mark_ironwood_extracted/take_ironwood_pczt drop only the
-        // PCZT key, not these) before writing the new batch's, so a since-gone action index's
-        // stale UA can never be silently misattributed to a different recipient in the new bundle.
-        super::propkv::clear_ironwood_unified_addresses(&mut self.psbt);
-        for (i, req) in outputs.iter().enumerate() {
-            if let Some(ua) = &req.unified_address {
-                let action_index = action_map
-                    .output_action_index(i)
-                    .ok_or_else(|| format!("output {i}: no action index"))?;
-                super::propkv::set_ironwood_unified_address(&mut self.psbt, action_index, ua);
-            }
-        }
-        Ok(action_map)
+        self.store_ironwood_pczt_and_unified_addresses(pczt, action_map, outputs)
+            .map_err(|e| e.to_string())
     }
 
     /// Reject a caller-supplied Unified Address whose Orchard receiver is not exactly `recipient`:
     /// it is stored verbatim and later returned by output parsing in place of `recipient`.
-    fn check_unified_address_matches_recipient(
+    pub(crate) fn check_unified_address_matches_recipient(
         &self,
         ua: &str,
         recipient: &crate::zcash::ironwood_build::OrchardAddressBytes,
@@ -301,6 +372,9 @@ impl ZcashBitGoPsbt {
     /// Constructor role: build real Ironwood spends (no shielded outputs) as an orchard PCZT and
     /// store it in the PSBT. A thin wrapper over [`Self::add_ironwood_actions`]; see it for the
     /// general contract, including the "only one call per PSBT" rule.
+    ///
+    /// Oracle-only: see [`Self::add_ironwood_actions`].
+    #[cfg(any(test, feature = "orchard-proving"))]
     pub fn add_ironwood_spends<R: rand::RngCore + rand::CryptoRng>(
         &mut self,
         requests: &[IronwoodSpendRequest],

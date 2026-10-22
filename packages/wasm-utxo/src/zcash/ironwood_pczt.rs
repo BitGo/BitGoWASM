@@ -97,60 +97,61 @@ crate::impl_wasm_error_code!(IronwoodPcztError);
 // ---- Mirror structs (serde ⇄ postcard) ----
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-struct BundleWire {
-    flags: u8,
-    value_pool: u8,       // 0 = Orchard, 1 = Ironwood
-    protocol_version: u8, // 0 = InsecureV1, 1 = V2, 2 = V3
-    value_sum_magnitude: u64,
-    value_sum_negative: bool,
-    anchor: [u8; 32],
-    zkproof: Option<Vec<u8>>,
-    bsk: Option<[u8; 32]>,
-    actions: Vec<ActionWire>,
+pub(crate) struct BundleWire {
+    pub(crate) flags: u8,
+    pub(crate) value_pool: u8,       // 0 = Orchard, 1 = Ironwood
+    pub(crate) protocol_version: u8, // 0 = InsecureV1, 1 = V2, 2 = V3
+    pub(crate) value_sum_magnitude: u64,
+    pub(crate) value_sum_negative: bool,
+    pub(crate) anchor: [u8; 32],
+    pub(crate) zkproof: Option<Vec<u8>>,
+    pub(crate) bsk: Option<[u8; 32]>,
+    pub(crate) actions: Vec<ActionWire>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-struct ActionWire {
-    cv_net: [u8; 32],
-    rcv: Option<[u8; 32]>,
-    spend: SpendWire,
-    output: OutputWire,
+pub(crate) struct ActionWire {
+    pub(crate) cv_net: [u8; 32],
+    pub(crate) rcv: Option<[u8; 32]>,
+    pub(crate) spend: SpendWire,
+    pub(crate) output: OutputWire,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-struct SpendWire {
-    nullifier: [u8; 32],
-    rk: [u8; 32],
-    spend_auth_sig: Option<Vec<u8>>, // 64
-    recipient: Option<Vec<u8>>,      // 43
-    value: Option<u64>,
-    rho: Option<[u8; 32]>,
-    rseed: Option<[u8; 32]>,
-    fvk: Option<Vec<u8>>, // 96 — None for real spends; dummy spends carry their fabricating fvk
-    witness: Option<WitnessWire>,
-    alpha: Option<[u8; 32]>,
-    dummy_sk: Option<[u8; 32]>,
-    proprietary: BTreeMap<String, Vec<u8>>,
+pub(crate) struct SpendWire {
+    pub(crate) nullifier: [u8; 32],
+    pub(crate) rk: [u8; 32],
+    pub(crate) spend_auth_sig: Option<Vec<u8>>, // 64
+    pub(crate) recipient: Option<Vec<u8>>,      // 43
+    pub(crate) value: Option<u64>,
+    pub(crate) rho: Option<[u8; 32]>,
+    pub(crate) rseed: Option<[u8; 32]>,
+    /// 96 bytes — `None` for real spends; dummy spends carry their fabricating fvk
+    pub(crate) fvk: Option<Vec<u8>>,
+    pub(crate) witness: Option<WitnessWire>,
+    pub(crate) alpha: Option<[u8; 32]>,
+    pub(crate) dummy_sk: Option<[u8; 32]>,
+    pub(crate) proprietary: BTreeMap<String, Vec<u8>>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-struct WitnessWire {
-    position: u32,
-    auth_path: Vec<[u8; 32]>,
+pub(crate) struct WitnessWire {
+    pub(crate) position: u32,
+    pub(crate) auth_path: Vec<[u8; 32]>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-struct OutputWire {
-    cmx: [u8; 32],
-    ephemeral_key: [u8; 32],
-    enc_ciphertext: Vec<u8>, // 580
-    out_ciphertext: Vec<u8>, // 80
-    recipient: Option<Vec<u8>>,
-    value: Option<u64>,
-    rseed: Option<[u8; 32]>,
-    ock: Option<[u8; 32]>,
-    user_address: Option<String>,
-    proprietary: BTreeMap<String, Vec<u8>>,
+pub(crate) struct OutputWire {
+    pub(crate) cmx: [u8; 32],
+    pub(crate) ephemeral_key: [u8; 32],
+    pub(crate) enc_ciphertext: Vec<u8>, // 580
+    pub(crate) out_ciphertext: Vec<u8>, // 80
+    pub(crate) recipient: Option<Vec<u8>>,
+    pub(crate) value: Option<u64>,
+    pub(crate) rseed: Option<[u8; 32]>,
+    pub(crate) ock: Option<[u8; 32]>,
+    pub(crate) user_address: Option<String>,
+    pub(crate) proprietary: BTreeMap<String, Vec<u8>>,
 }
 
 // ---- Public API ----
@@ -233,6 +234,10 @@ pub fn with_spend_rk(
 }
 
 /// Set the constructor placeholder `rk` and mark it as requiring signer replacement.
+///
+/// Oracle-only: the keyed Constructor's scrub is the only caller, and it exists only under
+/// `test` / `orchard-proving` (plan PR 7 deletes this marker entirely).
+#[cfg(any(test, feature = "orchard-proving"))]
 pub(crate) fn with_placeholder_spend_rk(
     bytes: &[u8],
     action_index: usize,
@@ -772,6 +777,22 @@ fn wire_to_output(
         o.proprietary,
     )
     .map_err(|e| IronwoodPcztError::Parse(format!("{e:?}")))
+}
+
+/// Assemble a bundle from wire-form actions — the keyless spend constructor's assembly
+/// path (plan §4): it builds its own actions plus the dummy-spend actions an outputs-only
+/// [`Builder`](orchard::builder::Builder) fabricated, then re-parses the whole set through
+/// the same validation a serialized PCZT takes ([`wire_to_bundle`], including the
+/// duplicate-nullifier guard).
+pub(crate) fn bundle_from_wire(wire: BundleWire) -> Result<PcztBundle, IronwoodPcztError> {
+    wire_to_bundle(wire)
+}
+
+/// The wire-form actions of an already-constructed bundle — how the keyless spend
+/// constructor moves an outputs-only builder bundle's dummy-spend actions into the combined
+/// bundle without rebuilding them.
+pub(crate) fn bundle_actions_to_wire(bundle: &PcztBundle) -> Vec<ActionWire> {
+    bundle_to_wire(bundle).actions
 }
 
 #[cfg(test)]
