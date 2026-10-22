@@ -42,6 +42,8 @@ macro_rules! js_arr {
     }};
 }
 
+pub(crate) use js_obj;
+
 impl From<WasmUtxoError> for JsValue {
     fn from(err: WasmUtxoError) -> Self {
         let code = err.code();
@@ -152,6 +154,12 @@ impl TryIntoJsValue for u32 {
 }
 
 impl TryIntoJsValue for u64 {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        Ok(js_sys::BigInt::from(*self).into())
+    }
+}
+
+impl TryIntoJsValue for i64 {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
         Ok(js_sys::BigInt::from(*self).into())
     }
@@ -398,7 +406,6 @@ impl TryIntoJsValue for crate::fixed_script_wallet::bitgo_psbt::ParsedOutput {
             "scriptId" => self.script_id,
             "paygo" => self.paygo,
             "derivationPath" => self.derivation_path.clone(),
-            ? "isShielded" => self.is_shielded
         )
     }
 }

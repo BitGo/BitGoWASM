@@ -24,6 +24,7 @@ macro_rules! impl_wasm_error_code {
 pub enum WasmUtxoError {
     StringError(String),
     Parse(ParseTransactionError),
+    ZcashParse(crate::fixed_script_wallet::bitgo_psbt::zcash::parse::ZcashParseTransactionError),
     UnifiedAddress(crate::zcash::unified_address::UnifiedAddressError),
     ZcashV6(crate::zcash::v6::ZcashV6Error),
     Ironwood(crate::zcash::ironwood_build::IronwoodBuildError),
@@ -39,6 +40,7 @@ impl fmt::Display for WasmUtxoError {
         match self {
             WasmUtxoError::StringError(s) => write!(f, "{}", s),
             WasmUtxoError::Parse(e) => write!(f, "{}", e),
+            WasmUtxoError::ZcashParse(e) => write!(f, "{}", e),
             WasmUtxoError::UnifiedAddress(e) => write!(f, "{}", e),
             WasmUtxoError::ZcashV6(e) => write!(f, "{}", e),
             WasmUtxoError::Ironwood(e) => write!(f, "{}", e),
@@ -54,6 +56,7 @@ impl WasmErrorCode for WasmUtxoError {
         match self {
             WasmUtxoError::StringError(_) => "WasmUtxoError.StringError".to_string(),
             WasmUtxoError::Parse(e) => e.code(),
+            WasmUtxoError::ZcashParse(e) => e.code(),
             WasmUtxoError::UnifiedAddress(e) => e.code(),
             WasmUtxoError::ZcashV6(e) => e.code(),
             WasmUtxoError::Ironwood(e) => e.code(),
@@ -97,6 +100,16 @@ impl From<crate::address::AddressError> for WasmUtxoError {
 impl From<ParseTransactionError> for WasmUtxoError {
     fn from(err: ParseTransactionError) -> Self {
         WasmUtxoError::Parse(err)
+    }
+}
+
+impl From<crate::fixed_script_wallet::bitgo_psbt::zcash::parse::ZcashParseTransactionError>
+    for WasmUtxoError
+{
+    fn from(
+        err: crate::fixed_script_wallet::bitgo_psbt::zcash::parse::ZcashParseTransactionError,
+    ) -> Self {
+        WasmUtxoError::ZcashParse(err)
     }
 }
 

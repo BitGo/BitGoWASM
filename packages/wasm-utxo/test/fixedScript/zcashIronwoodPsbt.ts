@@ -7,6 +7,8 @@ import { describe, it } from "mocha";
 import {
   ZcashIronwoodBitGoPsbt,
   zip302NoMemo,
+  type ZcashIronwoodParsedOutput,
+  type ZcashIronwoodParsedTransaction,
 } from "../../js/fixedScriptWallet/ZcashIronwoodBitGoPsbt.js";
 import {
   IRONWOOD_VERSION_GROUP_ID,
@@ -192,6 +194,54 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
       assert.strictEqual(parsed.minerFee, 100_000n);
       // The shielded note counts as an external spend, same as any other non-wallet output.
       assert.strictEqual(parsed.spendAmount, 100_000_000n);
+    });
+
+    // The Ironwood parse adds `inputKind`/`shieldedSpends`/`valueBalance` at the top level,
+    // `isShielded: false` on every transparent input and `actionIndex` on every output.
+    it("returns the Ironwood parse shape for a shielding PSBT", function () {
+      const psbt = buildShieldPsbt();
+      const parsed: ZcashIronwoodParsedTransaction = psbt.parseTransactionWithWalletKeys(
+        walletKeys,
+        { replayProtection: { publicKeys: [] } },
+      );
+
+      assert.strictEqual(parsed.inputKind, "transparent");
+      assert.deepStrictEqual(parsed.shieldedSpends, []);
+      // Shielding moves 1 ZEC into the pool: Σv_spend (0) − Σv_out (1 ZEC).
+      assert.strictEqual(parsed.valueBalance, -100_000_000n);
+      assert.strictEqual(parsed.inputs.length, 1);
+      assert.strictEqual(parsed.inputs[0].isShielded, false);
+
+      const shielded = parsed.outputs.filter((o) => o.isShielded);
+      assert.strictEqual(shielded.length, 1);
+      assert.strictEqual(typeof shielded[0].actionIndex, "number");
+      const transparent = parsed.outputs.filter((o) => !o.isShielded);
+      assert.ok(transparent.every((o) => o.actionIndex === null));
+
+      const outputs: ZcashIronwoodParsedOutput[] = psbt.parseOutputsWithWalletKeys(walletKeys);
+      assert.deepStrictEqual(
+        outputs.map((o) => o.actionIndex),
+        parsed.outputs.map((o) => o.actionIndex),
+      );
+    });
+
+    it("reports a zero value balance for a v6 PSBT with no shielded output yet", function () {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
+        blockHeight: NU6_3_TESTNET_HEIGHT,
+      });
+      psbt.addWalletInput({ txid: "11".repeat(32), vout: 0, value: 200_000_000n }, walletKeys, {
+        scriptId: SCRIPT_ID,
+        signPath: { signer: "user", cosigner: "bitgo" },
+      });
+      psbt.addWalletOutput(walletKeys, { chain: 1, index: 0, value: 199_900_000n });
+
+      const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, {
+        replayProtection: { publicKeys: [] },
+      });
+      assert.strictEqual(parsed.inputKind, "transparent");
+      assert.deepStrictEqual(parsed.shieldedSpends, []);
+      assert.strictEqual(parsed.valueBalance, 0n);
+      assert.strictEqual(parsed.outputs[0].actionIndex, null);
     });
 
     // The shielding flow is funded by transparent inputs, so it keeps the transparent-skeleton

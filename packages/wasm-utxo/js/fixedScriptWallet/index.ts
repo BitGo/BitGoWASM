@@ -43,6 +43,7 @@ export { BitGoKeySubtype, type PsbtKvKey } from "./BitGoKeySubtype.js";
 export {
   ZcashBitGoPsbt,
   type ZcashNetworkName,
+  type ZcashParsedInput,
   type ZcashParsedOutput,
   type ZcashTransactionVersion,
   type CreateEmptyZcashOptions,
@@ -53,9 +54,21 @@ export { ZcashPsbt, type ZcashPsbtInstance } from "./ZcashPsbt.js";
 export {
   ZcashIronwoodBitGoPsbt,
   zip302NoMemo,
+  type ZcashIronwoodParsedOutput,
+  type ZcashIronwoodParsedTransaction,
   type CreateEmptyIronwoodOptions,
   type CreateEmptyIronwoodWithConsensusBranchIdOptions,
 } from "./ZcashIronwoodBitGoPsbt.js";
+// Shared Zcash Ironwood (shielded-spend flow) types
+export type {
+  ZcashShieldedSpendRequest,
+  ZcashShieldedOutputRequest,
+  IronwoodRandomizerState,
+  ZcashInputKind,
+  ZcashShieldedSpend,
+  IronwoodVerificationReport,
+  IronwoodShieldedStatus,
+} from "./ZcashIronwoodTypes.js";
 
 // Zcash ZIP-316 Unified Address
 export { ZcashUnifiedAddress } from "./ZcashUnifiedAddress.js";

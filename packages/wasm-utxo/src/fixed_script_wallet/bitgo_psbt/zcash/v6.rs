@@ -876,7 +876,7 @@ pub(crate) fn new_bitgo_psbt_v6_at_height(
 /// The caller-supplied Unified Address for a transparent output, if `add_transparent_output`
 /// was given one for `output_index` — `None` for non-Zcash PSBTs or outputs without one.
 ///
-/// Mirrors `fold_shielded_outputs`'s treatment of `add_ironwood_output`'s UA: the
+/// Mirrors the Zcash parse's treatment of shielded outputs' stored UAs: the
 /// caller-supplied UA, not a bare address reconstructed from the scriptPubKey alone, is
 /// what a client actually pasted in.
 pub(crate) fn transparent_output_address_override(

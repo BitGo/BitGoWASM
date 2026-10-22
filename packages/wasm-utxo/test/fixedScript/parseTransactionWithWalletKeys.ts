@@ -196,6 +196,33 @@ describe("parseTransactionWithWalletKeys", function () {
               }
             });
 
+            // The Zcash parse is additive over the generic shape: transparent inputs gain
+            // `isShielded: false` and outputs gain `actionIndex: null`, while the Ironwood
+            // top-level fields stay v6-only.
+            if (networkName === "zec") {
+              parsed.inputs.forEach((input, i) => {
+                assert.strictEqual(
+                  (input as { isShielded?: boolean }).isShielded,
+                  false,
+                  `Input ${i} isShielded should be false for a transparent Zcash input`,
+                );
+              });
+              parsed.outputs.forEach((output, i) => {
+                assert.strictEqual(
+                  (output as { actionIndex?: number | null }).actionIndex,
+                  null,
+                  `Output ${i} actionIndex should be null for a transparent Zcash output`,
+                );
+              });
+              for (const key of ["inputKind", "shieldedSpends", "valueBalance"]) {
+                assert.ok(!(key in parsed), `a v4 Zcash parse should not expose ${key}`);
+              }
+            } else {
+              parsed.inputs.forEach((input, i) => {
+                assert.ok(!("isShielded" in input), `Input ${i} should not expose isShielded`);
+              });
+            }
+
             // Verify spend amount: AcidTest uses other wallet (800) + null wallet (700) = 1500
             // Taproot-only coins (e.g. Pearl) have no legacy outputs so spend amount is 0
             assert.strictEqual(

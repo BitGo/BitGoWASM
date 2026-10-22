@@ -13,11 +13,17 @@ use super::fee_policy_from_js;
 use super::parse_network;
 use super::BitGoPsbt;
 use crate::error::WasmUtxoError;
+use crate::fixed_script_wallet::bitgo_psbt::zcash::parse::{
+    ZcashParsedInput, ZcashParsedInputs, ZcashParsedOutput, ZcashParsedTransaction,
+    ZcashShieldedSpend,
+};
 use crate::fixed_script_wallet::bitgo_psbt::zcash::IronwoodOutputRequest;
 use crate::wasm::bip32::WasmBIP32;
 use crate::wasm::ecpair::WasmECPair;
 use crate::wasm::try_from_js_value::Bytes;
 use crate::wasm::try_from_js_value::TryFromJsValue;
+use crate::wasm::try_into_js_value::js_obj;
+use crate::wasm::try_into_js_value::TryIntoJsValue;
 use crate::wasm::wallet_keys::WasmRootWalletKeys;
 use crate::zcash::ironwood_build::{
     AnchorBytes, MemoBytes, OrchardAddressBytes, OvkBytes, ANCHOR_SIZE, MEMO_SIZE,
@@ -688,5 +694,113 @@ impl TryFromJsValue for IronwoodOutputRequest {
             memo,
             unified_address,
         })
+    }
+}
+
+/// The Zcash parse, exposed to JS: a Zcash PSBT always routes here (the generic parse
+/// refuses to drop the shielded side), so the returned object carries the additive
+/// `inputKind` / `shieldedSpends` / `valueBalance` fields.
+pub(crate) fn parse_transaction_with_wallet_keys(
+    psbt: &crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt,
+    wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+    replay_protection: &crate::fixed_script_wallet::ReplayProtection,
+    paygo_pubkeys: &[miniscript::bitcoin::secp256k1::PublicKey],
+) -> Result<JsValue, WasmUtxoError> {
+    crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_transaction_with_wallet_keys(
+        psbt,
+        wallet_keys,
+        replay_protection,
+        paygo_pubkeys,
+    )?
+    .try_to_js_value()
+}
+
+/// The Zcash outputs parse, exposed to JS (see [`parse_transaction_with_wallet_keys`]).
+pub(crate) fn parse_outputs_with_wallet_keys(
+    psbt: &crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt,
+    wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+    paygo_pubkeys: &[miniscript::bitcoin::secp256k1::PublicKey],
+) -> Result<JsValue, WasmUtxoError> {
+    crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_outputs_with_wallet_keys(
+        psbt,
+        wallet_keys,
+        paygo_pubkeys,
+    )?
+    .try_to_js_value()
+}
+
+impl TryIntoJsValue for ZcashParsedInput {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        // Same shape as the generic input, plus the additive `isShielded: false`.
+        let obj = self.base.try_to_js_value()?;
+        js_sys::Reflect::set(&obj, &"isShielded".into(), &JsValue::FALSE)
+            .map_err(|_| WasmUtxoError::new("Failed to set object property"))?;
+        Ok(obj)
+    }
+}
+
+impl TryIntoJsValue for ZcashParsedOutput {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        // Same shape as the generic output, plus the always-present `isShielded` and the
+        // action index for shielded outputs (`null` for transparent ones).
+        let obj = self.base.try_to_js_value()?;
+        js_sys::Reflect::set(
+            &obj,
+            &"isShielded".into(),
+            &self.is_shielded.try_to_js_value()?,
+        )
+        .map_err(|_| WasmUtxoError::new("Failed to set object property"))?;
+        let action_index = match self.action_index {
+            Some(index) => JsValue::from_f64(index as f64),
+            None => JsValue::NULL,
+        };
+        js_sys::Reflect::set(&obj, &"actionIndex".into(), &action_index)
+            .map_err(|_| WasmUtxoError::new("Failed to set object property"))?;
+        Ok(obj)
+    }
+}
+
+impl TryIntoJsValue for ZcashShieldedSpend {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        // Until plan PR 7 derives the state from `alpha`, `installed` means the signer
+        // replaced the Constructor's placeholder `rk` (= the wallet `ak`).
+        let randomizer = if self.rk_replaced {
+            "installed"
+        } else {
+            "placeholder"
+        };
+        js_obj!(
+            "actionIndex" => self.action_index,
+            "value" => self.value,
+            "recipient" => self.recipient.to_vec(),
+            "nullifier" => self.nullifier.to_vec(),
+            "randomizer" => randomizer.to_string(),
+            "signed" => self.signed,
+        )
+    }
+}
+
+impl TryIntoJsValue for ZcashParsedTransaction {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        let (input_kind, inputs, shielded_spends): (
+            &str,
+            Vec<ZcashParsedInput>,
+            Vec<ZcashShieldedSpend>,
+        ) = match &self.inputs {
+            ZcashParsedInputs::Transparent(inputs) => ("transparent", inputs.clone(), Vec::new()),
+            ZcashParsedInputs::Shielded(spends) => ("shielded", Vec::new(), spends.clone()),
+        };
+        // The Ironwood fields are additive and v6-only: a v4 parse keeps its existing shape.
+        let ironwood = self.is_ironwood_v6;
+        js_obj!(
+            "inputs" => inputs,
+            "outputs" => self.outputs.clone(),
+            "spendAmount" => self.spend_amount,
+            "minerFee" => self.miner_fee,
+            "virtualSize" => self.virtual_size,
+            ? "inputKind" => ironwood.then(|| input_kind.to_string()),
+            ? "shieldedSpends" => ironwood.then_some(shielded_spends),
+            ? "valueBalance" => ironwood.then_some(self.value_balance)
+        )
     }
 }

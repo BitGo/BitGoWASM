@@ -6,7 +6,15 @@ import {
   IRONWOOD_VERSION_GROUP_ID,
   ZcashBitGoPsbt,
   type ZcashNetworkName,
+  type ZcashParsedInput,
+  type ZcashParsedOutput,
 } from "./ZcashBitGoPsbt.js";
+import {
+  type ParsedTransaction,
+  type ParseOutputsOptions,
+  type ParseTransactionOptions,
+} from "./BitGoPsbt.js";
+import { type ZcashShieldedSpend } from "./ZcashIronwoodTypes.js";
 
 /**
  * Options for creating an empty Zcash v6 (Ironwood) shielding PSBT.
@@ -58,6 +66,33 @@ export function zip302NoMemo(): Uint8Array {
 }
 
 /**
+ * The parsed shape of a Zcash output through the Ironwood parse: the Zcash output shape plus
+ * the PCZT action index (`null` for transparent outputs).
+ */
+export type ZcashIronwoodParsedOutput = ZcashParsedOutput & {
+  actionIndex: number | null;
+};
+
+/**
+ * The parsed shape of a v6 (Ironwood) transaction. A discriminated union on `inputKind`:
+ * a shielded-input PSBT has no transparent inputs at all, and a transparent-input PSBT has
+ * no shielded spends. `valueBalance` is the orchard bundle's value balance (Σv_spend −
+ * Σv_out), `0` when there is no bundle.
+ */
+export type ZcashIronwoodParsedTransaction =
+  | (IronwoodParsedBase & { inputKind: "transparent"; shieldedSpends: [] })
+  | (IronwoodParsedBase & {
+      inputKind: "shielded";
+      inputs: [];
+      shieldedSpends: ZcashShieldedSpend[];
+    });
+
+/** The parse fields shared by both `inputKind` arms. */
+type IronwoodParsedBase = ParsedTransaction<ZcashIronwoodParsedOutput, ZcashParsedInput> & {
+  valueBalance: bigint;
+};
+
+/**
  * A Zcash **v6 (Ironwood / NU6.3)** shielding PSBT.
  *
  * Distinct from the generic `ZcashBitGoPsbt` (v4/Sapling-shaped transactions): a v6 PSBT carries
@@ -82,7 +117,37 @@ export function zip302NoMemo(): Uint8Array {
  * const tx = psbt.combineProof(proof);
  * ```
  */
-export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt {
+export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
+  ZcashIronwoodParsedOutput,
+  ZcashParsedInput
+> {
+  /**
+   * Parse the transaction through the Zcash parse, which surfaces the shielded side the
+   * generic parse refuses to drop: per-action output indices, the shielded spends, and the
+   * bundle's value balance. The plaintext spend info is unverified until the key-free
+   * verifier lands (plan PR 4).
+   */
+  override parseTransactionWithWalletKeys(
+    walletKeys: WalletKeysArg,
+    options: ParseTransactionOptions,
+  ): ZcashIronwoodParsedTransaction {
+    return super.parseTransactionWithWalletKeys(
+      walletKeys,
+      options,
+    ) as ZcashIronwoodParsedTransaction;
+  }
+
+  /**
+   * Parse outputs through the Zcash parse: every output carries `isShielded` and, for
+   * shielded outputs, its `actionIndex`.
+   */
+  override parseOutputsWithWalletKeys(
+    walletKeys: WalletKeysArg,
+    options?: ParseOutputsOptions,
+  ): ZcashIronwoodParsedOutput[] {
+    return super.parseOutputsWithWalletKeys(walletKeys, options);
+  }
+
   /**
    * Create an empty Zcash **v6 (Ironwood)** shielding PSBT, with the consensus branch ID
    * determined from block height.

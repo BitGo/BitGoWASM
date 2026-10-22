@@ -156,10 +156,10 @@ pub enum ParseTransactionError {
     SpendAmountOverflow { index: usize },
     /// Fee calculation error (outputs exceed inputs)
     FeeCalculation,
-    /// Failed to read the shielded (Ironwood) output's value
-    ShieldedOutput(String),
-    /// Failed to read the shielded (Ironwood) spends' values, or their total overflowed
-    ShieldedSpend(String),
+    /// A Zcash PSBT carrying shielded (Ironwood) data must be parsed with the Zcash parse
+    /// ([`crate::fixed_script_wallet::bitgo_psbt::zcash::parse`]) — the generic parse
+    /// refuses rather than silently dropping the shielded side.
+    UseZcashParse,
 }
 
 impl std::fmt::Display for ParseTransactionError {
@@ -183,11 +183,11 @@ impl std::fmt::Display for ParseTransactionError {
             ParseTransactionError::FeeCalculation => {
                 write!(f, "Fee calculation error: outputs exceed inputs")
             }
-            ParseTransactionError::ShieldedOutput(error) => {
-                write!(f, "Shielded output: {}", error)
-            }
-            ParseTransactionError::ShieldedSpend(error) => {
-                write!(f, "Shielded spend: {}", error)
+            ParseTransactionError::UseZcashParse => {
+                write!(
+                    f,
+                    "this Zcash PSBT carries shielded data; use the Zcash parse"
+                )
             }
         }
     }
@@ -2550,7 +2550,7 @@ impl BitGoPsbt {
         Ok(())
     }
 
-    fn parse_inputs(
+    pub(crate) fn parse_inputs(
         &self,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
         replay_protection: &crate::fixed_script_wallet::ReplayProtection,
@@ -2592,7 +2592,7 @@ impl BitGoPsbt {
     /// # Note
     /// This method does NOT validate wallet inputs. It only parses outputs to identify
     /// which ones belong to the provided wallet keys.
-    fn parse_outputs(
+    pub(crate) fn parse_outputs(
         &self,
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
         paygo_pubkeys: &[secp256k1::PublicKey],
@@ -2618,7 +2618,7 @@ impl BitGoPsbt {
                     error,
                 })?;
                 // Prefer the caller's original Unified Address (if `add_transparent_output` was
-                // given one for this output): mirrors `shielded_outputs`'s treatment of
+                // given one for this output): mirrors the Zcash parse's treatment of
                 // `add_ironwood_output`'s UA — the caller-supplied UA, not a bare address
                 // reconstructed from the scriptPubKey alone, is what a client actually pasted in.
                 if let Some(ua) = zcash::v6::transparent_output_address_override(self, output_index)
@@ -2630,33 +2630,14 @@ impl BitGoPsbt {
             .collect()
     }
 
-    /// The synthesized `ParsedOutput` for every one of this PSBT's shielded (Ironwood) outputs,
-    /// paired with its value — empty if this isn't a v6 (Ironwood) PSBT, or it is but no shielded
-    /// output has been added yet. Shared by `parse_transaction_with_wallet_keys` (which also folds
-    /// each value into `miner_fee`/`spend_amount`) and `parse_outputs_with_wallet_keys` (which only
-    /// needs the output entries).
-    ///
-    /// The shielded outputs live in a proprietary-map PCZT rather than `unsigned_tx.output`, so
-    /// plain transparent-output parsing never sees them; this is how callers surface them
-    /// explicitly.
-    fn shielded_outputs(&self) -> Result<Vec<(ParsedOutput, u64)>, ParseTransactionError> {
-        zcash::ironwood::fold_shielded_outputs(self)
-    }
-
-    /// Total value (zatoshi) of this PSBT's real shielded (Ironwood) spends — `0` if this isn't a
-    /// v6 (Ironwood) PSBT, or no shielded spend has been added. Like the shielded outputs, the
-    /// spends live in the proprietary-map PCZT, invisible to transparent-input parsing, so
-    /// `parse_transaction_with_wallet_keys` folds this into its input total.
-    fn shielded_spend_total(&self) -> Result<u64, ParseTransactionError> {
-        zcash::ironwood::fold_shielded_spend_total(self)
-    }
-
     /// Calculate total input value from parsed inputs
     ///
     /// # Returns
     /// - `Ok(u64)` with total input value
     /// - `Err(ParseTransactionError)` if overflow occurs
-    fn sum_input_values(parsed_inputs: &[ParsedInput]) -> Result<u64, ParseTransactionError> {
+    pub(crate) fn sum_input_values(
+        parsed_inputs: &[ParsedInput],
+    ) -> Result<u64, ParseTransactionError> {
         parsed_inputs
             .iter()
             .enumerate()
@@ -2672,7 +2653,7 @@ impl BitGoPsbt {
     /// # Returns
     /// - `Ok((total_value, spend_amount))` with total output value and external spend amount
     /// - `Err(ParseTransactionError)` if overflow occurs
-    fn sum_output_values(
+    pub(crate) fn sum_output_values(
         tx_outputs: &[miniscript::bitcoin::TxOut],
         parsed_outputs: &[ParsedOutput],
     ) -> Result<(u64, u64), ParseTransactionError> {
@@ -3271,11 +3252,12 @@ impl BitGoPsbt {
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
         paygo_pubkeys: &[secp256k1::PublicKey],
     ) -> Result<Vec<ParsedOutput>, ParseTransactionError> {
-        let mut outputs = self.parse_outputs(wallet_keys, paygo_pubkeys)?;
-        for (output, _amount) in self.shielded_outputs()? {
-            outputs.push(output);
+        // A Zcash PSBT carrying Ironwood (shielded) data must go through the Zcash parse —
+        // the generic one would silently drop the shielded outputs.
+        if zcash::parse::carries_shielded_data(self) {
+            return Err(ParseTransactionError::UseZcashParse);
         }
-        Ok(outputs)
+        self.parse_outputs(wallet_keys, paygo_pubkeys)
     }
 
     /// Parse transaction with wallet keys to identify wallet inputs/outputs and calculate metrics
@@ -3294,40 +3276,21 @@ impl BitGoPsbt {
         replay_protection: &crate::fixed_script_wallet::ReplayProtection,
         paygo_pubkeys: &[secp256k1::PublicKey],
     ) -> Result<ParsedTransaction, ParseTransactionError> {
+        // A Zcash PSBT carrying Ironwood (shielded) data must go through the Zcash parse
+        // (`zcash::parse`) — the generic parse would silently drop the shielded side.
+        if zcash::parse::carries_shielded_data(self) {
+            return Err(ParseTransactionError::UseZcashParse);
+        }
         let psbt = self.psbt();
 
         // Parse inputs and outputs
         let parsed_inputs = self.parse_inputs(wallet_keys, replay_protection)?;
-        let mut parsed_outputs = self.parse_outputs(wallet_keys, paygo_pubkeys)?;
+        let parsed_outputs = self.parse_outputs(wallet_keys, paygo_pubkeys)?;
 
         // Calculate totals
-        // Shielded spends fund the transaction alongside the transparent inputs (unshielding /
-        // mixed transactions); without them `miner_fee` underflows.
-        let total_input_value = Self::sum_input_values(&parsed_inputs)?
-            .checked_add(self.shielded_spend_total()?)
-            .ok_or_else(|| {
-                ParseTransactionError::ShieldedSpend("total input value overflow".to_string())
-            })?;
-        let (mut total_output_value, mut spend_amount) =
+        let total_input_value = Self::sum_input_values(&parsed_inputs)?;
+        let (total_output_value, spend_amount) =
             Self::sum_output_values(&psbt.unsigned_tx.output, &parsed_outputs)?;
-
-        // Fold in the shielded outputs, if any: they're invisible to the transparent-only parsing
-        // above, so without this they silently vanish into `miner_fee` and `spend_amount`
-        // undercounts the send.
-        for (output, amount) in self.shielded_outputs()? {
-            let output_index = parsed_outputs.len();
-            parsed_outputs.push(output);
-            total_output_value = total_output_value.checked_add(amount).ok_or(
-                ParseTransactionError::OutputValueOverflow {
-                    index: output_index,
-                },
-            )?;
-            spend_amount = spend_amount.checked_add(amount).ok_or(
-                ParseTransactionError::SpendAmountOverflow {
-                    index: output_index,
-                },
-            )?;
-        }
 
         // Calculate miner fee
         let miner_fee = total_input_value
