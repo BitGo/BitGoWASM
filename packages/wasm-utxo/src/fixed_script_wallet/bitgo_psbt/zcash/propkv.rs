@@ -97,10 +97,6 @@ pub enum ZecV6KeySubtype {
     /// [`take_ironwood_pczt`], as two little-endian `u32`s. Written alongside `IronwoodExtracted`
     /// so ZIP-317 fee estimation still sees the bundle's actions once the PCZT itself is gone.
     IronwoodExtractedCounts = 0x07,
-    /// The wallet's spend-validating key (`ak`, 32 bytes) for the stored Ironwood bundle.
-    /// Written by `add_shielded_spends`; the keyless verifier reads it for the `Rk` check,
-    /// which runs only when the key is present.
-    IronwoodSpendValidatingKey = 0x08,
     /// A little-endian bitset over Ironwood action indices: bit `i` set means action `i`'s
     /// real output already carries its final `out_ciphertext`. Written all-clear by
     /// `add_shielded_spends`, updated by `add_out_ciphertexts`, read by
@@ -297,29 +293,6 @@ pub fn clear_ironwood_unified_addresses(psbt: &mut miniscript::bitcoin::psbt::Ps
     psbt.proprietary.retain(|k, _| {
         !(k.prefix == BITGO_ZEC_V6 && k.subtype == ZecV6KeySubtype::UnifiedAddress as u8)
     });
-}
-
-/// Store the wallet's spend-validating key (`ak`, 32 bytes) for the stored Ironwood bundle.
-/// Written when the bundle is installed; the keyless
-/// verifier reads it for the `Rk` check.
-pub fn set_ironwood_spend_validating_key(
-    psbt: &mut miniscript::bitcoin::psbt::Psbt,
-    ak: &[u8; 32],
-) {
-    set_zec_v6(
-        psbt,
-        ZecV6KeySubtype::IronwoodSpendValidatingKey,
-        ak.to_vec(),
-    );
-}
-
-/// Fetch the wallet's spend-validating key stored by [`set_ironwood_spend_validating_key`],
-/// if present and well-formed.
-pub fn get_ironwood_spend_validating_key(
-    psbt: &miniscript::bitcoin::psbt::Psbt,
-) -> Option<[u8; 32]> {
-    let bytes = get_zec_v6(psbt, ZecV6KeySubtype::IronwoodSpendValidatingKey)?;
-    bytes.try_into().ok()
 }
 
 /// Store the full Unified Address string one plain transparent output (identified by its

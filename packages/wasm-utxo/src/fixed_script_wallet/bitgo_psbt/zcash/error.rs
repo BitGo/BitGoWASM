@@ -41,7 +41,7 @@ pub enum IronwoodPsbtError {
         action_index: usize,
     },
     /// Randomizers installed: these real spends still carry the placeholder `rk` — the signer's
-    /// randomizers must be installed before the proof request.
+    /// randomized `rk`s must be installed before any sighash or the proof request.
     RandomizerPending {
         /// The pending real spends' action indices.
         action_indices: Vec<usize>,
@@ -53,9 +53,27 @@ pub enum IronwoodPsbtError {
         action_indices: Vec<usize>,
     },
     /// The bundle is frozen: a spend-auth signature (or a transparent
-    /// partial signature, as defense in depth) exists, so ciphertexts can no longer be
-    /// installed.
+    /// partial signature, as defense in depth) exists, so ciphertexts and randomizers can no
+    /// longer be installed.
     AlreadySigned,
+    /// The batch names the same action index more than once.
+    DuplicateAction {
+        /// The repeated action index.
+        action_index: usize,
+    },
+    /// The proof request was given no `alpha` for these real spends: the PSBT never stores
+    /// the randomizers, so the prover needs one per real spend out of band.
+    RandomizerMissing {
+        /// The real spends' action indices without an `alpha`.
+        action_indices: Vec<usize>,
+    },
+    /// The proof is not the canonical size for the bundle's action count.
+    ProofLength {
+        /// `orchard::Proof::expected_proof_size` for the bundle's actions.
+        expected: usize,
+        /// The supplied proof's length.
+        actual: usize,
+    },
     /// The operation has nothing to act on: there is no pending item, or the batch is empty.
     NothingPending,
     /// The Ironwood Constructor rejected the request; the wrapped
@@ -70,6 +88,9 @@ pub enum IronwoodPsbtError {
     /// [`IronwoodVerifyError`](crate::zcash::ironwood_build::IronwoodVerifyError) carries
     /// the failing check (and its own `IronwoodVerifyError.<check>` code).
     Verify(crate::zcash::ironwood_build::IronwoodVerifyError),
+    /// Encoding the final v6 transaction failed; the wrapped
+    /// [`ZcashV6Error`](crate::zcash::v6::ZcashV6Error) carries the reason.
+    Encode(crate::zcash::v6::ZcashV6Error),
 }
 
 impl std::fmt::Display for IronwoodPsbtError {
@@ -116,8 +137,23 @@ impl std::fmt::Display for IronwoodPsbtError {
             ),
             IronwoodPsbtError::AlreadySigned => write!(
                 f,
-                "the bundle is frozen: a signature exists, so out_ciphertexts can no longer \
-                 be installed"
+                "the bundle is frozen: a signature exists, so out_ciphertexts and randomizers \
+                 can no longer be installed"
+            ),
+            IronwoodPsbtError::DuplicateAction { action_index } => {
+                write!(
+                    f,
+                    "action {action_index} appears more than once in the batch"
+                )
+            }
+            IronwoodPsbtError::RandomizerMissing { action_indices } => write!(
+                f,
+                "no alpha was supplied for real spends {action_indices:?}; the proof request \
+                 needs one per real spend"
+            ),
+            IronwoodPsbtError::ProofLength { expected, actual } => write!(
+                f,
+                "the proof is {actual} bytes; a bundle of this many actions needs {expected}"
             ),
             IronwoodPsbtError::NothingPending => {
                 write!(f, "there is nothing pending for this operation")
@@ -125,6 +161,7 @@ impl std::fmt::Display for IronwoodPsbtError {
             IronwoodPsbtError::Build(e) => write!(f, "{e}"),
             IronwoodPsbtError::Pczt(e) => write!(f, "{e}"),
             IronwoodPsbtError::Verify(e) => write!(f, "{e}"),
+            IronwoodPsbtError::Encode(e) => write!(f, "{e}"),
         }
     }
 }
@@ -134,6 +171,12 @@ impl std::error::Error for IronwoodPsbtError {}
 impl From<crate::zcash::ironwood_build::IronwoodBuildError> for IronwoodPsbtError {
     fn from(error: crate::zcash::ironwood_build::IronwoodBuildError) -> Self {
         IronwoodPsbtError::Build(error)
+    }
+}
+
+impl From<crate::zcash::v6::ZcashV6Error> for IronwoodPsbtError {
+    fn from(error: crate::zcash::v6::ZcashV6Error) -> Self {
+        IronwoodPsbtError::Encode(error)
     }
 }
 

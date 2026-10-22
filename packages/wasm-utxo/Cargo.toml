@@ -85,6 +85,11 @@ ff = "0.13"
 # shard/cap pair in build_ironwood_witness_from_shard. orchard's public API does not re-export
 # these, so this must be a direct dependency.
 incrementalmerkletree = "0.8"
+# Pallas field arithmetic: `set_spend_auth_randomizer` parses `alpha` as a Pallas scalar to
+# check `rk == ak.randomize(alpha)`, and the witness tests synthesize arbitrary canonical field
+# elements (leaf/sibling hashes) without needing a real note-commitment tree. Version pinned to
+# match orchard 0.15's own dependency (see Cargo.lock); already in-tree via orchard.
+pasta_curves = "0.5"
 # `LocatedPrunableTree::witness`/`PrunableTree::root_hash` do the real, pruning-aware Merkle
 # folding for build_ironwood_witness_from_shard, so the shard/cap wire shape and witnessing math
 # match what a real note-commitment-tree store (see wasm-privacy-coin's `ShardTree` usage) actually
@@ -109,10 +114,6 @@ hex = "0.4"
 wasm-bindgen-test = "0.3"
 rstest = "0.26.1"
 pastey = "0.1"
-# Pallas field arithmetic, used only in the ironwood_build witness tests to synthesize arbitrary
-# canonical field elements (leaf/sibling hashes) without needing a real note-commitment tree.
-# Version pinned to match orchard 0.15's own dependency (see Cargo.lock).
-pasta_curves = "0.5"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # 11.2 is the first release with the `Transaction::V6` / Ironwood (`ironwood_shielded_data`)

@@ -30,6 +30,7 @@ pub enum WasmUtxoError {
     Ironwood(crate::zcash::ironwood_build::IronwoodBuildError),
     Zip317(crate::zcash::zip317::Zip317Error),
     VerifyIronwood(crate::zcash::ironwood_build::IronwoodVerifyError),
+    IronwoodPsbt(crate::fixed_script_wallet::bitgo_psbt::zcash::error::IronwoodPsbtError),
     VerifyV6Signature(VerifyV6SignatureError),
 }
 
@@ -46,8 +47,19 @@ impl fmt::Display for WasmUtxoError {
             WasmUtxoError::Ironwood(e) => write!(f, "{}", e),
             WasmUtxoError::Zip317(e) => write!(f, "{}", e),
             WasmUtxoError::VerifyIronwood(e) => write!(f, "{}", e),
+            WasmUtxoError::IronwoodPsbt(e) => write!(f, "{}", e),
             WasmUtxoError::VerifyV6Signature(e) => write!(f, "{}", e),
         }
+    }
+}
+
+impl From<crate::fixed_script_wallet::bitgo_psbt::zcash::error::IronwoodPsbtError>
+    for WasmUtxoError
+{
+    fn from(
+        error: crate::fixed_script_wallet::bitgo_psbt::zcash::error::IronwoodPsbtError,
+    ) -> Self {
+        WasmUtxoError::IronwoodPsbt(error)
     }
 }
 
@@ -62,6 +74,7 @@ impl WasmErrorCode for WasmUtxoError {
             WasmUtxoError::Ironwood(e) => e.code(),
             WasmUtxoError::Zip317(e) => e.code(),
             WasmUtxoError::VerifyIronwood(e) => e.code(),
+            WasmUtxoError::IronwoodPsbt(e) => e.code(),
             WasmUtxoError::VerifyV6Signature(e) => e.code(),
         }
     }

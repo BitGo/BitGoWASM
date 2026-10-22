@@ -5,6 +5,7 @@
 
 use miniscript::bitcoin::Transaction;
 
+use super::error::IronwoodPsbtError;
 use super::{BitGoPsbt, ZcashBitGoPsbt};
 
 /// One requested Ironwood shielded output, as passed to
@@ -38,8 +39,8 @@ pub struct IronwoodOutputRequest {
 /// `recipient`/`value`/`rho`/`rseed`/`cmx` are note plaintext from the wallet's own note record;
 /// `witness` comes from the note-commitment tree. The FVK is passed transiently to the Constructor
 /// (to check note ownership and derive the nullifier) and omitted from the serialized PCZT; its
-/// `ak` is used as the placeholder `rk` until the signer delivers the randomized one
-/// (see [`ZcashBitGoPsbt::replace_ironwood_spend_rk`]).
+/// `ak` is used as the placeholder `rk` until the signer installs the randomizer pair
+/// (see [`ZcashBitGoPsbt::add_spend_randomizers`]).
 ///
 /// Oracle-only: production spends go through
 /// [`crate::zcash::ironwood_construct::IronwoodKeylessSpendSpec`].
@@ -578,96 +579,6 @@ impl ZcashBitGoPsbt {
             .any(|a| a.spend().dummy_sk().is_none())
     }
 
-    /// Render an Ironwood signing-hook error, naming the action for an out-of-range index.
-    fn ironwood_action_error(
-        action_index: usize,
-    ) -> impl Fn(crate::zcash::ironwood_build::IronwoodBuildError) -> String {
-        move |e| match e {
-            crate::zcash::ironwood_build::IronwoodBuildError::ActionIndexOutOfRange => {
-                format!("action {action_index} out of range")
-            }
-            e => e.to_string(),
-        }
-    }
-
-    /// Ingest the randomized `rk = ak.randomize(alpha)` for one real spend, replacing the
-    /// placeholder the Constructor left in the stored PCZT.
-    ///
-    /// Must run before any signature over the ZIP-244 digest exists — the digest commits `rk` — so
-    /// this is rejected once a transparent signature has been collected (the same ordering
-    /// contract [`Self::set_ironwood_out_ciphertext`] enforces) or a spend-auth signature has been
-    /// applied. Re-delivering the same `rk` is idempotent; delivering the placeholder itself (the
-    /// spend's unrandomized `ak`) is rejected. The bundle-level rules are shared with
-    /// [`crate::zcash::ironwood_build::set_spend_auth_randomizer`].
-    pub fn replace_ironwood_spend_rk(
-        &mut self,
-        action_index: usize,
-        rk: [u8; 32],
-    ) -> Result<(), String> {
-        use crate::zcash::{ironwood_build, ironwood_pczt};
-
-        if self
-            .psbt
-            .inputs
-            .iter()
-            .any(|input| !input.partial_sigs.is_empty())
-        {
-            return Err(
-                "cannot replace a spend's rk after a transparent signature has been collected: \
-                 rk is sighash-committed, so this would invalidate it"
-                    .to_string(),
-            );
-        }
-
-        let bytes = super::propkv::get_ironwood_pczt(&self.psbt)
-            .ok_or_else(|| "no Ironwood PCZT stored in PSBT".to_string())?;
-        let pczt = ironwood_pczt::deserialize_pczt(&bytes).map_err(|e| e.to_string())?;
-        // Ciphertexts first: the ciphertext round comes before the randomizers.
-        self.require_out_ciphertexts_set_in(&pczt)
-            .map_err(|e| e.to_string())?;
-        ironwood_build::check_spend_rk_replaceable(&pczt, action_index, &rk)
-            .map_err(Self::ironwood_action_error(action_index))?;
-
-        let patched =
-            ironwood_pczt::with_spend_rk(&bytes, action_index, rk).map_err(|e| e.to_string())?;
-        super::propkv::set_ironwood_pczt(&mut self.psbt, patched);
-        Ok(())
-    }
-
-    /// Apply the RedPallas `spend_auth_sig` for one real spend, after verifying
-    /// it against that spend's (already replaced) `rk` over the ZIP-244 sig digest. A rejected
-    /// signature is not stored.
-    pub fn apply_ironwood_spend_signature(
-        &mut self,
-        action_index: usize,
-        sig: [u8; 64],
-    ) -> Result<(), String> {
-        use crate::zcash::{ironwood_build, ironwood_pczt};
-
-        let bytes = super::propkv::get_ironwood_pczt(&self.psbt)
-            .ok_or_else(|| "no Ironwood PCZT stored in PSBT".to_string())?;
-        let mut pczt = ironwood_pczt::deserialize_pczt(&bytes).map_err(|e| e.to_string())?;
-        // Gate before the sighash: it is not final while any real output's out_ciphertext
-        // or any real spend's rk is still a placeholder.
-        self.require_out_ciphertexts_set_in(&pczt)
-            .map_err(|e| e.to_string())?;
-        ironwood_build::require_spend_rks_replaced(&pczt).map_err(|e| e.to_string())?;
-
-        let (amounts, scripts) = self.transparent_input_amounts_and_scripts()?;
-        let bundle = ironwood_build::pczt_action_data(&pczt).map_err(|e| e.to_string())?;
-        let tx = self.to_v6_transaction(self.psbt.unsigned_tx.clone(), Some(bundle))?;
-        let sighash = crate::zcash::v6::compute_v6_sig_digest(&tx, &amounts, &scripts);
-
-        // The shared signing-time role: re-checks the placeholder gate (a RedPallas signature
-        // made with alpha = 0 verifies against rk = ak) and runs orchard's verify-before-store.
-        ironwood_build::apply_spend_signature(&mut pczt, action_index, sighash, &sig)
-            .map_err(Self::ironwood_action_error(action_index))?;
-
-        let patched = ironwood_pczt::serialize_pczt(&pczt).map_err(|e| e.to_string())?;
-        super::propkv::set_ironwood_pczt(&mut self.psbt, patched);
-        Ok(())
-    }
-
     /// The shielded action-data view of the stored PCZT (commitments/ciphertexts/flags/value/anchor;
     /// no proof or signatures). This is what the ZIP-244 txid and sighash commit to.
     pub fn ironwood_action_data(&self) -> Result<crate::zcash::v6::IronwoodBundle, String> {
@@ -676,21 +587,21 @@ impl ZcashBitGoPsbt {
     }
 
     /// [`Self::ironwood_action_data`], but only once it is final enough to sign: errors while any
-    /// real spend's `rk` is still the Constructor's placeholder, since the ZIP-244 digest commits
-    /// `rk`.
+    /// real spend's randomizer (`alpha`) is not installed, since the ZIP-244 digest commits
+    /// `alpha`/`rk`.
     pub(crate) fn final_ironwood_action_data(
         &self,
     ) -> Result<crate::zcash::v6::IronwoodBundle, String> {
         use crate::zcash::ironwood_build::{self, IronwoodBuildError};
 
         let pczt = self.ironwood_pczt()?;
-        match ironwood_build::require_spend_rks_replaced(&pczt) {
+        match ironwood_build::require_spend_randomizers_installed(&pczt) {
             Ok(()) => {}
-            Err(IronwoodBuildError::PlaceholderRkNotReplaced) => {
+            Err(IronwoodBuildError::RandomizersNotInstalled) => {
                 return Err(
-                    "this PSBT spends real Ironwood notes whose rk is still the placeholder: the \
-                     signer must deliver the randomized rk (replace_ironwood_spend_rk) \
-                     before any sighash is computed — the ZIP-244 digest commits rk"
+                    "this PSBT spends real Ironwood notes whose randomizer is not installed: \
+                     the signer must deliver the randomizer pair (add_spend_randomizers) \
+                     before any sighash is computed — the ZIP-244 digest commits alpha/rk"
                         .to_string(),
                 )
             }
@@ -724,8 +635,8 @@ impl ZcashBitGoPsbt {
     /// bundle fails loudly with the failing check instead of leaking unverified plaintext.
     /// Verification only reads the PCZT: its plaintext stays in place for the prover.
     ///
-    /// The stored spend-validating key is passed through when
-    /// present; until then the `Rk` check is skipped and only the key-free checks run.
+    /// The PSBT carries no `ak`, so `Rk` only checks each real spend's state here; the client
+    /// checks its randomized `rk`s against its own `ak` and randomizers.
     pub(crate) fn keyless_verify(
         &self,
         pczt: &orchard::pczt::Bundle,
@@ -733,11 +644,7 @@ impl ZcashBitGoPsbt {
         crate::zcash::ironwood_verify::IronwoodVerificationReport,
         crate::zcash::ironwood_build::IronwoodVerifyError,
     > {
-        let ctx = crate::zcash::ironwood_verify::KeylessVerifyContext {
-            stored_ak: super::propkv::get_ironwood_spend_validating_key(&self.psbt),
-            ..Default::default()
-        };
-        crate::zcash::ironwood_verify::verify_bundle_without_keys(pczt, &ctx)
+        crate::zcash::ironwood_verify::verify_bundle_without_keys(pczt, &Default::default())
     }
 
     /// The String-flavored keyless verification of the stored PCZT the info accessors use;
@@ -998,40 +905,62 @@ impl ZcashBitGoPsbt {
         self,
         proof: Vec<u8>,
         mut rng: R,
-    ) -> Result<Vec<u8>, String> {
-        use crate::zcash::{ironwood_build, ironwood_pczt};
+    ) -> Result<Vec<u8>, IronwoodPsbtError> {
+        use crate::zcash::ironwood_build::{self, IronwoodBuildError};
+        use crate::zcash::ironwood_pczt;
+
+        // The String-returning helpers flow into the Build wrapper (their text is the
+        // underlying layer's own message).
+        let layer_err = |e: String| IronwoodPsbtError::Build(IronwoodBuildError::Verify(e));
 
         // Finalize the transparent inputs first: it enforces the 2-of-3 signature threshold, so an
         // under-signed PSBT fails here instead of after the (expensive) shielded finalize/combine.
-        let transparent = self.finalized_transparent_tx()?;
+        let transparent = self.finalized_transparent_tx().map_err(layer_err)?;
+
+        // Every real spend must already carry its spend-auth signature, and the proof must be
+        // sized for the bundle, so both are reported as typed errors instead of as orchard
+        // errors from the Transaction Extractor.
+        let mut pczt = self
+            .ironwood_pczt()
+            .map_err(|e| IronwoodPsbtError::Build(IronwoodBuildError::PcztWire(e)))?;
+        Self::require_spend_signatures(&pczt)?;
+        let expected = orchard::Proof::expected_proof_size(pczt.actions().len());
+        if proof.len() != expected {
+            return Err(IronwoodPsbtError::ProofLength {
+                expected,
+                actual: proof.len(),
+            });
+        }
 
         // The shielded binding signature signs the ZIP-244 sig digest over the complete tx
         // (transparent I/O + shielded action data). Signatures/proof are excluded from that digest,
         // so it is stable regardless of transparent-input signing.
-        let (amounts, scripts) = self.transparent_input_amounts_and_scripts()?;
-        let action_bundle = self.ironwood_action_data()?;
-        let sig_tx = self.to_v6_transaction(self.psbt.unsigned_tx.clone(), Some(action_bundle))?;
+        let (amounts, scripts) = self
+            .transparent_input_amounts_and_scripts()
+            .map_err(layer_err)?;
+        let action_bundle = self.ironwood_action_data().map_err(layer_err)?;
+        let sig_tx = self
+            .to_v6_transaction(self.psbt.unsigned_tx.clone(), Some(action_bundle))
+            .map_err(layer_err)?;
         let sighash = crate::zcash::v6::compute_v6_sig_digest(&sig_tx, &amounts, &scripts);
 
         // Pre-flight value-conservation guard, shared with the local-combine path.
-        self.check_ironwood_value_conservation()?;
+        self.check_ironwood_value_conservation()
+            .map_err(layer_err)?;
 
         // Signer + IO finalizer: sign the dummy spend(s) and derive the binding signing key.
-        let mut pczt = self.ironwood_pczt()?;
-        ironwood_build::finalize_shield_io(&mut pczt, sighash, &mut rng)
-            .map_err(|e| e.to_string())?;
+        ironwood_build::finalize_shield_io(&mut pczt, sighash, &mut rng)?;
 
         // Splice in the external proof, then run the Transaction Extractor.
-        let signed_bytes = ironwood_pczt::serialize_pczt(&pczt).map_err(|e| e.to_string())?;
-        let proven = ironwood_pczt::deserialize_pczt(
-            &ironwood_pczt::with_zkproof(&signed_bytes, proof).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
-        let full_bundle =
-            ironwood_build::combine(&proven, sighash, &mut rng).map_err(|e| e.to_string())?;
+        let signed_bytes = ironwood_pczt::serialize_pczt(&pczt)?;
+        let proven =
+            ironwood_pczt::deserialize_pczt(&ironwood_pczt::with_zkproof(&signed_bytes, proof)?)?;
+        let full_bundle = ironwood_build::combine(&proven, sighash, &mut rng)?;
 
-        let tx = self.to_v6_transaction(transparent, Some(full_bundle))?;
-        crate::zcash::v6::encode_v6_transaction(&tx).map_err(|e| e.to_string())
+        let tx = self
+            .to_v6_transaction(transparent, Some(full_bundle))
+            .map_err(layer_err)?;
+        crate::zcash::v6::encode_v6_transaction(&tx).map_err(IronwoodPsbtError::Encode)
     }
 
     /// Like [`Self::combine_ironwood_proof`], but produces the `zkproof` itself (via
@@ -1049,11 +978,12 @@ impl ZcashBitGoPsbt {
 
     /// Spend-bundle variant of [`Self::combine_ironwood_proof_locally`]: the Prover role derives
     /// `rk` inside the circuit from `ak` + `alpha`, so proving a bundle with real spends requires
-    /// each spend's `alpha` — delivered here as `(action_index, alpha)` pairs — and the spending
-    /// FVK, which the Constructor scrubbed from the stored PCZT ("the FVK never leaves its
-    /// holder": the local prover *is* the holder, so it passes its own FVK here; a remote keyed
-    /// prover supplies the equivalent out-of-band). Both are patched into the in-memory PCZT
-    /// only and never reach the PSBT or the produced transaction.
+    /// each spend's `alpha` — delivered here as `(action_index, alpha)` pairs, since the PSBT
+    /// never stores them — and the spending FVK, which the Constructor scrubbed from the stored
+    /// PCZT ("the FVK never leaves its holder": the local prover *is* the holder, so it passes
+    /// its own FVK here; a remote keyed prover supplies the equivalent out of band). Both are
+    /// patched into the in-memory PCZT only and never reach the PSBT or the produced
+    /// transaction.
     #[cfg(feature = "orchard-proving")]
     pub fn combine_ironwood_proof_locally_with_alphas<R: rand::RngCore + rand::CryptoRng>(
         self,
@@ -1074,21 +1004,19 @@ impl ZcashBitGoPsbt {
         // proof generation when the transaction doesn't conserve value.
         self.check_ironwood_value_conservation()?;
 
-        // Patch the alphas into the wire form (transiently — the result is consumed in-memory
-        // and never stored back into the PSBT).
+        // Patch the spending FVK and the alphas into a working copy of the wire form
+        // (transiently — the result is consumed in-memory and never stored back into the PSBT).
         let mut bytes = super::propkv::get_ironwood_pczt(&self.psbt)
             .ok_or_else(|| "no Ironwood PCZT stored in PSBT".to_string())?;
-        for (action_index, alpha) in alphas {
-            bytes = ironwood_pczt::with_spend_alpha(&bytes, *action_index, Some(*alpha))
-                .map_err(|e| e.to_string())?;
-        }
         if let Some(fvk) = spending_fvk {
             // The prover needs the FVK on every real spend to derive `ak`/`nk`; dummy spends
             // keep their fabricating FVK (the IO Finalizer signs them with it).
             bytes = ironwood_pczt::with_spend_fvk_on_real_spends(&bytes, *fvk)
                 .map_err(|e| e.to_string())?;
         }
-        let mut pczt = ironwood_pczt::deserialize_pczt(&bytes).map_err(|e| e.to_string())?;
+        let pczt = ironwood_pczt::deserialize_pczt(&bytes).map_err(|e| e.to_string())?;
+        let mut pczt =
+            ironwood_build::with_spend_alphas(&pczt, alphas).map_err(|e| e.to_string())?;
 
         ironwood_build::finalize_shield_io(&mut pczt, sighash, &mut rng)
             .map_err(|e| e.to_string())?;

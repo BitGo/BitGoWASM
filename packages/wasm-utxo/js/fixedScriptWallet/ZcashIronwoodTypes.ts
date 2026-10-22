@@ -38,8 +38,8 @@ export type ZcashShieldedOutputRequest = {
 
 /**
  * The randomizer state of a shielded spend: `placeholder` while the spend still carries the
- * wallet's spend-validating key as its `rk`, `installed` once the signer delivered the
- * randomized `(alpha, rk)` pair.
+ * Constructor's fixed placeholder `rk`, `installed` once the signer delivered its randomized
+ * `rk`. The PSBT never stores the wallet's `ak` or the randomizer `alpha`.
  */
 export const IronwoodRandomizerState = ["placeholder", "installed"] as const;
 export type IronwoodRandomizerState = (typeof IronwoodRandomizerState)[number];
@@ -90,12 +90,13 @@ export type IronwoodShieldedStatus = {
   inputKind: ZcashInputKind;
   /** Action indices whose `out_ciphertext` is still pending. */
   pendingOutCiphertexts: number[];
-  /** Action indices whose randomizer `(alpha, rk)` is still pending. */
+  /** Action indices whose randomized `rk` is still pending. */
   pendingRandomizers: number[];
   /** Action indices whose spend-auth signature is still pending. */
   pendingSpendSignatures: number[];
-  /** Whether a Halo2 proof is installed in the PCZT. */
-  hasProof: boolean;
-  /** Whether the PSBT is ready for `combineProof`. */
-  readyToCombine: boolean;
+  /**
+   * Whether the PSBT is ready for its proof: `getProofRequest(randomizers)` succeeds, and
+   * `combineProof(proof)` then needs only the proof.
+   */
+  readyForProof: boolean;
 };

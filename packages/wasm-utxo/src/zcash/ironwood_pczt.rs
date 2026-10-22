@@ -29,9 +29,6 @@ use orchard::{ProtocolVersion, ValuePool};
 /// Wire format version; bump on any layout change (deserialize rejects unknown versions).
 pub const FORMAT_VERSION: u8 = 0x02;
 
-/// Per-spend metadata key recording whether a real spend's placeholder `rk` was replaced.
-pub(crate) const SPEND_RK_STATE_PROPRIETARY_KEY: &str = "bitgo.rk_state";
-
 /// Errors from Ironwood PCZT (de)serialization.
 #[derive(Debug, strum::IntoStaticStr)]
 pub enum IronwoodPcztError {
@@ -223,34 +220,16 @@ pub fn with_out_ciphertext(
     })
 }
 
-/// Replace one action spend's `rk` (spend validating key) and mark it ready for sighashing.
-/// Rejects an `rk` that is not a canonical RedPallas verification key.
+/// Replace one action spend's `rk` (spend validating key). Rejects an `rk` that is not a
+/// canonical RedPallas verification key.
+///
+/// A real spend is randomized exactly when its `rk` is not the Constructor's
+/// [`PLACEHOLDER_RK`](super::ironwood_build::PLACEHOLDER_RK), so there is no wire marker to
+/// keep in sync.
 pub fn with_spend_rk(
     bytes: &[u8],
     action_index: usize,
     rk: [u8; 32],
-) -> Result<Vec<u8>, IronwoodPcztError> {
-    patch_spend_rk(bytes, action_index, rk, false)
-}
-
-/// Set the constructor placeholder `rk` and mark it as requiring signer replacement.
-///
-/// Oracle-only: the keyed Constructor's scrub is the only caller, and it exists only under
-/// `test` / `orchard-proving`.
-#[cfg(any(test, feature = "orchard-proving"))]
-pub(crate) fn with_placeholder_spend_rk(
-    bytes: &[u8],
-    action_index: usize,
-    rk: [u8; 32],
-) -> Result<Vec<u8>, IronwoodPcztError> {
-    patch_spend_rk(bytes, action_index, rk, true)
-}
-
-fn patch_spend_rk(
-    bytes: &[u8],
-    action_index: usize,
-    rk: [u8; 32],
-    is_placeholder: bool,
 ) -> Result<Vec<u8>, IronwoodPcztError> {
     with_patched_wire(bytes, |wire| {
         let spend = &mut wire
@@ -262,10 +241,6 @@ fn patch_spend_rk(
             return Err(IronwoodPcztError::BadFieldEncoding("spend.rk"));
         }
         spend.rk = rk;
-        spend.proprietary.insert(
-            SPEND_RK_STATE_PROPRIETARY_KEY.to_string(),
-            vec![u8::from(!is_placeholder)],
-        );
         Ok(())
     })
 }
@@ -677,22 +652,6 @@ pub(crate) fn duplicate_nullifier_index(bundle: &PcztBundle) -> Option<usize> {
     None
 }
 
-/// Whether a spend's `rk` has been replaced by the signer (the wire marker).
-///
-/// `None`/`[0]` mean the Constructor's placeholder (`rk` = the spend's `ak`) is still installed;
-/// any other marker value is a wire inconsistency, not a state.
-pub(crate) fn spend_rk_replaced(spend: &PcztSpend) -> Result<bool, String> {
-    match spend
-        .proprietary()
-        .get(SPEND_RK_STATE_PROPRIETARY_KEY)
-        .map(|state| state.as_slice())
-    {
-        Some([1]) => Ok(true),
-        Some([0]) | None => Ok(false),
-        Some(_) => Err("invalid Ironwood spend rk state marker".to_string()),
-    }
-}
-
 fn wire_to_action(
     a: ActionWire,
     note_version: NoteVersion,
@@ -934,39 +893,21 @@ mod tests {
     }
 
     #[test]
-    fn rk_patcher_tracks_placeholder_and_replaced_states() {
+    fn rk_patcher_sets_the_rk() {
         let bytes = serialize_pczt(&sample_pczt()).unwrap();
         let old_rk = <[u8; 32]>::from(deserialize_pczt(&bytes).unwrap().actions()[0].spend().rk());
 
-        let placeholder = with_placeholder_spend_rk(&bytes, 0, old_rk).unwrap();
-        let placeholder_bundle = deserialize_pczt(&placeholder).unwrap();
-        assert_eq!(
-            placeholder_bundle.actions()[0]
-                .spend()
-                .proprietary()
-                .get(SPEND_RK_STATE_PROPRIETARY_KEY)
-                .map(|state| state.as_slice()),
-            Some(&[0u8][..])
-        );
-
         let sk2 = Option::<SpendingKey>::from(SpendingKey::from_bytes([9u8; 32])).unwrap();
         let new_rk = <[u8; 32]>::from(redpallas::VerificationKey::from(
-            &SpendAuthorizingKey::from(&sk2).randomize(&pasta_curves::pallas::Scalar::ZERO),
+            &SpendAuthorizingKey::from(&sk2).randomize(&pasta_curves::pallas::Scalar::ONE),
         ));
         assert_ne!(old_rk, new_rk);
 
-        let patched = with_spend_rk(&placeholder, 0, new_rk).unwrap();
+        let patched = with_spend_rk(&bytes, 0, new_rk).unwrap();
         let bundle = deserialize_pczt(&patched).unwrap();
         assert_eq!(<[u8; 32]>::from(bundle.actions()[0].spend().rk()), new_rk);
-        assert_eq!(
-            bundle.actions()[0]
-                .spend()
-                .proprietary()
-                .get(SPEND_RK_STATE_PROPRIETARY_KEY)
-                .map(|state| state.as_slice()),
-            Some(&[1u8][..])
-        );
         assert_eq!(serialize_pczt(&bundle).unwrap(), patched);
+        // Re-delivering the same rk is a byte-identical no-op.
         assert_eq!(with_spend_rk(&patched, 0, new_rk).unwrap(), patched);
     }
 

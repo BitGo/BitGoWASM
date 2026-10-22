@@ -2,10 +2,15 @@
 //! ([`ZcashBitGoPsbt::add_shielded_spends`]) and the one-input-kind rule.
 //!
 //! The build service (IMS) selects notes and calls [`ZcashBitGoPsbt::add_shielded_spends`]
-//! with the notes' plaintext, their witnesses, the KMS-derived nullifiers, the requested
-//! outputs and the wallet's spend-validating key `ak` — and no viewing key. The constructed
-//! PCZT is stored in the PSBT together with `ak` (proprietary key `0x08`), which the key-free
-//! verifier reads for the `Rk` check, and the per-output Unified Addresses.
+//! with the notes' plaintext, their witnesses, the KMS-derived nullifiers and the requested
+//! outputs — and no key at all. The constructed PCZT is stored in the PSBT together with the
+//! per-output Unified Addresses.
+//!
+//! The PSBT never carries the wallet's spend-validating key `ak`, nor the spends' randomizers
+//! `alpha` (with the randomized `rk` an `alpha` would reveal `ak`): real spends start with the
+//! fixed [`PLACEHOLDER_RK`](crate::zcash::ironwood_build::PLACEHOLDER_RK), the signer installs
+//! only the randomized `rk` ([`ZcashBitGoPsbt::add_spend_randomizers`]), and the alphas reach
+//! the prover out of band ([`ZcashBitGoPsbt::proof_request`]).
 //!
 //! One input kind: a v6 PSBT spends **either** transparent inputs (transparent v6 or
 //! shielding) **or** shielded notes (deshield / shielded→shielded), never both. The shielded
@@ -30,9 +35,9 @@ impl ZcashBitGoPsbt {
     /// [`IronwoodActionMap`](crate::zcash::ironwood_build::IronwoodActionMap) gives, for each
     /// `spends[i]`/`outputs[i]`, the action index it landed at.
     ///
-    /// Every real spend carries the wallet's `ak` as the placeholder `rk` and no `alpha`; the
-    /// signer installs `alpha` and the matching `rk = ak.randomize(alpha)` before any sighash
-    /// is computed. Every output's `out_ciphertext` is a random placeholder —
+    /// Every real spend carries [`PLACEHOLDER_RK`](crate::zcash::ironwood_build::PLACEHOLDER_RK)
+    /// as its `rk` and no `alpha`; the signer installs the randomized `rk = ak.randomize(alpha)`
+    /// before any sighash is computed. Every output's `out_ciphertext` is a random placeholder —
     /// KMS replaces it under its FVK `ovk`. No FVK ever enters the stored
     /// PCZT.
     ///
@@ -42,15 +47,13 @@ impl ZcashBitGoPsbt {
     /// - **one call per PSBT** — a second call would silently overwrite the first batch
     ///   ([`IronwoodPsbtError::AlreadyAdded`]).
     ///
-    /// Also stored: the caller's `ak` (proprietary key `0x08`) — the key-free verifier's `Rk`
-    /// check reads it — each output's Unified Address, keyed by its action index, and the
+    /// Also stored: each output's Unified Address, keyed by its action index, and the
     /// all-clear `out_ciphertext` bitset (proprietary key `0x09`).
     pub fn add_shielded_spends<R: rand::RngCore + rand::CryptoRng>(
         &mut self,
         spends: &[crate::zcash::ironwood_construct::IronwoodKeylessSpendSpec],
         outputs: &[IronwoodOutputRequest],
         anchor: &crate::zcash::ironwood_build::AnchorBytes,
-        ak: &[u8; 32],
         rng: R,
     ) -> Result<crate::zcash::ironwood_build::IronwoodActionMap, IronwoodPsbtError> {
         use crate::zcash::{ironwood_build, ironwood_construct};
@@ -79,18 +82,11 @@ impl ZcashBitGoPsbt {
                 memo: req.memo,
             })
             .collect();
-        let (pczt, action_map) = ironwood_construct::construct_spend_pczt_keyless(
-            spends,
-            &output_specs,
-            anchor,
-            ak,
-            rng,
-        )?;
+        let (pczt, action_map) =
+            ironwood_construct::construct_spend_pczt_keyless(spends, &output_specs, anchor, rng)?;
         let action_count = pczt.actions().len();
         let action_map =
             self.store_ironwood_pczt_and_unified_addresses(pczt, action_map, outputs)?;
-        // The wallet's spend-validating key, for the key-free verifier's `Rk` check.
-        super::propkv::set_ironwood_spend_validating_key(&mut self.psbt, ak);
         // Every real output starts pending its `out_ciphertext`: the
         // little-endian bitset over the bundle's actions starts all-clear, so
         // `pending_out_ciphertexts` reports the full request until KMS's ciphertexts land.
@@ -242,25 +238,26 @@ impl ZcashBitGoPsbt {
         })
     }
 
-    /// Randomizers installed: every real spend's randomized `rk` must be installed — the ZIP-244
-    /// digest and the proof both commit to `rk`.
+    /// The real spends whose `rk` is still the placeholder.
+    fn pending_randomizers_in(pczt: &orchard::pczt::Bundle) -> Vec<usize> {
+        use crate::zcash::ironwood_build::spend_rk_is_placeholder;
+
+        pczt.actions()
+            .iter()
+            .enumerate()
+            .filter(|(_, action)| {
+                action.spend().dummy_sk().is_none() && spend_rk_is_placeholder(action.spend())
+            })
+            .map(|(action_index, _)| action_index)
+            .collect()
+    }
+
+    /// Randomizers installed: every real spend's randomized `rk` must be installed before any
+    /// sighash — the ZIP-244 digest and the proof both commit to `rk`.
     fn require_randomizers_installed(
         pczt: &orchard::pczt::Bundle,
     ) -> Result<(), IronwoodPsbtError> {
-        use crate::zcash::ironwood_build::IronwoodBuildError;
-
-        let mut pending = Vec::new();
-        for (action_index, action) in pczt.actions().iter().enumerate() {
-            let spend = action.spend();
-            if spend.dummy_sk().is_some() {
-                continue;
-            }
-            if !crate::zcash::ironwood_pczt::spend_rk_replaced(spend)
-                .map_err(IronwoodBuildError::PcztWire)?
-            {
-                pending.push(action_index);
-            }
-        }
+        let pending = Self::pending_randomizers_in(pczt);
         if pending.is_empty() {
             return Ok(());
         }
@@ -363,19 +360,25 @@ impl ZcashBitGoPsbt {
         Ok(())
     }
 
-    /// Signed before proven: every real spend's `spend_auth_sig` must be installed — the proof is
-    /// requested only once the wallet has signed, as shielding requests it only after its
-    /// transparent signing rounds.
-    fn require_spend_signatures(pczt: &orchard::pczt::Bundle) -> Result<(), IronwoodPsbtError> {
-        let pending: Vec<usize> = pczt
-            .actions()
+    /// The real spends with no `spend_auth_sig` yet.
+    fn pending_spend_signatures_in(pczt: &orchard::pczt::Bundle) -> Vec<usize> {
+        pczt.actions()
             .iter()
             .enumerate()
             .filter(|(_, action)| {
                 action.spend().dummy_sk().is_none() && action.spend().spend_auth_sig().is_none()
             })
             .map(|(action_index, _)| action_index)
-            .collect();
+            .collect()
+    }
+
+    /// Signed before proven: every real spend's `spend_auth_sig` must be installed — the proof is
+    /// requested only once the wallet has signed, as shielding requests it only after its
+    /// transparent signing rounds.
+    pub(crate) fn require_spend_signatures(
+        pczt: &orchard::pczt::Bundle,
+    ) -> Result<(), IronwoodPsbtError> {
+        let pending = Self::pending_spend_signatures_in(pczt);
         if pending.is_empty() {
             return Ok(());
         }
@@ -384,21 +387,269 @@ impl ZcashBitGoPsbt {
         })
     }
 
-    /// The proof request: the raw PCZT bytes, handed to the keyed prover at
-    /// finalize time. The returned proof goes straight to [`Self::combine_ironwood_proof`];
-    /// it is never stored in the PSBT.
+    /// The proof request: the PCZT bytes handed to the keyed prover at finalize time, with
+    /// each real spend's randomizer `alpha` patched in. The returned proof goes straight to
+    /// [`Self::combine_ironwood_proof`]; it is never stored in the PSBT.
     ///
     /// Every real output's `out_ciphertext`, every real spend's randomized `rk`, and every
-    /// real spend's `spend_auth_sig` must be installed first. Signing
-    /// freezes the bundle, so the proof is always made over the final action data. A
-    /// shielding bundle has none of these, so it is served as-is.
-    pub fn proof_request(&self) -> Result<Vec<u8>, IronwoodPsbtError> {
+    /// real spend's `spend_auth_sig` must be installed first. Signing freezes the bundle, so
+    /// the proof is always made over the final action data.
+    ///
+    /// The PSBT never stores `alpha` (with `rk` it would reveal the wallet's `ak`), so the
+    /// caller supplies exactly one `(action_index, alpha)` per real spend: each index must
+    /// exist ([`IronwoodPsbtError::UnknownAction`]), name a real spend
+    /// ([`IronwoodPsbtError::DummyAction`]) and appear once
+    /// ([`IronwoodPsbtError::DuplicateAction`]), every real spend must be covered
+    /// ([`IronwoodPsbtError::RandomizerMissing`]), and each `alpha` must be a canonical,
+    /// non-zero scalar. The alphas are written only to the returned bytes. A shielding bundle
+    /// takes no alphas and is served as-is.
+    pub fn proof_request(
+        &self,
+        alphas: &[(usize, [u8; 32])],
+    ) -> Result<Vec<u8>, IronwoodPsbtError> {
         let (bytes, pczt) = self.stored_ironwood_pczt()?;
         self.require_out_ciphertexts_set_in(&pczt)?;
         Self::require_randomizers_installed(&pczt)?;
         Self::require_spend_signatures(&pczt)?;
-        Ok(bytes)
+
+        for &(action_index, _) in alphas {
+            Self::require_real_spend(&pczt, action_index)?;
+        }
+        Self::require_distinct_actions(alphas.iter().map(|&(action_index, _)| action_index))?;
+        let missing: Vec<usize> = pczt
+            .actions()
+            .iter()
+            .enumerate()
+            .filter(|&(action_index, action)| {
+                action.spend().dummy_sk().is_none()
+                    && !alphas.iter().any(|&(index, _)| index == action_index)
+            })
+            .map(|(action_index, _)| action_index)
+            .collect();
+        if !missing.is_empty() {
+            return Err(IronwoodPsbtError::RandomizerMissing {
+                action_indices: missing,
+            });
+        }
+        if alphas.is_empty() {
+            return Ok(bytes);
+        }
+        let with_alphas = crate::zcash::ironwood_build::with_spend_alphas(&pczt, alphas)?;
+        Ok(crate::zcash::ironwood_pczt::serialize_pczt(&with_alphas)?)
     }
+
+    /// The action exists ([`IronwoodPsbtError::UnknownAction`]) and is a real spend
+    /// ([`IronwoodPsbtError::DummyAction`]).
+    fn require_real_spend(
+        pczt: &orchard::pczt::Bundle,
+        action_index: usize,
+    ) -> Result<(), IronwoodPsbtError> {
+        let action = pczt
+            .actions()
+            .get(action_index)
+            .ok_or(IronwoodPsbtError::UnknownAction)?;
+        if action.spend().dummy_sk().is_some() {
+            return Err(IronwoodPsbtError::DummyAction);
+        }
+        Ok(())
+    }
+
+    /// Reject a batch that names an action more than once.
+    fn require_distinct_actions(
+        indices: impl Iterator<Item = usize>,
+    ) -> Result<(), IronwoodPsbtError> {
+        let mut seen = Vec::new();
+        for action_index in indices {
+            if seen.contains(&action_index) {
+                return Err(IronwoodPsbtError::DuplicateAction { action_index });
+            }
+            seen.push(action_index);
+        }
+        Ok(())
+    }
+
+    // ---- The randomizer / spend-signature path ----
+
+    /// Install the signer's randomized `rk`s: one `(action_index, alpha, rk)` entry per real
+    /// spend, with `rk = ak.randomize(alpha)`. **Only `rk` is stored** — the PSBT never carries
+    /// `alpha` or `ak` (with `rk`, an `alpha` would reveal `ak`). **Atomic** — every entry is
+    /// validated and installed on a working copy first, so one bad entry stores nothing.
+    ///
+    /// Each index must exist ([`IronwoodPsbtError::UnknownAction`]), name a real spend
+    /// ([`IronwoodPsbtError::DummyAction`]) and appear once
+    /// ([`IronwoodPsbtError::DuplicateAction`]). `alpha` must be a canonical, non-zero scalar
+    /// and `rk` a canonical key other than the placeholder; given the wallet's `ak`, the pair
+    /// must satisfy `rk == ak.randomize(alpha)` ([`IronwoodPsbtError::Build`] wrapping the
+    /// [`crate::zcash::ironwood_build::IronwoodBuildError`] variants). Without `ak` the pair is
+    /// checked later, by the client's key-free verifier and by the keyed prover.
+    ///
+    /// Ciphertexts first: rejected while any real output's `out_ciphertext` is pending. Frozen
+    /// once signed: rejected once any signature exists ([`IronwoodPsbtError::AlreadySigned`]).
+    /// Only spend bundles take randomizers ([`IronwoodPsbtError::NotSpendBundle`]), and the
+    /// batch must not be empty ([`IronwoodPsbtError::NothingPending`]). Re-delivering an
+    /// installed `rk` is accepted: no sighash is final until every real spend has one.
+    pub fn add_spend_randomizers(
+        &mut self,
+        entries: &[(usize, [u8; 32], [u8; 32])],
+        ak: Option<&[u8; 32]>,
+    ) -> Result<(), IronwoodPsbtError> {
+        use crate::zcash::ironwood_build::{set_spend_auth_randomizer, IronwoodBuildError};
+        use orchard::primitives::redpallas::{SpendAuth, VerificationKey};
+
+        let (_, mut pczt) = self.stored_ironwood_pczt()?;
+        if !Self::bundle_has_real_spends(&pczt) {
+            return Err(IronwoodPsbtError::NotSpendBundle);
+        }
+        if entries.is_empty() {
+            return Err(IronwoodPsbtError::NothingPending);
+        }
+        self.require_unfrozen(&pczt)?;
+        self.require_out_ciphertexts_set_in(&pczt)?;
+        Self::require_distinct_actions(entries.iter().map(|&(action_index, _, _)| action_index))?;
+        // The identity encodes as all zeros: it randomizes to a key anyone can sign for.
+        let ak = ak
+            .map(|ak| {
+                if *ak == [0u8; 32] {
+                    return Err(IronwoodBuildError::BadSpendValidatingKey);
+                }
+                VerificationKey::<SpendAuth>::try_from(*ak)
+                    .map_err(|_| IronwoodBuildError::BadSpendValidatingKey)
+            })
+            .transpose()?;
+
+        // Validate-and-install on the working copy: the PSBT is replaced only on full success.
+        for &(action_index, alpha, rk) in entries {
+            Self::require_real_spend(&pczt, action_index)?;
+            set_spend_auth_randomizer(&mut pczt, action_index, &alpha, &rk, ak.as_ref())?;
+        }
+
+        let patched = crate::zcash::ironwood_pczt::serialize_pczt(&pczt)?;
+        super::propkv::set_ironwood_pczt(&mut self.psbt, patched);
+        Ok(())
+    }
+
+    /// The ZIP-244 sig digest the real spends' `spend_auth_sig`s are computed over. Every real
+    /// output's `out_ciphertext` and every real spend's randomizer must be installed first —
+    /// the digest commits both the ciphertexts and the randomized `rk`s.
+    pub fn spend_sighash(&self) -> Result<[u8; 32], IronwoodPsbtError> {
+        use crate::zcash::ironwood_build::IronwoodBuildError;
+
+        let (_, pczt) = self.stored_ironwood_pczt()?;
+        self.require_out_ciphertexts_set_in(&pczt)?;
+        Self::require_randomizers_installed(&pczt)?;
+        self.v6_sig_digest()
+            .map_err(|e| IronwoodPsbtError::Build(IronwoodBuildError::Verify(e)))
+    }
+
+    /// Apply the signer's spend-auth signatures: one `(action_index, sig)` entry per real
+    /// spend, each verified against that spend's installed `rk` over [`Self::spend_sighash`]
+    /// before it is stored. **Atomic** — every signature is verified on a working copy, so one
+    /// bad entry stores nothing.
+    ///
+    /// Each index must exist ([`IronwoodPsbtError::UnknownAction`]), name a real spend
+    /// ([`IronwoodPsbtError::DummyAction`]) and appear once
+    /// ([`IronwoodPsbtError::DuplicateAction`]). Only spend bundles take spend signatures
+    /// ([`IronwoodPsbtError::NotSpendBundle`]), and the batch must not be empty
+    /// ([`IronwoodPsbtError::NothingPending`]). Rejected while any real output's
+    /// `out_ciphertext` is pending or any real spend's randomized `rk` is not installed.
+    /// Signing does not freeze this method: every spend-auth signature is over the same
+    /// digest, so signatures may arrive in several batches.
+    pub fn add_spend_signatures(
+        &mut self,
+        entries: &[(usize, [u8; 64])],
+    ) -> Result<(), IronwoodPsbtError> {
+        use crate::zcash::ironwood_build::apply_spend_signature;
+
+        let (_, mut pczt) = self.stored_ironwood_pczt()?;
+        if !Self::bundle_has_real_spends(&pczt) {
+            return Err(IronwoodPsbtError::NotSpendBundle);
+        }
+        if entries.is_empty() {
+            return Err(IronwoodPsbtError::NothingPending);
+        }
+        let sighash = self.spend_sighash()?;
+        Self::require_distinct_actions(entries.iter().map(|&(action_index, _)| action_index))?;
+
+        // Verify-and-apply on the working copy: the PSBT is replaced only on full success.
+        for &(action_index, sig) in entries {
+            Self::require_real_spend(&pczt, action_index)?;
+            apply_spend_signature(&mut pczt, action_index, sighash, &sig)?;
+        }
+
+        let patched = crate::zcash::ironwood_pczt::serialize_pczt(&pczt)?;
+        super::propkv::set_ironwood_pczt(&mut self.psbt, patched);
+        Ok(())
+    }
+
+    /// The orchestration view of the shielded workflow: the input kind, what is still pending
+    /// at each stage, and whether the PSBT is ready for its proof. A PSBT without a PCZT is a
+    /// transparent one with nothing pending and nothing to prove; errors only when the stored
+    /// PCZT does not deserialize.
+    pub fn shielded_status(&self) -> Result<IronwoodShieldedStatus, IronwoodPsbtError> {
+        let Some(bytes) = super::propkv::get_ironwood_pczt(&self.psbt) else {
+            return Ok(IronwoodShieldedStatus {
+                input_kind: IronwoodInputKind::Transparent,
+                pending_out_ciphertexts: Vec::new(),
+                pending_randomizers: Vec::new(),
+                pending_spend_signatures: Vec::new(),
+                ready_for_proof: false,
+            });
+        };
+        let pczt = crate::zcash::ironwood_pczt::deserialize_pczt(&bytes)?;
+        let input_kind = if Self::bundle_has_real_spends(&pczt) {
+            IronwoodInputKind::Shielded
+        } else {
+            IronwoodInputKind::Transparent
+        };
+        let pending_out_ciphertexts = self.pending_out_ciphertexts_in(&pczt)?;
+        let pending_randomizers = Self::pending_randomizers_in(&pczt);
+        let pending_spend_signatures = Self::pending_spend_signatures_in(&pczt);
+        let ready_for_proof = match input_kind {
+            IronwoodInputKind::Shielded => {
+                pending_out_ciphertexts.is_empty()
+                    && pending_randomizers.is_empty()
+                    && pending_spend_signatures.is_empty()
+            }
+            // Shielding requests its proof once its transparent inputs are signed; the dummy
+            // spends are signed by the IO Finalizer during combine.
+            IronwoodInputKind::Transparent => self.finalized_transparent_tx().is_ok(),
+        };
+
+        Ok(IronwoodShieldedStatus {
+            input_kind,
+            pending_out_ciphertexts,
+            pending_randomizers,
+            pending_spend_signatures,
+            ready_for_proof,
+        })
+    }
+}
+
+/// Which input kind a v6 PSBT carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IronwoodInputKind {
+    /// Transparent inputs (a transparent v6 or shielding transaction).
+    Transparent,
+    /// Shielded note spends (a deshield or shielded→shielded transaction).
+    Shielded,
+}
+
+/// The orchestration view of the shielded workflow, from
+/// [`ZcashBitGoPsbt::shielded_status`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IronwoodShieldedStatus {
+    /// The PSBT's input kind.
+    pub input_kind: IronwoodInputKind,
+    /// The real outputs still pending their `out_ciphertext`.
+    pub pending_out_ciphertexts: Vec<usize>,
+    /// The real spends still pending their randomized `rk`.
+    pub pending_randomizers: Vec<usize>,
+    /// The real spends still pending their `spend_auth_sig`.
+    pub pending_spend_signatures: Vec<usize>,
+    /// Whether the PSBT is ready for its proof: [`ZcashBitGoPsbt::proof_request`] succeeds
+    /// (given the alphas), and [`ZcashBitGoPsbt::combine_ironwood_proof`] then needs only the
+    /// proof.
+    pub ready_for_proof: bool,
 }
 
 /// Whether the little-endian bitset has bit `index` set (bit `i` = byte `i / 8`, mask

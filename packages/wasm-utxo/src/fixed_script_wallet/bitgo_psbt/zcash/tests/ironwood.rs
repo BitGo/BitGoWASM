@@ -13,8 +13,9 @@ use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
 use crate::fixed_script_wallet::RootWalletKeys;
 use crate::networks::Network;
 use crate::zcash::ironwood_build::test_field_bytes as field_bytes;
+use crate::zcash::ironwood_build::{IronwoodBuildError, PLACEHOLDER_RK};
 use crate::zcash::NetworkUpgrade;
-use ff::Field;
+use ff::{Field, PrimeField as _};
 use orchard::keys::SpendAuthorizingKey;
 use orchard::keys::{FullViewingKey, Scope, SpendingKey};
 use orchard::note::{ExtractedNoteCommitment, Note, RandomSeed, Rho};
@@ -1067,7 +1068,7 @@ fn combine_ironwood_proof_fails_fast_on_missing_signatures() {
         .combine_ironwood_proof(vec![0u8; Proof::expected_proof_size(1)], OsRng)
         .unwrap_err();
     assert!(
-        err.contains("required signatures collected"),
+        err.to_string().contains("required signatures collected"),
         "unexpected error: {err}"
     );
 }
@@ -1446,11 +1447,7 @@ fn pczt_bytes_from_action_data(bundle: &crate::zcash::v6::IronwoodBundle) -> Vec
         .actions
         .iter()
         .map(|a| {
-            let mut spend_proprietary = BTreeMap::new();
-            spend_proprietary.insert(
-                crate::zcash::ironwood_pczt::SPEND_RK_STATE_PROPRIETARY_KEY.to_string(),
-                vec![1],
-            );
+            let spend_proprietary = BTreeMap::new();
             let spend = PcztSpend::parse(
                 a.nullifier,
                 a.rk,
@@ -1648,7 +1645,7 @@ fn golden_shield1zec_psbt_sighash_verifies_real_signature() {
         pczt_bytes_from_action_data(&bundle),
     );
     // The synthetic PCZT carries no plaintext or dummy markers, so it reads as a spend
-    // bundle; its ciphertexts are the golden transaction's final ones.
+    // bundle; its ciphertexts and `rk`s are the golden transaction's final ones.
     crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::set_ironwood_out_ciphertexts_set(
         &mut z.psbt,
         vec![0xff; bundle.actions.len().div_ceil(8)],
@@ -1780,10 +1777,9 @@ fn add_ironwood_spends_placeholder_state_and_round_trip() {
         .windows(req.fvk.len())
         .any(|window| window == &req.fvk[..]));
     assert!(spend.alpha().is_none());
-    assert_eq!(
-        <[u8; 32]>::from(spend.rk()),
-        <[u8; 32]>::try_from(&req.fvk[0..32]).unwrap()
-    );
+    assert_eq!(<[u8; 32]>::from(spend.rk()), PLACEHOLDER_RK);
+    // Not even the FVK's `ak` half is on the wire.
+    assert!(!bytes.windows(32).any(|window| window == &req.fvk[0..32]));
     assert_eq!(spend.value().map(|v| v.inner()), Some(req.value));
     assert_eq!(spend.rho().map(|r| r.to_bytes()), Some(req.rho));
     assert_eq!(spend.rseed().map(|r| *r.as_bytes()), Some(req.rseed));
@@ -1807,28 +1803,52 @@ fn add_ironwood_spends_placeholder_state_and_round_trip() {
 }
 
 #[test]
-fn sighash_gates_on_unpatched_rk_and_replace_rejects_bad_context() {
+fn sighash_gates_on_uninstalled_randomizers_and_the_batch_rejects_bad_context() {
     let (mut z, _keys) = build_unshield_psbt("ironwood_v6_spends_guard");
 
     let err = z.v6_sig_digest().unwrap_err();
-    assert!(err.contains("placeholder"), "unexpected: {err}");
+    assert!(err.contains("randomizer"), "unexpected: {err}");
 
-    // Replacing on a non-existent action is rejected.
-    assert!(z.replace_ironwood_spend_rk(1, [0u8; 32]).is_err());
-    // A non-canonical rk is rejected (the wire patcher validates the point).
-    assert!(z.replace_ironwood_spend_rk(0, [0xffu8; 32]).is_err());
+    let (req, _anchor, ask) = test_spend_request();
+    let ak = <[u8; 32]>::try_from(&req.fvk[0..32]).unwrap();
 
-    // FROST stand-in: randomized rk from a fresh randomizer.
-    let (_req, _anchor, ask) = test_spend_request();
-    let mut rng = OsRng;
-    let alpha = pasta_curves::pallas::Scalar::random(&mut rng);
-    let rsk = ask.randomize(&alpha);
-    let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&rsk));
-    z.replace_ironwood_spend_rk(0, rk).unwrap();
+    // Installing on a non-existent action is rejected.
+    let err = z
+        .add_spend_randomizers(&[(1, [1u8; 32], [0u8; 32])], Some(&ak))
+        .unwrap_err();
+    assert!(matches!(err, IronwoodPsbtError::UnknownAction));
+    // An rk that is not `ak.randomize(alpha)` is rejected.
+    let err = z
+        .add_spend_randomizers(&[(0, [1u8; 32], [0u8; 32])], Some(&ak))
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            IronwoodPsbtError::Build(IronwoodBuildError::RandomizerMismatch)
+        ),
+        "the mismatched pair must be rejected: {err:?}"
+    );
+    // The placeholder itself is not a randomized rk.
+    let err = z
+        .add_spend_randomizers(&[(0, [1u8; 32], PLACEHOLDER_RK)], None)
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            IronwoodPsbtError::Build(IronwoodBuildError::UnrandomizedRk)
+        ),
+        "unexpected: {err:?}"
+    );
 
-    // The digest is now fixed, and re-patching is idempotent.
+    // FROST stand-in: a real randomizer pair for the wallet's ak.
+    let (alpha, _rsk, rk) = randomized_spend_key(&ask);
+    z.add_spend_randomizers(&[(0, alpha.to_repr(), rk)], Some(&ak))
+        .unwrap();
+
+    // The digest is now fixed, and re-delivering the same pair is idempotent.
     z.v6_sig_digest().unwrap();
-    z.replace_ironwood_spend_rk(0, rk).unwrap();
+    z.add_spend_randomizers(&[(0, alpha.to_repr(), rk)], Some(&ak))
+        .unwrap();
 }
 
 #[test]
@@ -1841,7 +1861,8 @@ fn unshield_frost_flow_produces_a_valid_v6_tx() {
     let alpha = pasta_curves::pallas::Scalar::random(&mut rng);
     let rsk = ask.randomize(&alpha);
     let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&rsk));
-    z.replace_ironwood_spend_rk(0, rk).unwrap();
+    z.add_spend_randomizers(&[(0, alpha.to_repr(), rk)], None)
+        .unwrap();
 
     // The digest commits the final rk; the spend-auth signature is over exactly this digest.
     let sighash = z.v6_sig_digest().unwrap();
@@ -1859,13 +1880,13 @@ fn unshield_frost_flow_produces_a_valid_v6_tx() {
 
     // FROST stand-in round 2: RedPallas signature over the digest.
     let sig = rsk.sign(rng, &sighash);
-    z.apply_ironwood_spend_signature(0, <[u8; 64]>::from(&sig))
+    z.add_spend_signatures(&[(0, <[u8; 64]>::from(&sig))])
         .unwrap();
     // A second application with a different digest-shaped signature fails loudly and
     // leaves the stored signature untouched.
     let bad = rsk.sign(rng, &[0u8; 32]);
     assert!(z
-        .apply_ironwood_spend_signature(0, <[u8; 64]>::from(&bad))
+        .add_spend_signatures(&[(0, <[u8; 64]>::from(&bad))])
         .is_err());
 
     let proof = vec![0u8; Proof::expected_proof_size(1)];
@@ -1905,10 +1926,23 @@ fn combine_rejects_a_transaction_that_does_not_conserve_value() {
     .unwrap();
     assert_eq!(z.ironwood_bundle_info().unwrap().fee, -1);
 
+    // Combine checks the spend signatures before the conservation guard, so the spend must be
+    // randomized and signed for combine to reach the value check at all.
+    let (_req, _anchor, ask) = test_spend_request();
+    let (alpha, rsk, rk) = randomized_spend_key(&ask);
+    z.add_spend_randomizers(&[(0, alpha.to_repr(), rk)], None)
+        .unwrap();
+    let sighash = z.v6_sig_digest().unwrap();
+    z.add_spend_signatures(&[(0, <[u8; 64]>::from(&rsk.sign(OsRng, &sighash)))])
+        .unwrap();
+
     let err = z
         .combine_ironwood_proof(vec![0u8; Proof::expected_proof_size(1)], OsRng)
         .unwrap_err();
-    assert!(err.contains("does not conserve value"), "unexpected: {err}");
+    assert!(
+        err.to_string().contains("does not conserve value"),
+        "unexpected: {err}"
+    );
 }
 
 #[test]
@@ -2118,14 +2152,16 @@ fn build_signed_multi_spend_psbt(seed: &str) -> SignedMultiSpendFixture {
     let ask = SpendAuthorizingKey::from(&sk);
     let mut pairs = [(0usize, [0u8; 32]); 2];
     let mut rks = [[0u8; 32]; 2];
+    let mut randomizers = Vec::with_capacity(2);
     for (i, action_index) in action_map.spend_action_indices().iter().enumerate() {
         let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng);
         let rsk = ask.randomize(&alpha);
         let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&rsk));
-        z.replace_ironwood_spend_rk(*action_index, rk).unwrap();
+        randomizers.push((*action_index, alpha.to_repr(), rk));
         pairs[i] = (*action_index, alpha.to_repr());
         rks[i] = rk;
     }
+    z.add_spend_randomizers(&randomizers, None).unwrap();
 
     // The transparent side: real-spend bundles skip the client-ovk round, so either key
     // may open; sign user-then-bitgo like the shielding flow.
@@ -2135,13 +2171,14 @@ fn build_signed_multi_spend_psbt(seed: &str) -> SignedMultiSpendFixture {
         .unwrap();
 
     let sighash = z.v6_sig_digest().unwrap();
+    let mut signatures = Vec::with_capacity(2);
     for (i, action_index) in action_map.spend_action_indices().iter().enumerate() {
         let alpha = pasta_curves::pallas::Scalar::from_repr(pairs[i].1).unwrap();
         let rsk = ask.randomize(&alpha);
         let sig = rsk.sign(OsRng, &sighash);
-        z.apply_ironwood_spend_signature(*action_index, <[u8; 64]>::from(&sig))
-            .unwrap();
+        signatures.push((*action_index, <[u8; 64]>::from(&sig)));
     }
+    z.add_spend_signatures(&signatures).unwrap();
     (z, pairs, rks, fvk.to_bytes())
 }
 
@@ -2174,7 +2211,7 @@ fn multi_spend_multi_output_round_trips() {
     }
 }
 
-/// B3: the Transaction Extractor rejects a proof sized for the wrong action count.
+/// Combine rejects a proof sized for the wrong action count before reaching orchard.
 #[test]
 fn combine_rejects_a_proof_sized_for_a_different_action_count() {
     let (z, _pairs, _rks, _fvk) = build_signed_multi_spend_psbt("ironwood_v6_wrong_size_proof");
@@ -2182,12 +2219,17 @@ fn combine_rejects_a_proof_sized_for_a_different_action_count() {
         .combine_ironwood_proof(vec![0u8; Proof::expected_proof_size(1)], OsRng)
         .unwrap_err();
     assert!(
-        err.contains("non-canonical length"),
-        "expected a proof-size rejection, got: {err}"
+        matches!(
+            err,
+            IronwoodPsbtError::ProofLength { expected, actual }
+                if expected == Proof::expected_proof_size(2)
+                    && actual == Proof::expected_proof_size(1)
+        ),
+        "expected a proof-size rejection, got: {err:?}"
     );
 }
 
-/// PR-4 end-to-end under the proving feature: construct (placeholder rk) -> install real
+/// End-to-end under the proving feature: construct (placeholder rk) -> install real
 /// alphas/rks -> sign -> finalize IO -> prove LOCALLY -> extract -> verify the proof with
 /// orchard's own verifier — with the spending FVK supplied by the local prover (the holder).
 #[cfg(feature = "orchard-proving")]
@@ -2326,7 +2368,8 @@ fn mixed_transparent_and_shielded_signs_and_combines() {
     let alpha = pasta_curves::pallas::Scalar::random(&mut rng);
     let rsk = ask.randomize(&alpha);
     let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&rsk));
-    z.replace_ironwood_spend_rk(0, rk).unwrap();
+    z.add_spend_randomizers(&[(0, alpha.to_repr(), rk)], None)
+        .unwrap();
 
     // Mixed flows skip the client-ovk first round: any key may open the round.
     let bitgo_xpriv = test_wallet_xpriv(seed, 2);
@@ -2341,7 +2384,7 @@ fn mixed_transparent_and_shielded_signs_and_combines() {
 
     let sighash = z.v6_sig_digest().unwrap();
     let sig = rsk.sign(rng, &sighash);
-    z.apply_ironwood_spend_signature(0, <[u8; 64]>::from(&sig))
+    z.add_spend_signatures(&[(0, <[u8; 64]>::from(&sig))])
         .unwrap();
 
     let user_xpriv = test_wallet_xpriv(seed, 0);
@@ -2360,18 +2403,19 @@ fn mixed_transparent_and_shielded_signs_and_combines() {
     assert_eq!(zebra.ironwood_actions().count(), 1);
 }
 
-/// Randomize the test note's spend authorizing key and return `(rsk, rk)` — the FROST
-/// signer stand-in for one real spend.
+/// Randomize the test note's spend authorizing key under a fresh `alpha` and return
+/// `(alpha, rsk, rk)` — the FROST signer stand-in for one real spend.
 fn randomized_spend_key(
     ask: &SpendAuthorizingKey,
 ) -> (
+    pasta_curves::pallas::Scalar,
     orchard::primitives::redpallas::SigningKey<SpendAuth>,
     [u8; 32],
 ) {
     let alpha = pasta_curves::pallas::Scalar::random(OsRng);
     let rsk = ask.randomize(&alpha);
     let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&rsk));
-    (rsk, rk)
+    (alpha, rsk, rk)
 }
 
 #[test]
@@ -2462,15 +2506,16 @@ fn zcash_parse_reports_spend_signing_state() {
     };
 
     let (_req, _anchor, ask) = test_spend_request();
-    let (rsk, rk) = randomized_spend_key(&ask);
-    z.replace_ironwood_spend_rk(0, rk).unwrap();
+    let (alpha, rsk, rk) = randomized_spend_key(&ask);
+    z.add_spend_randomizers(&[(0, alpha.to_repr(), rk)], None)
+        .unwrap();
     let spend = parse_spend(&z);
     assert!(spend.rk_replaced);
     assert!(!spend.signed);
 
     let sighash = z.v6_sig_digest().unwrap();
     let sig = rsk.sign(OsRng, &sighash);
-    z.apply_ironwood_spend_signature(0, <[u8; 64]>::from(&sig))
+    z.add_spend_signatures(&[(0, <[u8; 64]>::from(&sig))])
         .unwrap();
     let spend = parse_spend(&z);
     assert!(spend.rk_replaced);
@@ -2536,59 +2581,87 @@ fn zcash_parse_keeps_transparent_error_codes() {
     );
 }
 
-/// `apply_ironwood_spend_signature` must refuse to ingest a spend-auth signature while a
-/// real spend still carries the Constructor's placeholder `rk` (= its `ak`): a RedPallas
-/// signature made with `alpha = 0` verifies against `rk = ak`, so signature verification
-/// alone cannot catch it — the gate is what keeps an unrandomized (linkable) rk off the
-/// chain. Fires before any signature bytes are examined.
+/// `add_spend_signatures` must refuse to ingest a spend-auth signature while a real spend
+/// still has no randomizer (`alpha`) installed: a RedPallas signature made with
+/// `alpha = 0` verifies against `rk = ak`, so signature verification alone cannot catch it —
+/// the gate is what keeps an unrandomized (linkable) rk off the chain. Fires before any
+/// signature bytes are examined.
 #[test]
-fn apply_spend_signature_rejects_a_placeholder_rk() {
+fn add_spend_signatures_rejects_uninstalled_randomizers() {
     let (mut z, _keys) = build_unshield_psbt("ironwood_v6_apply_rk_guard");
-    // Placeholder rk (marker [0]): any 64 bytes would be "verifiable" if the signer used
-    // alpha = 0, so the gate must fire on the STATE, not on signature validity.
-    let err = z.apply_ironwood_spend_signature(0, [7u8; 64]).unwrap_err();
+    // No alpha: any 64 bytes would be "verifiable" if the signer used alpha = 0, so the
+    // gate must fire on the STATE, not on signature validity.
+    let err = z.add_spend_signatures(&[(0, [7u8; 64])]).unwrap_err();
     assert!(
-        err.contains("placeholder"),
-        "expected the placeholder-rk gate, got: {err}"
+        matches!(err, IronwoodPsbtError::RandomizerPending { .. }),
+        "expected the installed-randomizer gate, got: {err:?}"
     );
 
-    // After the rk is replaced, the same bytes pass the gate (and fail RedPallas
-    // verification instead, which is the correct next layer).
-    let (req, _anchor, ask) = test_spend_request();
-    let _ = req;
-    let alpha = pasta_curves::pallas::Scalar::random(OsRng);
-    let rsk = ask.randomize(&alpha);
-    let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&rsk));
-    z.replace_ironwood_spend_rk(0, rk).unwrap();
-    let err = z.apply_ironwood_spend_signature(0, [7u8; 64]).unwrap_err();
+    // After the randomizer pair is installed, the same bytes pass the gate (and fail
+    // RedPallas verification instead, which is the correct next layer).
+    let (_req, _anchor, ask) = test_spend_request();
+    let (alpha, _rsk, rk) = randomized_spend_key(&ask);
+    z.add_spend_randomizers(&[(0, alpha.to_repr(), rk)], None)
+        .unwrap();
+    let err = z.add_spend_signatures(&[(0, [7u8; 64])]).unwrap_err();
     assert!(
-        !err.contains("placeholder"),
-        "the gate must not fire once the rk is replaced, got: {err}"
+        matches!(
+            err,
+            IronwoodPsbtError::Build(IronwoodBuildError::InvalidExternalSignature)
+        ),
+        "the gate must not fire once the randomizer is installed, got: {err:?}"
     );
 }
 
 #[test]
-fn replace_rk_rejects_the_placeholder_and_runs_only_before_spend_signatures() {
+fn add_spend_randomizers_rejects_unrandomized_pairs_and_freezes_after_signatures() {
     let (mut z, _keys) = build_unshield_psbt("ironwood_v6_replace_rk_guard");
     let (req, _anchor, ask) = test_spend_request();
 
-    // The placeholder itself (the unrandomized ak) is not a randomized rk.
+    // alpha = 0 randomizes to the placeholder ak itself: rejected.
     let ak = <[u8; 32]>::try_from(&req.fvk[0..32]).unwrap();
-    let err = z.replace_ironwood_spend_rk(0, ak).unwrap_err();
-    assert!(err.contains("placeholder"), "unexpected: {err}");
+    let err = z
+        .add_spend_randomizers(&[(0, [0u8; 32], ak)], Some(&ak))
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            IronwoodPsbtError::Build(IronwoodBuildError::UnrandomizedRk)
+        ),
+        "unexpected: {err:?}"
+    );
 
-    let (rsk, rk) = randomized_spend_key(&ask);
-    z.replace_ironwood_spend_rk(0, rk).unwrap();
+    // An rk randomized under a different alpha than the one delivered is rejected.
+    let (alpha, rsk, rk) = randomized_spend_key(&ask);
+    let (_other_alpha, _other_rsk, other_rk) = randomized_spend_key(&ask);
+    let err = z
+        .add_spend_randomizers(&[(0, alpha.to_repr(), other_rk)], Some(&ak))
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            IronwoodPsbtError::Build(IronwoodBuildError::RandomizerMismatch)
+        ),
+        "a mismatched pair must be rejected: {err:?}"
+    );
+
+    z.add_spend_randomizers(&[(0, alpha.to_repr(), rk)], None)
+        .unwrap();
     let sighash = z.v6_sig_digest().unwrap();
-    z.apply_ironwood_spend_signature(0, <[u8; 64]>::from(&rsk.sign(OsRng, &sighash)))
+    z.add_spend_signatures(&[(0, <[u8; 64]>::from(&rsk.sign(OsRng, &sighash)))])
         .unwrap();
 
     // No transparent inputs exist to trip the partial_sigs guard, but the applied spend-auth
-    // signature commits rk: replacing it now (even with the same value) is rejected.
-    let (_rsk2, rk2) = randomized_spend_key(&ask);
-    for new_rk in [rk2, rk] {
-        let err = z.replace_ironwood_spend_rk(0, new_rk).unwrap_err();
-        assert!(err.contains("spend-auth signature"), "unexpected: {err}");
+    // signature commits rk: installing a randomizer now (even the same pair) is rejected.
+    let (other_alpha, _other_rsk, other_rk) = randomized_spend_key(&ask);
+    for (new_alpha, new_rk) in [(other_alpha, other_rk), (alpha, rk)] {
+        let err = z
+            .add_spend_randomizers(&[(0, new_alpha.to_repr(), new_rk)], Some(&ak))
+            .unwrap_err();
+        assert!(
+            matches!(err, IronwoodPsbtError::AlreadySigned),
+            "unexpected: {err:?}"
+        );
     }
     assert_eq!(z.v6_sig_digest().unwrap(), sighash, "digest unchanged");
 }

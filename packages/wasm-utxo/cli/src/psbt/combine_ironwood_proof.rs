@@ -25,11 +25,13 @@ pub fn handle_combine_ironwood_proof_command(
         (Some(proof), false) => {
             let proof = hex::decode(&proof).context("invalid --proof hex")?;
             psbt.combine_ironwood_proof(proof, OsRng)
+                .map_err(|e| anyhow!(e))
         }
-        (None, true) => psbt.combine_ironwood_proof_locally(OsRng),
+        (None, true) => psbt
+            .combine_ironwood_proof_locally(OsRng)
+            .map_err(|e| anyhow!(e)),
         (None, false) => bail!("expected exactly one of --proof or --local-proof"),
     }
-    .map_err(|e| anyhow!(e))
     .context("failed to combine Ironwood proof")?;
 
     println!("{}", hex::encode(tx_bytes));
