@@ -41,8 +41,8 @@ pub enum NetworkUpgrade {
 pub struct UpgradeParams {
     pub branch_id: u32,
     /// Mainnet activation height. Set to `u32::MAX` when the upgrade has no assigned mainnet
-    /// height yet (NU7 — ZIP-259 lists it as TBD). A `u32::MAX` height is unreachable in
-    /// practice, so mainnet stays on the previous upgrade's rules until a real height is set.
+    /// height yet. A `u32::MAX` height is unreachable in practice, so mainnet stays on the
+    /// previous upgrade's rules until a real height is set.
     pub mainnet_activation_height: u32,
     pub testnet_activation_height: u32,
 }
@@ -122,13 +122,13 @@ impl NetworkUpgrade {
                 testnet_activation_height: 4134000,
             },
             // https://zips.z.cash/zip-0259 — NU7. Per ZIP-2003 version 4 transactions become
-            // invalid once NU7 activates; only v5 (ZIP-225) and v6 (ZIP-229) stay valid. The
-            // mainnet activation height is still TBD in ZIP-259; u32::MAX prevents accidental
-            // activation on mainnet until a real height is published.
+            // invalid once NU7 activates; only v5 (ZIP-225) and v6 (ZIP-229) stay valid.
+            // Mainnet activation height 3543405 was assigned in ZIP-259 (ZIP editors agreed
+            // 2026-10-20; ~2026-11-05 at 75s pre-NU7 spacing).
             // CSHLD:788
             NetworkUpgrade::Nu7 => UpgradeParams {
                 branch_id: 0x77190ad9,
-                mainnet_activation_height: u32::MAX,
+                mainnet_activation_height: 3543405,
                 testnet_activation_height: 4465026,
             },
         }
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_upgrade_ordering() {
-        // Verify chronological ordering on mainnet (u32::MAX sentinels sort last).
+        // Verify chronological ordering on mainnet.
         for i in 1..NetworkUpgrade::ALL.len() {
             let prev = NetworkUpgrade::ALL[i - 1];
             let curr = NetworkUpgrade::ALL[i];
@@ -207,6 +207,23 @@ mod tests {
                 curr
             );
         }
+    }
+
+    #[test]
+    fn test_nu7_activation_boundary() {
+        // ZIP-259: NU7 activates on Mainnet at 3543405 (branch 0x77190ad9); the
+        // preceding block is still Nu6_3 (0x37a5165b). Version 4 transactions are
+        // invalid from this height per ZIP-2003.
+        assert_eq!(
+            network_upgrade_at_height(3543404, true),
+            Some(NetworkUpgrade::Nu6_3)
+        );
+        assert_eq!(
+            network_upgrade_at_height(3543405, true),
+            Some(NetworkUpgrade::Nu7)
+        );
+        assert_eq!(branch_id_for_height(3543404, true), Some(0x37a5165b));
+        assert_eq!(branch_id_for_height(3543405, true), Some(0x77190ad9));
     }
 
     /// Tests that verify our constants match zebra-chain crate.
@@ -328,9 +345,10 @@ mod tests {
                     .activation_height(&network)
                     .map(|h| h.0);
 
-                // For upgrades with no assigned zebra mainnet height (NU7 — TBD in
-                // ZIP-259), we use u32::MAX as a sentinel. When zebra publishes a real
-                // mainnet height this test will fail, prompting us to update ours.
+                // For upgrades with no assigned zebra mainnet height yet (e.g. a future
+                // NU8 before its deployment ZIP assigns one), we use u32::MAX as a
+                // sentinel. When zebra publishes a real mainnet height the Some(expected)
+                // arm fails against the sentinel, prompting us to update ours.
                 match zebra_height {
                     Some(expected) => assert_eq!(
                         upgrade.mainnet_activation_height(),

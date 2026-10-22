@@ -95,7 +95,9 @@ export class ZcashBitGoPsbt extends BitGoPsbt<ZcashParsedOutput> {
    * @param walletKeys - The wallet's root keys (sets global xpubs in the PSBT)
    * @param options - Options including blockHeight to determine consensus rules
    * @returns A new ZcashBitGoPsbt instance
-   * @throws Error if block height is before Overwinter activation
+   * @throws Error if block height is before Overwinter activation, or if the height is at or
+   * after NU7 activation and the build would be a version 4 transaction (version 4 is invalid
+   * under NU7 per ZIP-2003; use ZcashIronwoodBitGoPsbt.createEmpty at those heights instead)
    *
    * @example
    * ```typescript
