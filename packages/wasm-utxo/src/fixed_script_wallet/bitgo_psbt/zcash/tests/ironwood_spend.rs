@@ -1,5 +1,5 @@
-//! Tests for the keyless Ironwood spend flow (plan PR 5): `add_shielded_spends`, the
-//! one-input-kind rule (rule 0), and the deshield / shielded→shielded lifecycles the build
+//! Tests for the keyless Ironwood spend flow: `add_shielded_spends`, the
+//! one-input-kind rule, and the deshield / shielded→shielded lifecycles the build
 //! service drives. Native-only (orchard + zebra).
 
 use super::*;
@@ -11,7 +11,6 @@ use crate::fixed_script_wallet::script_id::ScriptId;
 use crate::networks::Network;
 use crate::zcash::ironwood_build::{compute_out_ciphertext, IronwoodActionMap};
 use crate::zcash::ironwood_construct::test_util::keyless_fixture;
-use crate::zcash::ironwood_pczt::with_out_ciphertext;
 use crate::zcash::NetworkUpgrade;
 use ff::{Field, PrimeField};
 use orchard::keys::{FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey};
@@ -110,25 +109,33 @@ fn keyless_transfer_psbt(
     )
 }
 
-/// KMS's out-ciphertext round (plan §2 step 3): re-encrypt every requested output's
-/// `out_ciphertext` under the FVK's external `ovk` and splice it into the stored PCZT.
+/// KMS's out-ciphertext round: re-encrypt every requested output's
+/// `out_ciphertext` under the FVK's external `ovk` and deliver it through
+/// [`ZcashBitGoPsbt::add_out_ciphertexts`] — the production entry point, so the pending
+/// marker tracks every install.
 fn kms_out_ciphertexts(z: &mut ZcashBitGoPsbt, map: &IronwoodActionMap, fvk: &FullViewingKey) {
     let ovk = *fvk.to_ovk(Scope::External).as_ref();
     let pczt = z.ironwood_pczt().unwrap();
-    let mut bytes = z.raw_ironwood_pczt_bytes().unwrap();
-    for &action_index in map.output_action_indices() {
-        let expected = compute_out_ciphertext(&pczt, action_index, ovk, &mut OsRng).unwrap();
-        bytes = with_out_ciphertext(&bytes, action_index, expected).unwrap();
+    let entries: Vec<_> = map
+        .output_action_indices()
+        .iter()
+        .map(|&action_index| {
+            (
+                action_index,
+                compute_out_ciphertext(&pczt, action_index, ovk, &mut OsRng).unwrap(),
+            )
+        })
+        .collect();
+    if !entries.is_empty() {
+        z.add_out_ciphertexts(&entries).unwrap();
     }
-    crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::set_ironwood_pczt(&mut z.psbt, bytes);
 }
 
 /// The FROST stand-in round: install `(alpha, rk = ak.randomize(alpha))` on every real spend
 /// and return the `(action_index, alpha)` pairs the local prover needs.
 ///
-/// PR 7's `add_spend_randomizers` batch method does this atomically; until it lands, the
-/// alpha goes through the wire patcher and the matching `rk` through the existing
-/// `replace_ironwood_spend_rk` — the same two writes, in the same order.
+/// The alpha goes through the wire patcher and the matching `rk` through
+/// `replace_ironwood_spend_rk`, in that order.
 fn install_randomizers(
     z: &mut ZcashBitGoPsbt,
     map: &IronwoodActionMap,
@@ -168,7 +175,7 @@ fn install_spend_signatures(
     }
 }
 
-/// The full keyless deshield lifecycle (plan §2, no transparent inputs): build → FROST
+/// The full keyless deshield lifecycle: build → FROST
 /// randomizers → signatures → combine. Each step survives a serialize/deserialize round-trip,
 /// and zebra independently decodes the result.
 #[test]
@@ -381,7 +388,7 @@ fn keyless_parse_reports_verified_spends() {
     assert!(!spends[0].signed, "no signature yet");
 }
 
-/// Rule 0 (plan §3), shielded side: `add_shielded_spends` rejects a PSBT that already carries
+/// One input kind, shielded side: `add_shielded_spends` rejects a PSBT that already carries
 /// transparent inputs, with the typed error code.
 #[test]
 fn add_shielded_spends_rejects_transparent_inputs() {
@@ -413,7 +420,7 @@ fn add_shielded_spends_rejects_transparent_inputs() {
     );
 }
 
-/// Rule 0, transparent side: the generic input adders reject a PSBT whose stored bundle
+/// One input kind, transparent side: the generic input adders reject a PSBT whose stored bundle
 /// already spends real notes. A PSBT with only a shielded *output* (the shielding flow)
 /// still accepts transparent inputs — see the shielding tests in [`super::ironwood`].
 #[test]
@@ -438,7 +445,7 @@ fn transparent_adders_reject_after_shielded_spends() {
     );
 }
 
-/// Rule 0 at deserialize: a PSBT mixing transparent inputs with real spends (built through
+/// One input kind at deserialize: a PSBT mixing transparent inputs with real spends (built through
 /// the oracle path, which predates the rule) is rejected by `deserialize_v6`.
 #[test]
 fn deserialize_rejects_mixed_input_kinds() {
@@ -746,4 +753,383 @@ fn prove_and_verify_locally(
     orchard_bundle
         .verify_proof(&vk)
         .expect("the keyless bundle's locally-produced proof verifies");
+}
+
+// ---- The KMS out_ciphertext / proof-request workflow ----
+
+/// KMS's ciphertext for one action, under the FVK's external `ovk`.
+fn kms_out_ciphertext(z: &ZcashBitGoPsbt, fvk: &FullViewingKey, action_index: usize) -> [u8; 80] {
+    let ovk = *fvk.to_ovk(Scope::External).as_ref();
+    compute_out_ciphertext(&z.ironwood_pczt().unwrap(), action_index, ovk, &mut OsRng).unwrap()
+}
+
+/// A 2→1 PSBT: one real output and one fabricated dummy output (on a real spend).
+fn keyless_two_to_one_psbt(seed: &str) -> (ZcashBitGoPsbt, IronwoodActionMap, FullViewingKey) {
+    let (specs, anchor, fvk, ak) = keyless_fixture();
+    let mut z = empty_v6_psbt(seed);
+    let map = z
+        .add_shielded_spends(
+            &specs,
+            &[wallet_output(&fvk, 100, 90_000_000)],
+            &anchor,
+            &ak,
+            OsRng,
+        )
+        .unwrap();
+    (z, map, fvk)
+}
+
+/// Remove the `IronwoodOutCiphertextsSet` bitset, as a tampering party could.
+fn strip_out_ciphertexts_marker(z: &mut ZcashBitGoPsbt) {
+    use crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::{ZecV6KeySubtype, BITGO_ZEC_V6};
+    z.psbt.proprietary.retain(|key, _| {
+        !(key.prefix == BITGO_ZEC_V6
+            && key.subtype == ZecV6KeySubtype::IronwoodOutCiphertextsSet as u8)
+    });
+}
+
+/// A recognizable proof of the right size, so tests can tell which proof reached the wire.
+fn patterned_proof(n_actions: usize) -> Vec<u8> {
+    (0..Proof::expected_proof_size(n_actions))
+        .map(|i| (i % 251) as u8)
+        .collect()
+}
+
+/// The proof bytes of a combined v6 transaction.
+fn wire_proof(raw: &[u8]) -> Vec<u8> {
+    crate::zcash::v6::decode_v6_transaction(raw)
+        .unwrap()
+        .ironwood_bundle
+        .unwrap()
+        .proof
+}
+
+/// The out-ciphertext request lists exactly the real outputs — dummy outputs excluded —
+/// and errors once every real output is set, when there are none, or on a shielding PSBT.
+#[test]
+fn out_ciphertext_request_lists_real_outputs_and_errors_when_empty() {
+    let (mut z, map, fvk) = keyless_two_to_one_psbt("ironwood_v6_keyless_request");
+    let (bytes, pending) = z.out_ciphertext_request().unwrap();
+    assert_eq!(bytes, z.raw_ironwood_pczt_bytes().unwrap());
+    assert_eq!(pending, vec![map.output_action_index(0).unwrap()]);
+    assert_eq!(z.pending_out_ciphertexts().unwrap(), pending);
+
+    // The KMS round resolves the request; a further request errors with NothingPending.
+    let ct = kms_out_ciphertext(&z, &fvk, pending[0]);
+    z.add_out_ciphertexts(&[(pending[0], ct)]).unwrap();
+    assert!(z.pending_out_ciphertexts().unwrap().is_empty());
+    assert!(matches!(
+        z.out_ciphertext_request(),
+        Err(IronwoodPsbtError::NothingPending)
+    ));
+
+    // A spend-only bundle (no real outputs) has nothing to request either.
+    let (specs, anchor, _fvk, ak) = keyless_fixture();
+    let mut spend_only = empty_v6_psbt("ironwood_v6_keyless_request_spend_only");
+    spend_only
+        .add_shielded_spends(&specs[..1], &[], &anchor, &ak, OsRng)
+        .unwrap();
+    assert!(matches!(
+        spend_only.out_ciphertext_request(),
+        Err(IronwoodPsbtError::NothingPending)
+    ));
+
+    // Shielding is not a spend bundle, and neither is a PSBT without a PCZT.
+    let mut shield = build_shield_psbt("ironwood_v6_keyless_request_shield");
+    assert!(matches!(
+        shield.out_ciphertext_request(),
+        Err(IronwoodPsbtError::NotSpendBundle)
+    ));
+    assert!(matches!(
+        shield.add_out_ciphertexts(&[(0, [0u8; 80])]),
+        Err(IronwoodPsbtError::NotSpendBundle)
+    ));
+    assert!(shield.pending_out_ciphertexts().unwrap().is_empty());
+    assert!(matches!(
+        empty_v6_psbt("ironwood_v6_keyless_request_empty").out_ciphertext_request(),
+        Err(IronwoodPsbtError::NotSpendBundle)
+    ));
+}
+
+/// `add_out_ciphertexts` is atomic: a valid entry followed by a bad one (an unknown or a
+/// dummy action index) stores nothing — the PCZT bytes and the pending marker are untouched.
+#[test]
+fn add_out_ciphertexts_is_atomic() {
+    let (mut z, map, fvk) = keyless_two_to_one_psbt("ironwood_v6_keyless_atomic");
+    let before = z.raw_ironwood_pczt_bytes().unwrap();
+    let real_index = map.output_action_index(0).unwrap();
+    let ct = kms_out_ciphertext(&z, &fvk, real_index);
+
+    let error = z
+        .add_out_ciphertexts(&[(real_index, ct), (99, [0u8; 80])])
+        .unwrap_err();
+    assert!(matches!(error, IronwoodPsbtError::UnknownAction));
+    assert_eq!(z.raw_ironwood_pczt_bytes().unwrap(), before);
+    assert_eq!(z.pending_out_ciphertexts().unwrap(), vec![real_index]);
+
+    let dummy_index = 1 - real_index;
+    let error = z
+        .add_out_ciphertexts(&[(real_index, ct), (dummy_index, ct)])
+        .unwrap_err();
+    assert!(matches!(error, IronwoodPsbtError::DummyAction));
+    assert_eq!(z.raw_ironwood_pczt_bytes().unwrap(), before);
+    assert_eq!(z.pending_out_ciphertexts().unwrap(), vec![real_index]);
+
+    let error = z.add_out_ciphertexts(&[]).unwrap_err();
+    assert!(matches!(error, IronwoodPsbtError::NothingPending));
+}
+
+/// Re-delivering the installed bytes is a no-op; different bytes on a set index are
+/// rejected and change nothing.
+#[test]
+fn add_out_ciphertexts_is_idempotent_for_identical_bytes_only() {
+    let (mut z, map, fvk) = keyless_two_to_one_psbt("ironwood_v6_keyless_idempotent");
+    let action_index = map.output_action_index(0).unwrap();
+    let ct = kms_out_ciphertext(&z, &fvk, action_index);
+
+    z.add_out_ciphertexts(&[(action_index, ct)]).unwrap();
+    let after = z.raw_ironwood_pczt_bytes().unwrap();
+
+    // Identical bytes: accepted, nothing changes.
+    z.add_out_ciphertexts(&[(action_index, ct)]).unwrap();
+    assert_eq!(z.raw_ironwood_pczt_bytes().unwrap(), after);
+    assert!(z.pending_out_ciphertexts().unwrap().is_empty());
+
+    // Different bytes: rejected, nothing changes.
+    let error = z
+        .add_out_ciphertexts(&[(action_index, [7u8; 80])])
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::OutCiphertextConflict { action_index: idx } if idx == action_index
+    ));
+    assert_eq!(z.raw_ironwood_pczt_bytes().unwrap(), after);
+}
+
+/// Duplicates within one batch follow the same rule as re-delivery: identical bytes are
+/// accepted, different bytes are a conflict that stores nothing.
+#[test]
+fn add_out_ciphertexts_rejects_conflicting_duplicates_in_one_batch() {
+    let (mut z, map, fvk) = keyless_two_to_one_psbt("ironwood_v6_keyless_batch_duplicates");
+    let action_index = map.output_action_index(0).unwrap();
+    let ct = kms_out_ciphertext(&z, &fvk, action_index);
+    let before = z.raw_ironwood_pczt_bytes().unwrap();
+
+    let error = z
+        .add_out_ciphertexts(&[(action_index, ct), (action_index, [7u8; 80])])
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::OutCiphertextConflict { action_index: idx } if idx == action_index
+    ));
+    assert_eq!(z.raw_ironwood_pczt_bytes().unwrap(), before);
+    assert_eq!(z.pending_out_ciphertexts().unwrap(), vec![action_index]);
+
+    z.add_out_ciphertexts(&[(action_index, ct), (action_index, ct)])
+        .unwrap();
+    assert!(z.pending_out_ciphertexts().unwrap().is_empty());
+    assert_eq!(
+        z.ironwood_pczt().unwrap().actions()[action_index]
+            .output()
+            .encrypted_note()
+            .out_ciphertext,
+        ct
+    );
+}
+
+/// A spend bundle whose bitset was stripped fails closed: every real output counts as
+/// pending, the gates hold, and the KMS round still completes (re-creating the bitset).
+#[test]
+fn missing_out_ciphertexts_marker_fails_closed() {
+    let seed = "ironwood_v6_keyless_marker_stripped";
+    let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
+    kms_out_ciphertexts(&mut z, &map, &fvk);
+    assert!(z.pending_out_ciphertexts().unwrap().is_empty());
+
+    strip_out_ciphertexts_marker(&mut z);
+    let mut expected = map.output_action_indices().to_vec();
+    expected.sort_unstable();
+    assert_eq!(z.pending_out_ciphertexts().unwrap(), expected);
+    assert!(matches!(
+        z.proof_request(),
+        Err(IronwoodPsbtError::OutCiphertextPending { .. })
+    ));
+
+    // The stripped state survives the PSBT wire too.
+    let bytes = z.serialize_v6();
+    let mut z = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap();
+    assert_eq!(z.pending_out_ciphertexts().unwrap(), expected);
+
+    // Re-delivering (the same KMS response would carry fresh randomness) resolves it.
+    let entries: Vec<_> = map
+        .output_action_indices()
+        .iter()
+        .map(|&action_index| (action_index, kms_out_ciphertext(&z, &fvk, action_index)))
+        .collect();
+    z.add_out_ciphertexts(&entries).unwrap();
+    assert!(z.pending_out_ciphertexts().unwrap().is_empty());
+    let pairs = install_randomizers(&mut z, &map, &ask);
+    install_spend_signatures(&mut z, &pairs, &ask);
+    z.proof_request().unwrap();
+}
+
+/// Frozen once signed: no ciphertext install once a spend-auth signature exists — even for the
+/// already-installed (identical) bytes, which idempotent re-delivery alone would have accepted.
+#[test]
+fn add_out_ciphertexts_rejects_after_a_spend_signature() {
+    let seed = "ironwood_v6_keyless_rule3_spend_sig";
+    let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
+
+    kms_out_ciphertexts(&mut z, &map, &fvk);
+    let pairs = install_randomizers(&mut z, &map, &ask);
+    install_spend_signatures(&mut z, &pairs, &ask);
+
+    let entries: Vec<(usize, [u8; 80])> = map
+        .output_action_indices()
+        .iter()
+        .map(|&action_index| (action_index, [0u8; 80]))
+        .collect();
+    let error = z.add_out_ciphertexts(&entries).unwrap_err();
+    assert!(matches!(error, IronwoodPsbtError::AlreadySigned));
+}
+
+/// The freeze's transparent defense in depth: a shielding PSBT with a collected transparent
+/// signature refuses `add_out_ciphertexts` too.
+#[test]
+fn add_out_ciphertexts_rejects_after_a_transparent_signature() {
+    use crate::bitcoin::secp256k1::Secp256k1;
+
+    let seed = "ironwood_v6_keyless_rule3_transparent_sig";
+    let secp = Secp256k1::new();
+    let wallet_keys = root_wallet_keys(seed);
+    let mut shield = build_shield_psbt(seed);
+    shield
+        .sign_ironwood_v6(&test_wallet_xpriv(seed, 0), &wallet_keys, &secp)
+        .unwrap();
+    assert!(
+        shield
+            .psbt
+            .inputs
+            .iter()
+            .any(|input| !input.partial_sigs.is_empty()),
+        "the transparent round collected a signature"
+    );
+
+    let error = shield.add_out_ciphertexts(&[(0, [0u8; 80])]).unwrap_err();
+    assert!(matches!(error, IronwoodPsbtError::AlreadySigned));
+}
+
+/// The proof request refuses a spend bundle until its ciphertexts, then its randomizers,
+/// then its spend signatures are installed; a shielding bundle is served as-is.
+#[test]
+fn proof_request_requires_ciphertexts_randomizers_then_signatures() {
+    let seed = "ironwood_v6_keyless_proof_request";
+    let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
+
+    let mut outputs = map.output_action_indices().to_vec();
+    outputs.sort_unstable();
+    assert!(matches!(
+        z.proof_request(),
+        Err(IronwoodPsbtError::OutCiphertextPending { action_indices }) if action_indices == outputs
+    ));
+
+    kms_out_ciphertexts(&mut z, &map, &fvk);
+    let mut spends = map.spend_action_indices().to_vec();
+    spends.sort_unstable();
+    assert!(matches!(
+        z.proof_request(),
+        Err(IronwoodPsbtError::RandomizerPending { action_indices }) if action_indices == spends
+    ));
+
+    let pairs = install_randomizers(&mut z, &map, &ask);
+    assert!(matches!(
+        z.proof_request(),
+        Err(IronwoodPsbtError::SpendSignaturePending { action_indices }) if action_indices == spends
+    ));
+
+    install_spend_signatures(&mut z, &pairs, &ask);
+    assert_eq!(
+        z.proof_request().unwrap(),
+        z.raw_ironwood_pczt_bytes().unwrap()
+    );
+
+    let shield = build_shield_psbt("ironwood_v6_keyless_proof_request_shield");
+    assert_eq!(
+        shield.proof_request().unwrap(),
+        shield.raw_ironwood_pczt_bytes().unwrap()
+    );
+}
+
+/// The ciphertexts-first gate covers every path that commits the action data: both sighashes, the
+/// randomizer installer and the spend-signature path — not just the proof request.
+#[test]
+fn pending_out_ciphertexts_gate_sighashes_randomizers_and_signatures() {
+    let seed = "ironwood_v6_keyless_rule1_gates";
+    let (mut z, map, _ak, _fvk, _ask) = keyless_transfer_psbt(seed);
+    let spend_index = map.spend_action_indices()[0];
+    let is_rule1 = |e: &str| e.contains("pending their out_ciphertext");
+
+    let error = z.v6_sig_digest().unwrap_err();
+    assert!(is_rule1(&error), "unexpected: {error}");
+    let error = z.v6_transparent_sighash(0).unwrap_err();
+    assert!(is_rule1(&error), "unexpected: {error}");
+    let error = z
+        .replace_ironwood_spend_rk(spend_index, [1u8; 32])
+        .unwrap_err();
+    assert!(is_rule1(&error), "unexpected: {error}");
+    let error = z
+        .apply_ironwood_spend_signature(spend_index, [0u8; 64])
+        .unwrap_err();
+    assert!(is_rule1(&error), "unexpected: {error}");
+}
+
+/// The full sign-then-prove lifecycle, the same shape as shielding: sign first, then the
+/// finalize step requests the proof and passes it straight to `combine_ironwood_proof`. The
+/// signatures made before proving stay valid (the sig digest excludes the proof), the proof
+/// request survives a PSBT round trip, and exactly that proof reaches the wire.
+#[test]
+fn sign_then_prove_lifecycle_combines_the_requested_proof() {
+    let seed = "ironwood_v6_keyless_sign_then_prove";
+    let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
+
+    kms_out_ciphertexts(&mut z, &map, &fvk);
+    let pairs = install_randomizers(&mut z, &map, &ask);
+    install_spend_signatures(&mut z, &pairs, &ask);
+    let sighash = z.v6_sig_digest().unwrap();
+
+    // Finalize, possibly in another request: the signed PSBT is all KMS needs.
+    let bytes = z.serialize_v6();
+    let z = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap();
+    let request = z.proof_request().unwrap();
+    assert!(
+        crate::zcash::ironwood_pczt::deserialize_pczt(&request)
+            .unwrap()
+            .zkproof()
+            .is_none(),
+        "the request carries no proof; the proof never enters the PSBT"
+    );
+
+    let proof = patterned_proof(2);
+    let raw = z.combine_ironwood_proof(proof.clone(), OsRng).unwrap();
+    assert_eq!(wire_proof(&raw), proof);
+
+    // The spend signatures collected before proving verify against the final digest.
+    let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+    let bundle = tx.ironwood_bundle.as_ref().unwrap();
+    assert_eq!(
+        crate::zcash::v6::compute_v6_sig_digest(&tx, &[], &[]),
+        sighash
+    );
+    for &(action_index, _) in &pairs {
+        let rk = VerificationKey::<SpendAuth>::try_from(bundle.actions[action_index].rk).unwrap();
+        let sig = orchard::primitives::redpallas::Signature::<SpendAuth>::from(
+            bundle.spend_auth_sigs[action_index],
+        );
+        rk.verify(&sighash, &sig)
+            .expect("the pre-proof spend signature verifies on the broadcast transaction");
+    }
+
+    use zebra_chain::serialization::ZcashDeserialize;
+    use zebra_chain::transaction::Transaction as ZebraTx;
+    ZebraTx::zcash_deserialize(&raw[..]).expect("zebra decodes the signed-then-proven transfer");
 }

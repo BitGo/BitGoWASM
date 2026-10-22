@@ -1,4 +1,4 @@
-//! The **keyless** Ironwood spend Constructor (plan §4): build a deshield or
+//! The **keyless** Ironwood spend Constructor: build a deshield or
 //! shielded→shielded bundle from real spends and requested outputs without any viewing key.
 //!
 //! The keyed constructor ([`construct_spend_pczt_multi`]) needs each spend's FVK — the orchard
@@ -18,7 +18,7 @@
 //!   form stays keyless by construction;
 //! - each output's `out_ciphertext` is a random **placeholder** (encrypted under `ovk = ⊥`):
 //!   KMS re-encrypts it under its FVK `ovk` and splices the real one in via
-//!   [`with_out_ciphertext`](super::ironwood_pczt::with_out_ciphertext) (plan §2 step 3).
+//!   [`with_out_ciphertext`](super::ironwood_pczt::with_out_ciphertext).
 //!
 //! Surplus outputs (more outputs than spends) are fabricated as **dummy-spend** actions by an
 //! outputs-only [`Builder`] — reusing orchard's own dummy-spend fabrication (its `dummy_sk`,
@@ -99,7 +99,7 @@ struct ActionOrigin {
 
 /// Constructor: build a keyless Ironwood spend bundle as an orchard PCZT from real spends
 /// and/or requested outputs — the deshield and shielded→shielded Constructor for a build
-/// service that holds no viewing keys (plan §4).
+/// service that holds no viewing keys.
 ///
 /// The bundle has `max(spends.len(), outputs.len())` actions (the Ironwood V3 default flags
 /// enable cross-address transfers, so a spend and an output share an action): where one side
@@ -155,7 +155,7 @@ pub fn construct_spend_pczt_keyless<R: RngCore + CryptoRng>(
         if spec.ovk.is_some() {
             return Err(IronwoodBuildError::OvkNotAllowed { output_index });
         }
-        // A zero-valued output is how a bundle marks fabricated dummies (invariant 4).
+        // A zero-valued output is how a bundle marks fabricated dummies.
         if spec.amount == 0 {
             return Err(IronwoodBuildError::ZeroValueOutput { output_index });
         }
@@ -258,7 +258,7 @@ pub fn construct_spend_pczt_keyless<R: RngCore + CryptoRng>(
 
     let bundle = assemble_bundle(wires, value_sum, anchor)?;
 
-    // Self-check (plan §4 step 4): the Constructor's own output must pass every key-free
+    // Self-check: the Constructor's own output must pass every key-free
     // check the client will later run on it — note commitments, value commitments, the
     // value sum, the witnesses, the placeholder-rk state, and no leaked viewing keys.
     let report = verify_bundle_without_keys(
@@ -283,7 +283,7 @@ pub fn construct_spend_pczt_keyless<R: RngCore + CryptoRng>(
     Ok((bundle, action_map))
 }
 
-/// Validate one keyless spend's note data (plan §4 invariants 1–2): the reconstructed note
+/// Validate one keyless spend's note data: the reconstructed note
 /// must be internally valid, must commit to exactly `cmx`, and its witness must recompute to
 /// the bundle's anchor. The nullifier's *value* is deliberately NOT checked — that needs the
 /// FVK — only that it is a canonical encoding.
@@ -348,7 +348,7 @@ fn real_spend_wire(spec: &IronwoodKeylessSpendSpec, ak: &[u8; 32]) -> SpendWire 
     }
 }
 
-/// Rejection-sample an output note's `rseed` for `rho` (plan §4): a random 32-byte seed is
+/// Rejection-sample an output note's `rseed` for `rho`: a random 32-byte seed is
 /// only usable when `RandomSeed::from_bytes` accepts it.
 fn sample_rseed<R: RngCore>(rng: &mut R, rho: &Rho) -> RandomSeed {
     loop {
@@ -360,7 +360,7 @@ fn sample_rseed<R: RngCore>(rng: &mut R, rho: &Rho) -> RandomSeed {
     }
 }
 
-/// Rejection-sample the action's value-commitment trapdoor (plan §4): a random 32-byte
+/// Rejection-sample the action's value-commitment trapdoor: a random 32-byte
 /// scalar is only usable when it is a canonical field-element encoding.
 fn sample_rcv<R: RngCore>(rng: &mut R) -> ValueCommitTrapdoor {
     loop {
@@ -418,7 +418,7 @@ fn real_output_wire<R: RngCore>(
 
 /// Encrypt an output note: the real `enc_ciphertext` (recoverable by whoever holds the
 /// recipient's `ivk`) and the ephemeral key it rode in on, plus a placeholder `out_ciphertext`
-/// under `ovk = ⊥` — random bytes, replaced by KMS's real one later (plan §2 step 3).
+/// under `ovk = ⊥` — random bytes, replaced by KMS's real one later.
 fn encrypt_output<R: RngCore>(
     note: Note,
     memo: &MemoBytes,
@@ -698,7 +698,7 @@ mod tests {
     }
 
     /// Patch every requested output's `out_ciphertext` to the real encryption under `ovk` —
-    /// what KMS does in the production flow (plan §2 step 3).
+    /// what KMS does in the production flow.
     fn patch_out_ciphertexts(
         bundle: &PcztBundle,
         output_indices: &[usize],
@@ -712,7 +712,7 @@ mod tests {
         deserialize_pczt(&bytes).unwrap()
     }
 
-    /// The oracle round trip (plan PR 5's tests): a bundle built by the keyless Constructor
+    /// The oracle round trip: a bundle built by the keyless Constructor
     /// behaves exactly like one built by the keyed oracle — KMS's `out_ciphertext`s splice in,
     /// the FROST randomizers install, the keyed verifier and the key-free verifier both pass,
     /// and the FROST stand-in signatures verify.
@@ -917,7 +917,7 @@ mod tests {
         assert_eq!(report.value_balance, 10_000_000);
     }
 
-    /// Negative tests, one per constructor invariant (plan §4).
+    /// Negative tests, one per constructor invariant.
     #[test]
     fn rejects_bad_requests() {
         let (specs, anchor, fvk, ak) = fixture();
@@ -1043,7 +1043,7 @@ mod tests {
         ));
     }
 
-    /// No FVK reaches the constructed PCZT (plan PR 5 review focus): every real spend's `fvk`
+    /// No FVK reaches the constructed PCZT: every real spend's `fvk`
     /// is absent, and the wallet FVK's secret-ish half (`nk ‖ rivk`) appears nowhere in the
     /// serialized bytes — only `ak`, the public placeholder `rk`, does.
     #[test]

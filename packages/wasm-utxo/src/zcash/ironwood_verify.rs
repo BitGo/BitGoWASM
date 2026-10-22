@@ -1,24 +1,24 @@
-//! The key-free verifier for Ironwood (Zcash v6) PCZT bundles (plan §5).
+//! The key-free verifier for Ironwood (Zcash v6) PCZT bundles.
 //!
 //! A party without viewing keys — the client co-signing, or a build service — cannot check
 //! nullifier ownership or decrypt anything, but it CAN check that the transaction it is
 //! asked to sign moves exactly the values it was shown:
 //!
-//! - `K1` every output's plaintext note produces its committed `cmx`;
-//! - `K2` every action's `cv_net` commits to its plaintext net value;
+//! - `NoteCommitment`: every output's plaintext note produces its committed `cmx`;
+//! - `CvNet`: every action's `cv_net` commits to its plaintext net value;
 //! - every action keeps its full plaintext (note recipient/value/rho/rseed, `rcv`): the
 //!   prover needs it, and it is what lets anyone reading the PSBT see what moves where;
-//! - `K3` the bundle's committed `value_sum` equals `Σ(v_spend − v_out)` over exactly the
+//! - `ValueSum`: the bundle's committed `value_sum` equals `Σ(v_spend − v_out)` over exactly the
 //!   reported spends and outputs — dummy spends carry value 0, so nothing moves unseen;
-//! - `K4` every real spend's rebuilt note commits to a leaf under the bundle's anchor and
-//!   matches the spend's recorded `cmx`;
-//! - `K5` every real spend's `rk` is either the stored wallet `ak` (placeholder) or
+//! - `SpendWitness`: every real spend's rebuilt note commits to a leaf under the bundle's anchor
+//!   and matches the spend's recorded `cmx`;
+//! - `Rk`: every real spend's `rk` is either the stored wallet `ak` (placeholder) or
 //!   `ak.randomize(alpha)` (installed), consistent with the caller's expectations;
-//! - `K6` no viewing-key material (`fvk`, ZIP-32 derivation) leaks on a real spend;
-//! - `K8` the bundle is an Ironwood V3 bundle with the default flags;
-//! - `K9` value-0 (dummy) outputs only sit on actions with a real spend;
-//! - `K10` every present spend-auth signature verifies against the spend's `rk` over the
-//!   caller's sighash.
+//! - `ViewingKeyPresent`: no viewing-key material (`fvk`, ZIP-32 derivation) leaks on a real spend;
+//! - `BundleVersion`: the bundle is an Ironwood V3 bundle with the default flags;
+//! - `ZeroValueOutput`: value-0 (dummy) outputs only sit on actions with a real spend;
+//! - `SpendSignature`: every present spend-auth signature verifies against the spend's `rk` over
+//!   the caller's sighash.
 //!
 //! Duplicate nullifiers are not re-checked here: `deserialize_pczt` already rejects them.
 //!
@@ -40,12 +40,11 @@ use super::ironwood_build::{
 };
 use super::ironwood_pczt::PcztSpend;
 
-/// The caller's own expectations for the keyless verification (plan §5).
+/// The caller's own expectations for the keyless verification.
 #[derive(Debug, Clone, Default)]
 pub struct KeylessVerifyContext {
     /// The wallet's spend-validating key (`ak`) as stored in the PSBT (proprietary key
-    /// `0x08`). Required for `K5` when there are real spends; `None` skips `K5` (the key
-    /// is not written until plan PR 5).
+    /// `0x08`). Required for `Rk` when there are real spends; `None` skips `Rk`.
     pub stored_ak: Option<[u8; 32]>,
     /// The caller's own `ak`: when given, it must equal `stored_ak` (the client verifies
     /// it is signing for its own wallet).
@@ -54,7 +53,7 @@ pub struct KeylessVerifyContext {
     /// each spend on those actions must match.
     pub expected_randomizers: Vec<(usize, [u8; 32], [u8; 32])>,
     /// The ZIP-244 shielded sig digest to verify present spend-auth signatures against
-    /// (`K10`); `None` skips the check.
+    /// (`SpendSignature`); `None` skips the check.
     pub sighash: Option<[u8; 32]>,
 }
 
@@ -73,8 +72,7 @@ pub struct VerifiedSpend {
     pub cmx: [u8; 32],
     /// The witness's leaf position in the commitment tree.
     pub position: u32,
-    /// Whether the signer replaced the Constructor's placeholder `rk` (the wire marker;
-    /// plan PR 7 derives this from `alpha` instead).
+    /// Whether the signer replaced the Constructor's placeholder `rk` (the wire marker).
     pub randomizer_installed: bool,
     /// Whether a spend-auth signature is present.
     pub signed: bool,
@@ -104,7 +102,7 @@ pub struct IronwoodVerificationReport {
     pub anchor: [u8; 32],
 }
 
-/// Verify an Ironwood PCZT bundle without any viewing keys (plan §5).
+/// Verify an Ironwood PCZT bundle without any viewing keys.
 ///
 /// On success the bundle's values are exactly what the plaintext fields say they are, and
 /// every real spend commits to a leaf under the bundle's anchor: the only transaction a
@@ -115,8 +113,8 @@ pub fn verify_bundle_without_keys(
     bundle: &PcztBundle,
     ctx: &KeylessVerifyContext,
 ) -> Result<IronwoodVerificationReport, IronwoodVerifyError> {
-    // K8: the bundle must be an Ironwood V3 bundle with the default flags — anything else
-    // changes the flag semantics the accounting below relies on.
+    // `BundleVersion`: the bundle must be an Ironwood V3 bundle with the default flags — anything
+    // else changes the flag semantics the accounting below relies on.
     let ironwood_v3 = BundleVersion::ironwood_v3();
     let expected_flags = ironwood_v3
         .default_flags()
@@ -155,7 +153,7 @@ pub fn verify_bundle_without_keys(
         // A missing field could otherwise hide a value from the checks below.
         let (spend_value, output_value, output_recipient) = action_plaintext(action_index, action)?;
 
-        // K1: the output's plaintext note must produce its committed `cmx`.
+        // `NoteCommitment`: the output's plaintext note must produce its committed `cmx`.
         output.verify_note_commitment(spend).map_err(|e| {
             action_error(
                 action_index,
@@ -164,7 +162,7 @@ pub fn verify_bundle_without_keys(
             )
         })?;
 
-        // K2 (F3 fix): `cv_net` must commit to the action's plaintext net value — no FVK is
+        // `CvNet`: `cv_net` must commit to the action's plaintext net value — no FVK is
         // needed for this.
         action
             .verify_cv_net()
@@ -180,10 +178,10 @@ pub fn verify_bundle_without_keys(
                     format!("a dummy spend carries a non-zero value ({spend_value} zatoshi)"),
                 ));
             }
-            // K9: a value-0 output may only sit on an action with a real spend — a value-0
-            // output on a dummy-spend action would be indistinguishable from a fabricated
-            // one in the value-based accounting. The dummy spend's paired output is a REAL
-            // output (the shielding pairing: dummy spend carries the real output).
+            // `ZeroValueOutput`: a value-0 output may only sit on an action with a real spend — a
+            // value-0 output on a dummy-spend action would be indistinguishable from a fabricated
+            // one in the value-based accounting. The dummy spend's paired output is a REAL output
+            // (the shielding pairing: dummy spend carries the real output).
             if output_value == 0 {
                 return Err(action_error(
                     action_index,
@@ -232,7 +230,7 @@ pub fn verify_bundle_without_keys(
         }
     }
 
-    // K3: the committed value_sum must equal Σ(v_spend − v_out) over exactly the reported
+    // `ValueSum`: the committed value_sum must equal Σ(v_spend − v_out) over exactly the reported
     // spends and outputs. Everything left out of the report is value-0 (dummy spends and
     // fabricated outputs are checked above), so the reported values are the whole bundle:
     // nothing moves that the caller is not shown.
@@ -263,7 +261,7 @@ pub fn verify_bundle_without_keys(
 /// The stored spend-validating key: its raw bytes (the placeholder `rk`) and the parsed key.
 type StoredAk = ([u8; 32], VerificationKey<SpendAuth>);
 
-/// K5 setup: the stored `ak` — the wallet's public spend-validating key, which the
+/// `Rk` setup: the stored `ak` — the wallet's public spend-validating key, which the
 /// Constructor also writes verbatim as the placeholder `rk` — parsed as a canonical,
 /// non-identity verification key, and matched against the caller's own when given.
 fn stored_spend_validating_key(
@@ -354,8 +352,8 @@ fn action_plaintext(
     Ok((spend_value, output_value, output_recipient))
 }
 
-/// Run the real-spend-only checks (`K4`, `K5`, `K6`, `K10`) on one action and return its
-/// verified data.
+/// Run the real-spend-only checks (`SpendWitness`, `Rk`, `ViewingKeyPresent`, `SpendSignature`) on
+/// one action and return its verified data.
 fn verify_real_spend(
     bundle: &PcztBundle,
     action_index: usize,
@@ -363,7 +361,7 @@ fn verify_real_spend(
     ctx: &KeylessVerifyContext,
     stored_ak: Option<&StoredAk>,
 ) -> Result<VerifiedSpend, IronwoodVerifyError> {
-    // K4: rebuild the note from plaintext and check it against the witness and the
+    // `SpendWitness`: rebuild the note from plaintext and check it against the witness and the
     // recorded `cmx`.
     let recipient = spend.recipient().ok_or_else(|| {
         action_error(
@@ -436,7 +434,7 @@ fn verify_real_spend(
         ));
     }
 
-    // K6: no viewing-key material may leak on a real spend.
+    // `ViewingKeyPresent`: no viewing-key material may leak on a real spend.
     if spend.fvk().is_some() || spend.zip32_derivation().is_some() {
         return Err(action_error(
             action_index,
@@ -445,12 +443,11 @@ fn verify_real_spend(
         ));
     }
 
-    // K5: the `rk` must be the stored wallet `ak` (placeholder) or `ak.randomize(alpha)`
+    // `Rk`: the `rk` must be the stored wallet `ak` (placeholder) or `ak.randomize(alpha)`
     // (installed), consistent with the caller's expected randomizers.
     //
-    // The reported randomizer state stays marker-based (plan PR 7 derives it from `alpha`
-    // instead): `replace_ironwood_spend_rk` patches the `rk` without installing `alpha`,
-    // so alpha-presence is not yet equivalent to "replaced".
+    // The reported randomizer state is marker-based: `replace_ironwood_spend_rk` patches the `rk`
+    // without installing `alpha`, so alpha-presence is not yet equivalent to "replaced".
     let randomizer_installed =
         crate::zcash::ironwood_pczt::spend_rk_replaced(spend).map_err(|e| {
             action_error(
@@ -516,8 +513,8 @@ fn verify_real_spend(
         }
     }
 
-    // K10: any present spend-auth signature must verify against the spend's `rk` over the
-    // caller's sighash.
+    // `SpendSignature`: any present spend-auth signature must verify against the spend's `rk` over
+    // the caller's sighash.
     if let (Some(sighash), Some(sig)) = (ctx.sighash, spend.spend_auth_sig()) {
         spend.rk().verify(sighash.as_slice(), sig).map_err(|e| {
             action_error(
@@ -669,8 +666,8 @@ mod tests {
         }
     }
 
-    /// The context the tests verify with: no stored `ak` (the `0x08` key is not written until
-    /// plan PR 5), so the `Rk` state checks are skipped and only key-free checks run.
+    /// The context the tests verify with: no stored `ak` (proprietary key `0x08`), so the
+    /// `Rk` state checks are skipped and only key-free checks run.
     fn ctx() -> KeylessVerifyContext {
         KeylessVerifyContext::default()
     }
@@ -682,7 +679,7 @@ mod tests {
     }
 
     /// The wallet's public spend-validating key (`ak`), as the Constructor writes it for the
-    /// placeholder `rk` — and as plan PR 5 stores it under `0x08`.
+    /// placeholder `rk` — and as `add_shielded_spends` stores it under `0x08`.
     fn test_ak() -> [u8; 32] {
         // `ask.randomize(0)` is `ask` itself as a RedPallas signing key.
         let ask = test_ask().randomize(&pasta_curves::pallas::Scalar::ZERO);
@@ -767,8 +764,8 @@ mod tests {
         );
     }
 
-    /// An output whose recipient is withheld would otherwise skip `K1` and drop out of the
-    /// report while its value still balanced `K3`: funds to a recipient nobody is shown.
+    /// An output whose recipient is withheld would otherwise skip `NoteCommitment` and drop out of
+    /// the report while its value still balanced `ValueSum`: funds to a recipient nobody is shown.
     #[test]
     fn output_without_its_recipient_fails_missing_plaintext() {
         let (bytes, _anchor, _recipient) = test_bundle();
@@ -877,7 +874,7 @@ mod tests {
         let bytes = serialize_pczt(&bundle).unwrap();
         // Swap the two real spends' plaintext values (via the action map, so each spec's own
         // action gets the other's value): each action's `cv_net` no longer commits to its net
-        // value, while the bundle totals stay equal, so only `K2` can catch it.
+        // value, while the bundle totals stay equal, so only `CvNet` can catch it.
         let action_a = action_map.spend_action_index(0).unwrap();
         let action_b = action_map.spend_action_index(1).unwrap();
         let spend_a = with_spend_value(&bytes, action_a, 40_000_000).unwrap();
@@ -1122,10 +1119,11 @@ mod tests {
 
     #[test]
     fn zero_value_output_on_a_dummy_spend_fails_zero_value_output() {
-        // A shielding bundle's dummy spend carries a real output; rewrite that output to a
-        // value-0 one with a consistent note commitment, `cv_net` and committed sum, so the
-        // verifier reaches `K9` instead of tripping on `K1`–`K3`: the accounting could no
-        // longer tell it apart from a fabricated dummy output.
+        // A shielding bundle's dummy spend carries a real output; rewrite that output to a value-0
+        // one with a consistent note commitment, `cv_net` and committed sum, so the verifier
+        // reaches `ZeroValueOutput` instead of tripping on the `NoteCommitment`, `CvNet` or
+        // `ValueSum` checks: the accounting could no longer tell it apart from a fabricated dummy
+        // output.
         let (bytes, shield, dummy_action) = shielding_bundle();
         // The output note's rho is the paired SPEND's nullifier (`Rho::from_nf_old`).
         let rho = Option::<Rho>::from(Rho::from_bytes(

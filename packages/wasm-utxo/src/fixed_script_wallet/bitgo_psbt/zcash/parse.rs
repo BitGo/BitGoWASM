@@ -6,8 +6,8 @@
 //! [`ParseTransactionError::UseZcashParse`] instead of silently dropping it. This module
 //! composes that generic machinery with the shielded fold, producing the richer
 //! [`ZcashParsedTransaction`] (per-action output indices, shielded spends, the bundle's
-//! value balance). The plaintext spend info is unverified until the key-free verifier
-//! lands (plan PR 4).
+//! value balance). The key-free verifier checks the bundle before any plaintext value is
+//! returned.
 
 use super::ZcashBitGoPsbt;
 use crate::fixed_script_wallet::bitgo_psbt::{
@@ -18,7 +18,7 @@ use crate::zcash::ironwood_build::OrchardAddressBytes;
 
 /// One shielded (Ironwood) spend, as surfaced by the parse.
 ///
-/// Plaintext values from the PCZT, verified by the key-free verifier (plan §5) before they
+/// Plaintext values from the PCZT, verified by the key-free verifier before they
 /// reach the caller: the rebuilt note commits to a leaf under the bundle's anchor and
 /// matches the recorded `cmx`. What a keyless party cannot check (note ownership,
 /// nullifier validity) can only make the transaction invalid, never misdirected.
@@ -38,8 +38,8 @@ pub struct ZcashShieldedSpend {
     pub position: u32,
     /// The single-receiver Unified Address of the spent note's Orchard receiver.
     pub address: String,
-    /// Whether the signer replaced the Constructor's placeholder `rk` (plan PR 7 derives
-    /// this from `alpha` instead of the wire marker).
+    /// Whether the signer replaced the Constructor's placeholder `rk` (read from the wire
+    /// marker).
     pub rk_replaced: bool,
     /// Whether a spend-auth signature is installed.
     pub signed: bool,
@@ -96,7 +96,7 @@ pub enum ZcashParseTransactionError {
     /// The shielded side could not be read (no usable PCZT, an unencodable address, or a
     /// value overflow).
     Shielded(String),
-    /// The shielded side failed key-free verification (plan §5); the error code is the
+    /// The shielded side failed key-free verification; the error code is the
     /// failing verifier check (`IronwoodVerifyError.<check>`).
     Verify(crate::zcash::ironwood_build::IronwoodVerifyError),
 }
@@ -341,7 +341,7 @@ fn shielded_side(
     {
         return Ok((Vec::new(), Vec::new(), 0));
     }
-    // The keyless verifier (plan §5) runs before any plaintext value leaves here: a
+    // The keyless verifier runs before any plaintext value leaves here: a
     // tampered bundle fails with the failing check's error code. The plaintext itself is
     // left in the PCZT untouched — the prover needs it, and the parse surfaces it.
     let pczt = z

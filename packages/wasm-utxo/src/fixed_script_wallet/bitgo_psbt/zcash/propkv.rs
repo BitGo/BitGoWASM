@@ -98,9 +98,16 @@ pub enum ZecV6KeySubtype {
     /// so ZIP-317 fee estimation still sees the bundle's actions once the PCZT itself is gone.
     IronwoodExtractedCounts = 0x07,
     /// The wallet's spend-validating key (`ak`, 32 bytes) for the stored Ironwood bundle.
-    /// Written by plan PR 5's `add_shielded_spends`; the keyless verifier reads it for the
-    /// `Rk` check. Not written today, so the check only runs once the key exists.
+    /// Written by `add_shielded_spends`; the keyless verifier reads it for the `Rk` check,
+    /// which runs only when the key is present.
     IronwoodSpendValidatingKey = 0x08,
+    /// A little-endian bitset over Ironwood action indices: bit `i` set means action `i`'s
+    /// real output already carries its final `out_ciphertext`. Written all-clear by
+    /// `add_shielded_spends`, updated by `add_out_ciphertexts`, read by
+    /// `pending_out_ciphertexts`. Only spend bundles are tracked (shielding finalizes its
+    /// ciphertexts at signing); a spend bundle without the bitset counts every real output as
+    /// pending, so stripping the key cannot skip the ciphertexts-first rule.
+    IronwoodOutCiphertextsSet = 0x09,
 }
 
 fn set_zec_v6(
@@ -293,7 +300,7 @@ pub fn clear_ironwood_unified_addresses(psbt: &mut miniscript::bitcoin::psbt::Ps
 }
 
 /// Store the wallet's spend-validating key (`ak`, 32 bytes) for the stored Ironwood bundle.
-/// Written when the bundle is installed (plan PR 5's `add_shielded_spends`); the keyless
+/// Written when the bundle is installed; the keyless
 /// verifier reads it for the `Rk` check.
 pub fn set_ironwood_spend_validating_key(
     psbt: &mut miniscript::bitcoin::psbt::Psbt,
@@ -330,6 +337,18 @@ pub fn set_transparent_output_unified_address(
         key: (output_index as u32).to_le_bytes().to_vec(),
     };
     psbt.proprietary.insert(key, ua.as_bytes().to_vec());
+}
+
+/// Store the `IronwoodOutCiphertextsSet` bitset ([`ZecV6KeySubtype::IronwoodOutCiphertextsSet`]):
+/// one bit per action index, little-endian (bit `i` = byte `i / 8`, mask `1 << (i % 8)`), set
+/// when that action's real output carries its final `out_ciphertext`.
+pub fn set_ironwood_out_ciphertexts_set(psbt: &mut miniscript::bitcoin::psbt::Psbt, bits: Vec<u8>) {
+    set_zec_v6(psbt, ZecV6KeySubtype::IronwoodOutCiphertextsSet, bits);
+}
+
+/// Fetch the `IronwoodOutCiphertextsSet` bitset, if present.
+pub fn get_ironwood_out_ciphertexts_set(psbt: &miniscript::bitcoin::psbt::Psbt) -> Option<Vec<u8>> {
+    get_zec_v6(psbt, ZecV6KeySubtype::IronwoodOutCiphertextsSet)
 }
 
 /// Fetch the Unified Address string stored by [`set_transparent_output_unified_address`] for
