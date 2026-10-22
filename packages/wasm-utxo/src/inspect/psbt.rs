@@ -793,7 +793,7 @@ pub fn parse_tx_bytes_with_network(
 
 /// Parsing of v6 (Ironwood) shielding PSBTs at unsigned/half-signed/fully-signed transparent
 /// signing states. Native-only (orchard + zebra), matching
-/// `bitgo_psbt::zcash_psbt::ironwood_v6_tests`.
+/// `bitgo_psbt::zcash::tests::ironwood`.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod ironwood_v6_tests {
     use super::*;

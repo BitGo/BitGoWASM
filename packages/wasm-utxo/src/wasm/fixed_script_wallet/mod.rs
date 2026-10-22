@@ -1368,7 +1368,7 @@ impl BitGoPsbt {
     /// Get the Zcash consensus branch ID from the PSBT proprietary map (returns None for non-Zcash PSBTs)
     pub fn consensus_branch_id(&self) -> Option<u32> {
         use crate::fixed_script_wallet::bitgo_psbt::{
-            propkv::get_zec_consensus_branch_id, BitGoPsbt as InnerBitGoPsbt,
+            zcash::propkv::get_zec_consensus_branch_id, BitGoPsbt as InnerBitGoPsbt,
         };
         match &self.psbt {
             InnerBitGoPsbt::Zcash(z, _) => get_zec_consensus_branch_id(&z.psbt),
