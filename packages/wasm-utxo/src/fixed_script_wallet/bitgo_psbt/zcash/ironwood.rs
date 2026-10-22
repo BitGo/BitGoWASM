@@ -5,8 +5,7 @@
 
 use miniscript::bitcoin::Transaction;
 
-use super::propkv;
-use super::{BitGoPsbt, ParseTransactionError, ParsedOutput, ZcashBitGoPsbt};
+use super::{BitGoPsbt, ZcashBitGoPsbt};
 
 /// One requested Ironwood shielded output, as passed to
 /// [`ZcashBitGoPsbt::add_ironwood_outputs`].
@@ -70,6 +69,12 @@ pub struct IronwoodSpendInfo {
     pub value: u64,
     /// The nullifier this spend reveals (committed in the action data).
     pub nullifier: [u8; 32],
+    /// Raw 43-byte Orchard recipient of the spent note.
+    pub recipient: crate::zcash::ironwood_build::OrchardAddressBytes,
+    /// Whether the signer replaced the Constructor's placeholder `rk` (the wire marker).
+    pub rk_replaced: bool,
+    /// Whether a spend-auth signature is installed.
+    pub signed: bool,
 }
 
 /// The spend/output/fee accounting view of the stored PCZT: real spends, real outputs, the
@@ -687,10 +692,17 @@ impl ZcashBitGoPsbt {
                     .value()
                     .map(|v| v.inner())
                     .ok_or_else(|| "real spend is missing its plaintext value".to_string())?;
+                let recipient = spend
+                    .recipient()
+                    .map(|address| address.to_raw_address_bytes())
+                    .ok_or_else(|| "real spend is missing its plaintext recipient".to_string())?;
                 Ok(IronwoodSpendInfo {
                     action_index,
                     value,
                     nullifier: spend.nullifier().to_bytes(),
+                    recipient,
+                    rk_replaced: crate::zcash::ironwood_pczt::spend_rk_replaced(spend)?,
+                    signed: spend.spend_auth_sig().is_some(),
                 })
             })
             .collect()
@@ -1055,78 +1067,4 @@ pub(crate) fn estimated_script_sig_len(input: &crate::bitcoin::psbt::Input) -> u
         Some(redeem) => zip317::p2sh_multisig_script_sig_len(redeem.len()),
         None => zip317::p2pkh_script_sig_len(),
     }
-}
-
-/// The synthesized `ParsedOutput` for every one of this PSBT's shielded (Ironwood) outputs,
-/// paired with its value — empty if this isn't a v6 (Ironwood) PSBT, or it is but no shielded
-/// output has been added yet. Shared by `parse_transaction_with_wallet_keys` (which also folds
-/// each value into `miner_fee`/`spend_amount`) and `parse_outputs_with_wallet_keys` (which only
-/// needs the output entries).
-///
-/// The shielded outputs live in a proprietary-map PCZT rather than `unsigned_tx.output`, so
-/// plain transparent-output parsing never sees them; this is how callers surface them
-/// explicitly.
-pub(crate) fn fold_shielded_outputs(
-    psbt: &BitGoPsbt,
-) -> Result<Vec<(ParsedOutput, u64)>, ParseTransactionError> {
-    let BitGoPsbt::Zcash(z, _) = psbt else {
-        return Ok(Vec::new());
-    };
-    let infos = z
-        .ironwood_shielded_outputs_info()
-        .map_err(ParseTransactionError::ShieldedOutput)?;
-    infos
-        .into_iter()
-        .map(|(action_index, amount, recipient)| {
-            // Prefer the caller's original Unified Address (if `add_ironwood_outputs` was
-            // given one for this action): it may carry a transparent/Sapling receiver
-            // alongside the Orchard one, which a single-receiver reconstruction from
-            // `recipient` alone cannot recover.
-            let address = match propkv::get_ironwood_unified_address(&z.psbt, action_index) {
-                Some(ua) => ua,
-                None => crate::zcash::unified_address::encode_orchard_receiver(
-                    &recipient,
-                    psbt.network().to_coin_name(),
-                )
-                .map_err(|e| ParseTransactionError::ShieldedOutput(e.to_string()))?,
-            };
-            Ok((
-                ParsedOutput {
-                    address: Some(address),
-                    // No scriptPubKey exists for a shielded output; the raw receiver is
-                    // still available here (not a scriptPubKey, but the same "raw
-                    // output-destination bytes" role this field plays for transparent
-                    // outputs).
-                    script: recipient.to_vec(),
-                    value: amount,
-                    script_id: None,
-                    paygo: false,
-                    derivation_path: None,
-                    is_shielded: Some(true),
-                },
-                amount,
-            ))
-        })
-        .collect()
-}
-
-/// Total value (zatoshi) of this PSBT's real shielded (Ironwood) spends — `0` if this isn't a
-/// v6 (Ironwood) PSBT, or no shielded spend has been added. Like the shielded outputs, the
-/// spends live in the proprietary-map PCZT, invisible to transparent-input parsing, so
-/// `parse_transaction_with_wallet_keys` folds this into its input total.
-pub(crate) fn fold_shielded_spend_total(psbt: &BitGoPsbt) -> Result<u64, ParseTransactionError> {
-    let BitGoPsbt::Zcash(z, _) = psbt else {
-        return Ok(0);
-    };
-    z.ironwood_shielded_spends_info()
-        .map_err(ParseTransactionError::ShieldedSpend)?
-        .iter()
-        .try_fold(0u64, |total, spend| {
-            total.checked_add(spend.value).ok_or_else(|| {
-                ParseTransactionError::ShieldedSpend(format!(
-                    "action {}: value overflow",
-                    spend.action_index
-                ))
-            })
-        })
 }

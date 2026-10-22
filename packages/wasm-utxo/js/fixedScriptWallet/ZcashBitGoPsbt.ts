@@ -8,6 +8,7 @@ import {
   BitGoPsbt,
   type CreateEmptyOptions,
   type HydrationUnspent,
+  type ParsedInput,
   type ParsedOutput,
 } from "./BitGoPsbt.js";
 import { ZcashTransaction, type ITransaction } from "../transaction.js";
@@ -15,6 +16,12 @@ import { ZcashTransaction, type ITransaction } from "../transaction.js";
 /** Zcash network names */
 export type ZcashNetworkName = "zcash" | "zcashTest" | "zec" | "tzec";
 
+/**
+ * A transparent Zcash input. Same shape as {@link ParsedInput}; the additive
+ * `isShielded: false` lets callers discriminate inputs uniformly across the Zcash parse
+ * results (shielded spends come back as `ZcashShieldedSpend`s instead).
+ */
+export type ZcashParsedInput = ParsedInput & { isShielded: false };
 export type ZcashParsedOutput = ParsedOutput & {
   /**
    * True for a shielded (Orchard/Ironwood) output. Such an output has no `unsigned_tx` entry of
@@ -83,7 +90,10 @@ export type CreateEmptyZcashWithConsensusBranchIdOptions = CreateEmptyOptions & 
  * const psbt = ZcashBitGoPsbt.fromBytes(bytes, "zcash");
  * ```
  */
-export class ZcashBitGoPsbt extends BitGoPsbt<ZcashParsedOutput> {
+export class ZcashBitGoPsbt<
+  TOutput extends ZcashParsedOutput = ZcashParsedOutput,
+  TInput extends ZcashParsedInput = ZcashParsedInput,
+> extends BitGoPsbt<TOutput, TInput> {
   /**
    * Create an empty Zcash PSBT with consensus branch ID determined from block height
    *

@@ -13,6 +13,7 @@ pub use crate::zcash::transaction::{
 };
 
 pub(crate) mod ironwood;
+pub(crate) mod parse;
 pub(crate) mod propkv;
 pub(crate) mod v6;
 
@@ -21,7 +22,7 @@ pub use ironwood::{
 };
 pub use v6::VerifyV6SignatureError;
 
-use super::{psbt_wallet_input, BitGoPsbt, DeserializeError, ParseTransactionError, ParsedOutput};
+use super::{psbt_wallet_input, BitGoPsbt, DeserializeError};
 
 /// Tests for the Zcash modules, split by subject in [`tests`].
 #[cfg(test)]

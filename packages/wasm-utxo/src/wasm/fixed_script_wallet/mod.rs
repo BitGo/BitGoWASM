@@ -847,6 +847,16 @@ impl BitGoPsbt {
             .map(|ecpair| ecpair.get_public_key())
             .collect();
 
+        // A Zcash PSBT routes to the Zcash parse, which surfaces the shielded side.
+        if let crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::Zcash(..) = &self.psbt {
+            return zcash_psbt::parse_transaction_with_wallet_keys(
+                &self.psbt,
+                wallet_keys,
+                replay_protection,
+                &pubkeys,
+            );
+        }
+
         // Call the Rust implementation
         let parsed_tx = self
             .psbt
@@ -874,6 +884,11 @@ impl BitGoPsbt {
             .iter()
             .map(|ecpair| ecpair.get_public_key())
             .collect();
+
+        // A Zcash PSBT routes to the Zcash parse, which surfaces the shielded side.
+        if let crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::Zcash(..) = &self.psbt {
+            return zcash_psbt::parse_outputs_with_wallet_keys(&self.psbt, wallet_keys, &pubkeys);
+        }
 
         // Call the Rust implementation
         let parsed_outputs = self

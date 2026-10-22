@@ -2380,21 +2380,147 @@ fn spend_bundle_accounting_skips_dummy_outputs_and_counts_spends() {
     assert_eq!(spends.len(), 1);
     assert_eq!(spends[0].value, 100_000_000);
 
-    // Transaction parsing folds the shielded spend into the input total, so the unshield's
-    // fee is the 1_000-zatoshi difference rather than an underflow.
+    // The Zcash parse folds the shielded spend into the input total, so the unshield's
+    // fee is the 1_000-zatoshi difference rather than an underflow. The generic parse
+    // refuses the PSBT outright instead of dropping the shielded side.
     let psbt = BitGoPsbt::Zcash(z, Network::ZcashTestnet);
-    let parsed = psbt
+    let generic_error = psbt
         .parse_transaction_with_wallet_keys(
+            &wallet_keys,
+            &crate::fixed_script_wallet::ReplayProtection::new(vec![]),
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(
+        crate::error::WasmErrorCode::code(&generic_error),
+        "ParseTransactionError.UseZcashParse"
+    );
+
+    let parsed =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_transaction_with_wallet_keys(
+            &psbt,
             &wallet_keys,
             &crate::fixed_script_wallet::ReplayProtection::new(vec![]),
             &[],
         )
         .unwrap();
     assert_eq!(parsed.miner_fee, 1_000);
-    assert!(parsed
-        .outputs
-        .iter()
-        .all(|output| output.is_shielded != Some(true)));
+    assert!(parsed.outputs.iter().all(|output| !output.is_shielded));
+    assert!(parsed.is_ironwood_v6);
+    assert_eq!(parsed.value_balance, 100_000_000);
+    let crate::fixed_script_wallet::bitgo_psbt::zcash::parse::ZcashParsedInputs::Shielded(
+        shielded_spends,
+    ) = &parsed.inputs
+    else {
+        panic!("a deshield parses as shielded inputs");
+    };
+    assert_eq!(shielded_spends.len(), 1);
+    assert_eq!(shielded_spends[0].value, 100_000_000);
+    assert_eq!(shielded_spends[0].nullifier, spends[0].nullifier);
+    assert_eq!(
+        shielded_spends[0].recipient,
+        test_spend_request().0.recipient
+    );
+    assert!(!shielded_spends[0].rk_replaced);
+    assert!(!shielded_spends[0].signed);
+}
+
+/// The Zcash parse reports each spend's randomizer and signature state from the PCZT
+/// rather than assuming the Constructor's placeholder state.
+#[test]
+fn zcash_parse_reports_spend_signing_state() {
+    let (mut z, wallet_keys) = build_unshield_psbt("ironwood_v6_parse_signing_state");
+    let parse_spend = |z: &ZcashBitGoPsbt| {
+        let psbt = BitGoPsbt::Zcash(z.clone(), Network::ZcashTestnet);
+        let parsed =
+            crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_transaction_with_wallet_keys(
+                &psbt,
+                &wallet_keys,
+                &crate::fixed_script_wallet::ReplayProtection::new(vec![]),
+                &[],
+            )
+            .unwrap();
+        match parsed.inputs {
+            crate::fixed_script_wallet::bitgo_psbt::zcash::parse::ZcashParsedInputs::Shielded(
+                mut spends,
+            ) => spends.remove(0),
+            _ => panic!("a deshield parses as shielded inputs"),
+        }
+    };
+
+    let (_req, _anchor, ask) = test_spend_request();
+    let (rsk, rk) = randomized_spend_key(&ask);
+    z.replace_ironwood_spend_rk(0, rk).unwrap();
+    let spend = parse_spend(&z);
+    assert!(spend.rk_replaced);
+    assert!(!spend.signed);
+
+    let sighash = z.v6_sig_digest().unwrap();
+    let sig = rsk.sign(OsRng, &sighash);
+    z.apply_ironwood_spend_signature(0, <[u8; 64]>::from(&sig))
+        .unwrap();
+    let spend = parse_spend(&z);
+    assert!(spend.rk_replaced);
+    assert!(spend.signed);
+}
+
+/// Until the one-input-kind rule lands on the build side, the Zcash parse refuses a PSBT
+/// that mixes transparent inputs with shielded spends rather than dropping either side.
+#[test]
+fn zcash_parse_rejects_mixed_input_kinds() {
+    let wallet_keys = root_wallet_keys("ironwood_v6_parse_mixed");
+    let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
+    let mut psbt =
+        BitGoPsbt::new_zcash_v6_at_height(Network::ZcashTestnet, &wallet_keys, nu6_3, None, None)
+            .unwrap();
+    psbt.add_wallet_input(
+        Txid::from_byte_array([0x33u8; 32]),
+        0,
+        200_000_000,
+        &wallet_keys,
+        ScriptId { chain: 0, index: 0 },
+        WalletInputOptions::default(),
+    )
+    .unwrap();
+    let BitGoPsbt::Zcash(mut z, network) = psbt else {
+        panic!("expected Zcash PSBT");
+    };
+    z.add_transparent_output(
+        miniscript::bitcoin::ScriptBuf::from(vec![0x76u8, 0xa9, 0x14, 0x88, 0xac]),
+        299_999_000,
+        None,
+    )
+    .unwrap();
+    let (req, anchor, _ask) = test_spend_request();
+    z.add_ironwood_actions(&[req], &[], &anchor, OsRng).unwrap();
+
+    let psbt = BitGoPsbt::Zcash(z, network);
+    let error =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_transaction_with_wallet_keys(
+            &psbt,
+            &wallet_keys,
+            &crate::fixed_script_wallet::ReplayProtection::new(vec![]),
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(
+        crate::error::WasmErrorCode::code(&error),
+        "ZcashParseTransactionError.MixedInputKinds"
+    );
+}
+
+/// Transparent failures in the Zcash parse keep the coin-neutral `ParseTransactionError.*`
+/// codes: routing every Zcash PSBT through the Zcash parse changes no existing error code.
+#[test]
+fn zcash_parse_keeps_transparent_error_codes() {
+    let error =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::ZcashParseTransactionError::from(
+            crate::fixed_script_wallet::bitgo_psbt::ParseTransactionError::FeeCalculation,
+        );
+    assert_eq!(
+        crate::error::WasmErrorCode::code(&error),
+        "ParseTransactionError.FeeCalculation"
+    );
 }
 
 /// `apply_ironwood_spend_signature` must refuse to ingest a spend-auth signature while a
@@ -2464,8 +2590,10 @@ fn shielding_v6_keeps_the_bitcoin_weight_virtual_size() {
     assert!(z.raw_ironwood_pczt_bytes().is_some());
     let weight_vsize = z.psbt.unsigned_tx.weight().to_vbytes_ceil();
 
-    let parsed = BitGoPsbt::Zcash(z, Network::ZcashTestnet)
-        .parse_transaction_with_wallet_keys(
+    let psbt = BitGoPsbt::Zcash(z, Network::ZcashTestnet);
+    let parsed =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_transaction_with_wallet_keys(
+            &psbt,
             &RootWalletKeys::new(get_test_wallet_keys(seed)),
             &crate::fixed_script_wallet::ReplayProtection::new(vec![]),
             &[],

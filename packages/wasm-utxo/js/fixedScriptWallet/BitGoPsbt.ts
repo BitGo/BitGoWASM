@@ -55,8 +55,11 @@ export type ParsedOutput = {
   derivationPath: string | null;
 };
 
-export type ParsedTransaction<TOutput extends ParsedOutput = ParsedOutput> = {
-  inputs: ParsedInput[];
+export type ParsedTransaction<
+  TOutput extends ParsedOutput = ParsedOutput,
+  TInput extends ParsedInput = ParsedInput,
+> = {
+  inputs: TInput[];
   outputs: TOutput[];
   spendAmount: bigint;
   minerFee: bigint;
@@ -135,7 +138,10 @@ export type HydrationUnspent =
   | { chain: number; index: number; value: bigint } // wallet input
   | { pubkey: Uint8Array; value: bigint }; // P2SH-P2PK replay protection input
 
-export class BitGoPsbt<TOutput extends ParsedOutput = ParsedOutput>
+export class BitGoPsbt<
+    TOutput extends ParsedOutput = ParsedOutput,
+    TInput extends ParsedInput = ParsedInput,
+  >
   extends PsbtBase<WasmBitGoPsbt>
   implements IPsbtWithAddress
 {
@@ -619,7 +625,7 @@ export class BitGoPsbt<TOutput extends ParsedOutput = ParsedOutput>
   parseTransactionWithWalletKeys(
     walletKeys: WalletKeysArg,
     options: ParseTransactionOptions,
-  ): ParsedTransaction<TOutput> {
+  ): ParsedTransaction<TOutput, TInput> {
     const keys = RootWalletKeys.from(walletKeys);
     const rp = ReplayProtection.from(options.replayProtection, this._wasm.network());
     const pubkeys = options.payGoPubkeys?.map((arg) => ECPair.from(arg).wasm);
@@ -627,7 +633,7 @@ export class BitGoPsbt<TOutput extends ParsedOutput = ParsedOutput>
       keys.wasm,
       rp.wasm,
       pubkeys,
-    ) as ParsedTransaction<TOutput>;
+    ) as ParsedTransaction<TOutput, TInput>;
   }
 
   /**
