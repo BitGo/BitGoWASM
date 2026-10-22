@@ -147,6 +147,10 @@ pub enum IronwoodBuildError {
     BadRecipient,
     /// The anchor bytes are not a valid Ironwood note-commitment-tree root.
     BadAnchor,
+    /// An Ironwood output must carry a positive value: a zero-valued output is how the
+    /// construction marks fabricated dummy outputs, so accepting one from a caller would
+    /// make real and fabricated outputs indistinguishable (plan F8).
+    ZeroValueOutput { output_index: usize },
     /// The orchard builder rejected the bundle parameters.
     Builder(String),
     /// The orchard builder rejected the output.
@@ -250,6 +254,27 @@ pub enum IronwoodVerifyCheck {
     CvNet,
     /// The output note does not produce the committed `cmx`.
     NoteCommitment,
+    /// The bundle's committed `value_sum` does not equal the plaintext
+    /// `Σ(v_spend − v_out)`.
+    ValueSum,
+    /// The real spend's rebuilt note does not commit to a leaf under the bundle's anchor
+    /// (or does not match the spend's recorded `cmx`).
+    SpendWitness,
+    /// A real spend leaks viewing-key material (`fvk` or a ZIP-32 derivation) on the wire.
+    ViewingKeyPresent,
+    /// The bundle is not an Ironwood V3 bundle with the default flags.
+    BundleVersion,
+    /// A value-0 (dummy) output is paired with a dummy spend, so the value-based
+    /// accounting cannot distinguish it from a real output.
+    ZeroValueOutput,
+    /// A spend-auth signature does not verify against the spend's `rk` over the caller's
+    /// sighash.
+    SpendSignature,
+    /// An action is missing a plaintext field (note recipient/value/rho/rseed or the
+    /// value-commitment trapdoor) that the checks and the prover rely on.
+    MissingPlaintext,
+    /// A fabricated (dummy) spend carries a non-zero value.
+    DummySpendValue,
 }
 
 /// The full orchard Verifier role's failure modes (see [`verify_ironwood_spends`]).
@@ -277,6 +302,14 @@ impl core::fmt::Display for IronwoodVerifyCheck {
             Self::Rk => "rk",
             Self::CvNet => "cv_net",
             Self::NoteCommitment => "note commitment",
+            Self::ValueSum => "value sum",
+            Self::SpendWitness => "spend witness",
+            Self::ViewingKeyPresent => "viewing key present",
+            Self::BundleVersion => "bundle version",
+            Self::ZeroValueOutput => "zero-value output",
+            Self::SpendSignature => "spend signature",
+            Self::MissingPlaintext => "missing plaintext",
+            Self::DummySpendValue => "dummy spend value",
         };
         f.write_str(s)
     }
@@ -322,6 +355,11 @@ impl core::fmt::Display for IronwoodBuildError {
             Self::BadAnchor => write!(f, "ironwood-build: invalid anchor bytes"),
             Self::Builder(e) => write!(f, "ironwood-build: builder error: {e}"),
             Self::Output(e) => write!(f, "ironwood-build: output error: {e}"),
+            Self::ZeroValueOutput { output_index } => write!(
+                f,
+                "ironwood-build: output {output_index} has a zero value; Ironwood outputs \
+                 must carry a positive value"
+            ),
             Self::Finalize(e) => write!(f, "ironwood-build: IO finalization failed: {e}"),
             Self::Extract(e) => write!(f, "ironwood-build: extractor error: {e}"),
             Self::EmptyBundle => write!(f, "ironwood-build: bundle has no actions"),
@@ -584,7 +622,10 @@ pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
             .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
     }
 
-    for spec in outputs {
+    for (output_index, spec) in outputs.iter().enumerate() {
+        if spec.amount == 0 {
+            return Err(IronwoodBuildError::ZeroValueOutput { output_index });
+        }
         let recipient = Option::from(Address::from_raw_address_bytes(&spec.recipient))
             .ok_or(IronwoodBuildError::BadRecipient)?;
         let ovk = spec.ovk.or(default_ovk).map(OutgoingViewingKey::from);
@@ -804,7 +845,9 @@ pub fn verify_spend_pczt(bundle: &PcztBundle) -> Result<(), IronwoodBuildError> 
                 IronwoodBuildError::Verify(format!("output action {i}: note commitment: {e}"))
             })?;
         }
-        if spend.fvk().is_some() && output.recipient().is_some() {
+        // F3 fix: `cv_net` commits to the plaintext net value — no FVK is needed for that,
+        // so the check runs whenever both sides carry their values.
+        if spend.value().is_some() && output.value().is_some() {
             action.verify_cv_net().map_err(|e| {
                 IronwoodBuildError::Verify(format!("action {i}: value commitment: {e}"))
             })?;

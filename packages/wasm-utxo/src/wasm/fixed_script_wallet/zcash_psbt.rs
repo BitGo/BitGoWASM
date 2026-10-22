@@ -774,6 +774,10 @@ impl TryIntoJsValue for ZcashShieldedSpend {
             "value" => self.value,
             "recipient" => self.recipient.to_vec(),
             "nullifier" => self.nullifier.to_vec(),
+            // Recomputed from the verified plaintext (the keyless verifier's K4).
+            "cmx" => self.cmx.to_vec(),
+            "position" => self.position,
+            "address" => self.address,
             "randomizer" => randomizer.to_string(),
             "signed" => self.signed,
         )

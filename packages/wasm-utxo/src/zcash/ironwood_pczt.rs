@@ -20,9 +20,8 @@ use serde::{Deserialize, Serialize};
 
 use orchard::bundle::BundleVersion;
 use orchard::note::{NoteVersion, Nullifier};
-use orchard::pczt::{
-    Action as PcztAction, Bundle as PcztBundle, Output as PcztOutput, Spend as PcztSpend,
-};
+pub(crate) use orchard::pczt::Spend as PcztSpend;
+use orchard::pczt::{Action as PcztAction, Bundle as PcztBundle, Output as PcztOutput};
 use orchard::primitives::redpallas;
 use orchard::value::Sign;
 use orchard::{ProtocolVersion, ValuePool};
@@ -386,6 +385,120 @@ pub fn with_spend_alpha(
             .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
             .spend
             .alpha = alpha;
+        Ok(())
+    })
+}
+
+/// Test-only: the wire action at `action_index`, for the tamper patchers below.
+#[cfg(test)]
+fn wire_action(
+    wire: &mut BundleWire,
+    action_index: usize,
+) -> Result<&mut ActionWire, IronwoodPcztError> {
+    wire.actions
+        .get_mut(action_index)
+        .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))
+}
+
+/// Test-only: replace one real spend's Merkle witness in the wire form (plan PR 4's
+/// `SpendWitness` tamper test).
+#[cfg(test)]
+pub(crate) fn with_spend_witness_for_test(
+    bytes: &[u8],
+    action_index: usize,
+    position: u32,
+    auth_path: &[[u8; 32]],
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        wire_action(wire, action_index)?.spend.witness = Some(WitnessWire {
+            position,
+            auth_path: auth_path.to_vec(),
+        });
+        Ok(())
+    })
+}
+
+/// Test-only: replace the bundle's committed `value_sum` in the wire form (plan PR 4's
+/// `ValueSum` tamper test).
+#[cfg(test)]
+pub(crate) fn with_value_sum_for_test(
+    bytes: &[u8],
+    magnitude: u64,
+    negative: bool,
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        wire.value_sum_magnitude = magnitude;
+        wire.value_sum_negative = negative;
+        Ok(())
+    })
+}
+
+/// Test-only: drop one action output's plaintext `recipient` in the wire form, leaving its
+/// value in place (plan PR 4's `MissingPlaintext` tamper test).
+#[cfg(test)]
+pub(crate) fn without_output_recipient_for_test(
+    bytes: &[u8],
+    action_index: usize,
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        wire_action(wire, action_index)?.output.recipient = None;
+        Ok(())
+    })
+}
+
+/// Test-only: rewrite one action so it consistently carries a different output note and
+/// net value — output `value`/`rseed`/`cmx`, the action's `cv_net`/`rcv` — together with
+/// the bundle's committed `value_sum`, so a tamper test reaches the check it targets
+/// instead of tripping an earlier one.
+#[cfg(test)]
+pub(crate) struct ActionRewriteForTest {
+    pub(crate) action_index: usize,
+    pub(crate) output_value: u64,
+    pub(crate) output_rseed: [u8; 32],
+    pub(crate) output_cmx: [u8; 32],
+    pub(crate) spend_value: Option<u64>,
+    pub(crate) cv_net: [u8; 32],
+    pub(crate) rcv: [u8; 32],
+    pub(crate) value_sum_magnitude: u64,
+    pub(crate) value_sum_negative: bool,
+}
+
+#[cfg(test)]
+pub(crate) fn with_action_rewrite_for_test(
+    bytes: &[u8],
+    rewrite: &ActionRewriteForTest,
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        let action = wire_action(wire, rewrite.action_index)?;
+        action.output.value = Some(rewrite.output_value);
+        action.output.rseed = Some(rewrite.output_rseed);
+        action.output.cmx = rewrite.output_cmx;
+        if let Some(value) = rewrite.spend_value {
+            action.spend.value = Some(value);
+        }
+        action.cv_net = rewrite.cv_net;
+        action.rcv = Some(rewrite.rcv);
+        wire.value_sum_magnitude = rewrite.value_sum_magnitude;
+        wire.value_sum_negative = rewrite.value_sum_negative;
+        Ok(())
+    })
+}
+
+/// Test-only: replace one action output's plaintext `recipient` in the wire form (a valid
+/// 43-byte Orchard address), producing a PCZT whose output note no longer commits to its
+/// `cmx`. Exists for the tamper tests (plan PR 4) and the TS tampered-parse fixture.
+#[cfg(test)]
+pub(crate) fn with_output_recipient_for_test(
+    bytes: &[u8],
+    action_index: usize,
+    recipient: &[u8; 43],
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        wire.actions
+            .get_mut(action_index)
+            .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
+            .output
+            .recipient = Some(recipient.to_vec());
         Ok(())
     })
 }

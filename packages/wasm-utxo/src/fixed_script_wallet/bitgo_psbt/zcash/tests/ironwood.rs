@@ -2006,24 +2006,22 @@ fn zip317_ironwood_term_matches_the_stored_action_count() {
 #[test]
 fn ironwood_bundle_info_rejects_a_tampered_plaintext_value() {
     // The spend's plaintext value is not bound by the proofs (only `cv_net`/`cm` are), so a
-    // plaintext that disagrees with the bundle's committed `value_sum` must be caught by the
-    // accounting cross-check rather than silently flowing into the fee.
+    // plaintext that disagrees with the bundle's commitments must be caught by the keyless
+    // verifier rather than silently flowing into the fee: the action's own `cv_net` (`K2`)
+    // rejects it before the bundle-level `value_sum` cross-check (`K3`) is reached.
     let (mut z, _keys) = build_unshield_psbt("ironwood_v6_tampered_plaintext");
 
     // The honest bundle accounts cleanly: fee = 0 - 99_999_000 + 100_000_000.
     assert_eq!(z.ironwood_bundle_info().unwrap().fee, 1_000);
 
     // Tamper the spend plaintext value (+1 zatoshi) without touching the committed
-    // value_sum, re-store, and expect the cross-check to reject it.
+    // value_sum or cv_net, re-store, and expect the verifier to reject it.
     let bytes =
         crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::get_ironwood_pczt(&z.psbt).unwrap();
     let tampered = crate::zcash::ironwood_pczt::with_spend_value(&bytes, 0, 100_000_001).unwrap();
     crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::set_ironwood_pczt(&mut z.psbt, tampered);
     let err = z.ironwood_bundle_info().unwrap_err();
-    assert!(
-        err.contains("inconsistent with the bundle's committed value_sum"),
-        "unexpected: {err}"
-    );
+    assert!(err.contains("cv_net check"), "unexpected: {err}");
 }
 
 /// Fixture bundle of [`build_signed_multi_spend_psbt`], factored out for clippy's
@@ -2423,6 +2421,15 @@ fn spend_bundle_accounting_skips_dummy_outputs_and_counts_spends() {
     );
     assert!(!shielded_spends[0].rk_replaced);
     assert!(!shielded_spends[0].signed);
+    // The spend's address is its own receiver's UA — never an output's stored UA.
+    assert_eq!(
+        shielded_spends[0].address,
+        crate::zcash::unified_address::encode_orchard_receiver(
+            &shielded_spends[0].recipient,
+            Network::ZcashTestnet.to_coin_name(),
+        )
+        .unwrap()
+    );
 }
 
 /// The Zcash parse reports each spend's randomizer and signature state from the PCZT
@@ -2736,4 +2743,118 @@ fn transparent_only_v6_is_refused_by_the_v4_signing_paths() {
     let bytes = psbt.serialize().unwrap();
     let err = psbt.combine_inputs(&bytes).unwrap_err();
     assert!(err.contains("not supported for v6"), "unexpected: {err}");
+}
+
+/// Generator for the TS tampered-parse fixture (plan PR 4's `IronwoodVerifyError` test):
+/// a shielded-output PSBT whose stored PCZT output recipient was swapped at equal value.
+/// Run with `cargo test --lib write_tampered_psbt_fixture -- --ignored`.
+#[test]
+#[ignore = "fixture generator: run with --ignored to rewrite the fixture"]
+fn write_tampered_psbt_fixture() {
+    let z = build_shield_psbt("ironwood-ts");
+    let bytes = crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::get_ironwood_pczt(&z.psbt)
+        .expect("shielded PCZT stored");
+    // A valid but different recipient (a different key's address) at equal value.
+    let other_sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([9u8; 32])).unwrap();
+    let other_recipient = FullViewingKey::from(&other_sk)
+        .address_at(0u32, Scope::External)
+        .to_raw_address_bytes();
+    let tampered =
+        crate::zcash::ironwood_pczt::with_output_recipient_for_test(&bytes, 0, &other_recipient)
+            .unwrap();
+    let mut psbt = z;
+    crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::set_ironwood_pczt(
+        &mut psbt.psbt,
+        tampered,
+    );
+    let psbt_bytes = psbt.serialize().unwrap();
+    let hex = hex::encode(psbt_bytes);
+    let path = format!(
+        "{}/test/fixtures/zcash/ironwood_tampered_recipient.hex",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::write(&path, hex).unwrap();
+    println!("wrote {path}");
+}
+
+/// The TS tampered-parse fixture fails the parse with the failing check's code.
+#[test]
+fn tampered_fixture_fails_with_note_commitment_code() {
+    let hex = crate::fixed_script_wallet::test_utils::fixtures::load_fixture(
+        "zcash/ironwood_tampered_recipient.hex",
+    )
+    .unwrap();
+    let bytes = hex::decode(hex.trim()).unwrap();
+    let psbt = crate::fixed_script_wallet::bitgo_psbt::ZcashBitGoPsbt::deserialize(
+        &bytes,
+        crate::networks::Network::ZcashTestnet,
+    )
+    .unwrap();
+    let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("ironwood-ts"));
+    let err =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_transaction_with_wallet_keys(
+            &crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::Zcash(
+                psbt,
+                crate::networks::Network::ZcashTestnet,
+            ),
+            &wallet_keys,
+            &crate::fixed_script_wallet::ReplayProtection::new(vec![]),
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(
+        crate::error::WasmErrorCode::code(&err),
+        "IronwoodVerifyError.NoteCommitment",
+        "unexpected: {err:?}"
+    );
+}
+
+/// A shielded side that cannot be read (here: the PCZT was already extracted) keeps the
+/// `ZcashParseTransactionError.Shielded` code — only verifier failures carry
+/// `IronwoodVerifyError.<check>`.
+#[test]
+fn zcash_parse_of_an_extracted_pczt_keeps_the_shielded_code() {
+    let mut z = build_shield_psbt("ironwood-ts");
+    assert!(z.mark_ironwood_extracted());
+    let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("ironwood-ts"));
+    let err =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_transaction_with_wallet_keys(
+            &BitGoPsbt::Zcash(z, Network::ZcashTestnet),
+            &wallet_keys,
+            &crate::fixed_script_wallet::ReplayProtection::new(vec![]),
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(
+        crate::error::WasmErrorCode::code(&err),
+        "ZcashParseTransactionError.Shielded"
+    );
+}
+
+/// A zero-valued Ironwood output is rejected at build time, on every constructor path.
+#[test]
+fn add_ironwood_outputs_rejects_a_zero_value_output() {
+    let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("ironwood_v6_zero_output"));
+    let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
+    let psbt =
+        BitGoPsbt::new_zcash_v6_at_height(Network::ZcashTestnet, &wallet_keys, nu6_3, None, None)
+            .unwrap();
+    let BitGoPsbt::Zcash(mut z, _) = psbt else {
+        panic!("expected Zcash PSBT");
+    };
+    let (req, anchor, _ask) = test_spend_request();
+    let err = z
+        .add_ironwood_outputs(
+            &[IronwoodOutputRequest {
+                recipient: req.recipient,
+                amount: 0,
+                ovk: None,
+                memo: [0u8; 512],
+                unified_address: None,
+            }],
+            &anchor,
+            OsRng,
+        )
+        .unwrap_err();
+    assert!(err.contains("zero value"), "unexpected: {err}");
 }

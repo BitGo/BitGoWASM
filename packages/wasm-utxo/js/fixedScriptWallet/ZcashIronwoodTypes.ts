@@ -58,6 +58,15 @@ export type ZcashShieldedSpend = {
   recipient: Uint8Array;
   /** The nullifier this spend reveals. */
   nullifier: Uint8Array;
+  /**
+   * The note commitment recomputed from the verified plaintext: the key-free verifier
+   * checks it commits to a leaf under the bundle's anchor and matches the recorded `cmx`.
+   */
+  cmx: Uint8Array;
+  /** The witness's leaf position in the commitment tree. */
+  position: number;
+  /** The single-receiver Unified Address of the spent note's Orchard receiver. */
+  address: string;
   /** Randomizer state of the spend's `rk` (see {@link IronwoodRandomizerState}). */
   randomizer: IronwoodRandomizerState;
   /** Whether a spend-auth signature is installed for this spend. */
