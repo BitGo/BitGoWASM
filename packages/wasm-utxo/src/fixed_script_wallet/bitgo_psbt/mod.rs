@@ -12,17 +12,15 @@ pub(crate) mod propkv;
 pub mod psbt_wallet_input;
 pub mod psbt_wallet_output;
 mod sighash;
-pub mod zcash_psbt;
+pub mod zcash;
+pub use zcash as zcash_psbt;
 
 use crate::Network;
 pub use dash_psbt::DashBitGoPsbt;
 use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey, FeeRate, Txid};
-pub use propkv::{
-    find_kv, get_zec_consensus_branch_id, BitGoKeyValue, ProprietaryKeySubtype,
-    WasmUtxoVersionInfo, BITGO,
-};
+pub use propkv::{find_kv, BitGoKeyValue, ProprietaryKeySubtype, WasmUtxoVersionInfo, BITGO};
 pub use sighash::validate_sighash_type;
-pub use zcash_psbt::{
+pub use zcash::{
     decode_zcash_transaction_meta, ZcashBitGoPsbt, ZcashTransactionMeta,
     ZCASH_SAPLING_VERSION_GROUP_ID,
 };
@@ -473,17 +471,14 @@ impl BitGoPsbt {
         version_group_id: Option<u32>,
         expiry_height: Option<u32>,
     ) -> Self {
-        BitGoPsbt::Zcash(
-            ZcashBitGoPsbt::new(
-                network,
-                wallet_keys,
-                consensus_branch_id,
-                version,
-                lock_time,
-                version_group_id,
-                expiry_height,
-            ),
+        zcash::new_bitgo_psbt_zcash(
             network,
+            wallet_keys,
+            consensus_branch_id,
+            version,
+            lock_time,
+            version_group_id,
+            expiry_height,
         )
     }
 
@@ -499,18 +494,15 @@ impl BitGoPsbt {
         version_group_id: Option<u32>,
         expiry_height: Option<u32>,
     ) -> Result<Self, String> {
-        Ok(BitGoPsbt::Zcash(
-            ZcashBitGoPsbt::new_at_height(
-                network,
-                wallet_keys,
-                block_height,
-                version,
-                lock_time,
-                version_group_id,
-                expiry_height,
-            )?,
+        zcash::new_bitgo_psbt_zcash_at_height(
             network,
-        ))
+            wallet_keys,
+            block_height,
+            version,
+            lock_time,
+            version_group_id,
+            expiry_height,
+        )
     }
 
     /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT with an explicit consensus branch id.
@@ -528,15 +520,12 @@ impl BitGoPsbt {
         lock_time: Option<u32>,
         expiry_height: Option<u32>,
     ) -> Self {
-        BitGoPsbt::Zcash(
-            ZcashBitGoPsbt::new_v6(
-                network,
-                wallet_keys,
-                consensus_branch_id,
-                lock_time,
-                expiry_height,
-            ),
+        zcash::v6::new_bitgo_psbt_v6(
             network,
+            wallet_keys,
+            consensus_branch_id,
+            lock_time,
+            expiry_height,
         )
     }
 
@@ -553,16 +542,13 @@ impl BitGoPsbt {
         lock_time: Option<u32>,
         expiry_height: Option<u32>,
     ) -> Result<Self, String> {
-        Ok(BitGoPsbt::Zcash(
-            ZcashBitGoPsbt::new_v6_at_height(
-                network,
-                wallet_keys,
-                block_height,
-                lock_time,
-                expiry_height,
-            )?,
+        zcash::v6::new_bitgo_psbt_v6_at_height(
             network,
-        ))
+            wallet_keys,
+            block_height,
+            lock_time,
+            expiry_height,
+        )
     }
 
     /// Create a new empty PSBT with the same network parameters as an existing PSBT
@@ -588,22 +574,10 @@ impl BitGoPsbt {
         let lock_time = template.psbt().unsigned_tx.lock_time.to_consensus_u32();
 
         match template {
-            BitGoPsbt::Zcash(z, _) => {
-                let branch_id = propkv::get_zec_consensus_branch_id(&z.psbt)
-                    .ok_or("Template PSBT missing ZecConsensusBranchId")?;
-                Ok(BitGoPsbt::Zcash(
-                    ZcashBitGoPsbt::new(
-                        network,
-                        wallet_keys,
-                        branch_id,
-                        Some(version),
-                        Some(lock_time),
-                        z.version_group_id,
-                        z.expiry_height,
-                    ),
-                    network,
-                ))
-            }
+            BitGoPsbt::Zcash(z, _) => Ok(BitGoPsbt::Zcash(
+                z.new_like(wallet_keys, version, lock_time)?,
+                network,
+            )),
             _ => Ok(Self::new(
                 network,
                 wallet_keys,
@@ -1720,24 +1694,7 @@ impl BitGoPsbt {
                     .map_err(|e| e.to_string())?;
                 Ok(serialize(&tx))
             }
-            BitGoPsbt::Zcash(zcash_psbt, _) => {
-                let tx = legacy_txformat::build_half_signed_legacy_tx(&zcash_psbt.psbt)
-                    .map_err(|e| e.to_string())?;
-
-                // Serialize with Zcash-specific fields
-                let parts = crate::zcash::transaction::ZcashTransactionParts {
-                    transaction: tx,
-                    is_overwintered: true,
-                    version_group_id: Some(
-                        zcash_psbt
-                            .version_group_id
-                            .unwrap_or(zcash_psbt::ZCASH_SAPLING_VERSION_GROUP_ID),
-                    ),
-                    expiry_height: Some(zcash_psbt.expiry_height.unwrap_or(0)),
-                    sapling_fields: zcash_psbt.sapling_fields.clone(),
-                };
-                crate::zcash::transaction::encode_zcash_transaction_parts(&parts)
-            }
+            BitGoPsbt::Zcash(zcash_psbt, _) => zcash_psbt.extract_half_signed_legacy_tx(),
         }
     }
 
@@ -1844,30 +1801,7 @@ impl BitGoPsbt {
                 Ok(())
             }
             BitGoPsbt::Zcash(ref mut zcash_psbt, _network) => {
-                use miniscript::psbt::PsbtExt;
-
-                // Extract consensus branch ID from PSBT proprietary map
-                let branch_id = propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt)
-                    .ok_or_else(|| "Missing ZecConsensusBranchId in PSBT".to_string())?;
-
-                // Extract version group ID and expiry height from ZcashPsbt
-                let version_group_id = zcash_psbt
-                    .version_group_id
-                    .unwrap_or(zcash_psbt::ZCASH_SAPLING_VERSION_GROUP_ID);
-                let expiry_height = zcash_psbt.expiry_height.unwrap_or(0);
-
-                // Finalize using ZIP-243 sighash verification
-                zcash_psbt
-                    .psbt
-                    .finalize_inp_mut_with_zcash(
-                        secp,
-                        input_index,
-                        branch_id,
-                        version_group_id,
-                        expiry_height,
-                    )
-                    .map_err(|e| e.to_string())?;
-                Ok(())
+                zcash_psbt.finalize_input(secp, input_index)
             }
         }
     }
@@ -1937,19 +1871,8 @@ impl BitGoPsbt {
             }
             BitGoPsbt::Zcash(zcash_psbt, _) => {
                 use miniscript::bitcoin::hashes::{sha256d, Hash};
-                // A v6 (Ironwood) PSBT's txid is the ZIP-244 digest over the transparent skeleton
-                // plus shielded action data — the v4/Sapling path below builds an invalid
-                // transaction for it (wrong wire format entirely), so it must not be used here.
-                let txid_bytes = if zcash_psbt.is_ironwood_v6() {
-                    zcash_psbt
-                        .unsigned_v6_txid()
-                        .expect("Failed to compute v6 (Ironwood) txid")
-                } else {
-                    zcash_psbt
-                        .compute_txid()
-                        .expect("Failed to compute Zcash txid")
-                };
-                let hash = sha256d::Hash::from_byte_array(txid_bytes);
+                let hash =
+                    sha256d::Hash::from_byte_array(zcash::v6::unsigned_txid_bytes(zcash_psbt));
                 Txid::from_raw_hash(hash)
             }
         }
@@ -2292,96 +2215,8 @@ impl BitGoPsbt {
                     }
                 }
             }
-            BitGoPsbt::Zcash(ref mut zcash_psbt, network) => {
-                // Extract consensus branch ID from PSBT proprietary map
-                let branch_id = propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt)
-                    .ok_or_else(|| "Missing ZecConsensusBranchId in PSBT".to_string())?;
-                let version_group_id = zcash_psbt
-                    .version_group_id
-                    .unwrap_or(zcash_psbt::ZCASH_SAPLING_VERSION_GROUP_ID);
-                let expiry_height = zcash_psbt.expiry_height.unwrap_or(0);
-
-                let psbt = &mut zcash_psbt.psbt;
-
-                // Check bounds
-                if input_index >= psbt.inputs.len() {
-                    return Err(format!(
-                        "Input index {} out of bounds (total inputs: {})",
-                        input_index,
-                        psbt.inputs.len()
-                    ));
-                }
-
-                // Check if this is a replay protection input (P2SH-P2PK)
-                // These need direct signing since sign_zcash iterates over bip32_derivation
-                if let Some(redeem_script) = &psbt.inputs[input_index].redeem_script.clone() {
-                    if let Ok(redeem_pubkey) =
-                        Self::extract_pubkey_from_p2pk_redeem_script(redeem_script)
-                    {
-                        // Verify the provided key matches the redeem script pubkey
-                        if public_key != redeem_pubkey {
-                            return Err(
-                                "Public key mismatch: derived pubkey does not match redeem_script pubkey"
-                                    .to_string(),
-                            );
-                        }
-
-                        // Sign directly using ZIP-243 sighash
-                        let ecdsa_sig = Self::sign_p2sh_p2pk_input_zcash(
-                            psbt,
-                            input_index,
-                            redeem_script,
-                            privkey,
-                            branch_id,
-                            version_group_id,
-                            expiry_height,
-                            &secp,
-                        )?;
-
-                        // Add signature to partial_sigs
-                        psbt.inputs[input_index]
-                            .partial_sigs
-                            .insert(public_key, ecdsa_sig);
-
-                        return Ok(());
-                    }
-                }
-
-                // For regular inputs, use standard Zcash signing
-                let bitcoin_network = if network.is_testnet() {
-                    miniscript::bitcoin::Network::Testnet
-                } else {
-                    miniscript::bitcoin::Network::Bitcoin
-                };
-                let private_key = miniscript::bitcoin::PrivateKey::new(*privkey, bitcoin_network);
-                let key_map = std::collections::BTreeMap::from_iter([(public_key, private_key)]);
-
-                // Sign with Zcash-specific sighash
-                let result =
-                    psbt.sign_zcash(&key_map, &secp, branch_id, version_group_id, expiry_height);
-
-                // Check if our specific input was signed
-                match result {
-                    Ok(signing_keys) => {
-                        if signing_keys.contains_key(&input_index) {
-                            Ok(())
-                        } else {
-                            Err(format!(
-                                "Input {} was not signed (no key found or already signed)",
-                                input_index
-                            ))
-                        }
-                    }
-                    Err((partial_success, errors)) => {
-                        if let Some(error) = errors.get(&input_index) {
-                            Err(format!("Failed to sign input {}: {:?}", input_index, error))
-                        } else if partial_success.contains_key(&input_index) {
-                            Ok(())
-                        } else {
-                            Err(format!("Input {} was not signed", input_index))
-                        }
-                    }
-                }
+            BitGoPsbt::Zcash(ref mut zcash_psbt, _network) => {
+                zcash_psbt.sign_with_privkey(input_index, privkey, public_key, &secp)
             }
         }
     }
@@ -2565,57 +2400,7 @@ impl BitGoPsbt {
                     _ => psbt.sign(k, secp),
                 }
             }
-            BitGoPsbt::Zcash(ref mut zcash_psbt, _network) => {
-                // v6 (Ironwood) inputs are signed over the ZIP-244 digest, not ZIP-243. Signing
-                // here would put a signature into `partial_sigs` that no verifier can satisfy, and
-                // nothing downstream re-checks it — so refuse. `SignError` carries no message, so
-                // callers going through the `String`-returning wrappers get the detail from
-                // `ensure_not_ironwood_v6`. Use `add_v6_transparent_signature` instead.
-                if zcash_psbt.is_ironwood_v6() {
-                    return Err((
-                        Default::default(),
-                        std::collections::BTreeMap::from_iter([(
-                            0,
-                            miniscript::bitcoin::psbt::SignError::UnknownOutputType,
-                        )]),
-                    ));
-                }
-
-                // Extract consensus branch ID from PSBT proprietary map
-                let branch_id =
-                    propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt).ok_or_else(|| {
-                        (
-                            Default::default(),
-                            std::collections::BTreeMap::from_iter([(
-                                0,
-                                miniscript::bitcoin::psbt::SignError::KeyNotFound,
-                            )]),
-                        )
-                    })?;
-
-                // Extract version group ID and expiry height from ZcashPsbt
-                let version_group_id = zcash_psbt
-                    .version_group_id
-                    .unwrap_or(zcash_psbt::ZCASH_SAPLING_VERSION_GROUP_ID);
-                let expiry_height = zcash_psbt.expiry_height.unwrap_or(0);
-
-                // Sign using ZIP-243 sighash
-                zcash_psbt
-                    .psbt
-                    .sign_zcash(k, secp, branch_id, version_group_id, expiry_height)
-            }
-        }
-    }
-
-    /// Reject v6 (Ironwood) PSBTs on the v4/Sapling-shaped paths, with a message explaining which
-    /// dedicated method to use instead. [`Self::sign`] applies the same rule, but its `SignError`
-    /// return type carries no message, so the `String`-returning wrappers check here as well.
-    pub(crate) fn ensure_not_ironwood_v6(&self) -> Result<(), String> {
-        match self {
-            BitGoPsbt::Zcash(z, _) if z.is_ironwood_v6() => {
-                Err(zcash_psbt::V6_NOT_SUPPORTED_BY_V4_PATH.to_string())
-            }
-            _ => Ok(()),
+            BitGoPsbt::Zcash(ref mut zcash_psbt, _network) => zcash_psbt.sign(k, secp),
         }
     }
 
@@ -2836,12 +2621,9 @@ impl BitGoPsbt {
                 // given one for this output): mirrors `shielded_outputs`'s treatment of
                 // `add_ironwood_output`'s UA — the caller-supplied UA, not a bare address
                 // reconstructed from the scriptPubKey alone, is what a client actually pasted in.
-                if let BitGoPsbt::Zcash(z, _) = self {
-                    if let Some(ua) =
-                        propkv::get_transparent_output_unified_address(&z.psbt, output_index)
-                    {
-                        parsed.address = Some(ua);
-                    }
+                if let Some(ua) = zcash::v6::transparent_output_address_override(self, output_index)
+                {
+                    parsed.address = Some(ua);
                 }
                 Ok(parsed)
             })
@@ -2858,45 +2640,7 @@ impl BitGoPsbt {
     /// plain transparent-output parsing never sees them; this is how callers surface them
     /// explicitly.
     fn shielded_outputs(&self) -> Result<Vec<(ParsedOutput, u64)>, ParseTransactionError> {
-        let BitGoPsbt::Zcash(z, _) = self else {
-            return Ok(Vec::new());
-        };
-        let infos = z
-            .ironwood_shielded_outputs_info()
-            .map_err(ParseTransactionError::ShieldedOutput)?;
-        infos
-            .into_iter()
-            .map(|(action_index, amount, recipient)| {
-                // Prefer the caller's original Unified Address (if `add_ironwood_outputs` was
-                // given one for this action): it may carry a transparent/Sapling receiver
-                // alongside the Orchard one, which a single-receiver reconstruction from
-                // `recipient` alone cannot recover.
-                let address = match propkv::get_ironwood_unified_address(&z.psbt, action_index) {
-                    Some(ua) => ua,
-                    None => crate::zcash::unified_address::encode_orchard_receiver(
-                        &recipient,
-                        self.network().to_coin_name(),
-                    )
-                    .map_err(|e| ParseTransactionError::ShieldedOutput(e.to_string()))?,
-                };
-                Ok((
-                    ParsedOutput {
-                        address: Some(address),
-                        // No scriptPubKey exists for a shielded output; the raw receiver is
-                        // still available here (not a scriptPubKey, but the same "raw
-                        // output-destination bytes" role this field plays for transparent
-                        // outputs).
-                        script: recipient.to_vec(),
-                        value: amount,
-                        script_id: None,
-                        paygo: false,
-                        derivation_path: None,
-                        is_shielded: Some(true),
-                    },
-                    amount,
-                ))
-            })
-            .collect()
+        zcash::ironwood::fold_shielded_outputs(self)
     }
 
     /// Total value (zatoshi) of this PSBT's real shielded (Ironwood) spends — `0` if this isn't a
@@ -2904,20 +2648,7 @@ impl BitGoPsbt {
     /// spends live in the proprietary-map PCZT, invisible to transparent-input parsing, so
     /// `parse_transaction_with_wallet_keys` folds this into its input total.
     fn shielded_spend_total(&self) -> Result<u64, ParseTransactionError> {
-        let BitGoPsbt::Zcash(z, _) = self else {
-            return Ok(0);
-        };
-        z.ironwood_shielded_spends_info()
-            .map_err(ParseTransactionError::ShieldedSpend)?
-            .iter()
-            .try_fold(0u64, |total, spend| {
-                total.checked_add(spend.value).ok_or_else(|| {
-                    ParseTransactionError::ShieldedSpend(format!(
-                        "action {}: value overflow",
-                        spend.action_index
-                    ))
-                })
-            })
+        zcash::ironwood::fold_shielded_spend_total(self)
     }
 
     /// Calculate total input value from parsed inputs
@@ -3101,75 +2832,6 @@ impl BitGoPsbt {
         })
     }
 
-    /// Sign a P2SH-P2PK (replay protection) input using Zcash ZIP-243 sighash.
-    ///
-    /// # Arguments
-    /// - `psbt`: The PSBT containing the input to sign
-    /// - `input_index`: Index of the input to sign
-    /// - `redeem_script`: The P2PK redeem script
-    /// - `privkey`: The private key to sign with
-    /// - `branch_id`: Zcash consensus branch ID
-    /// - `version_group_id`: Zcash version group ID
-    /// - `expiry_height`: Zcash transaction expiry height
-    ///
-    /// # Returns
-    /// - `Ok(EcdsaSignature)` containing the signature and sighash type
-    /// - `Err(String)` if sighash computation fails
-    #[allow(clippy::too_many_arguments)]
-    fn sign_p2sh_p2pk_input_zcash<C: secp256k1::Signing>(
-        psbt: &Psbt,
-        input_index: usize,
-        redeem_script: &miniscript::bitcoin::ScriptBuf,
-        privkey: &secp256k1::SecretKey,
-        branch_id: u32,
-        version_group_id: u32,
-        expiry_height: u32,
-        secp: &secp256k1::Secp256k1<C>,
-    ) -> Result<miniscript::bitcoin::ecdsa::Signature, String> {
-        use miniscript::bitcoin::{
-            ecdsa::Signature as EcdsaSignature, sighash::SighashCache,
-            sighash::SighashCacheZcashExt,
-        };
-
-        // v6 (Ironwood) inputs are signed over the ZIP-244 digest, not ZIP-243. Signing here would
-        // insert a signature into `partial_sigs` that no verifier can ever satisfy, and nothing
-        // downstream re-checks it — so refuse instead.
-        if version_group_id == crate::zcash::transaction::ZCASH_IRONWOOD_VERSION_GROUP_ID {
-            return Err(zcash_psbt::V6_NOT_SUPPORTED_BY_V4_PATH.to_string());
-        }
-
-        // Get input value for sighash computation
-        let input = &psbt.inputs[input_index];
-        let prevout = psbt.unsigned_tx.input[input_index].previous_output;
-        let value = psbt_wallet_input::get_output_script_and_value(input, prevout)
-            .map(|(_, v)| v)
-            .unwrap_or(miniscript::bitcoin::Amount::ZERO);
-
-        // Compute ZIP-243 sighash
-        let mut cache = SighashCache::new(&psbt.unsigned_tx);
-        let sighash_type = 0x01u32; // SIGHASH_ALL for Zcash
-        let sighash = cache
-            .p2sh_signature_hash_zcash(
-                input_index,
-                redeem_script,
-                value,
-                sighash_type,
-                branch_id,
-                version_group_id,
-                expiry_height,
-            )
-            .map_err(|e| format!("Failed to compute Zcash sighash: {}", e))?;
-
-        let message = secp256k1::Message::from_digest(sighash.to_byte_array());
-
-        // Create ECDSA signature
-        let signature = secp.sign_ecdsa(&message, privkey);
-        Ok(EcdsaSignature {
-            signature,
-            sighash_type,
-        })
-    }
-
     /// Verify if a replay protection input has a valid signature
     ///
     /// This method checks if a given input is a replay protection input and verifies the signature.
@@ -3245,32 +2907,14 @@ impl BitGoPsbt {
 
         // Handle Zcash specially - use ZIP-243 sighash
         if let BitGoPsbt::Zcash(zcash_psbt, _) = self {
-            use miniscript::bitcoin::sighash::SighashCacheZcashExt;
-
-            let branch_id = propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt)
-                .ok_or("Missing ZecConsensusBranchId in PSBT")?;
-            let version_group_id = zcash_psbt
-                .version_group_id
-                .unwrap_or(zcash_psbt::ZCASH_SAPLING_VERSION_GROUP_ID);
-            let expiry_height = zcash_psbt.expiry_height.unwrap_or(0);
-
-            let sighash = cache
-                .p2sh_signature_hash_zcash(
-                    input_index,
-                    redeem_script,
-                    value,
-                    ecdsa_sig.sighash_type,
-                    branch_id,
-                    version_group_id,
-                    expiry_height,
-                )
-                .map_err(|e| format!("Failed to compute Zcash sighash: {}", e))?;
-
-            let message = secp256k1::Message::from_digest(sighash.to_byte_array());
-            return match secp.verify_ecdsa(&message, &ecdsa_sig.signature, &public_key.inner) {
-                Ok(()) => Ok(true),
-                Err(_) => Ok(false),
-            };
+            return zcash_psbt.verify_replay_protection_signature(
+                secp,
+                input_index,
+                redeem_script,
+                value,
+                &ecdsa_sig,
+                &public_key,
+            );
         }
 
         let fork_id = network.sighash_fork_id();
@@ -3424,30 +3068,7 @@ impl BitGoPsbt {
                 )
             }
             BitGoPsbt::Zcash(zcash_psbt, _network) => {
-                // v6 (Ironwood) transparent inputs are signed over the ZIP-244 digest, not ZIP-243.
-                // Verifying here would compute a meaningless Sapling digest and report Ok(false) for
-                // a valid v6 signature — a wrong false that downstream signature counting reads as
-                // "not signed yet" — so fail loudly instead, matching `ensure_not_ironwood_v6`.
-                if zcash_psbt.is_ironwood_v6() {
-                    return Err(zcash_psbt::V6_NOT_SUPPORTED_BY_V4_PATH.to_string());
-                }
-                // Use Zcash-specific signature verification with ZIP-243 sighash
-                let branch_id = propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt)
-                    .ok_or("Missing ZecConsensusBranchId in PSBT")?;
-                let version_group_id = zcash_psbt
-                    .version_group_id
-                    .unwrap_or(zcash_psbt::ZCASH_SAPLING_VERSION_GROUP_ID);
-                let expiry_height = zcash_psbt.expiry_height.unwrap_or(0);
-
-                psbt_wallet_input::verify_ecdsa_signature_zcash(
-                    secp,
-                    &zcash_psbt.psbt,
-                    input_index,
-                    public_key,
-                    branch_id,
-                    version_group_id,
-                    expiry_height,
-                )
+                zcash_psbt.verify_signature_with_pubkey(secp, input_index, public_key)
             }
         }
     }
@@ -3588,12 +3209,12 @@ impl BitGoPsbt {
         secp: &secp256k1::Secp256k1<C>,
         input_index: usize,
         pubkey: &secp256k1::PublicKey,
-    ) -> Result<bool, zcash_psbt::VerifyV6SignatureError> {
+    ) -> Result<bool, zcash::VerifyV6SignatureError> {
         match self {
             BitGoPsbt::Zcash(zcash_psbt, _) => {
                 zcash_psbt.verify_v6_signature_with_pub(secp, input_index, pubkey)
             }
-            _ => Err(zcash_psbt::VerifyV6SignatureError::NotZcash),
+            _ => Err(zcash::VerifyV6SignatureError::NotZcash),
         }
     }
 
@@ -3618,12 +3239,12 @@ impl BitGoPsbt {
         secp: &secp256k1::Secp256k1<C>,
         input_index: usize,
         xpub: &miniscript::bitcoin::bip32::Xpub,
-    ) -> Result<bool, zcash_psbt::VerifyV6SignatureError> {
+    ) -> Result<bool, zcash::VerifyV6SignatureError> {
         match self {
             BitGoPsbt::Zcash(zcash_psbt, _) => {
                 zcash_psbt.verify_v6_signature_with_xpub(secp, input_index, xpub)
             }
-            _ => Err(zcash_psbt::VerifyV6SignatureError::NotZcash),
+            _ => Err(zcash::VerifyV6SignatureError::NotZcash),
         }
     }
 
@@ -6148,13 +5769,13 @@ mod tests {
         zcash_psbt.psbt.inputs[0].partial_sigs.insert(pubkey, sig);
 
         let consensus_branch_id =
-            propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt).expect("branch id");
+            zcash::propkv::get_zec_consensus_branch_id(&zcash_psbt.psbt).expect("branch id");
         let version_group_id = zcash_psbt
             .version_group_id
-            .unwrap_or(zcash_psbt::ZCASH_SAPLING_VERSION_GROUP_ID);
+            .unwrap_or(zcash::ZCASH_SAPLING_VERSION_GROUP_ID);
         let expiry_height = zcash_psbt.expiry_height.unwrap_or(0);
 
-        let ok = psbt_wallet_input::verify_ecdsa_signature_zcash(
+        let ok = zcash::verify_ecdsa_signature_zcash(
             &secp,
             &zcash_psbt.psbt,
             0,
