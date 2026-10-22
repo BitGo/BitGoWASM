@@ -438,7 +438,9 @@ impl BitGoPsbt {
     /// * `expiry_height` - Optional expiry height
     ///
     /// # Errors
-    /// Returns error if block height is before Overwinter activation
+    /// Returns error if block height is before Overwinter activation, or if the height is
+    /// at or after NU7 activation and the build would be a version 4 transaction — version 4
+    /// is invalid under NU7 per ZIP-2003; use `create_empty_zcash_v6_at_height` instead
     #[allow(clippy::too_many_arguments)]
     pub fn create_empty_zcash_at_height(
         network: &str,

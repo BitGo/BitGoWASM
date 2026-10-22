@@ -3603,7 +3603,7 @@ mod tests {
     /// then every broadcast was rejected with "transaction version 4 not supported by the
     /// network upgrade Nu7" and retried forever. Fail at build time instead.
     #[test]
-    fn test_new_zcash_at_height_rejects_v4_after_nu7_on_testnet() {
+    fn test_new_zcash_at_height_rejects_v4_after_nu7() {
         use crate::fixed_script_wallet::test_utils::get_test_wallet_keys;
         use crate::zcash::NetworkUpgrade;
 
@@ -3640,17 +3640,13 @@ mod tests {
             );
         }
 
-        // Mainnet has no assigned NU7 height yet (u32::MAX sentinel), so the same
-        // height stays buildable there.
-        assert_eq!(
-            NetworkUpgrade::Nu7.mainnet_activation_height(),
-            u32::MAX,
-            "this test assumes NU7 mainnet activation is still unassigned (u32::MAX)"
-        );
+        // Mainnet activates NU7 at 3543405 (ZIP-259). The cutover is exact there too:
+        // the block before still builds v4, at activation and beyond it is refused.
+        let nu7_mainnet_height = NetworkUpgrade::Nu7.mainnet_activation_height();
         let result = BitGoPsbt::new_zcash_at_height(
             Network::Zcash,
             &keys,
-            nu7_height,
+            nu7_mainnet_height - 1,
             None,
             None,
             None,
@@ -3658,8 +3654,25 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "mainnet is unaffected until NU7 is scheduled"
+            "v4 is still valid on the mainnet block before NU7"
         );
+
+        for height in [nu7_mainnet_height, nu7_mainnet_height + 10_000] {
+            let err = BitGoPsbt::new_zcash_at_height(
+                Network::Zcash,
+                &keys,
+                height,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect_err("v4 must be refused at or after NU7 activation on mainnet");
+            assert!(
+                err.contains("NU7") && err.contains("version 4"),
+                "error should name NU7 and the invalid version, got: {err}"
+            );
+        }
     }
 
     fn test_round_trip_with_format(format: fixtures::TxFormat, network: Network) {
