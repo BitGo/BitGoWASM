@@ -3,6 +3,7 @@
 //! - [`v4`]: the v4/Sapling PSBT surface.
 //! - [`v6`]: transparent v6 (Ironwood) behavior (sighash, signatures, wire format).
 //! - [`ironwood`]: shielded (PCZT) behavior and ZIP-317 accounting. Native-only.
+//! - [`ironwood_spend`]: the keyless spend flow and the one-input-kind rule. Native-only.
 
 use super::*;
 
@@ -14,5 +15,7 @@ mod common;
 use common::*;
 #[cfg(not(target_arch = "wasm32"))]
 mod ironwood;
+#[cfg(not(target_arch = "wasm32"))]
+mod ironwood_spend;
 #[cfg(not(target_arch = "wasm32"))]
 mod v6;

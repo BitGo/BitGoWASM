@@ -13,6 +13,9 @@ pub mod address;
 pub mod blake2b;
 /// orchard PCZT ↔ v6 IronwoodBundle bridge (Constructor / Signer / Extractor roles).
 pub mod ironwood_build;
+/// The key-free Ironwood spend Constructor (plan §4): builds deshield and
+/// shielded→shielded bundles without any viewing key.
+pub mod ironwood_construct;
 /// Serialization of the orchard PCZT Ironwood bundle (proof-service payload / PSBT carry).
 pub mod ironwood_pczt;
 /// The key-free verifier for Ironwood PCZT bundles (plan §5).

@@ -293,9 +293,8 @@ pub fn clear_ironwood_unified_addresses(psbt: &mut miniscript::bitcoin::psbt::Ps
 }
 
 /// Store the wallet's spend-validating key (`ak`, 32 bytes) for the stored Ironwood bundle.
-/// Written when the bundle is installed (plan PR 5); the keyless verifier reads it for the
-/// `Rk` check.
-#[allow(dead_code)] // written by plan PR 5's add_shielded_spends
+/// Written when the bundle is installed (plan PR 5's `add_shielded_spends`); the keyless
+/// verifier reads it for the `Rk` check.
 pub fn set_ironwood_spend_validating_key(
     psbt: &mut miniscript::bitcoin::psbt::Psbt,
     ak: &[u8; 32],

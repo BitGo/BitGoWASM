@@ -795,6 +795,13 @@ impl BitGoPsbt {
             ..Default::default()
         };
 
+        // Rule 0 (plan §3): the Zcash arm rejects a transparent input on a PSBT that already
+        // spends shielded notes. A stored PCZT with only dummy spends — the shielding flow —
+        // is fine.
+        if let BitGoPsbt::Zcash(zcash, _) = self {
+            zcash.reject_transparent_input_with_spend_bundle()?;
+        }
+
         crate::psbt_ops::insert_input(self.psbt_mut(), index, tx_in, psbt_input)
     }
 
@@ -894,6 +901,12 @@ impl BitGoPsbt {
         value: u64,
         options: ReplayProtectionOptions,
     ) -> Result<usize, String> {
+        // Rule 0 (plan §3): the Zcash arm rejects a transparent input on a PSBT that already
+        // spends shielded notes (see `add_input_at_index`).
+        if let BitGoPsbt::Zcash(zcash, _) = self {
+            zcash.reject_transparent_input_with_spend_bundle()?;
+        }
+
         let network = self.network();
         Self::add_replay_protection_input_to_psbt(
             self.psbt_mut(),
@@ -1157,6 +1170,12 @@ impl BitGoPsbt {
         script_id: ScriptId,
         options: WalletInputOptions,
     ) -> Result<usize, String> {
+        // Rule 0 (plan §3): the Zcash arm rejects a transparent input on a PSBT that already
+        // spends shielded notes (see `add_input_at_index`).
+        if let BitGoPsbt::Zcash(zcash, _) = self {
+            zcash.reject_transparent_input_with_spend_bundle()?;
+        }
+
         let network = self.network();
         Self::add_wallet_input_to_psbt(
             self.psbt_mut(),
