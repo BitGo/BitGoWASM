@@ -77,6 +77,19 @@ pub struct IronwoodSpendInfo {
     pub signed: bool,
 }
 
+impl From<&crate::zcash::ironwood_verify::VerifiedSpend> for IronwoodSpendInfo {
+    fn from(spend: &crate::zcash::ironwood_verify::VerifiedSpend) -> Self {
+        IronwoodSpendInfo {
+            action_index: spend.action_index,
+            value: spend.value,
+            nullifier: spend.nullifier,
+            recipient: spend.recipient,
+            rk_replaced: spend.randomizer_installed,
+            signed: spend.signed,
+        }
+    }
+}
+
 /// The spend/output/fee accounting view of the stored PCZT: real spends, real outputs, the
 /// bundle's value balance, and the transaction-level fee.
 ///
@@ -335,17 +348,12 @@ impl ZcashBitGoPsbt {
         if self.require_no_shielded_output_ever_added()? {
             return Ok((0, 0));
         }
-        let pczt = self.ironwood_pczt()?;
-        Self::pczt_real_spend_and_output_counts(&pczt)
+        self.pczt_real_spend_and_output_counts()
     }
 
-    fn pczt_real_spend_and_output_counts(
-        pczt: &orchard::pczt::Bundle,
-    ) -> Result<(usize, usize), String> {
-        Ok((
-            Self::bundle_real_spends(pczt)?.len(),
-            Self::bundle_real_outputs(pczt)?.len(),
-        ))
+    fn pczt_real_spend_and_output_counts(&self) -> Result<(usize, usize), String> {
+        let report = self.keyless_verify_info()?;
+        Ok((report.spends.len(), report.outputs.len()))
     }
 
     /// Client-managed `ovk`, raw-key form: re-encrypt the Ironwood output's `out_ciphertext` under
@@ -620,6 +628,36 @@ impl ZcashBitGoPsbt {
         Ok(true)
     }
 
+    /// The keyless verification of the stored PCZT (plan §5): run every check a party
+    /// without viewing keys can run before surfacing any plaintext value, so a tampered
+    /// bundle fails loudly with the failing check instead of leaking unverified plaintext.
+    /// Verification only reads the PCZT: its plaintext stays in place for the prover.
+    ///
+    /// The stored spend-validating key (plan PR 5's `0x08` key) is passed through when
+    /// present; until then the `Rk` check is skipped and only the key-free checks run.
+    pub(crate) fn keyless_verify(
+        &self,
+        pczt: &orchard::pczt::Bundle,
+    ) -> Result<
+        crate::zcash::ironwood_verify::IronwoodVerificationReport,
+        crate::zcash::ironwood_build::IronwoodVerifyError,
+    > {
+        let ctx = crate::zcash::ironwood_verify::KeylessVerifyContext {
+            stored_ak: super::propkv::get_ironwood_spend_validating_key(&self.psbt),
+            ..Default::default()
+        };
+        crate::zcash::ironwood_verify::verify_bundle_without_keys(pczt, &ctx)
+    }
+
+    /// The String-flavored keyless verification of the stored PCZT the info accessors use;
+    /// the Zcash parse calls [`Self::keyless_verify`] to keep the failing check's error code.
+    fn keyless_verify_info(
+        &self,
+    ) -> Result<crate::zcash::ironwood_verify::IronwoodVerificationReport, String> {
+        self.keyless_verify(&self.ironwood_pczt()?)
+            .map_err(|e| e.to_string())
+    }
+
     /// The action index, value (zatoshi), and raw 43-byte recipient of every shielded Ironwood
     /// output added via [`Self::add_ironwood_output`]/[`Self::add_ironwood_outputs`] — empty if no
     /// shielded output is present yet.
@@ -659,7 +697,12 @@ impl ZcashBitGoPsbt {
         if self.require_no_shielded_output_ever_added()? {
             return Ok(Vec::new());
         }
-        Self::bundle_real_outputs(&self.ironwood_pczt()?)
+        let report = self.keyless_verify_info()?;
+        Ok(report
+            .outputs
+            .into_iter()
+            .map(|output| (output.action_index, output.value, output.recipient))
+            .collect())
     }
 
     /// The action index, value (zatoshi), and nullifier of every real Ironwood spend added via
@@ -676,67 +719,8 @@ impl ZcashBitGoPsbt {
         if self.require_no_shielded_output_ever_added()? {
             return Ok(Vec::new());
         }
-        Self::bundle_real_spends(&self.ironwood_pczt()?)
-    }
-
-    /// Every real spend in `pczt` (no `dummy_sk`, see [`Self::bundle_has_real_spends`]); a real
-    /// spend always carries its plaintext value.
-    fn bundle_real_spends(pczt: &orchard::pczt::Bundle) -> Result<Vec<IronwoodSpendInfo>, String> {
-        pczt.actions()
-            .iter()
-            .enumerate()
-            .filter(|(_, action)| action.spend().dummy_sk().is_none())
-            .map(|(action_index, action)| {
-                let spend = action.spend();
-                let value = spend
-                    .value()
-                    .map(|v| v.inner())
-                    .ok_or_else(|| "real spend is missing its plaintext value".to_string())?;
-                let recipient = spend
-                    .recipient()
-                    .map(|address| address.to_raw_address_bytes())
-                    .ok_or_else(|| "real spend is missing its plaintext recipient".to_string())?;
-                Ok(IronwoodSpendInfo {
-                    action_index,
-                    value,
-                    nullifier: spend.nullifier().to_bytes(),
-                    recipient,
-                    rk_replaced: crate::zcash::ironwood_pczt::spend_rk_replaced(spend)?,
-                    signed: spend.spend_auth_sig().is_some(),
-                })
-            })
-            .collect()
-    }
-
-    /// Every real output in `pczt`: all but the fabricated zero-valued outputs the builder pairs
-    /// with surplus real spends (see [`Self::ironwood_shielded_outputs_info`]).
-    fn bundle_real_outputs(
-        pczt: &orchard::pczt::Bundle,
-    ) -> Result<
-        Vec<(
-            usize,
-            u64,
-            crate::zcash::ironwood_build::OrchardAddressBytes,
-        )>,
-        String,
-    > {
-        let mut outputs = Vec::new();
-        for (action_index, action) in pczt.actions().iter().enumerate() {
-            let output = action.output();
-            let value = output
-                .value()
-                .map(|v| v.inner())
-                .ok_or_else(|| "shielded output is missing its plaintext value".to_string())?;
-            if value == 0 && action.spend().dummy_sk().is_none() {
-                continue;
-            }
-            let recipient = output
-                .recipient()
-                .map(|address| address.to_raw_address_bytes())
-                .ok_or_else(|| "shielded output is missing its plaintext recipient".to_string())?;
-            outputs.push((action_index, value, recipient));
-        }
-        Ok(outputs)
+        let report = self.keyless_verify_info()?;
+        Ok(report.spends.iter().map(IronwoodSpendInfo::from).collect())
     }
 
     /// The spend/output/fee accounting for the bundle behind this PSBT — see
@@ -747,25 +731,24 @@ impl ZcashBitGoPsbt {
         if self.require_no_shielded_output_ever_added()? {
             return Err("no Ironwood PCZT stored in PSBT".to_string());
         }
-        let pczt = self.ironwood_pczt()?;
-        let spends = Self::bundle_real_spends(&pczt)?;
-        let outputs = Self::bundle_real_outputs(&pczt)?;
+        // The keyless verifier (plan §5) runs every key-free check — including `ValueSum`,
+        // which cross-checks the committed `value_sum` against the plaintext note values —
+        // before any accounting flows out of here. The plaintext note values are NOT bound
+        // after deserialization: the proofs bind only `cv_net`/`cm`.
+        let report = self.keyless_verify_info()?;
+        let spends = report
+            .spends
+            .iter()
+            .map(IronwoodSpendInfo::from)
+            .collect::<Vec<_>>();
+        let outputs = report
+            .outputs
+            .iter()
+            .map(|output| (output.action_index, output.value, output.recipient))
+            .collect::<Vec<_>>();
         // The bundle's committed value balance (the wire `value_sum`): the quantity the IO
         // Finalizer enforces against the proof-bound `cv_net`s and the ZIP-244 digest commits.
-        // The plaintext note values below are NOT bound after deserialization — the proofs bind
-        // only `cv_net`/`cm` — so they are cross-checked against the committed sum before any
-        // accounting flows out of here.
-        let value_balance = crate::zcash::ironwood_build::pczt_action_data(&pczt)
-            .map_err(|e| e.to_string())?
-            .value_balance;
-        let spend_total = spends.iter().map(|s| s.value as i128).sum::<i128>();
-        let output_total = outputs.iter().map(|(_, v, _)| *v as i128).sum::<i128>();
-        if spend_total - output_total != value_balance as i128 {
-            return Err(format!(
-                "plaintext note values are inconsistent with the bundle's committed value_sum: \
-                 spends {spend_total} - outputs {output_total} != value_balance {value_balance}"
-            ));
-        }
+        let value_balance = report.value_balance;
         let transparent_in = self
             .transparent_input_amounts_and_scripts()?
             .0
@@ -1033,10 +1016,7 @@ impl ZcashBitGoPsbt {
     ///
     /// Returns whether a PCZT was present.
     pub fn mark_ironwood_extracted(&mut self) -> bool {
-        if let Ok((spends, outputs)) = self
-            .ironwood_pczt()
-            .and_then(|pczt| Self::pczt_real_spend_and_output_counts(&pczt))
-        {
+        if let Ok((spends, outputs)) = self.pczt_real_spend_and_output_counts() {
             super::propkv::set_ironwood_extracted_counts(
                 &mut self.psbt,
                 spends as u32,

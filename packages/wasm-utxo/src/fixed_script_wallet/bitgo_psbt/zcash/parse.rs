@@ -18,8 +18,10 @@ use crate::zcash::ironwood_build::OrchardAddressBytes;
 
 /// One shielded (Ironwood) spend, as surfaced by the parse.
 ///
-/// Plaintext values from the PCZT, not yet verified against the bundle's commitments —
-/// the key-free verifier (plan PR 4) hardens this.
+/// Plaintext values from the PCZT, verified by the key-free verifier (plan §5) before they
+/// reach the caller: the rebuilt note commits to a leaf under the bundle's anchor and
+/// matches the recorded `cmx`. What a keyless party cannot check (note ownership,
+/// nullifier validity) can only make the transaction invalid, never misdirected.
 #[derive(Clone, Debug)]
 pub struct ZcashShieldedSpend {
     /// The spend's action index in the orchard bundle.
@@ -30,6 +32,12 @@ pub struct ZcashShieldedSpend {
     pub recipient: OrchardAddressBytes,
     /// The nullifier this spend reveals (committed in the action data).
     pub nullifier: [u8; 32],
+    /// The note commitment recomputed from the verified plaintext.
+    pub cmx: [u8; 32],
+    /// The witness's leaf position in the commitment tree.
+    pub position: u32,
+    /// The single-receiver Unified Address of the spent note's Orchard receiver.
+    pub address: String,
     /// Whether the signer replaced the Constructor's placeholder `rk` (plan PR 7 derives
     /// this from `alpha` instead of the wire marker).
     pub rk_replaced: bool,
@@ -85,8 +93,12 @@ pub enum ZcashParseTransactionError {
     Transparent(ParseTransactionError),
     /// The PSBT mixes transparent inputs with shielded spends.
     MixedInputKinds,
-    /// The shielded side could not be read from the PCZT plaintext.
+    /// The shielded side could not be read (no usable PCZT, an unencodable address, or a
+    /// value overflow).
     Shielded(String),
+    /// The shielded side failed key-free verification (plan §5); the error code is the
+    /// failing verifier check (`IronwoodVerifyError.<check>`).
+    Verify(crate::zcash::ironwood_build::IronwoodVerifyError),
 }
 
 impl std::fmt::Display for ZcashParseTransactionError {
@@ -98,6 +110,9 @@ impl std::fmt::Display for ZcashParseTransactionError {
                 "a PSBT cannot mix transparent inputs with shielded spends"
             ),
             ZcashParseTransactionError::Shielded(error) => write!(f, "Shielded side: {error}"),
+            ZcashParseTransactionError::Verify(error) => {
+                write!(f, "Shielded side failed verification: {error}")
+            }
         }
     }
 }
@@ -110,6 +125,12 @@ impl From<ParseTransactionError> for ZcashParseTransactionError {
     }
 }
 
+impl From<crate::zcash::ironwood_build::IronwoodVerifyError> for ZcashParseTransactionError {
+    fn from(error: crate::zcash::ironwood_build::IronwoodVerifyError) -> Self {
+        ZcashParseTransactionError::Verify(error)
+    }
+}
+
 impl crate::error::WasmErrorCode for ZcashParseTransactionError {
     fn code(&self) -> String {
         match self {
@@ -118,6 +139,9 @@ impl crate::error::WasmErrorCode for ZcashParseTransactionError {
             ZcashParseTransactionError::Transparent(error) => {
                 crate::error::WasmErrorCode::code(error)
             }
+            // A verification failure carries the failing check as its code
+            // (`IronwoodVerifyError.NoteCommitment`, …) — callers key diagnostics on it.
+            ZcashParseTransactionError::Verify(error) => crate::error::WasmErrorCode::code(error),
             _ => format!("ZcashParseTransactionError.{}", <&'static str>::from(self)),
         }
     }
@@ -155,11 +179,9 @@ pub(crate) fn parse_outputs_with_wallet_keys(
     paygo_pubkeys: &[miniscript::bitcoin::secp256k1::PublicKey],
 ) -> Result<Vec<ZcashParsedOutput>, ZcashParseTransactionError> {
     let z = zcash_psbt(bitgo_psbt)?;
-    let shielded_outputs = z
-        .ironwood_shielded_outputs_info()
-        .map_err(ZcashParseTransactionError::Shielded)?;
+    let (shielded_outputs, _spends, _value_balance) = shielded_side(z)?;
     let mut outputs = transparent_outputs(bitgo_psbt.parse_outputs(wallet_keys, paygo_pubkeys)?);
-    outputs.extend(shielded_parsed_outputs(z, &shielded_outputs)?);
+    outputs.extend(shielded_outputs);
     Ok(outputs)
 }
 
@@ -319,21 +341,44 @@ fn shielded_side(
     {
         return Ok((Vec::new(), Vec::new(), 0));
     }
-    let info = z
-        .ironwood_bundle_info()
+    // The keyless verifier (plan §5) runs before any plaintext value leaves here: a
+    // tampered bundle fails with the failing check's error code. The plaintext itself is
+    // left in the PCZT untouched — the prover needs it, and the parse surfaces it.
+    let pczt = z
+        .ironwood_pczt()
         .map_err(ZcashParseTransactionError::Shielded)?;
-    let outputs = shielded_parsed_outputs(z, &info.outputs)?;
-    let spends = info
+    let report = z.keyless_verify(&pczt)?;
+    let outputs = shielded_parsed_outputs(
+        z,
+        &report
+            .outputs
+            .iter()
+            .map(|output| (output.action_index, output.value, output.recipient))
+            .collect::<Vec<_>>(),
+    )?;
+    let spends = report
         .spends
-        .into_iter()
-        .map(|spend| ZcashShieldedSpend {
-            action_index: spend.action_index,
-            value: spend.value,
-            recipient: spend.recipient,
-            nullifier: spend.nullifier,
-            rk_replaced: spend.rk_replaced,
-            signed: spend.signed,
+        .iter()
+        .map(|spend| {
+            // The stored Unified Addresses belong to the bundle's *outputs* (keyed by their
+            // action index), so a spend's address is always rebuilt from its own receiver.
+            let address = crate::zcash::unified_address::encode_orchard_receiver(
+                &spend.recipient,
+                z.network().to_coin_name(),
+            )
+            .map_err(|e| ZcashParseTransactionError::Shielded(e.to_string()))?;
+            Ok(ZcashShieldedSpend {
+                action_index: spend.action_index,
+                value: spend.value,
+                recipient: spend.recipient,
+                nullifier: spend.nullifier,
+                cmx: spend.cmx,
+                position: spend.position,
+                address,
+                rk_replaced: spend.randomizer_installed,
+                signed: spend.signed,
+            })
         })
-        .collect();
-    Ok((outputs, spends, info.value_balance))
+        .collect::<Result<Vec<_>, ZcashParseTransactionError>>()?;
+    Ok((outputs, spends, report.value_balance))
 }

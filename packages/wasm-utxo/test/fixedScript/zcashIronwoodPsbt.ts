@@ -1267,4 +1267,34 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
       );
     });
   });
+
+  describe("key-free verification of the shielded side", function () {
+    it("rejects a tampered PSBT at parse time with the failing check's error code", function () {
+      // Fixture: a shielded-output PSBT whose stored PCZT output recipient was swapped at
+      // equal value (regenerated via
+      // `cargo test --lib write_tampered_psbt_fixture -- --ignored`).
+      const tamperedHex = fs
+        .readFileSync(
+          path.resolve(
+            path.dirname(fileURLToPath(import.meta.url)),
+            "../fixtures/zcash/ironwood_tampered_recipient.hex",
+          ),
+          "utf8",
+        )
+        .trim();
+      const tamperedBytes = Buffer.from(tamperedHex, "hex");
+      const psbt = ZcashIronwoodBitGoPsbt.fromBytes(new Uint8Array(tamperedBytes), "zcashTest");
+      assert.throws(
+        () =>
+          psbt.parseTransactionWithWalletKeys(walletKeys, { replayProtection: { publicKeys: [] } }),
+        (err: unknown) => {
+          assert.strictEqual(
+            (err as Error & { code?: string }).code,
+            "IronwoodVerifyError.NoteCommitment",
+          );
+          return true;
+        },
+      );
+    });
+  });
 });

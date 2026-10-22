@@ -15,6 +15,8 @@ pub mod blake2b;
 pub mod ironwood_build;
 /// Serialization of the orchard PCZT Ironwood bundle (proof-service payload / PSBT carry).
 pub mod ironwood_pczt;
+/// The key-free verifier for Ironwood PCZT bundles (plan §5).
+pub mod ironwood_verify;
 pub mod transaction;
 pub mod unified_address;
 pub mod v6;
