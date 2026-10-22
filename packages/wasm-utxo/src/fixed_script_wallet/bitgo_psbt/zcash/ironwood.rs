@@ -42,7 +42,7 @@ pub struct IronwoodOutputRequest {
 /// (see [`ZcashBitGoPsbt::replace_ironwood_spend_rk`]).
 ///
 /// Oracle-only: production spends go through
-/// [`crate::zcash::ironwood_construct::IronwoodKeylessSpendSpec`] (plan PR 5).
+/// [`crate::zcash::ironwood_construct::IronwoodKeylessSpendSpec`].
 #[cfg(any(test, feature = "orchard-proving"))]
 #[derive(Clone)]
 pub struct IronwoodSpendRequest {
@@ -281,7 +281,7 @@ impl ZcashBitGoPsbt {
     ///
     /// Real spends leave the placeholder `rk` (= the spend's `ak`) in the stored PCZT.
     ///
-    /// Oracle-only (plan PR 5): production spends go through
+    /// Oracle-only: production spends go through
     /// [`Self::add_shielded_spends`], the keyless Constructor. This keyed path needs the FVK
     /// on the PSBT side and is compiled only under `test` / `orchard-proving`.
     #[cfg(any(test, feature = "orchard-proving"))]
@@ -342,8 +342,19 @@ impl ZcashBitGoPsbt {
         let (pczt, action_map) =
             ironwood_build::construct_spend_pczt_multi(&spend_specs, &output_specs, anchor, rng)
                 .map_err(|e| e.to_string())?;
-        self.store_ironwood_pczt_and_unified_addresses(pczt, action_map, outputs)
-            .map_err(|e| e.to_string())
+        let action_count = pczt.actions().len();
+        let action_map = self
+            .store_ironwood_pczt_and_unified_addresses(pczt, action_map, outputs)
+            .map_err(|e| e.to_string())?;
+        if !spends.is_empty() {
+            // The keyed Constructor encrypts every out_ciphertext under the FVK's ovk at
+            // construction, so its spend bundle starts with every ciphertext set.
+            super::propkv::set_ironwood_out_ciphertexts_set(
+                &mut self.psbt,
+                vec![0xff; action_count.div_ceil(8)],
+            );
+        }
+        Ok(action_map)
     }
 
     /// Reject a caller-supplied Unified Address whose Orchard receiver is not exactly `recipient`:
@@ -611,6 +622,9 @@ impl ZcashBitGoPsbt {
         let bytes = super::propkv::get_ironwood_pczt(&self.psbt)
             .ok_or_else(|| "no Ironwood PCZT stored in PSBT".to_string())?;
         let pczt = ironwood_pczt::deserialize_pczt(&bytes).map_err(|e| e.to_string())?;
+        // Ciphertexts first: the ciphertext round comes before the randomizers.
+        self.require_out_ciphertexts_set_in(&pczt)
+            .map_err(|e| e.to_string())?;
         ironwood_build::check_spend_rk_replaceable(&pczt, action_index, &rk)
             .map_err(Self::ironwood_action_error(action_index))?;
 
@@ -633,7 +647,10 @@ impl ZcashBitGoPsbt {
         let bytes = super::propkv::get_ironwood_pczt(&self.psbt)
             .ok_or_else(|| "no Ironwood PCZT stored in PSBT".to_string())?;
         let mut pczt = ironwood_pczt::deserialize_pczt(&bytes).map_err(|e| e.to_string())?;
-        // Gate before the sighash: it is not final while any real spend's rk is the placeholder.
+        // Gate before the sighash: it is not final while any real output's out_ciphertext
+        // or any real spend's rk is still a placeholder.
+        self.require_out_ciphertexts_set_in(&pczt)
+            .map_err(|e| e.to_string())?;
         ironwood_build::require_spend_rks_replaced(&pczt).map_err(|e| e.to_string())?;
 
         let (amounts, scripts) = self.transparent_input_amounts_and_scripts()?;
@@ -702,12 +719,12 @@ impl ZcashBitGoPsbt {
         Ok(true)
     }
 
-    /// The keyless verification of the stored PCZT (plan §5): run every check a party
+    /// The keyless verification of the stored PCZT: run every check a party
     /// without viewing keys can run before surfacing any plaintext value, so a tampered
     /// bundle fails loudly with the failing check instead of leaking unverified plaintext.
     /// Verification only reads the PCZT: its plaintext stays in place for the prover.
     ///
-    /// The stored spend-validating key (plan PR 5's `0x08` key) is passed through when
+    /// The stored spend-validating key is passed through when
     /// present; until then the `Rk` check is skipped and only the key-free checks run.
     pub(crate) fn keyless_verify(
         &self,
@@ -805,7 +822,7 @@ impl ZcashBitGoPsbt {
         if self.require_no_shielded_output_ever_added()? {
             return Err("no Ironwood PCZT stored in PSBT".to_string());
         }
-        // The keyless verifier (plan §5) runs every key-free check — including `ValueSum`,
+        // The keyless verifier runs every key-free check — including `ValueSum`,
         // which cross-checks the committed `value_sum` against the plaintext note values —
         // before any accounting flows out of here. The plaintext note values are NOT bound
         // after deserialization: the proofs bind only `cv_net`/`cm`.
@@ -966,13 +983,17 @@ impl ZcashBitGoPsbt {
     }
 
     /// Transaction Extractor role: given the external prover's `proof` bytes, finalize the
-    /// transparent inputs, apply the shielded binding signature, and produce the broadcast-ready v6
-    /// transaction bytes.
+    /// transparent inputs, apply the shielded binding signature, and produce the broadcast-ready
+    /// v6 transaction bytes.
+    ///
+    /// Shielding and shielded spends share this shape: signing is done first, then the
+    /// prover's proof (from [`Self::proof_request`] for a spend bundle) is passed straight in.
     ///
     /// The PSBT must already carry every transparent input's signatures (via
-    /// [`Self::add_v6_transparent_signature`]) and the PCZT (from [`Self::add_ironwood_output`]).
-    /// `rng` seeds both the dummy spend-auth signature (in the IO finalizer) and the binding
-    /// signature (in the Transaction Extractor). Consumes `self`.
+    /// [`Self::add_v6_transparent_signature`]) and the PCZT (from [`Self::add_ironwood_output`]
+    /// or [`Self::add_shielded_spends`]). `rng` seeds both the dummy spend-auth signature (in
+    /// the IO finalizer) and the binding signature (in the Transaction Extractor). Consumes
+    /// `self`.
     pub fn combine_ironwood_proof<R: rand::RngCore + rand::CryptoRng>(
         self,
         proof: Vec<u8>,

@@ -1,4 +1,4 @@
-//! Typed errors for the Ironwood PSBT workflow (plan §6.4).
+//! Typed errors for the Ironwood PSBT workflow.
 //!
 //! Every new Ironwood method on [`super::ZcashBitGoPsbt`] returns
 //! [`IronwoodPsbtError`], whose variant name is the JS `err.code`
@@ -11,7 +11,7 @@
 /// An Ironwood PSBT workflow error.
 #[derive(Debug, strum::IntoStaticStr)]
 pub enum IronwoodPsbtError {
-    /// Rule 0 (plan §3): a v6 PSBT spends either transparent inputs or shielded notes,
+    /// One input kind: a v6 PSBT spends either transparent inputs or shielded notes,
     /// never both. [`super::ZcashBitGoPsbt::add_shielded_spends`] rejects a PSBT that
     /// already carries transparent inputs.
     MixedInputKinds,
@@ -21,6 +21,43 @@ pub enum IronwoodPsbtError {
     /// A caller-supplied Unified Address is not a valid Unified Address, has no Orchard
     /// receiver, or its Orchard receiver is not the output's `recipient`.
     BadUnifiedAddress(String),
+    /// The PSBT carries no Ironwood PCZT, or its bundle is not a spend bundle (no real
+    /// spends), and the operation needs one.
+    NotSpendBundle,
+    /// An action index the operation named does not exist in the bundle.
+    UnknownAction,
+    /// The action index names a fabricated (dummy) half, not a real spend or output.
+    DummyAction,
+    /// Ciphertexts first: these real outputs' `out_ciphertext`s are still pending — the KMS
+    /// ciphertext round must run before randomizers, sighashes, or proof requests.
+    OutCiphertextPending {
+        /// The pending real outputs' action indices.
+        action_indices: Vec<usize>,
+    },
+    /// The action already has an `out_ciphertext`, and the entry carries different bytes;
+    /// re-delivering identical bytes is accepted.
+    OutCiphertextConflict {
+        /// The offending action index.
+        action_index: usize,
+    },
+    /// Randomizers installed: these real spends still carry the placeholder `rk` — the signer's
+    /// randomizers must be installed before the proof request.
+    RandomizerPending {
+        /// The pending real spends' action indices.
+        action_indices: Vec<usize>,
+    },
+    /// Signed before proven: these real spends have no `spend_auth_sig` yet — the proof is
+    /// requested only after the wallet has signed.
+    SpendSignaturePending {
+        /// The unsigned real spends' action indices.
+        action_indices: Vec<usize>,
+    },
+    /// The bundle is frozen: a spend-auth signature (or a transparent
+    /// partial signature, as defense in depth) exists, so ciphertexts can no longer be
+    /// installed.
+    AlreadySigned,
+    /// The operation has nothing to act on: there is no pending item, or the batch is empty.
+    NothingPending,
     /// The Ironwood Constructor rejected the request; the wrapped
     /// [`IronwoodBuildError`](crate::zcash::ironwood_build::IronwoodBuildError) carries the
     /// reason (and its own `IronwoodBuildError.*` code).
@@ -29,6 +66,10 @@ pub enum IronwoodPsbtError {
     /// [`IronwoodPcztError`](crate::zcash::ironwood_pczt::IronwoodPcztError) carries the
     /// reason.
     Pczt(crate::zcash::ironwood_pczt::IronwoodPcztError),
+    /// The key-free verifier rejected the bundle; the wrapped
+    /// [`IronwoodVerifyError`](crate::zcash::ironwood_build::IronwoodVerifyError) carries
+    /// the failing check (and its own `IronwoodVerifyError.<check>` code).
+    Verify(crate::zcash::ironwood_build::IronwoodVerifyError),
 }
 
 impl std::fmt::Display for IronwoodPsbtError {
@@ -44,8 +85,46 @@ impl std::fmt::Display for IronwoodPsbtError {
                 "an Ironwood PCZT is already present; only one call is supported"
             ),
             IronwoodPsbtError::BadUnifiedAddress(e) => write!(f, "invalid unified address: {e}"),
+            IronwoodPsbtError::NotSpendBundle => {
+                write!(f, "this PSBT carries no Ironwood spend bundle")
+            }
+            IronwoodPsbtError::UnknownAction => {
+                write!(f, "the named action index does not exist in the bundle")
+            }
+            IronwoodPsbtError::DummyAction => write!(
+                f,
+                "the named action is a fabricated dummy, not a real spend or output"
+            ),
+            IronwoodPsbtError::OutCiphertextPending { action_indices } => write!(
+                f,
+                "real outputs {action_indices:?} are still pending their out_ciphertext; \
+                 run the KMS ciphertext round first"
+            ),
+            IronwoodPsbtError::OutCiphertextConflict { action_index } => write!(
+                f,
+                "action {action_index}'s out_ciphertext is already set to different bytes"
+            ),
+            IronwoodPsbtError::RandomizerPending { action_indices } => write!(
+                f,
+                "real spends {action_indices:?} still carry the placeholder rk; install the \
+                 signer's randomizers first"
+            ),
+            IronwoodPsbtError::SpendSignaturePending { action_indices } => write!(
+                f,
+                "real spends {action_indices:?} are not signed yet; the proof is requested \
+                 only after the spend-auth signatures are installed"
+            ),
+            IronwoodPsbtError::AlreadySigned => write!(
+                f,
+                "the bundle is frozen: a signature exists, so out_ciphertexts can no longer \
+                 be installed"
+            ),
+            IronwoodPsbtError::NothingPending => {
+                write!(f, "there is nothing pending for this operation")
+            }
             IronwoodPsbtError::Build(e) => write!(f, "{e}"),
             IronwoodPsbtError::Pczt(e) => write!(f, "{e}"),
+            IronwoodPsbtError::Verify(e) => write!(f, "{e}"),
         }
     }
 }
@@ -71,6 +150,7 @@ impl crate::error::WasmErrorCode for IronwoodPsbtError {
         match self {
             IronwoodPsbtError::Build(error) => crate::error::WasmErrorCode::code(error),
             IronwoodPsbtError::Pczt(error) => crate::error::WasmErrorCode::code(error),
+            IronwoodPsbtError::Verify(error) => crate::error::WasmErrorCode::code(error),
             other => format!("IronwoodPsbtError.{}", <&'static str>::from(other)),
         }
     }

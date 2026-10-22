@@ -762,8 +762,8 @@ impl TryIntoJsValue for ZcashParsedOutput {
 
 impl TryIntoJsValue for ZcashShieldedSpend {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
-        // Until plan PR 7 derives the state from `alpha`, `installed` means the signer
-        // replaced the Constructor's placeholder `rk` (= the wallet `ak`).
+        // `installed` means the signer replaced the Constructor's placeholder `rk`
+        // (= the wallet `ak`).
         let randomizer = if self.rk_replaced {
             "installed"
         } else {
@@ -774,7 +774,7 @@ impl TryIntoJsValue for ZcashShieldedSpend {
             "value" => self.value,
             "recipient" => self.recipient.to_vec(),
             "nullifier" => self.nullifier.to_vec(),
-            // Recomputed from the verified plaintext (the keyless verifier's K4).
+            // Recomputed from the verified plaintext (the keyless verifier's `SpendWitness` check).
             "cmx" => self.cmx.to_vec(),
             "position" => self.position,
             "address" => self.address,

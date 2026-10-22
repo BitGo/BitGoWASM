@@ -236,7 +236,7 @@ pub fn with_spend_rk(
 /// Set the constructor placeholder `rk` and mark it as requiring signer replacement.
 ///
 /// Oracle-only: the keyed Constructor's scrub is the only caller, and it exists only under
-/// `test` / `orchard-proving` (plan PR 7 deletes this marker entirely).
+/// `test` / `orchard-proving`.
 #[cfg(any(test, feature = "orchard-proving"))]
 pub(crate) fn with_placeholder_spend_rk(
     bytes: &[u8],
@@ -405,7 +405,7 @@ fn wire_action(
         .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))
 }
 
-/// Test-only: replace one real spend's Merkle witness in the wire form (plan PR 4's
+/// Test-only: replace one real spend's Merkle witness in the wire form (for the
 /// `SpendWitness` tamper test).
 #[cfg(test)]
 pub(crate) fn with_spend_witness_for_test(
@@ -423,7 +423,7 @@ pub(crate) fn with_spend_witness_for_test(
     })
 }
 
-/// Test-only: replace the bundle's committed `value_sum` in the wire form (plan PR 4's
+/// Test-only: replace the bundle's committed `value_sum` in the wire form (for the
 /// `ValueSum` tamper test).
 #[cfg(test)]
 pub(crate) fn with_value_sum_for_test(
@@ -439,7 +439,7 @@ pub(crate) fn with_value_sum_for_test(
 }
 
 /// Test-only: drop one action output's plaintext `recipient` in the wire form, leaving its
-/// value in place (plan PR 4's `MissingPlaintext` tamper test).
+/// value in place.
 #[cfg(test)]
 pub(crate) fn without_output_recipient_for_test(
     bytes: &[u8],
@@ -491,7 +491,7 @@ pub(crate) fn with_action_rewrite_for_test(
 
 /// Test-only: replace one action output's plaintext `recipient` in the wire form (a valid
 /// 43-byte Orchard address), producing a PCZT whose output note no longer commits to its
-/// `cmx`. Exists for the tamper tests (plan PR 4) and the TS tampered-parse fixture.
+/// `cmx`. Exists for the tamper tests and the TS tampered-parse fixture.
 #[cfg(test)]
 pub(crate) fn with_output_recipient_for_test(
     bytes: &[u8],
@@ -780,7 +780,7 @@ fn wire_to_output(
 }
 
 /// Assemble a bundle from wire-form actions — the keyless spend constructor's assembly
-/// path (plan §4): it builds its own actions plus the dummy-spend actions an outputs-only
+/// path: it builds its own actions plus the dummy-spend actions an outputs-only
 /// [`Builder`](orchard::builder::Builder) fabricated, then re-parses the whole set through
 /// the same validation a serialized PCZT takes ([`wire_to_bundle`], including the
 /// duplicate-nullifier guard).

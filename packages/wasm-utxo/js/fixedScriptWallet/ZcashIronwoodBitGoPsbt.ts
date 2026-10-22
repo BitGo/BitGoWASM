@@ -124,8 +124,8 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
   /**
    * Parse the transaction through the Zcash parse, which surfaces the shielded side the
    * generic parse refuses to drop: per-action output indices, the shielded spends, and the
-   * bundle's value balance. The plaintext spend info is unverified until the key-free
-   * verifier lands (plan PR 4).
+   * bundle's value balance. The key-free verifier checks the bundle before any plaintext
+   * value is returned.
    */
   override parseTransactionWithWalletKeys(
     walletKeys: WalletKeysArg,

@@ -2,11 +2,11 @@
  * Shared Zcash Ironwood (v6) types for the shielded-spend flow.
  *
  * These describe what the build service, the client and KMS each see as the PSBT moves
- * through the flow in `docs/ironwood-shielded-spend-plan.md` §2. Parse-facing types live in
+ * through the build → KMS → sign → prove → combine flow. Parse-facing types live in
  * `ZcashIronwoodBitGoPsbt.ts`; this module holds the shared vocabulary.
  */
 
-/** One shielded note to spend, as passed to `addShieldedSpends` (plan PR 5). */
+/** One shielded note to spend, as passed to `addShieldedSpends`. */
 export type ZcashShieldedSpendRequest = {
   /** Raw 43-byte Orchard recipient (diversifier ‖ pk_d). */
   recipient: Uint8Array;
@@ -24,7 +24,7 @@ export type ZcashShieldedSpendRequest = {
   nullifier: Uint8Array;
 };
 
-/** One shielded output to create, as passed to `addShieldedSpends` (plan PR 5). */
+/** One shielded output to create, as passed to `addShieldedSpends`. */
 export type ZcashShieldedOutputRequest = {
   /** Raw 43-byte Orchard recipient. */
   recipient: Uint8Array;
@@ -73,7 +73,7 @@ export type ZcashShieldedSpend = {
   signed: boolean;
 };
 
-/** The client-side verification report of a shielded bundle (plan PR 4). */
+/** The client-side verification report of a shielded bundle. */
 export type IronwoodVerificationReport = {
   /** The bundle's real spends, as verified. */
   spends: ZcashShieldedSpend[];
@@ -85,7 +85,7 @@ export type IronwoodVerificationReport = {
   anchor: Uint8Array;
 };
 
-/** Orchestration state of the shielded side of a spend PSBT (plan PR 7). */
+/** Orchestration state of the shielded side of a spend PSBT. */
 export type IronwoodShieldedStatus = {
   inputKind: ZcashInputKind;
   /** Action indices whose `out_ciphertext` is still pending. */

@@ -153,7 +153,7 @@ pub enum IronwoodBuildError {
     BadAnchor,
     /// An Ironwood output must carry a positive value: a zero-valued output is how the
     /// construction marks fabricated dummy outputs, so accepting one from a caller would
-    /// make real and fabricated outputs indistinguishable (plan F8).
+    /// make real and fabricated outputs indistinguishable.
     ZeroValueOutput { output_index: usize },
     /// The orchard builder rejected the bundle parameters.
     Builder(String),
@@ -243,12 +243,12 @@ pub enum IronwoodBuildError {
     /// the Constructor's placeholder (the spend's `ak`). Marking that `rk` as replaced would let
     /// a linkable `rk` past the [`PlaceholderRkNotReplaced`](Self::PlaceholderRkNotReplaced) gate.
     UnrandomizedRk,
-    /// The keyless spend constructor was called without any real spend (plan §4 invariant 6):
+    /// The keyless spend constructor was called without any real spend:
     /// an output-only bundle is a *shielding* build — use [`construct_shield_pczt_multi`]
     /// for it.
     NoSpends,
-    /// An output passed to the keyless spend constructor carried an explicit `ovk` (plan §4
-    /// invariant 7): in the spend flow KMS owns encryption, so the PSBT side may not choose
+    /// An output passed to the keyless spend constructor carried an explicit `ovk`: in the
+    /// spend flow KMS owns encryption, so the PSBT side may not choose
     /// one. The placeholder `out_ciphertext` the constructor installs is replaced by KMS's
     /// `out_ciphertext` later.
     OvkNotAllowed {
@@ -256,7 +256,7 @@ pub enum IronwoodBuildError {
         output_index: usize,
     },
     /// The spend-validating key bytes are not a canonical, non-identity RedPallas
-    /// verification key (plan §4 invariant 5): the placeholder `rk` must be a key the
+    /// verification key: the placeholder `rk` must be a key the
     /// signer's `ak.randomize(alpha)` can replace.
     BadSpendValidatingKey,
     /// A keyless spend's caller-supplied nullifier is not a canonical Pallas base-field
@@ -268,8 +268,8 @@ pub enum IronwoodBuildError {
     /// A note or output value, or the spend/output total, exceeds Zcash `MAX_MONEY`
     /// (21 000 000 ZEC): no such value can appear in a valid transaction.
     ValueOutOfRange,
-    /// The keyless spend constructor's own output failed the key-free verifier (plan §4 step
-    /// 4) — an internal inconsistency; the wrapped error names the failing check.
+    /// The keyless spend constructor's own output failed the key-free verifier — an
+    /// internal inconsistency; the wrapped error names the failing check.
     SelfCheck(IronwoodVerifyError),
 }
 
@@ -603,7 +603,7 @@ impl IronwoodActionMap {
 
 impl IronwoodActionMap {
     /// Assemble a map from already-shuffled action indices — the keyless spend
-    /// constructor's shuffle (plan §4) produces them directly, without a builder.
+    /// constructor's shuffle produces them directly, without a builder.
     pub(crate) fn from_parts(
         spend_action_indices: Vec<usize>,
         output_action_indices: Vec<usize>,
@@ -644,7 +644,7 @@ impl IronwoodActionMap {
 /// known, then hand the PCZT to the prover and [`combine`].
 ///
 /// This is the oracle path: keyed construction through the orchard `Builder`, available only
-/// under `test` / `orchard-proving` (plan PR 5). The production deshield/shielded→shielded
+/// under `test` / `orchard-proving`. The production deshield/shielded→shielded
 /// Constructor is [`crate::zcash::ironwood_construct::construct_spend_pczt_keyless`].
 #[cfg(any(test, feature = "orchard-proving"))]
 pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
@@ -984,7 +984,7 @@ pub fn verify_spend_pczt(bundle: &PcztBundle) -> Result<(), IronwoodBuildError> 
                 IronwoodBuildError::Verify(format!("output action {i}: note commitment: {e}"))
             })?;
         }
-        // F3 fix: `cv_net` commits to the plaintext net value — no FVK is needed for that,
+        // `cv_net` commits to the plaintext net value — no FVK is needed for that,
         // so the check runs whenever both sides carry their values.
         if spend.value().is_some() && output.value().is_some() {
             action.verify_cv_net().map_err(|e| {

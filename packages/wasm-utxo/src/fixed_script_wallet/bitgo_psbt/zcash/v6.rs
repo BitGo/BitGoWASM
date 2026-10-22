@@ -437,6 +437,10 @@ impl ZcashBitGoPsbt {
     /// [`Self::unsigned_v6_txid`] does for the txid.
     pub fn v6_transparent_sighash(&self, index: usize) -> Result<[u8; 32], String> {
         let (amounts, scripts) = self.transparent_input_amounts_and_scripts()?;
+        // Ciphertexts first: a tracked spend bundle must have every real output's
+        // `out_ciphertext` installed before anything commits the action data.
+        self.require_out_ciphertexts_set()
+            .map_err(|e| e.to_string())?;
         let bundle = if self.require_no_shielded_output_ever_added()? {
             None
         } else {
@@ -467,6 +471,10 @@ impl ZcashBitGoPsbt {
     /// before it is signed.
     pub fn v6_sig_digest(&self) -> Result<[u8; 32], String> {
         let (amounts, scripts) = self.transparent_input_amounts_and_scripts()?;
+        // Ciphertexts first: a tracked spend bundle must have every real output's
+        // `out_ciphertext` installed before the digest is final.
+        self.require_out_ciphertexts_set()
+            .map_err(|e| e.to_string())?;
         let bundle = self.final_ironwood_action_data()?;
         let tx = self.to_v6_transaction(self.psbt.unsigned_tx.clone(), Some(bundle))?;
         Ok(crate::zcash::v6::compute_v6_sig_digest(
@@ -807,7 +815,7 @@ impl ZcashBitGoPsbt {
                 "v6 PSBT is missing its Ironwood PCZT after extraction".to_string(),
             ));
         }
-        // Rule 0 (plan §3): a v6 PSBT carries either transparent inputs or shielded spends,
+        // One input kind: a v6 PSBT carries either transparent inputs or shielded spends,
         // never both. The shielded side of the rule lives in
         // `add_shielded_spends` (transparent-input check) and the generic input adders'
         // Zcash arms; this closes the deserialize hole a PSBT could be edited through.

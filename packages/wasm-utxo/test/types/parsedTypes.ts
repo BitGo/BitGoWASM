@@ -1,5 +1,5 @@
 /**
- * Compile-time type tests for the generic parsed-input type parameter (plan PR 3).
+ * Compile-time type tests for the generic parsed-input type parameter.
  *
  * Nothing here runs — these are type-level assertions checked by `tsc`; the exported
  * functions exist only to anchor the annotations. A mismatch fails `npm run build:test`.

@@ -1647,8 +1647,14 @@ fn golden_shield1zec_psbt_sighash_verifies_real_signature() {
         &mut z.psbt,
         pczt_bytes_from_action_data(&bundle),
     );
+    // The synthetic PCZT carries no plaintext or dummy markers, so it reads as a spend
+    // bundle; its ciphertexts are the golden transaction's final ones.
+    crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::set_ironwood_out_ciphertexts_set(
+        &mut z.psbt,
+        vec![0xff; bundle.actions.len().div_ceil(8)],
+    );
 
-    // The PSBT-derived sighash must equal the codec's (PR1-golden) sighash — i.e. the PSBT
+    // The PSBT-derived sighash must equal the codec's sighash — i.e. the PSBT
     // threaded the spent-output value + script through correctly.
     let psbt_sighash = z.v6_transparent_sighash(0).unwrap();
     let codec_sighash = compute_v6_transparent_sighash(
@@ -2007,8 +2013,8 @@ fn zip317_ironwood_term_matches_the_stored_action_count() {
 fn ironwood_bundle_info_rejects_a_tampered_plaintext_value() {
     // The spend's plaintext value is not bound by the proofs (only `cv_net`/`cm` are), so a
     // plaintext that disagrees with the bundle's commitments must be caught by the keyless
-    // verifier rather than silently flowing into the fee: the action's own `cv_net` (`K2`)
-    // rejects it before the bundle-level `value_sum` cross-check (`K3`) is reached.
+    // verifier rather than silently flowing into the fee: the action's own `cv_net` (`CvNet`)
+    // rejects it before the bundle-level `value_sum` cross-check (`ValueSum`) is reached.
     let (mut z, _keys) = build_unshield_psbt("ironwood_v6_tampered_plaintext");
 
     // The honest bundle accounts cleanly: fee = 0 - 99_999_000 + 100_000_000.
@@ -2471,8 +2477,8 @@ fn zcash_parse_reports_spend_signing_state() {
     assert!(spend.signed);
 }
 
-/// Until the one-input-kind rule lands on the build side, the Zcash parse refuses a PSBT
-/// that mixes transparent inputs with shielded spends rather than dropping either side.
+/// The Zcash parse refuses a PSBT that mixes transparent inputs with shielded spends
+/// rather than dropping either side.
 #[test]
 fn zcash_parse_rejects_mixed_input_kinds() {
     let wallet_keys = root_wallet_keys("ironwood_v6_parse_mixed");
@@ -2745,7 +2751,7 @@ fn transparent_only_v6_is_refused_by_the_v4_signing_paths() {
     assert!(err.contains("not supported for v6"), "unexpected: {err}");
 }
 
-/// Generator for the TS tampered-parse fixture (plan PR 4's `IronwoodVerifyError` test):
+/// Generator for the TS tampered-parse fixture:
 /// a shielded-output PSBT whose stored PCZT output recipient was swapped at equal value.
 /// Run with `cargo test --lib write_tampered_psbt_fixture -- --ignored`.
 #[test]
