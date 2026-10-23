@@ -429,8 +429,7 @@ impl BitGoPsbt {
         let tx = self
             .zcash()?
             .clone()
-            .combine_ironwood_proof(proof.to_vec(), rand::rngs::OsRng)
-            .map_err(|e| WasmUtxoError::new(&e))?;
+            .combine_ironwood_proof(proof.to_vec(), rand::rngs::OsRng)?;
         self.zcash_mut()?.mark_ironwood_extracted();
         Ok(tx)
     }

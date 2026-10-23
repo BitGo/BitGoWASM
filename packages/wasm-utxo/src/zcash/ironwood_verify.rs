@@ -12,9 +12,10 @@
 //!   reported spends and outputs — dummy spends carry value 0, so nothing moves unseen;
 //! - `SpendWitness`: every real spend's rebuilt note commits to a leaf under the bundle's anchor
 //!   and matches the spend's recorded `cmx`;
-//! - `Rk`: every real spend's `rk` is either the stored wallet `ak` (placeholder) or
-//!   `ak.randomize(alpha)` (installed), consistent with the caller's expectations;
+//! - `Rk`: every real spend's `rk` is either [`PLACEHOLDER_RK`] or a randomized key; given the
+//!   caller's own `ak` and FROST randomizers, each randomized `rk` is `ak.randomize(alpha)`;
 //! - `ViewingKeyPresent`: no viewing-key material (`fvk`, ZIP-32 derivation) leaks on a real spend;
+//! - `RandomizerPresent`: no real spend carries its `alpha`, which with `rk` reveals `ak`;
 //! - `BundleVersion`: the bundle is an Ironwood V3 bundle with the default flags;
 //! - `ZeroValueOutput`: value-0 (dummy) outputs only sit on actions with a real spend;
 //! - `SpendSignature`: every present spend-auth signature verifies against the spend's `rk` over
@@ -25,6 +26,8 @@
 //! Failures surface as [`IronwoodVerifyError::Action`] carrying an
 //! [`IronwoodVerifyCheck`], so the JS error code is `IronwoodVerifyError.<check>` — the
 //! same shape the keyed verifier uses.
+//!
+//! [`PLACEHOLDER_RK`]: super::ironwood_build::PLACEHOLDER_RK
 
 use ff::Field;
 use orchard::{
@@ -36,21 +39,21 @@ use orchard::{
 };
 
 use super::ironwood_build::{
-    IronwoodVerifyCheck, IronwoodVerifyError, OrchardAddressBytes, CMX_PROPRIETARY_KEY,
+    spend_rk_is_placeholder, IronwoodVerifyCheck, IronwoodVerifyError, OrchardAddressBytes,
+    CMX_PROPRIETARY_KEY,
 };
 use super::ironwood_pczt::PcztSpend;
 
 /// The caller's own expectations for the keyless verification.
 #[derive(Debug, Clone, Default)]
 pub struct KeylessVerifyContext {
-    /// The wallet's spend-validating key (`ak`) as stored in the PSBT (proprietary key
-    /// `0x08`). Required for `Rk` when there are real spends; `None` skips `Rk`.
-    pub stored_ak: Option<[u8; 32]>,
-    /// The caller's own `ak`: when given, it must equal `stored_ak` (the client verifies
-    /// it is signing for its own wallet).
+    /// The caller's own spend-validating key (`ak`) — never read from the PSBT, which does not
+    /// carry it. When given, every randomized real spend must have an entry in
+    /// `expected_randomizers` whose `rk` is `ak.randomize(alpha)`: the client checks it is
+    /// signing for its own wallet.
     pub expected_ak: Option<[u8; 32]>,
-    /// The `(action, alpha, rk)` triples the caller's FROST round produced: when given,
-    /// each spend on those actions must match.
+    /// The `(action, alpha, rk)` triples the caller's FROST round produced: when given, each
+    /// spend on those actions must carry exactly that randomized `rk`.
     pub expected_randomizers: Vec<(usize, [u8; 32], [u8; 32])>,
     /// The ZIP-244 shielded sig digest to verify present spend-auth signatures against
     /// (`SpendSignature`); `None` skips the check.
@@ -72,7 +75,9 @@ pub struct VerifiedSpend {
     pub cmx: [u8; 32],
     /// The witness's leaf position in the commitment tree.
     pub position: u32,
-    /// Whether the signer replaced the Constructor's placeholder `rk` (the wire marker).
+    /// Whether the signer replaced the Constructor's [`PLACEHOLDER_RK`] with a randomized `rk`.
+    ///
+    /// [`PLACEHOLDER_RK`]: super::ironwood_build::PLACEHOLDER_RK
     pub randomizer_installed: bool,
     /// Whether a spend-auth signature is present.
     pub signed: bool,
@@ -139,7 +144,7 @@ pub fn verify_bundle_without_keys(
         ));
     }
 
-    let stored_ak = stored_spend_validating_key(ctx)?;
+    let expected_ak = expected_spend_validating_key(ctx)?;
 
     let mut spends = Vec::new();
     let mut outputs = Vec::new();
@@ -202,7 +207,7 @@ pub fn verify_bundle_without_keys(
             action_index,
             spend,
             ctx,
-            stored_ak.as_ref(),
+            expected_ak.as_ref(),
         )?);
         // The fabricated zero-valued outputs the Constructor pairs with surplus real
         // spends stay out of the reported outputs; everything else is a real output.
@@ -258,33 +263,11 @@ pub fn verify_bundle_without_keys(
     })
 }
 
-/// The stored spend-validating key: its raw bytes (the placeholder `rk`) and the parsed key.
-type StoredAk = ([u8; 32], VerificationKey<SpendAuth>);
-
-/// `Rk` setup: the stored `ak` — the wallet's public spend-validating key, which the
-/// Constructor also writes verbatim as the placeholder `rk` — parsed as a canonical,
-/// non-identity verification key, and matched against the caller's own when given.
-fn stored_spend_validating_key(
+/// `Rk` setup: the caller's own `ak`, parsed as a canonical, non-identity verification key.
+fn expected_spend_validating_key(
     ctx: &KeylessVerifyContext,
-) -> Result<Option<StoredAk>, IronwoodVerifyError> {
-    let stored = match (ctx.stored_ak, ctx.expected_ak) {
-        (Some(stored), Some(expected)) if stored != expected => {
-            return Err(action_error(
-                0,
-                IronwoodVerifyCheck::Rk,
-                "the stored spend-validating key is not the caller's own".to_string(),
-            ));
-        }
-        (None, Some(_)) => {
-            return Err(action_error(
-                0,
-                IronwoodVerifyCheck::Rk,
-                "the PSBT stores no spend-validating key to check the caller's against".to_string(),
-            ));
-        }
-        (stored, _) => stored,
-    };
-    let Some(bytes) = stored else {
+) -> Result<Option<VerificationKey<SpendAuth>>, IronwoodVerifyError> {
+    let Some(bytes) = ctx.expected_ak else {
         return Ok(None);
     };
     // The identity point encodes as all zeros; it randomizes to a key anyone can sign for.
@@ -292,17 +275,18 @@ fn stored_spend_validating_key(
         return Err(action_error(
             0,
             IronwoodVerifyCheck::Rk,
-            "the stored spend-validating key is the identity".to_string(),
+            "the expected spend-validating key is the identity".to_string(),
         ));
     }
-    let key = VerificationKey::<SpendAuth>::try_from(bytes).map_err(|e| {
-        action_error(
-            0,
-            IronwoodVerifyCheck::Rk,
-            format!("the stored spend-validating key is not a canonical point: {e}"),
-        )
-    })?;
-    Ok(Some((bytes, key)))
+    VerificationKey::<SpendAuth>::try_from(bytes)
+        .map(Some)
+        .map_err(|e| {
+            action_error(
+                0,
+                IronwoodVerifyCheck::Rk,
+                format!("the expected spend-validating key is not a canonical point: {e}"),
+            )
+        })
 }
 
 /// The action's plaintext: `(spend value, output value, output recipient)`, after checking
@@ -359,7 +343,7 @@ fn verify_real_spend(
     action_index: usize,
     spend: &PcztSpend,
     ctx: &KeylessVerifyContext,
-    stored_ak: Option<&StoredAk>,
+    expected_ak: Option<&VerificationKey<SpendAuth>>,
 ) -> Result<VerifiedSpend, IronwoodVerifyError> {
     // `SpendWitness`: rebuild the note from plaintext and check it against the witness and the
     // recorded `cmx`.
@@ -443,74 +427,65 @@ fn verify_real_spend(
         ));
     }
 
-    // `Rk`: the `rk` must be the stored wallet `ak` (placeholder) or `ak.randomize(alpha)`
-    // (installed), consistent with the caller's expected randomizers.
-    //
-    // The reported randomizer state is marker-based: `replace_ironwood_spend_rk` patches the `rk`
-    // without installing `alpha`, so alpha-presence is not yet equivalent to "replaced".
-    let randomizer_installed =
-        crate::zcash::ironwood_pczt::spend_rk_replaced(spend).map_err(|e| {
-            action_error(
-                action_index,
-                IronwoodVerifyCheck::Rk,
-                format!("the spend's rk-state marker is malformed: {e}"),
-            )
-        })?;
-    if let Some((stored_ak_bytes, ak)) = stored_ak {
-        match spend.alpha() {
-            // The Constructor writes the wallet's `ak` bytes verbatim as the placeholder wire
-            // `rk`, so the placeholder state is a byte-for-byte match on the stored key.
-            None => {
-                if <[u8; 32]>::from(spend.rk()) != *stored_ak_bytes {
-                    return Err(action_error(
-                        action_index,
-                        IronwoodVerifyCheck::Rk,
-                        "the spend's rk does not match the stored spend-validating key".to_string(),
-                    ));
-                }
-            }
-            Some(alpha) if bool::from(alpha.is_zero()) => {
+    // `RandomizerPresent`: `alpha` never rides the PSBT — with the randomized `rk` it would
+    // reveal the wallet's `ak`.
+    if spend.alpha().is_some() {
+        return Err(action_error(
+            action_index,
+            IronwoodVerifyCheck::RandomizerPresent,
+            "a real spend carries its randomizer (alpha), which with rk reveals ak".to_string(),
+        ));
+    }
+
+    // `Rk`: the `rk` is the placeholder until the signer installs its randomized one; the
+    // caller checks a randomized `rk` against its own `ak` and FROST randomizers.
+    let randomizer_installed = !spend_rk_is_placeholder(spend);
+    let expected = ctx
+        .expected_randomizers
+        .iter()
+        .find(|(action, _, _)| *action == action_index);
+    match expected {
+        Some((_, expected_alpha, expected_rk)) => {
+            if !randomizer_installed || <[u8; 32]>::from(spend.rk()) != *expected_rk {
                 return Err(action_error(
                     action_index,
                     IronwoodVerifyCheck::Rk,
-                    "the spend carries an unrandomized alpha".to_string(),
+                    "the spend's rk does not match the caller's expected rk".to_string(),
                 ));
             }
-            Some(alpha) => {
-                if ak.randomize(alpha) != *spend.rk() {
+            if let Some(ak) = expected_ak {
+                let alpha = Option::<pasta_curves::pallas::Scalar>::from(
+                    <pasta_curves::pallas::Scalar as ff::PrimeField>::from_repr(*expected_alpha),
+                )
+                .filter(|alpha| !bool::from(alpha.is_zero()))
+                .ok_or_else(|| {
+                    action_error(
+                        action_index,
+                        IronwoodVerifyCheck::Rk,
+                        "the caller's expected alpha is zero or not a canonical scalar".to_string(),
+                    )
+                })?;
+                if ak.randomize(&alpha) != *spend.rk() {
                     return Err(action_error(
                         action_index,
                         IronwoodVerifyCheck::Rk,
-                        "the spend's rk is not ak.randomize(alpha) for the stored \
+                        "the spend's rk is not ak.randomize(alpha) for the caller's \
                          spend-validating key"
                             .to_string(),
                     ));
                 }
             }
         }
-    }
-    if let Some((_, expected_alpha, expected_rk)) = ctx
-        .expected_randomizers
-        .iter()
-        .find(|(action, _, _)| *action == action_index)
-    {
-        if spend.alpha().map(<[u8; 32]>::from) != Some(*expected_alpha) {
+        None if randomizer_installed && expected_ak.is_some() => {
             return Err(action_error(
                 action_index,
                 IronwoodVerifyCheck::Rk,
-                "the spend's installed alpha does not match the caller's expectation".to_string(),
+                "the spend's randomized rk cannot be checked against the caller's \
+                 spend-validating key without its expected randomizer"
+                    .to_string(),
             ));
         }
-        if VerificationKey::<SpendAuth>::try_from(*expected_rk)
-            .map(|rk| rk != *spend.rk())
-            .unwrap_or(true)
-        {
-            return Err(action_error(
-                action_index,
-                IronwoodVerifyCheck::Rk,
-                "the caller's expected rk does not match the spend's rk".to_string(),
-            ));
-        }
+        None => {}
     }
 
     // `SpendSignature`: any present spend-auth signature must verify against the spend's `rk` over
@@ -666,8 +641,8 @@ mod tests {
         }
     }
 
-    /// The context the tests verify with: no stored `ak` (proprietary key `0x08`), so the
-    /// `Rk` state checks are skipped and only key-free checks run.
+    /// The context the tests verify with: no caller `ak` or randomizers, so `Rk` only checks
+    /// each real spend's state.
     fn ctx() -> KeylessVerifyContext {
         KeylessVerifyContext::default()
     }
@@ -678,8 +653,8 @@ mod tests {
         SpendAuthorizingKey::from(&sk)
     }
 
-    /// The wallet's public spend-validating key (`ak`), as the Constructor writes it for the
-    /// placeholder `rk` — and as `add_shielded_spends` stores it under `0x08`.
+    /// The wallet's public spend-validating key (`ak`) — the client's own key, never in the
+    /// PSBT.
     fn test_ak() -> [u8; 32] {
         // `ask.randomize(0)` is `ask` itself as a RedPallas signing key.
         let ask = test_ask().randomize(&pasta_curves::pallas::Scalar::ZERO);
@@ -692,16 +667,16 @@ mod tests {
         <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&signing_key))
     }
 
-    /// Install `alpha` and the matching randomized `rk = ak.randomize(alpha)` on action 0
-    /// (the test bundle's only real spend). Returns the patched bytes and the signing key.
+    /// Install the randomized `rk = ak.randomize(alpha)` on action 0 (the test bundle's only
+    /// real spend) — `rk` only, as the signer does. Returns the patched bytes, the signing key
+    /// and the `rk`.
     fn with_installed_randomizer(
         bytes: &[u8],
         alpha: pasta_curves::pallas::Scalar,
-    ) -> (Vec<u8>, redpallas::SigningKey<SpendAuth>) {
+    ) -> (Vec<u8>, redpallas::SigningKey<SpendAuth>, [u8; 32]) {
         let rsk = test_ask().randomize(&alpha);
         let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&rsk));
-        let with_alpha = with_spend_alpha(bytes, 0, Some(alpha.to_repr())).unwrap();
-        (with_spend_rk(&with_alpha, 0, rk).unwrap(), rsk)
+        (with_spend_rk(bytes, 0, rk).unwrap(), rsk, rk)
     }
 
     #[test]
@@ -909,38 +884,96 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_rk_verifies_against_the_stored_ak() {
+    fn placeholder_rk_verifies_with_the_callers_ak() {
         let (bytes, _anchor, _recipient) = test_bundle();
         let ctx = KeylessVerifyContext {
-            stored_ak: Some(test_ak()),
             expected_ak: Some(test_ak()),
             ..Default::default()
         };
-        verify_check(&bytes, &ctx).unwrap();
+        let report = verify_check(&bytes, &ctx).unwrap();
+        assert!(!report.spends[0].randomizer_installed);
     }
 
     #[test]
-    fn placeholder_rk_of_a_foreign_stored_ak_fails_rk() {
+    fn identity_expected_ak_fails_rk() {
         let (bytes, _anchor, _recipient) = test_bundle();
         let ctx = KeylessVerifyContext {
-            stored_ak: Some(foreign_ak()),
+            expected_ak: Some([0u8; 32]),
             ..Default::default()
         };
-        // The placeholder `rk` is the Constructor's `ak`; a different stored key must fail.
         assert_eq!(
             verify_check(&bytes, &ctx).unwrap_err(),
             IronwoodVerifyCheck::Rk
         );
+    }
+
+    #[test]
+    fn installed_randomizer_verifies_against_the_callers_ak() {
+        let (bytes, _anchor, _recipient) = test_bundle();
+        let alpha = pasta_curves::pallas::Scalar::random(OsRng);
+        let (installed, _rsk, rk) = with_installed_randomizer(&bytes, alpha);
+        let ctx = KeylessVerifyContext {
+            expected_ak: Some(test_ak()),
+            expected_randomizers: vec![(0, alpha.to_repr(), rk)],
+            ..Default::default()
+        };
+        let report = verify_check(&installed, &ctx).unwrap();
+        assert!(report.spends[0].randomizer_installed);
+        // Without the caller's expectations the installed state is still reported.
+        let report = verify_check(&installed, &KeylessVerifyContext::default()).unwrap();
+        assert!(report.spends[0].randomizer_installed);
     }
 
     #[test]
     fn foreign_expected_ak_fails_rk() {
         let (bytes, _anchor, _recipient) = test_bundle();
+        let alpha = pasta_curves::pallas::Scalar::random(OsRng);
+        let (installed, _rsk, rk) = with_installed_randomizer(&bytes, alpha);
         let ctx = KeylessVerifyContext {
-            stored_ak: Some(test_ak()),
             expected_ak: Some(foreign_ak()),
+            expected_randomizers: vec![(0, alpha.to_repr(), rk)],
             ..Default::default()
         };
+        assert_eq!(
+            verify_check(&installed, &ctx).unwrap_err(),
+            IronwoodVerifyCheck::Rk
+        );
+    }
+
+    #[test]
+    fn expected_alpha_that_does_not_produce_the_rk_fails_rk() {
+        let (bytes, _anchor, _recipient) = test_bundle();
+        let (installed, _rsk, rk) =
+            with_installed_randomizer(&bytes, pasta_curves::pallas::Scalar::random(OsRng));
+        // The installed `rk`, but a different claimed `alpha`.
+        let other_alpha = pasta_curves::pallas::Scalar::random(OsRng).to_repr();
+        let ctx = KeylessVerifyContext {
+            expected_ak: Some(test_ak()),
+            expected_randomizers: vec![(0, other_alpha, rk)],
+            ..Default::default()
+        };
+        assert_eq!(
+            verify_check(&installed, &ctx).unwrap_err(),
+            IronwoodVerifyCheck::Rk
+        );
+    }
+
+    #[test]
+    fn expected_rk_that_differs_from_the_installed_one_fails_rk() {
+        let (bytes, _anchor, _recipient) = test_bundle();
+        let alpha = pasta_curves::pallas::Scalar::random(OsRng);
+        let (installed, _rsk, _rk) = with_installed_randomizer(&bytes, alpha);
+        let (_, _, other_rk) =
+            with_installed_randomizer(&bytes, pasta_curves::pallas::Scalar::random(OsRng));
+        let ctx = KeylessVerifyContext {
+            expected_randomizers: vec![(0, alpha.to_repr(), other_rk)],
+            ..Default::default()
+        };
+        assert_eq!(
+            verify_check(&installed, &ctx).unwrap_err(),
+            IronwoodVerifyCheck::Rk
+        );
+        // An expected randomizer on a spend still at the placeholder fails too.
         assert_eq!(
             verify_check(&bytes, &ctx).unwrap_err(),
             IronwoodVerifyCheck::Rk
@@ -948,79 +981,44 @@ mod tests {
     }
 
     #[test]
-    fn expected_ak_without_a_stored_ak_fails_rk() {
+    fn expected_ak_without_the_randomizer_of_an_installed_spend_fails_rk() {
         let (bytes, _anchor, _recipient) = test_bundle();
+        let (installed, _rsk, _rk) =
+            with_installed_randomizer(&bytes, pasta_curves::pallas::Scalar::random(OsRng));
         let ctx = KeylessVerifyContext {
             expected_ak: Some(test_ak()),
             ..Default::default()
         };
         assert_eq!(
-            verify_check(&bytes, &ctx).unwrap_err(),
+            verify_check(&installed, &ctx).unwrap_err(),
             IronwoodVerifyCheck::Rk
         );
     }
 
     #[test]
-    fn identity_stored_ak_fails_rk() {
+    fn zero_expected_alpha_fails_rk() {
         let (bytes, _anchor, _recipient) = test_bundle();
         let ctx = KeylessVerifyContext {
-            stored_ak: Some([0u8; 32]),
+            expected_ak: Some(test_ak()),
+            expected_randomizers: vec![(0, [0u8; 32], test_ak())],
             ..Default::default()
         };
+        let tampered = with_spend_rk(&bytes, 0, test_ak()).unwrap();
         assert_eq!(
-            verify_check(&bytes, &ctx).unwrap_err(),
+            verify_check(&tampered, &ctx).unwrap_err(),
             IronwoodVerifyCheck::Rk
         );
     }
 
     #[test]
-    fn installed_randomizer_verifies_against_the_stored_ak() {
+    fn alpha_on_a_real_spend_fails_randomizer_present() {
         let (bytes, _anchor, _recipient) = test_bundle();
         let alpha = pasta_curves::pallas::Scalar::random(OsRng);
-        let (installed, rsk) = with_installed_randomizer(&bytes, alpha);
-        let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&rsk));
-        let ctx = KeylessVerifyContext {
-            stored_ak: Some(test_ak()),
-            expected_randomizers: vec![(0, alpha.to_repr(), rk)],
-            ..Default::default()
-        };
-        verify_check(&installed, &ctx).unwrap();
-    }
-
-    #[test]
-    fn alpha_with_a_mismatched_rk_fails_rk() {
-        let (bytes, _anchor, _recipient) = test_bundle();
-        let (installed, _rsk) =
-            with_installed_randomizer(&bytes, pasta_curves::pallas::Scalar::random(OsRng));
-        // Keep the installed `rk` but claim a different `alpha`.
-        let other_alpha = pasta_curves::pallas::Scalar::random(OsRng).to_repr();
-        let tampered = with_spend_alpha(&installed, 0, Some(other_alpha)).unwrap();
-        let ctx = KeylessVerifyContext {
-            stored_ak: Some(test_ak()),
-            ..Default::default()
-        };
+        let (installed, _rsk, _rk) = with_installed_randomizer(&bytes, alpha);
+        let tampered = with_spend_alpha(&installed, 0, Some(alpha.to_repr())).unwrap();
         assert_eq!(
-            verify_check(&tampered, &ctx).unwrap_err(),
-            IronwoodVerifyCheck::Rk
-        );
-    }
-
-    #[test]
-    fn zero_alpha_fails_rk() {
-        let (bytes, _anchor, _recipient) = test_bundle();
-        let tampered = with_spend_alpha(
-            &bytes,
-            0,
-            Some(pasta_curves::pallas::Scalar::ZERO.to_repr()),
-        )
-        .unwrap();
-        let ctx = KeylessVerifyContext {
-            stored_ak: Some(test_ak()),
-            ..Default::default()
-        };
-        assert_eq!(
-            verify_check(&tampered, &ctx).unwrap_err(),
-            IronwoodVerifyCheck::Rk
+            verify_check(&tampered, &ctx()).unwrap_err(),
+            IronwoodVerifyCheck::RandomizerPresent
         );
     }
 
@@ -1054,13 +1052,12 @@ mod tests {
     #[test]
     fn valid_spend_auth_sig_verifies_and_is_reported() {
         let (bytes, _anchor, _recipient) = test_bundle();
-        let (installed, rsk) =
+        let (installed, rsk, _rk) =
             with_installed_randomizer(&bytes, pasta_curves::pallas::Scalar::random(OsRng));
         let sighash = field_bytes(66);
         let sig = <[u8; 64]>::from(&rsk.sign(OsRng, &sighash));
         let signed = with_spend_auth_sig(&installed, 0, sig).unwrap();
         let ctx = KeylessVerifyContext {
-            stored_ak: Some(test_ak()),
             sighash: Some(sighash),
             ..Default::default()
         };
@@ -1071,11 +1068,10 @@ mod tests {
     #[test]
     fn invalid_spend_auth_sig_fails_spend_signature() {
         let (bytes, _anchor, _recipient) = test_bundle();
-        let (installed, _rsk) =
+        let (installed, _rsk, _rk) =
             with_installed_randomizer(&bytes, pasta_curves::pallas::Scalar::random(OsRng));
         let tampered = with_spend_auth_sig(&installed, 0, [9u8; 64]).unwrap();
         let ctx = KeylessVerifyContext {
-            stored_ak: Some(test_ak()),
             sighash: Some(field_bytes(66)),
             ..Default::default()
         };

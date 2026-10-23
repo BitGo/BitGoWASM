@@ -40,6 +40,7 @@ use orchard::note::ExtractedNoteCommitment;
 #[cfg(any(test, feature = "orchard-proving"))]
 use orchard::note::{Note, NoteVersion, RandomSeed, Rho};
 use orchard::pczt::Bundle as PcztBundle;
+use orchard::primitives::redpallas::{SpendAuth, VerificationKey};
 use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath};
 use orchard::value::NoteValue;
 use orchard::{Action as OrchardAction, Address};
@@ -74,6 +75,18 @@ pub type FvkBytes = [u8; FVK_SIZE];
 /// Proprietary key under which a real spend's on-chain note commitment (`cmx`) is recorded in its
 /// action's proprietary map (reconciliation/audit; the PCZT spend side has no dedicated cmx field).
 pub const CMX_PROPRIETARY_KEY: &str = "cmx";
+
+/// The `rk` every real spend carries until the signer installs its randomized one: the Pallas
+/// point `hash_to_curve("BitGo-Ironwood")(b"placeholder-rk")`, whose discrete log nobody knows,
+/// so no signature verifies against it.
+///
+/// A real spend is unrandomized exactly when its `rk` is this point, so the randomizer state is
+/// read from the committed `rk` itself. It is deliberately not the wallet's `ak`: the PSBT never
+/// carries `ak`.
+pub const PLACEHOLDER_RK: [u8; 32] = [
+    0xc9, 0xf6, 0x55, 0x48, 0xf6, 0x26, 0x83, 0x02, 0x08, 0x17, 0x96, 0xa7, 0x05, 0x63, 0x14, 0x1d,
+    0x16, 0xf5, 0x35, 0x69, 0xda, 0xe4, 0xe9, 0xe9, 0xd4, 0x63, 0xfa, 0xbe, 0x57, 0x12, 0x21, 0x8e,
+];
 
 /// Merkle depth of the Ironwood/Orchard note commitment tree.
 pub const IRONWOOD_MERKLE_DEPTH: usize = 32;
@@ -223,11 +236,6 @@ pub enum IronwoodBuildError {
     /// The orchard PCZT Signer role rejected the signature for a reason other than
     /// [`InvalidExternalSignature`](Self::InvalidExternalSignature).
     Signer(String),
-    /// A spend-auth signature cannot be applied while a real spend's `rk` is still the
-    /// Constructor's placeholder (`rk` = its `ak`): a RedPallas signature made with `alpha = 0`
-    /// verifies against `rk = ak`, so application must wait for the signer's
-    /// randomized `rk` (see [`set_spend_auth_randomizer`]).
-    PlaceholderRkNotReplaced,
     /// A spend's `rk` cannot be (re)installed once any action in the bundle carries a
     /// spend-auth signature: the ZIP-244 sighash commits every action's `rk`, so replacing any
     /// of them would invalidate every signature already made.
@@ -239,9 +247,9 @@ pub enum IronwoodBuildError {
     /// were fabricated with its `dummy_sk`, which the IO Finalizer signs with, so replacing them
     /// would break that signature.
     RandomizerOnDummySpend,
-    /// The randomizer pair would leave the spend's `rk` unrandomized: `alpha` is zero, or `rk` is
-    /// the Constructor's placeholder (the spend's `ak`). Marking that `rk` as replaced would let
-    /// a linkable `rk` past the [`PlaceholderRkNotReplaced`](Self::PlaceholderRkNotReplaced) gate.
+    /// The randomizer pair would leave the spend's `rk` unrandomized: `alpha` is zero (so
+    /// `rk = ak.randomize(alpha)` is the wallet's own, linkable `ak`), or `rk` is
+    /// [`PLACEHOLDER_RK`].
     UnrandomizedRk,
     /// The keyless spend constructor was called without any real spend:
     /// an output-only bundle is a *shielding* build — use [`construct_shield_pczt_multi`]
@@ -255,10 +263,31 @@ pub enum IronwoodBuildError {
         /// The offending output's position in the `outputs` slice.
         output_index: usize,
     },
-    /// The spend-validating key bytes are not a canonical, non-identity RedPallas
-    /// verification key: the placeholder `rk` must be a key the
-    /// signer's `ak.randomize(alpha)` can replace.
+    /// The caller-supplied spend-validating key (`ak`) is not a canonical, non-identity
+    /// RedPallas verification key, so no randomizer pair can be checked against it.
     BadSpendValidatingKey,
+    /// The randomizer pair is inconsistent with the caller's spend-validating key: `rk` is not
+    /// `ak.randomize(alpha)`, or `rk` is not a canonical verification key.
+    RandomizerMismatch,
+    /// A real spend's `rk` is still [`PLACEHOLDER_RK`]: the ZIP-244 digest commits `rk`, so no
+    /// sighash computed before every randomizer is installed is final.
+    RandomizersNotInstalled,
+    /// A randomizer `alpha` is not a canonical Pallas scalar encoding.
+    BadAlpha {
+        /// The action the randomizer targets.
+        action_index: usize,
+    },
+    /// The prover or keyed verifier was given no `alpha` for this real spend: the PSBT never
+    /// stores one, so every real spend's `alpha` must be supplied out of band.
+    RandomizerMissing {
+        /// The real spend without an `alpha`.
+        action_index: usize,
+    },
+    /// Two randomizers target the same action.
+    DuplicateRandomizer {
+        /// The repeated action index.
+        action_index: usize,
+    },
     /// A keyless spend's caller-supplied nullifier is not a canonical Pallas base-field
     /// encoding. The nullifier is installed verbatim and keys the paired output note's `rho`.
     BadNullifier {
@@ -294,6 +323,9 @@ pub enum IronwoodVerifyCheck {
     SpendWitness,
     /// A real spend leaks viewing-key material (`fvk` or a ZIP-32 derivation) on the wire.
     ViewingKeyPresent,
+    /// A real spend carries its randomizer `alpha` on the wire: with `rk` it reveals the
+    /// wallet's `ak` (`ak = rk − [alpha]·G`).
+    RandomizerPresent,
     /// The bundle is not an Ironwood V3 bundle with the default flags.
     BundleVersion,
     /// A value-0 (dummy) output is paired with a dummy spend, so the value-based
@@ -337,6 +369,7 @@ impl core::fmt::Display for IronwoodVerifyCheck {
             Self::ValueSum => "value sum",
             Self::SpendWitness => "spend witness",
             Self::ViewingKeyPresent => "viewing key present",
+            Self::RandomizerPresent => "randomizer present",
             Self::BundleVersion => "bundle version",
             Self::ZeroValueOutput => "zero-value output",
             Self::SpendSignature => "spend signature",
@@ -463,15 +496,10 @@ impl core::fmt::Display for IronwoodBuildError {
                  sighash"
             ),
             Self::Signer(e) => write!(f, "ironwood-build: PCZT signer error: {e}"),
-            Self::PlaceholderRkNotReplaced => write!(
-                f,
-                "ironwood-build: cannot apply a spend signature while a real spend's rk is \
-                 still the placeholder"
-            ),
             Self::SpendSignatureAlreadyPresent => write!(
                 f,
-                "ironwood-build: a spend's rk cannot be replaced after a spend-auth signature \
-                 exists (the sighash commits every action's rk)"
+                "ironwood-build: a spend's randomizer cannot be installed after a \
+                 spend-auth signature exists (the sighash commits every action's rk)"
             ),
             Self::SetFvkOnDummySpend => write!(
                 f,
@@ -485,8 +513,8 @@ impl core::fmt::Display for IronwoodBuildError {
             ),
             Self::UnrandomizedRk => write!(
                 f,
-                "ironwood-build: the spend randomizer must randomize rk (alpha is zero or rk is \
-                 the placeholder ak)"
+                "ironwood-build: the randomizer leaves the spend's rk unrandomized (alpha is \
+                 zero, or rk is the placeholder)"
             ),
             Self::NoSpends => write!(
                 f,
@@ -507,6 +535,29 @@ impl core::fmt::Display for IronwoodBuildError {
                 f,
                 "ironwood-build: spend {spend_index}'s nullifier is not a canonical field \
                  element"
+            ),
+            Self::RandomizerMismatch => write!(
+                f,
+                "ironwood-build: the randomizer pair does not match the spend-validating key \
+                 (rk must equal ak.randomize(alpha))"
+            ),
+            Self::RandomizersNotInstalled => write!(
+                f,
+                "ironwood-build: cannot compute a sighash or apply a signature while a real \
+                 spend's rk is still the placeholder"
+            ),
+            Self::BadAlpha { action_index } => write!(
+                f,
+                "ironwood-build: action {action_index}'s alpha is not a canonical scalar"
+            ),
+            Self::RandomizerMissing { action_index } => write!(
+                f,
+                "ironwood-build: no alpha was supplied for the real spend at action \
+                 {action_index}"
+            ),
+            Self::DuplicateRandomizer { action_index } => write!(
+                f,
+                "ironwood-build: more than one randomizer targets action {action_index}"
             ),
             Self::ValueOutOfRange => write!(
                 f,
@@ -687,14 +738,6 @@ pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
     let default_ovk = parsed
         .first()
         .map(|p| *p.fvk.to_ovk(Scope::External).as_ref());
-    let spend_ak_bytes: Vec<[u8; 32]> = parsed
-        .iter()
-        .map(|p| {
-            let mut ak = [0u8; 32];
-            ak.copy_from_slice(&p.fvk.to_bytes()[..32]);
-            ak
-        })
-        .collect();
     for ParsedSpend {
         fvk,
         note,
@@ -765,8 +808,7 @@ pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
             })
             .map_err(|e| IronwoodBuildError::Updater(e.to_string()))?;
     }
-    let bundle =
-        scrub_spend_randomizers(&bundle, action_map.spend_action_indices(), &spend_ak_bytes)?;
+    let bundle = scrub_spend_randomizers(&bundle, action_map.spend_action_indices())?;
     Ok((bundle, action_map))
 }
 
@@ -925,26 +967,25 @@ fn parse_spend_spec(
 }
 
 /// Strip builder-generated spend authorizing data from every real spend, through the wire form
-/// (the only place a built PCZT's `alpha`/`rk` are writable): clear `alpha`, install the spend's
-/// `ak` as a valid placeholder `rk`, and mark it for later signer replacement. Dummy spends are
-/// untouched: their stored `alpha`/`dummy_sk` are what the IO Finalizer signs with.
+/// (the only place a built PCZT's `alpha`/`rk` are writable): clear `alpha` and install
+/// [`PLACEHOLDER_RK`] — the builder's randomized `rk` together with its `alpha` would reveal the
+/// spend's `ak`. Dummy spends are untouched: their stored `alpha`/`dummy_sk` are what the IO
+/// Finalizer signs with.
 #[cfg(any(test, feature = "orchard-proving"))]
 fn scrub_spend_randomizers(
     bundle: &PcztBundle,
     spend_indices: &[usize],
-    spend_ak_bytes: &[[u8; 32]],
 ) -> Result<PcztBundle, IronwoodBuildError> {
     use super::ironwood_pczt::{
-        deserialize_pczt, serialize_pczt, with_placeholder_spend_rk, with_spend_alpha,
-        with_spend_fvk_cleared, IronwoodPcztError,
+        deserialize_pczt, serialize_pczt, with_spend_alpha, with_spend_fvk_cleared, with_spend_rk,
+        IronwoodPcztError,
     };
     let map = |e: IronwoodPcztError| IronwoodBuildError::PcztWire(e.to_string());
 
     let mut bytes = serialize_pczt(bundle).map_err(map)?;
-    for (i, ak) in spend_ak_bytes.iter().enumerate() {
-        let idx = spend_indices[i];
+    for &idx in spend_indices {
         bytes = with_spend_alpha(&bytes, idx, None).map_err(map)?;
-        bytes = with_placeholder_spend_rk(&bytes, idx, *ak).map_err(map)?;
+        bytes = with_spend_rk(&bytes, idx, PLACEHOLDER_RK).map_err(map)?;
         // The caller-supplied FVK is constructor-only: it must never ride the
         // serialized PCZT past this point. Dummy fvks (shielding builds) are
         // untouched — `create_proof` requires an fvk on every spend.
@@ -995,56 +1036,32 @@ pub fn verify_spend_pczt(bundle: &PcztBundle) -> Result<(), IronwoodBuildError> 
     Ok(())
 }
 
-/// Signing time: install FROST's randomizer and the matching `rk`, replacing the placeholder.
+/// Signing time: install the signer's randomized `rk` on one real spend, replacing
+/// [`PLACEHOLDER_RK`]. Only `rk` is written: `alpha` stays out of the PCZT (with `rk` it would
+/// reveal the wallet's `ak`) and is delivered to the prover out of band ([`with_spend_alphas`]).
+/// The bundle is replaced only on full success.
 ///
-/// `alpha` and `rk` are set together because the Verifier's `verify_rk` requires them to be
-/// consistent — a bare `rk` setter would let them drift. The pair is installed atomically
-/// (through the wire form): the caller's bundle is replaced only on full success. Whether `rk`
-/// actually equals `ak.randomize(alpha)` is not checked here (that needs the FVK); it is
-/// [`verify_ironwood_spends`]'s `Rk` check.
+/// `alpha` must be a canonical, non-zero scalar, and `rk` a canonical verification key other
+/// than [`PLACEHOLDER_RK`]. When the caller supplies the wallet's `ak`, the pair is checked
+/// (`rk == ak.randomize(alpha)`), so a randomizer for a foreign wallet fails here; without it
+/// the pair is checked by the client's key-free verifier and by the keyed prover.
 ///
-/// Rejected per [`check_spend_rk_replaceable`] (any spend-auth signature already present, a
-/// dummy spend, or `rk` equal to the Constructor's placeholder), and for `alpha = 0`: the pair
-/// is marked as the replaced `rk`, so accepting an unrandomized one would defeat
-/// [`apply_spend_signature`]'s placeholder gate.
+/// Rejected when any action in the bundle carries a spend-auth signature (the digest commits
+/// every action's `rk`, so installing any one invalidates them all) and when the target is a
+/// dummy spend (its `alpha`/`rk` belong to its fabricating builder). Re-delivering the
+/// installed `rk` is accepted (a no-op rewrite).
 pub fn set_spend_auth_randomizer(
     bundle: &mut PcztBundle,
     action_index: usize,
     alpha: &[u8; 32],
     rk: &[u8; 32],
+    ak: Option<&VerificationKey<SpendAuth>>,
 ) -> Result<(), IronwoodBuildError> {
     use super::ironwood_pczt::{
-        deserialize_pczt, serialize_pczt, with_spend_alpha, with_spend_rk, IronwoodPcztError,
+        deserialize_pczt, serialize_pczt, with_spend_rk, IronwoodPcztError,
     };
     let map = |e: IronwoodPcztError| IronwoodBuildError::PcztWire(e.to_string());
 
-    check_spend_rk_replaceable(bundle, action_index, rk)?;
-    if *alpha == [0u8; 32] {
-        return Err(IronwoodBuildError::UnrandomizedRk);
-    }
-    let bytes = serialize_pczt(bundle).map_err(map)?;
-    let bytes = with_spend_alpha(&bytes, action_index, Some(*alpha)).map_err(map)?;
-    let bytes = with_spend_rk(&bytes, action_index, *rk).map_err(map)?;
-    *bundle = deserialize_pczt(&bytes).map_err(map)?;
-    Ok(())
-}
-
-/// The rules every path that replaces a spend's `rk` shares ([`set_spend_auth_randomizer`] and
-/// the PSBT-level `replace_ironwood_spend_rk`):
-///
-/// - no action in the bundle may carry a spend-auth signature yet — the ZIP-244 sighash commits
-///   every action's `rk`, so replacing any one invalidates all of them
-///   ([`IronwoodBuildError::SpendSignatureAlreadyPresent`]);
-/// - the target must be a real spend ([`IronwoodBuildError::RandomizerOnDummySpend`]);
-/// - `rk` must not be the Constructor's placeholder (the spend's unrandomized `ak`)
-///   ([`IronwoodBuildError::UnrandomizedRk`]).
-///
-/// Re-delivering the already-installed `rk` passes.
-pub(crate) fn check_spend_rk_replaceable(
-    bundle: &PcztBundle,
-    action_index: usize,
-    rk: &[u8; 32],
-) -> Result<(), IronwoodBuildError> {
     let spend = bundle
         .actions()
         .get(action_index)
@@ -1060,28 +1077,113 @@ pub(crate) fn check_spend_rk_replaceable(
     if spend.dummy_sk().is_some() {
         return Err(IronwoodBuildError::RandomizerOnDummySpend);
     }
-    let rk_replaced =
-        super::ironwood_pczt::spend_rk_replaced(spend).map_err(IronwoodBuildError::PcztWire)?;
-    if !rk_replaced && <[u8; 32]>::from(spend.rk()) == *rk {
+    let alpha_scalar = parse_alpha(action_index, alpha)?;
+    if *rk == PLACEHOLDER_RK {
         return Err(IronwoodBuildError::UnrandomizedRk);
     }
+    let rk_key = VerificationKey::<SpendAuth>::try_from(*rk)
+        .map_err(|_| IronwoodBuildError::RandomizerMismatch)?;
+    if let Some(ak) = ak {
+        if ak.randomize(&alpha_scalar) != rk_key {
+            return Err(IronwoodBuildError::RandomizerMismatch);
+        }
+    }
+
+    let bytes = serialize_pczt(bundle).map_err(map)?;
+    let bytes = with_spend_rk(&bytes, action_index, *rk).map_err(map)?;
+    *bundle = deserialize_pczt(&bytes).map_err(map)?;
     Ok(())
 }
 
-/// Errors with [`IronwoodBuildError::PlaceholderRkNotReplaced`] while any real spend's `rk` is
-/// still the Constructor's placeholder: the ZIP-244 digest commits `rk`, so no sighash computed
-/// before every replacement is final.
-pub fn require_spend_rks_replaced(bundle: &PcztBundle) -> Result<(), IronwoodBuildError> {
+/// Parse a randomizer `alpha`: a canonical, non-zero Pallas scalar. A zero `alpha` randomizes
+/// `ak` to itself, leaving a linkable `rk`.
+fn parse_alpha(
+    action_index: usize,
+    alpha: &[u8; 32],
+) -> Result<pasta_curves::pallas::Scalar, IronwoodBuildError> {
+    use ff::{Field, PrimeField};
+
+    let alpha = Option::<pasta_curves::pallas::Scalar>::from(
+        pasta_curves::pallas::Scalar::from_repr(*alpha),
+    )
+    .ok_or(IronwoodBuildError::BadAlpha { action_index })?;
+    if bool::from(alpha.is_zero()) {
+        return Err(IronwoodBuildError::UnrandomizedRk);
+    }
+    Ok(alpha)
+}
+
+/// Whether a real spend's `rk` is still [`PLACEHOLDER_RK`].
+pub(crate) fn spend_rk_is_placeholder(spend: &super::ironwood_pczt::PcztSpend) -> bool {
+    <[u8; 32]>::from(spend.rk()) == PLACEHOLDER_RK
+}
+
+/// Errors with [`IronwoodBuildError::RandomizersNotInstalled`] while any real spend's `rk` is
+/// still [`PLACEHOLDER_RK`]: the ZIP-244 digest commits every action's `rk`, so no sighash
+/// computed before every randomizer is installed is final.
+pub fn require_spend_randomizers_installed(bundle: &PcztBundle) -> Result<(), IronwoodBuildError> {
     for action in bundle.actions().iter() {
         let spend = action.spend();
         if spend.dummy_sk().is_some() {
             continue;
         }
-        if !super::ironwood_pczt::spend_rk_replaced(spend).map_err(IronwoodBuildError::PcztWire)? {
-            return Err(IronwoodBuildError::PlaceholderRkNotReplaced);
+        if spend_rk_is_placeholder(spend) {
+            return Err(IronwoodBuildError::RandomizersNotInstalled);
         }
     }
     Ok(())
+}
+
+/// A working copy of `bundle` with every real spend's `alpha` installed, for the roles that
+/// need it (the Prover, and the keyed Verifier's `verify_rk`). The PSBT never stores `alpha`, so
+/// it is supplied here out of band and the copy must not be written back.
+///
+/// `alphas` holds exactly one `(action_index, alpha)` per real spend: an out-of-range index
+/// ([`IronwoodBuildError::ActionIndexOutOfRange`]), a dummy spend
+/// ([`IronwoodBuildError::RandomizerOnDummySpend`]), a repeated index
+/// ([`IronwoodBuildError::DuplicateRandomizer`]), a non-canonical or zero `alpha`, and a real
+/// spend left without one ([`IronwoodBuildError::RandomizerMissing`]) are rejected.
+pub fn with_spend_alphas(
+    bundle: &PcztBundle,
+    alphas: &[(usize, [u8; 32])],
+) -> Result<PcztBundle, IronwoodBuildError> {
+    use super::ironwood_pczt::{
+        deserialize_pczt, serialize_pczt, with_spend_alpha, IronwoodPcztError,
+    };
+    let map = |e: IronwoodPcztError| IronwoodBuildError::PcztWire(e.to_string());
+
+    let mut seen = Vec::with_capacity(alphas.len());
+    for (action_index, alpha) in alphas {
+        let action = bundle
+            .actions()
+            .get(*action_index)
+            .ok_or(IronwoodBuildError::ActionIndexOutOfRange)?;
+        if action.spend().dummy_sk().is_some() {
+            return Err(IronwoodBuildError::RandomizerOnDummySpend);
+        }
+        if seen.contains(action_index) {
+            return Err(IronwoodBuildError::DuplicateRandomizer {
+                action_index: *action_index,
+            });
+        }
+        parse_alpha(*action_index, alpha)?;
+        seen.push(*action_index);
+    }
+    if let Some(action_index) = bundle
+        .actions()
+        .iter()
+        .enumerate()
+        .find(|(i, a)| a.spend().dummy_sk().is_none() && !seen.contains(i))
+        .map(|(i, _)| i)
+    {
+        return Err(IronwoodBuildError::RandomizerMissing { action_index });
+    }
+
+    let mut bytes = serialize_pczt(bundle).map_err(map)?;
+    for (action_index, alpha) in alphas {
+        bytes = with_spend_alpha(&bytes, *action_index, Some(*alpha)).map_err(map)?;
+    }
+    deserialize_pczt(&bytes).map_err(map)
 }
 
 /// Signing time: apply an externally produced spend-auth signature (orchard verifies it against
@@ -1089,9 +1191,8 @@ pub fn require_spend_rks_replaced(bundle: &PcztBundle) -> Result<(), IronwoodBui
 ///
 /// The sighash must be the ZIP-244 digest computed over the CURRENT action data — a signature
 /// over a pre-installation digest fails `rk` verification here. Rejected while any real
-/// spend's `rk` is still the placeholder ([`require_spend_rks_replaced`]): a RedPallas
-/// signature made with `alpha = 0` verifies against `rk = ak`, so the gate is what keeps an
-/// unrandomized — linkable — `rk` from reaching the chain.
+/// spend's `rk` is still [`PLACEHOLDER_RK`] ([`require_spend_randomizers_installed`]): the
+/// digest is not final until every randomized `rk` is installed.
 pub fn apply_spend_signature(
     bundle: &mut PcztBundle,
     action_index: usize,
@@ -1103,7 +1204,7 @@ pub fn apply_spend_signature(
     if action_index >= bundle.actions().len() {
         return Err(IronwoodBuildError::ActionIndexOutOfRange);
     }
-    require_spend_rks_replaced(bundle)?;
+    require_spend_randomizers_installed(bundle)?;
     bundle.actions_mut()[action_index]
         .apply_signature(sighash, redpallas::Signature::<SpendAuth>::from(*sig))
         .map_err(|e| match e {
@@ -1150,8 +1251,8 @@ pub fn set_spend_fvk(
 ///
 /// - `Spend::verify_nullifier` — the plaintext fields produce the recorded nullifier under
 ///   this FVK, and the FVK owns the note;
-/// - `Spend::verify_rk` — `ak.randomize(alpha) == rk`; requires `alpha` to be installed
-///   ( [`set_spend_auth_randomizer`]), and fails with the `Rk` check otherwise;
+/// - `Spend::verify_rk` — `ak.randomize(alpha) == rk`, with each real spend's `alpha` taken
+///   from `alphas` (the PSBT never stores it; see [`with_spend_alphas`]);
 /// - `Action::verify_cv_net` — the value commitment matches the action's net value;
 /// - `Output::verify_note_commitment` — the output note produces the committed `cmx`;
 /// - `Bundle::verify_cross_address_restriction` — structural.
@@ -1160,8 +1261,22 @@ pub fn set_spend_fvk(
 pub fn verify_ironwood_spends(
     bundle: &PcztBundle,
     fvk: &FvkBytes,
+    alphas: &[(usize, [u8; 32])],
 ) -> Result<(), IronwoodVerifyError> {
     let fvk = FullViewingKey::from_bytes(fvk).ok_or(IronwoodVerifyError::BadFvk)?;
+    let bundle = &with_spend_alphas(bundle, alphas).map_err(|e| {
+        let action_index = match e {
+            IronwoodBuildError::RandomizerMissing { action_index }
+            | IronwoodBuildError::DuplicateRandomizer { action_index }
+            | IronwoodBuildError::BadAlpha { action_index } => action_index,
+            _ => 0,
+        };
+        IronwoodVerifyError::Action {
+            action_index,
+            check: IronwoodVerifyCheck::Rk,
+            detail: e.to_string(),
+        }
+    })?;
     bundle
         .verify_cross_address_restriction()
         .map_err(|e| IronwoodVerifyError::CrossAddressRestriction(e.to_string()))?;
@@ -2962,14 +3077,10 @@ mod tests {
         assert!(action_map.output_action_indices().is_empty());
 
         let spend = bundle.actions()[0].spend();
-        let fvk = FullViewingKey::from_bytes(&spec.fvk).unwrap();
         // The in-memory Constructor uses the FVK, but the persisted PCZT carries no FVK or alpha.
         assert!(spend.fvk().is_none());
         assert!(spend.alpha().is_none());
-        assert_eq!(
-            <[u8; 32]>::from(spend.rk()),
-            <[u8; 32]>::try_from(&fvk.to_bytes()[0..32]).unwrap()
-        );
+        assert_eq!(<[u8; 32]>::from(spend.rk()), PLACEHOLDER_RK);
         // The note plaintext required by the proof flow remains available, excluding the FVK.
         assert_eq!(spend.value().as_ref().map(|v| v.inner()), Some(spec.value));
         assert_eq!(spend.rho().as_ref().map(|r| r.to_bytes()), Some(spec.rho));
@@ -2993,13 +3104,6 @@ mod tests {
                 .get(CMX_PROPRIETARY_KEY)
                 .map(|v| v.as_slice()),
             Some(&spec.cmx.to_vec()[..])
-        );
-        assert_eq!(
-            spend
-                .proprietary()
-                .get(super::super::ironwood_pczt::SPEND_RK_STATE_PROPRIETARY_KEY)
-                .map(|v| v.as_slice()),
-            Some(&[0u8][..])
         );
         // Spend-only action: the paired output side is a zero-valued dummy note.
         let output = bundle.actions()[0].output();
@@ -3250,22 +3354,26 @@ mod tests {
         );
     }
 
-    // ---- PR-5: signing-time hooks + the Verifier role ----
+    // ---- Signing-time hooks + the Verifier role ----
 
     use crate::error::WasmErrorCode as _;
     use ff::{Field as _, PrimeField as _};
     use orchard::keys::SpendAuthorizingKey;
 
+    /// The parsed spend-validating key behind `fvk_bytes` — the `ak` argument of
+    /// [`set_spend_auth_randomizer`].
+    fn test_ak(fvk_bytes: &FvkBytes) -> VerificationKey<SpendAuth> {
+        VerificationKey::<SpendAuth>::try_from(<[u8; 32]>::try_from(&fvk_bytes[..32]).unwrap())
+            .unwrap()
+    }
+
     #[test]
     fn installing_the_randomizer_replaces_the_placeholder_atomically() {
         let (spec, anchor) = test_spend_spec();
         let (mut bundle, _) = construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
-        let fvk = FullViewingKey::from_bytes(&spec.fvk).unwrap();
-        let ak = <[u8; 32]>::try_from(&fvk.to_bytes()[0..32]).unwrap();
-
-        // Placeholder state: rk == ak, no alpha.
+        // Placeholder state: rk == PLACEHOLDER_RK, no alpha.
         let spend = bundle.actions()[0].spend();
-        assert_eq!(<[u8; 32]>::from(spend.rk()), ak);
+        assert_eq!(<[u8; 32]>::from(spend.rk()), PLACEHOLDER_RK);
         assert!(spend.alpha().is_none());
         let placeholder_actions = pczt_action_data(&bundle).unwrap().actions;
 
@@ -3279,13 +3387,12 @@ mod tests {
             orchard::primitives::redpallas::SpendAuth,
         >::from(&rsk));
 
-        set_spend_auth_randomizer(&mut bundle, 0, &alpha_bytes, &rk).unwrap();
+        set_spend_auth_randomizer(&mut bundle, 0, &alpha_bytes, &rk, Some(&test_ak(&spec.fvk)))
+            .unwrap();
+        // Only rk is installed: alpha never enters the PCZT.
         let spend = bundle.actions()[0].spend();
         assert_eq!(<[u8; 32]>::from(spend.rk()), rk);
-        assert_eq!(
-            spend.alpha().as_ref().map(|a| a.to_repr()),
-            Some(alpha_bytes)
-        );
+        assert!(spend.alpha().is_none());
 
         // The ZIP-244-committed action data carries the replaced rk (alpha is witness-side and
         // deliberately absent from it).
@@ -3297,23 +3404,36 @@ mod tests {
     fn set_spend_auth_randomizer_rejects_an_unrandomized_rk_and_dummy_spends() {
         let (spec, anchor) = test_spend_spec();
         let (mut bundle, _) = construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
-        let placeholder = <[u8; 32]>::from(bundle.actions()[0].spend().rk());
+        let ak = test_ak(&spec.fvk);
+        let ak_bytes = <[u8; 32]>::from(&ak);
+        let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng).to_repr();
 
-        // alpha = 0 yields rk = ak: the linkable placeholder, which must not be marked replaced.
+        // alpha = 0 yields rk = ak: the wallet's own, linkable key.
         assert!(matches!(
-            set_spend_auth_randomizer(&mut bundle, 0, &[0u8; 32], &placeholder),
+            set_spend_auth_randomizer(&mut bundle, 0, &[0u8; 32], &ak_bytes, Some(&ak)),
             Err(IronwoodBuildError::UnrandomizedRk)
         ));
-        // A non-zero alpha paired with the placeholder rk is refused too.
-        let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng).to_repr();
+        // The placeholder itself is not a randomized rk, with or without the wallet's ak.
+        for ak in [Some(&ak), None] {
+            assert!(matches!(
+                set_spend_auth_randomizer(&mut bundle, 0, &alpha, &PLACEHOLDER_RK, ak),
+                Err(IronwoodBuildError::UnrandomizedRk)
+            ));
+        }
+        // A non-zero alpha paired with the unrandomized ak is a mismatched pair.
         assert!(matches!(
-            set_spend_auth_randomizer(&mut bundle, 0, &alpha, &placeholder),
-            Err(IronwoodBuildError::UnrandomizedRk)
+            set_spend_auth_randomizer(&mut bundle, 0, &alpha, &ak_bytes, Some(&ak)),
+            Err(IronwoodBuildError::RandomizerMismatch)
+        ));
+        // A non-canonical alpha names its action.
+        assert!(matches!(
+            set_spend_auth_randomizer(&mut bundle, 0, &[0xffu8; 32], &ak_bytes, None),
+            Err(IronwoodBuildError::BadAlpha { action_index: 0 })
         ));
         // Nothing was installed: the signature gate still sees the placeholder.
         assert!(matches!(
             apply_spend_signature(&mut bundle, 0, [7u8; 32], &[7u8; 64]),
-            Err(IronwoodBuildError::PlaceholderRkNotReplaced)
+            Err(IronwoodBuildError::RandomizersNotInstalled)
         ));
 
         // A dummy spend's alpha/rk belong to its fabricating builder.
@@ -3322,7 +3442,7 @@ mod tests {
                 .unwrap();
         let rk = <[u8; 32]>::from(shield.actions()[0].spend().rk());
         assert!(matches!(
-            set_spend_auth_randomizer(&mut shield, 0, &alpha, &rk),
+            set_spend_auth_randomizer(&mut shield, 0, &alpha, &rk, Some(&test_ak(&spec.fvk))),
             Err(IronwoodBuildError::RandomizerOnDummySpend)
         ));
     }
@@ -3337,26 +3457,37 @@ mod tests {
         let rk = <[u8; 32]>::from(orchard::primitives::redpallas::VerificationKey::<
             orchard::primitives::redpallas::SpendAuth,
         >::from(&ask.randomize(&alpha)));
-        set_spend_auth_randomizer(&mut bundle, 0, &alpha.to_repr(), &rk).unwrap();
+        set_spend_auth_randomizer(
+            &mut bundle,
+            0,
+            &alpha.to_repr(),
+            &rk,
+            Some(&test_ak(&spec.fvk)),
+        )
+        .unwrap();
 
-        verify_ironwood_spends(&bundle, &spec.fvk).unwrap();
+        verify_ironwood_spends(&bundle, &spec.fvk, &[(0, alpha.to_repr())]).unwrap();
+        // The alpha is needed out of band: without it the rk cannot be checked.
+        let err = verify_ironwood_spends(&bundle, &spec.fvk, &[]).unwrap_err();
+        assert_eq!(err.code(), "IronwoodVerifyError.Rk");
     }
 
     #[test]
     fn verify_ironwood_spends_rejects_a_mismatched_rk() {
         let (spec, anchor) = test_spend_spec();
-        let (mut bundle, _) = construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
+        let (bundle, _) = construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
         let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([7u8; 32])).unwrap();
         let ask = SpendAuthorizingKey::from(&sk);
-        // rk randomized under a DIFFERENT alpha than the one installed: the pair has drifted.
-        let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng);
+        // rk randomized under a DIFFERENT alpha than the one the prover is given: without the
+        // wallet's ak the installer cannot tell, but the keyed verifier does.
+        let (mut bundle, alpha) = (bundle, pasta_curves::pallas::Scalar::random(&mut OsRng));
         let other_alpha = pasta_curves::pallas::Scalar::random(&mut OsRng);
         let rk = <[u8; 32]>::from(orchard::primitives::redpallas::VerificationKey::<
             orchard::primitives::redpallas::SpendAuth,
         >::from(&ask.randomize(&other_alpha)));
-        set_spend_auth_randomizer(&mut bundle, 0, &alpha.to_repr(), &rk).unwrap();
+        set_spend_auth_randomizer(&mut bundle, 0, &alpha.to_repr(), &rk, None).unwrap();
 
-        let err = verify_ironwood_spends(&bundle, &spec.fvk).unwrap_err();
+        let err = verify_ironwood_spends(&bundle, &spec.fvk, &[(0, alpha.to_repr())]).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -3380,12 +3511,20 @@ mod tests {
         let rk = <[u8; 32]>::from(orchard::primitives::redpallas::VerificationKey::<
             orchard::primitives::redpallas::SpendAuth,
         >::from(&ask.randomize(&alpha)));
-        set_spend_auth_randomizer(&mut bundle, 0, &alpha.to_repr(), &rk).unwrap();
+        set_spend_auth_randomizer(
+            &mut bundle,
+            0,
+            &alpha.to_repr(),
+            &rk,
+            Some(&test_ak(&spec.fvk)),
+        )
+        .unwrap();
+        let alphas = [(0, alpha.to_repr())];
 
         // A different wallet's FVK does not own the note.
         let foreign_sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([9u8; 32])).unwrap();
         let foreign_fvk = FullViewingKey::from(&foreign_sk).to_bytes();
-        let err = verify_ironwood_spends(&bundle, &foreign_fvk).unwrap_err();
+        let err = verify_ironwood_spends(&bundle, &foreign_fvk, &alphas).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -3400,7 +3539,7 @@ mod tests {
         assert_eq!(err.code(), "IronwoodVerifyError.Nullifier");
 
         // Garbage FVK bytes are a distinct code.
-        let err = verify_ironwood_spends(&bundle, &[0xffu8; 96]).unwrap_err();
+        let err = verify_ironwood_spends(&bundle, &[0xffu8; 96], &alphas).unwrap_err();
         assert!(matches!(err, IronwoodVerifyError::BadFvk));
         assert_eq!(err.code(), "IronwoodVerifyError.BadFvk");
     }
@@ -3442,7 +3581,13 @@ mod tests {
             &SpendAuthorizingKey::from(&sk).randomize(&alpha)
         ));
         assert!(matches!(
-            set_spend_auth_randomizer(&mut bundle, real, &alpha.to_repr(), &rk),
+            set_spend_auth_randomizer(
+                &mut bundle,
+                real,
+                &alpha.to_repr(),
+                &rk,
+                Some(&test_ak(&spec.fvk))
+            ),
             Err(IronwoodBuildError::SpendSignatureAlreadyPresent)
         ));
     }
@@ -3477,7 +3622,14 @@ mod tests {
         let rk = <[u8; 32]>::from(orchard::primitives::redpallas::VerificationKey::<
             orchard::primitives::redpallas::SpendAuth,
         >::from(&ask.randomize(&alpha)));
-        set_spend_auth_randomizer(&mut bundle, 0, &alpha.to_repr(), &rk).unwrap();
+        set_spend_auth_randomizer(
+            &mut bundle,
+            0,
+            &alpha.to_repr(),
+            &rk,
+            Some(&test_ak(&spec.fvk)),
+        )
+        .unwrap();
         let current = digest_of(&bundle);
         assert_ne!(pre_installation, current);
 
@@ -3501,18 +3653,84 @@ mod tests {
             orchard::primitives::redpallas::SpendAuth,
         >::from(&ask.randomize(&alpha2)));
         assert!(matches!(
-            set_spend_auth_randomizer(&mut bundle, 0, &alpha2.to_repr(), &rk2),
+            set_spend_auth_randomizer(
+                &mut bundle,
+                0,
+                &alpha2.to_repr(),
+                &rk2,
+                Some(&test_ak(&spec.fvk))
+            ),
             Err(IronwoodBuildError::SpendSignatureAlreadyPresent)
         ));
     }
 
     #[test]
-    fn apply_spend_signature_rejects_a_placeholder_rk() {
+    fn placeholder_rk_is_the_domain_separated_hash_to_curve_point() {
+        use pasta_curves::arithmetic::CurveExt;
+        use pasta_curves::group::{Group, GroupEncoding};
+
+        let point = pasta_curves::pallas::Point::hash_to_curve("BitGo-Ironwood")(b"placeholder-rk");
+        assert!(!bool::from(point.is_identity()));
+        assert_eq!(point.to_bytes(), PLACEHOLDER_RK);
+        VerificationKey::<SpendAuth>::try_from(PLACEHOLDER_RK).unwrap();
+    }
+
+    #[test]
+    fn with_spend_alphas_needs_exactly_one_alpha_per_real_spend() {
+        let (spec, anchor) = test_spend_spec();
+        let output = IronwoodOutputSpec {
+            recipient: test_recipient(),
+            amount: 1_000,
+            ovk: None,
+            memo: [0u8; 512],
+        };
+        let (bundle, map) =
+            construct_spend_pczt_multi(&[spec], &[output, output], &anchor, OsRng).unwrap();
+        let real = map.spend_action_index(0).unwrap();
+        let dummy = (0..2).find(|&i| i != real).unwrap();
+        let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng).to_repr();
+
+        let patched = with_spend_alphas(&bundle, &[(real, alpha)]).unwrap();
+        assert_eq!(
+            patched.actions()[real]
+                .spend()
+                .alpha()
+                .as_ref()
+                .map(|a| a.to_repr()),
+            Some(alpha)
+        );
+        // The input bundle is untouched.
+        assert!(bundle.actions()[real].spend().alpha().is_none());
+
+        assert!(matches!(
+            with_spend_alphas(&bundle, &[]),
+            Err(IronwoodBuildError::RandomizerMissing { action_index }) if action_index == real
+        ));
+        assert!(matches!(
+            with_spend_alphas(&bundle, &[(real, alpha), (real, alpha)]),
+            Err(IronwoodBuildError::DuplicateRandomizer { .. })
+        ));
+        assert!(matches!(
+            with_spend_alphas(&bundle, &[(real, alpha), (dummy, alpha)]),
+            Err(IronwoodBuildError::RandomizerOnDummySpend)
+        ));
+        assert!(matches!(
+            with_spend_alphas(&bundle, &[(7, alpha)]),
+            Err(IronwoodBuildError::ActionIndexOutOfRange)
+        ));
+        assert!(matches!(
+            with_spend_alphas(&bundle, &[(real, [0u8; 32])]),
+            Err(IronwoodBuildError::UnrandomizedRk)
+        ));
+    }
+
+    #[test]
+    fn apply_spend_signature_rejects_uninstalled_randomizers() {
         let (spec, anchor) = test_spend_spec();
         let (mut bundle, _) = construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
         let err = apply_spend_signature(&mut bundle, 0, [7u8; 32], &[7u8; 64]).unwrap_err();
         assert!(
-            matches!(err, IronwoodBuildError::PlaceholderRkNotReplaced),
+            matches!(err, IronwoodBuildError::RandomizersNotInstalled),
             "unexpected: {err:?}"
         );
     }

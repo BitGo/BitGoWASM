@@ -12,8 +12,8 @@
 //!   `cmx`/`enc_ciphertext`) is fabricated here, keyed to the paired spend's nullifier;
 //! - every action's `rcv`/`cv_net` pair is sampled here, and the bundle's committed
 //!   `value_sum` is `Σ(v_spend − v_out)`;
-//! - `rk` is the wallet's spend-validating key `ak` (the Constructor's placeholder), with no
-//!   `alpha` — the FROST signer replaces both ([`set_spend_auth_randomizer`]);
+//! - `rk` is the fixed [`PLACEHOLDER_RK`], with no `alpha` — the FROST signer installs the
+//!   randomized `rk` ([`set_spend_auth_randomizer`]); the wallet's `ak` never enters the bundle;
 //! - no FVK ever enters the constructed bundle: real spends carry `fvk = None`, so the wire
 //!   form stays keyless by construction;
 //! - each output's `out_ciphertext` is a random **placeholder** (encrypted under `ovk = ⊥`):
@@ -33,6 +33,7 @@
 //!
 //! [`construct_spend_pczt_multi`]: super::ironwood_build::construct_spend_pczt_multi
 //! [`set_spend_auth_randomizer`]: super::ironwood_build::set_spend_auth_randomizer
+//! [`PLACEHOLDER_RK`]: super::ironwood_build::PLACEHOLDER_RK
 //! [`verify_bundle_without_keys`]: super::ironwood_verify::verify_bundle_without_keys
 
 use rand::seq::SliceRandom;
@@ -42,7 +43,6 @@ use orchard::bundle::BundleVersion;
 use orchard::keys::{FullViewingKey, Scope, SpendingKey};
 use orchard::note::{ExtractedNoteCommitment, Note, NoteVersion, Nullifier, RandomSeed, Rho};
 use orchard::pczt::Bundle as PcztBundle;
-use orchard::primitives::redpallas::{SpendAuth, VerificationKey};
 use orchard::tree::Anchor;
 use orchard::value::{NoteValue, ValueCommitTrapdoor, ValueCommitment};
 use orchard::Address;
@@ -50,7 +50,7 @@ use orchard::Address;
 use super::ironwood_build::{
     build_ironwood_witness, construct_shield_pczt_multi, AnchorBytes, IronwoodActionMap,
     IronwoodBuildError, IronwoodOutputSpec, IronwoodWitness, MemoBytes, OrchardAddressBytes,
-    CMX_PROPRIETARY_KEY, MEMO_SIZE,
+    CMX_PROPRIETARY_KEY, MEMO_SIZE, PLACEHOLDER_RK,
 };
 use super::ironwood_pczt::{ActionWire, OutputWire, SpendWire, WitnessWire};
 use super::ironwood_verify::{verify_bundle_without_keys, KeylessVerifyContext};
@@ -108,9 +108,9 @@ struct ActionOrigin {
 /// least one real spend is required: output-only bundles are *shielding* builds
 /// ([`construct_shield_pczt_multi`]).
 ///
-/// `ak` is the wallet's spend-validating key. It becomes every real spend's placeholder `rk`
-/// (replaced by the signer's `ak.randomize(alpha)` later) and is the only key material the
-/// constructed bundle carries — never an FVK.
+/// No key material is needed or carried: every real spend's `rk` is [`PLACEHOLDER_RK`]
+/// (replaced by the signer's randomized `rk` later), and real spends carry no FVK, `ak` or
+/// `alpha`.
 ///
 /// Every output must have `ovk: None` and a positive amount: KMS owns encryption in the spend
 /// flow, and a zero-valued output is how a bundle marks fabricated dummies.
@@ -124,23 +124,12 @@ pub fn construct_spend_pczt_keyless<R: RngCore + CryptoRng>(
     spends: &[IronwoodKeylessSpendSpec],
     outputs: &[IronwoodOutputSpec],
     anchor: &AnchorBytes,
-    ak: &[u8; 32],
     mut rng: R,
 ) -> Result<(PcztBundle, IronwoodActionMap), IronwoodBuildError> {
-    // Invariant 6: at least one real spend. Output-only bundles are shielding builds.
+    // At least one real spend: output-only bundles are shielding builds.
     if spends.is_empty() {
         return Err(IronwoodBuildError::NoSpends);
     }
-    // Invariant 5: `ak` must be a canonical, non-identity spend-auth key — it becomes every
-    // real spend's placeholder `rk`, so a non-canonical one would only fail later, inside the
-    // wire parse, with a less obvious error. The identity encodes as all zeros; it
-    // `randomize`s to a key anyone can sign for, so it is rejected up front (as the key-free
-    // verifier's `Rk` check does).
-    if *ak == [0u8; 32] {
-        return Err(IronwoodBuildError::BadSpendValidatingKey);
-    }
-    VerificationKey::<SpendAuth>::try_from(*ak)
-        .map_err(|_| IronwoodBuildError::BadSpendValidatingKey)?;
     Option::<Anchor>::from(Anchor::from_bytes(*anchor)).ok_or(IronwoodBuildError::BadAnchor)?;
 
     // Validate every caller input before anything is built, so a bad request fails
@@ -151,7 +140,7 @@ pub fn construct_spend_pczt_keyless<R: RngCore + CryptoRng>(
     }
     let mut recipients = Vec::with_capacity(outputs.len());
     for (output_index, spec) in outputs.iter().enumerate() {
-        // Invariant 7: KMS owns encryption in the spend flow — no caller-chosen `ovk`.
+        // KMS owns encryption in the spend flow — no caller-chosen `ovk`.
         if spec.ovk.is_some() {
             return Err(IronwoodBuildError::OvkNotAllowed { output_index });
         }
@@ -232,7 +221,7 @@ pub fn construct_spend_pczt_keyless<R: RngCore + CryptoRng>(
             ActionWire {
                 cv_net: cv_net.to_bytes(),
                 rcv: Some(rcv.to_bytes()),
-                spend: real_spend_wire(spend_spec, ak),
+                spend: real_spend_wire(spend_spec),
                 output,
             },
             ActionOrigin {
@@ -261,14 +250,8 @@ pub fn construct_spend_pczt_keyless<R: RngCore + CryptoRng>(
     // Self-check: the Constructor's own output must pass every key-free
     // check the client will later run on it — note commitments, value commitments, the
     // value sum, the witnesses, the placeholder-rk state, and no leaked viewing keys.
-    let report = verify_bundle_without_keys(
-        &bundle,
-        &KeylessVerifyContext {
-            stored_ak: Some(*ak),
-            ..Default::default()
-        },
-    )
-    .map_err(IronwoodBuildError::SelfCheck)?;
+    let report = verify_bundle_without_keys(&bundle, &KeylessVerifyContext::default())
+        .map_err(IronwoodBuildError::SelfCheck)?;
     debug_assert_eq!(
         report.spends.len(),
         spends.len(),
@@ -325,12 +308,12 @@ fn validate_keyless_spend_note(
     Ok(())
 }
 
-/// The wire spend half of one real spend: note plaintext, the witness, the wallet `ak` as the
-/// placeholder `rk`, no `alpha`, no FVK, and the note's `cmx` recorded for reconciliation.
-fn real_spend_wire(spec: &IronwoodKeylessSpendSpec, ak: &[u8; 32]) -> SpendWire {
+/// The wire spend half of one real spend: note plaintext, the witness, [`PLACEHOLDER_RK`] as
+/// `rk`, no `alpha`, no FVK, and the note's `cmx` recorded for reconciliation.
+fn real_spend_wire(spec: &IronwoodKeylessSpendSpec) -> SpendWire {
     SpendWire {
         nullifier: spec.nullifier,
-        rk: *ak,
+        rk: PLACEHOLDER_RK,
         spend_auth_sig: None,
         recipient: Some(spec.recipient.to_vec()),
         value: Some(spec.value),
@@ -609,7 +592,7 @@ fn assemble_bundle(
         actions,
     };
     super::ironwood_pczt::bundle_from_wire(wire).map_err(|e| match e {
-        // Invariant 3: surface the wire parse's duplicate-nullifier guard as the typed
+        // Surface the wire parse's duplicate-nullifier guard as the typed
         // Constructor error (the index is the post-shuffle action index).
         super::ironwood_pczt::IronwoodPcztError::DuplicateNullifier { action_index } => {
             IronwoodBuildError::DuplicateNullifier { action_index }
@@ -628,7 +611,8 @@ pub(crate) mod test_util {
     /// Two real notes (100M and 80M zatoshi) of one wallet under a real two-leaf tree, as the
     /// keyless Constructor receives them (nullifiers as the note store / KMS would report
     /// them), plus the anchor, the wallet's FVK (the test oracle's key holder, standing in for
-    /// KMS) and its spend-validating key `ak`.
+    /// KMS) and its spend-validating key `ak` (the client's key, never passed to the
+    /// Constructor).
     pub(crate) fn keyless_fixture() -> (
         Vec<IronwoodKeylessSpendSpec>,
         AnchorBytes,
@@ -681,6 +665,7 @@ mod tests {
     use crate::zcash::ironwood_pczt::{deserialize_pczt, serialize_pczt, with_out_ciphertext};
     use ff::{Field, PrimeField};
     use orchard::keys::SpendAuthorizingKey;
+    use orchard::primitives::redpallas::{SpendAuth, VerificationKey};
     use rand::rngs::OsRng;
 
     use super::test_util::keyless_fixture as fixture;
@@ -722,8 +707,7 @@ mod tests {
         let outs: Vec<IronwoodOutputSpec> = (0..outputs)
             .map(|j| wallet_output(&fvk, 100 + j as u32, 90_000_000))
             .collect();
-        let (bundle, map) =
-            construct_spend_pczt_keyless(specs, &outs, &anchor, &ak, OsRng).unwrap();
+        let (bundle, map) = construct_spend_pczt_keyless(specs, &outs, &anchor, OsRng).unwrap();
 
         // Shape: UNPADDED means exactly max(S, O) actions.
         assert_eq!(bundle.actions().len(), spends.max(outputs));
@@ -736,6 +720,7 @@ mod tests {
         let ask = SpendAuthorizingKey::from(
             &Option::<SpendingKey>::from(SpendingKey::from_bytes([7u8; 32])).unwrap(),
         );
+        let ak_key = VerificationKey::<SpendAuth>::try_from(ak).unwrap();
         let mut randomizers = Vec::new();
         let mut bundle = bundle;
         for action_index in map.spend_action_indices() {
@@ -746,19 +731,29 @@ mod tests {
                 *action_index,
                 &alpha.to_repr(),
                 &rk,
+                Some(&ak_key),
             )
             .unwrap();
             randomizers.push((*action_index, alpha.to_repr(), rk));
         }
 
-        // The keyed oracle verifier passes (the FVK holder's view)…
-        crate::zcash::ironwood_build::verify_ironwood_spends(&bundle, &fvk.to_bytes()).unwrap();
+        // Only the randomized rk is stored: alpha stays with the signer.
+        for action_index in map.spend_action_indices() {
+            assert!(bundle.actions()[*action_index].spend().alpha().is_none());
+        }
+
+        // The keyed oracle verifier passes (the FVK holder's view, alphas out of band)…
+        let alphas: Vec<(usize, [u8; 32])> = randomizers
+            .iter()
+            .map(|(action_index, alpha, _)| (*action_index, *alpha))
+            .collect();
+        crate::zcash::ironwood_build::verify_ironwood_spends(&bundle, &fvk.to_bytes(), &alphas)
+            .unwrap();
 
         // …and the key-free verifier passes with the caller's own expectations.
         let report = verify_bundle_without_keys(
             &bundle,
             &KeylessVerifyContext {
-                stored_ak: Some(ak),
                 expected_ak: Some(ak),
                 expected_randomizers: randomizers.clone(),
                 ..Default::default()
@@ -784,7 +779,6 @@ mod tests {
         verify_bundle_without_keys(
             &bundle,
             &KeylessVerifyContext {
-                stored_ak: Some(ak),
                 sighash: Some(sighash),
                 ..Default::default()
             },
@@ -822,14 +816,13 @@ mod tests {
     /// real spends carry value-0 dummy outputs; `value_sum` is positive for a deshield.
     #[test]
     fn action_map_and_dummy_outputs_follow_the_shapes() {
-        let (specs, anchor, fvk, ak) = fixture();
+        let (specs, anchor, fvk, _ak) = fixture();
 
         // 2 spends → 1 output: the surplus spend carries a dummy output (value 0).
         let (bundle, map) = construct_spend_pczt_keyless(
             &specs,
             &[wallet_output(&fvk, 100, 90_000_000)],
             &anchor,
-            &ak,
             OsRng,
         )
         .unwrap();
@@ -867,18 +860,11 @@ mod tests {
             Some(0)
         );
         // Two 100M/80M spends pay out 90M: valueBalance is +90M (positive: a deshield).
-        let report = verify_bundle_without_keys(
-            &bundle,
-            &KeylessVerifyContext {
-                stored_ak: Some(ak),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let report = verify_bundle_without_keys(&bundle, &KeylessVerifyContext::default()).unwrap();
         assert_eq!(report.value_balance, 90_000_000);
 
         // 1 spend → 2 outputs: the surplus output rides a dummy spend.
-        let (specs, anchor, fvk, ak) = fixture();
+        let (specs, anchor, fvk, _ak) = fixture();
         let (bundle, map) = construct_spend_pczt_keyless(
             &specs[..1],
             &[
@@ -886,7 +872,6 @@ mod tests {
                 wallet_output(&fvk, 101, 50_000_000),
             ],
             &anchor,
-            &ak,
             OsRng,
         )
         .unwrap();
@@ -905,14 +890,7 @@ mod tests {
                 Some(40_000_000 + 10_000_000 * j as u64)
             );
         }
-        let report = verify_bundle_without_keys(
-            &bundle,
-            &KeylessVerifyContext {
-                stored_ak: Some(ak),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let report = verify_bundle_without_keys(&bundle, &KeylessVerifyContext::default()).unwrap();
         // 100M spent − 90M outputs = +10M (positive: a deshield pays out).
         assert_eq!(report.value_balance, 10_000_000);
     }
@@ -920,57 +898,45 @@ mod tests {
     /// Negative tests, one per constructor invariant.
     #[test]
     fn rejects_bad_requests() {
-        let (specs, anchor, fvk, ak) = fixture();
+        let (specs, anchor, fvk, _ak) = fixture();
 
-        // Invariant 6: at least one spend.
+        // At least one spend.
         assert!(matches!(
-            construct_spend_pczt_keyless(&[], &[], &anchor, &ak, OsRng),
+            construct_spend_pczt_keyless(&[], &[], &anchor, OsRng),
             Err(IronwoodBuildError::NoSpends)
         ));
 
-        // Invariant 5: `ak` must be a canonical verification key (the identity fails).
-        assert!(matches!(
-            construct_spend_pczt_keyless(&specs, &[], &anchor, &[0u8; 32], OsRng),
-            Err(IronwoodBuildError::BadSpendValidatingKey)
-        ));
-
-        // Invariant 7: no caller-chosen ovk.
+        // No caller-chosen ovk.
         let mut bad_ovk = wallet_output(&fvk, 100, 90_000_000);
         bad_ovk.ovk = Some([3u8; 32]);
         assert!(matches!(
-            construct_spend_pczt_keyless(&specs, &[bad_ovk], &anchor, &ak, OsRng),
+            construct_spend_pczt_keyless(&specs, &[bad_ovk], &anchor, OsRng),
             Err(IronwoodBuildError::OvkNotAllowed { output_index: 0 })
         ));
 
-        // Invariant 4: zero-valued outputs are the dummy marker.
+        // Zero-valued outputs are the dummy marker.
         assert!(matches!(
-            construct_spend_pczt_keyless(
-                &specs,
-                &[wallet_output(&fvk, 100, 0)],
-                &anchor,
-                &ak,
-                OsRng
-            ),
+            construct_spend_pczt_keyless(&specs, &[wallet_output(&fvk, 100, 0)], &anchor, OsRng),
             Err(IronwoodBuildError::ZeroValueOutput { output_index: 0 })
         ));
 
-        // Invariant 1: the note must commit to its recorded cmx.
+        // The note must commit to its recorded cmx.
         let mut bad_cmx = specs[0];
         bad_cmx.cmx = field_bytes(999);
         assert!(matches!(
-            construct_spend_pczt_keyless(&[bad_cmx], &[], &anchor, &ak, OsRng),
+            construct_spend_pczt_keyless(&[bad_cmx], &[], &anchor, OsRng),
             Err(IronwoodBuildError::NoteCommitmentMismatch)
         ));
 
-        // Invariant 1: the note plaintext must be internally valid (non-canonical rho).
+        // The note plaintext must be internally valid (non-canonical rho).
         let mut bad_rho = specs[0];
         bad_rho.rho = [0xffu8; 32];
         assert!(matches!(
-            construct_spend_pczt_keyless(&[bad_rho], &[], &anchor, &ak, OsRng),
+            construct_spend_pczt_keyless(&[bad_rho], &[], &anchor, OsRng),
             Err(IronwoodBuildError::InvalidNote)
         ));
 
-        // Invariant 2: the witness must recompute to the anchor.
+        // The witness must recompute to the anchor.
         assert!(matches!(
             construct_spend_pczt_keyless(
                 &specs,
@@ -983,29 +949,22 @@ mod tests {
                     ]
                 )
                 .0,
-                &ak,
                 OsRng
             ),
             Err(IronwoodBuildError::WitnessAnchorMismatch)
         ));
 
-        // Invariant 3: duplicate nullifiers are rejected, as the typed Constructor error.
+        // Duplicate nullifiers are rejected, as the typed Constructor error.
         let mut dup = specs[1];
         dup.nullifier = specs[0].nullifier;
         assert!(matches!(
-            construct_spend_pczt_keyless(&[specs[0], dup], &[], &anchor, &ak, OsRng),
+            construct_spend_pczt_keyless(&[specs[0], dup], &[], &anchor, OsRng),
             Err(IronwoodBuildError::DuplicateNullifier { .. })
-        ));
-
-        // Invariant 5: a non-canonical (non-point) `ak` encoding.
-        assert!(matches!(
-            construct_spend_pczt_keyless(&specs, &[], &anchor, &[0xffu8; 32], OsRng),
-            Err(IronwoodBuildError::BadSpendValidatingKey)
         ));
 
         // A non-canonical anchor encoding.
         assert!(matches!(
-            construct_spend_pczt_keyless(&specs, &[], &[0xffu8; 32], &ak, OsRng),
+            construct_spend_pczt_keyless(&specs, &[], &[0xffu8; 32], OsRng),
             Err(IronwoodBuildError::BadAnchor)
         ));
 
@@ -1013,7 +972,7 @@ mod tests {
         let mut bad_nf = specs[1];
         bad_nf.nullifier = [0xffu8; 32];
         assert!(matches!(
-            construct_spend_pczt_keyless(&[specs[0], bad_nf], &[], &anchor, &ak, OsRng),
+            construct_spend_pczt_keyless(&[specs[0], bad_nf], &[], &anchor, OsRng),
             Err(IronwoodBuildError::BadNullifier { spend_index: 1 })
         ));
 
@@ -1023,7 +982,6 @@ mod tests {
                 &specs,
                 &[wallet_output(&fvk, 100, MAX_MONEY + 1)],
                 &anchor,
-                &ak,
                 OsRng
             ),
             Err(IronwoodBuildError::ValueOutOfRange)
@@ -1036,7 +994,6 @@ mod tests {
                     wallet_output(&fvk, 101, 1)
                 ],
                 &anchor,
-                &ak,
                 OsRng
             ),
             Err(IronwoodBuildError::ValueOutOfRange)
@@ -1045,16 +1002,16 @@ mod tests {
 
     /// No FVK reaches the constructed PCZT: every real spend's `fvk`
     /// is absent, and the wallet FVK's secret-ish half (`nk ‖ rivk`) appears nowhere in the
-    /// serialized bytes — only `ak`, the public placeholder `rk`, does.
+    /// serialized bytes. Neither does its `ak`: the placeholder `rk` is [`PLACEHOLDER_RK`].
     #[test]
     fn constructed_pczt_carries_no_wallet_fvk() {
-        let (specs, anchor, fvk, ak) = fixture();
+        let (specs, anchor, fvk, _ak) = fixture();
         for (spends, outputs) in [(1usize, 0usize), (2, 1), (1, 2), (2, 2)] {
             let outs: Vec<IronwoodOutputSpec> = (0..outputs)
                 .map(|j| wallet_output(&fvk, 100 + j as u32, 30_000_000))
                 .collect();
             let (bundle, map) =
-                construct_spend_pczt_keyless(&specs[..spends], &outs, &anchor, &ak, OsRng).unwrap();
+                construct_spend_pczt_keyless(&specs[..spends], &outs, &anchor, OsRng).unwrap();
             for &idx in map.spend_action_indices() {
                 let spend = bundle.actions()[idx].spend();
                 assert!(spend.fvk().is_none(), "real spend {idx} carries an fvk");
@@ -1063,7 +1020,7 @@ mod tests {
                     spend.alpha().is_none(),
                     "no alpha before the signer installs one"
                 );
-                assert_eq!(<[u8; 32]>::from(spend.rk()), ak, "placeholder rk is ak");
+                assert_eq!(<[u8; 32]>::from(spend.rk()), PLACEHOLDER_RK);
             }
             let bytes = serialize_pczt(&bundle).unwrap();
             let fvk_bytes = fvk.to_bytes();
@@ -1072,7 +1029,7 @@ mod tests {
                 !bytes.windows(nk_rivk.len()).any(|w| w == nk_rivk),
                 "{spends}→{outputs}: the wallet FVK's nk‖rivk leaked into the PCZT"
             );
-            for half in [&fvk_bytes[32..64], &fvk_bytes[64..96]] {
+            for half in [&fvk_bytes[..32], &fvk_bytes[32..64], &fvk_bytes[64..96]] {
                 assert!(
                     !bytes.windows(32).any(|w| w == half),
                     "{spends}→{outputs}: a wallet FVK component leaked into the PCZT"
@@ -1085,14 +1042,14 @@ mod tests {
     /// and `rseed`s — linkability hinges on the Constructor randomizing everything it can.
     #[test]
     fn two_builds_randomize_order_rcvs_and_rseeds() {
-        let (specs, anchor, fvk, ak) = fixture();
+        let (specs, anchor, fvk, _ak) = fixture();
         let outs = [
             wallet_output(&fvk, 100, 30_000_000),
             wallet_output(&fvk, 101, 30_000_000),
         ];
         let build = || {
             let (bundle, map) =
-                construct_spend_pczt_keyless(&specs, &outs, &anchor, &ak, OsRng).unwrap();
+                construct_spend_pczt_keyless(&specs, &outs, &anchor, OsRng).unwrap();
             (serialize_pczt(&bundle).unwrap(), map)
         };
         // The action ORDER differs: the maps disagree on where spend 0 landed. 2! orders are
