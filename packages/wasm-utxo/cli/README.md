@@ -296,6 +296,14 @@ The spend-flow commands reproduce the same steps interactively: a fixture's `req
 valid `--notes-file`, and steps 3–5 above produce its out-ciphertexts, randomizers, signatures,
 proof request and proof.
 
+**Capturing on-chain goldens.** The v6 spend goldens under `test/fixtures/zcash/`
+(`v6_unshield_*`, `v6_shielded_transfer_*`) were produced with the same commands on chain data:
+the `ironwood_scan_note` and `ironwood_tree` examples recover the spent note and its Merkle
+witness from a node's RPC output, the steps above build, sign and prove the transaction, and
+the mined transaction's raw hex and txid become the fixture pair. Wallet generation
+(`ironwood_keygen`, `ironwood_derive`) and the full procedure are documented in
+[`../docs/zcash-v6-transaction.md`](../docs/zcash-v6-transaction.md).
+
 ### Supported Networks
 
 The CLI supports the following networks (use with `--network` flag):
