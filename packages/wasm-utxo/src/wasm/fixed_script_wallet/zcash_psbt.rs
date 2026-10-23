@@ -15,7 +15,7 @@ use super::BitGoPsbt;
 use crate::error::WasmUtxoError;
 use crate::fixed_script_wallet::bitgo_psbt::zcash::error::IronwoodPsbtError;
 use crate::fixed_script_wallet::bitgo_psbt::zcash::ironwood_spend::{
-    IronwoodInputKind, IronwoodShieldedStatus,
+    IronwoodInputKind, IronwoodShieldedStatus, IronwoodVerifiedBundle,
 };
 use crate::fixed_script_wallet::bitgo_psbt::zcash::parse::{
     ZcashParsedInput, ZcashParsedInputs, ZcashParsedOutput, ZcashParsedTransaction,
@@ -35,6 +35,7 @@ use crate::zcash::ironwood_build::{
     WitnessAuthPath, IRONWOOD_MERKLE_DEPTH,
 };
 use crate::zcash::ironwood_construct::IronwoodKeylessSpendSpec;
+use crate::zcash::ironwood_verify::VerifiedOutput;
 
 impl BitGoPsbt {
     /// Borrow the inner `ZcashBitGoPsbt`, erroring if this is not a Zcash PSBT.
@@ -819,6 +820,77 @@ impl BitGoPsbt {
             .map_err(WasmUtxoError::from)?
             .try_to_js_value()
     }
+
+    /// The client's key-free verification of the stored shielded bundle: the checks of
+    /// `verify_bundle_without_keys`, driven by the caller's own expectations. The PSBT is
+    /// never trusted for who a spend belongs to — the spend-validating key and the signers'
+    /// randomized keys come in from the caller, never from the PSBT.
+    ///
+    /// * `spendValidatingKey` - the caller's own spend-validating key (32 bytes, optional).
+    ///   When given, every randomized real spend must carry
+    ///   `rk == ak.randomize(alpha)` for the caller's matching `randomizers` entry: the
+    ///   caller checks it is signing for its own wallet.
+    /// * `randomizers` - the signer's randomizers, an array of
+    ///   `{ actionIndex: number, alpha: Uint8Array, rk: Uint8Array }` (optional). Each entry
+    ///   must land on a real spend; a spend whose installed `rk` does not match its entry is
+    ///   rejected (`IronwoodVerifyError.Rk`).
+    ///
+    /// When every real spend's randomized `rk` is installed, the ZIP-244 sig digest is
+    /// computed here and any present spend-auth signature is verified over it
+    /// (`IronwoodVerifyError.SpendSignature`); a mid-flow bundle (placeholder `rk`s still
+    /// pending) verifies without the signature check instead.
+    ///
+    /// Returns the verified view of the bundle —
+    /// `{ spends: ZcashShieldedSpend[], outputs: [{ actionIndex, value, recipient }],
+    /// valueBalance: bigint, anchor: Uint8Array }`. Once it passes, the only transaction the
+    /// caller can sign over this bundle that verifies on-chain is one that moves exactly the
+    /// values shown.
+    pub fn verify_ironwood_shielded_bundle(
+        &self,
+        spend_validating_key: Option<Vec<u8>>,
+        randomizers: JsValue,
+    ) -> Result<JsValue, WasmUtxoError> {
+        let randomizers: Vec<SpendRandomizerEntry> = serde_wasm_bindgen::from_value(randomizers)
+            .map_err(|e| WasmUtxoError::new(&format!("invalid randomizer entries: {e}")))?;
+        let ak: Option<[u8; 32]> = spend_validating_key
+            .map(|bytes| fixed_bytes(&bytes, "spendValidatingKey"))
+            .transpose()?;
+        let randomizers = randomizers
+            .into_iter()
+            .map(|entry| {
+                Ok((
+                    entry.action_index,
+                    fixed_bytes(&entry.alpha, "alpha")?,
+                    fixed_bytes(&entry.rk, "rk")?,
+                ))
+            })
+            .collect::<Result<Vec<_>, IronwoodPsbtError>>()?;
+        self.zcash()?
+            .verify_shielded_bundle(ak.as_ref(), &randomizers)
+            .map_err(WasmUtxoError::from)?
+            .try_to_js_value()
+    }
+}
+
+impl TryIntoJsValue for VerifiedOutput {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "actionIndex" => self.action_index,
+            "value" => self.value,
+            "recipient" => self.recipient.to_vec(),
+        )
+    }
+}
+
+impl TryIntoJsValue for IronwoodVerifiedBundle {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "spends" => self.spends.clone(),
+            "outputs" => self.outputs.clone(),
+            "valueBalance" => self.value_balance,
+            "anchor" => self.anchor.to_vec(),
+        )
+    }
 }
 
 /// Length-check a boundary byte string, naming the field and its expected size in the error.
@@ -1009,8 +1081,8 @@ impl TryIntoJsValue for ZcashParsedOutput {
 
 impl TryIntoJsValue for ZcashShieldedSpend {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
-        // `installed` means the signer replaced the Constructor's placeholder `rk`
-        // (= the wallet `ak`).
+        // `installed` means the signer replaced the Constructor's `PLACEHOLDER_RK` with its
+        // randomized `rk`.
         let randomizer = if self.rk_replaced {
             "installed"
         } else {

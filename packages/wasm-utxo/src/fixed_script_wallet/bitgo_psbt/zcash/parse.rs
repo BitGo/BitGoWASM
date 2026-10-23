@@ -38,8 +38,7 @@ pub struct ZcashShieldedSpend {
     pub position: u32,
     /// The single-receiver Unified Address of the spent note's Orchard receiver.
     pub address: String,
-    /// Whether the signer replaced the Constructor's placeholder `rk` (read from the wire
-    /// marker).
+    /// Whether the signer replaced the Constructor's placeholder `rk` with a randomized one.
     pub rk_replaced: bool,
     /// Whether a spend-auth signature is installed.
     pub signed: bool,
@@ -360,25 +359,35 @@ fn shielded_side(
         .spends
         .iter()
         .map(|spend| {
-            // The stored Unified Addresses belong to the bundle's *outputs* (keyed by their
-            // action index), so a spend's address is always rebuilt from its own receiver.
-            let address = crate::zcash::unified_address::encode_orchard_receiver(
-                &spend.recipient,
-                z.network().to_coin_name(),
-            )
-            .map_err(|e| ZcashParseTransactionError::Shielded(e.to_string()))?;
-            Ok(ZcashShieldedSpend {
-                action_index: spend.action_index,
-                value: spend.value,
-                recipient: spend.recipient,
-                nullifier: spend.nullifier,
-                cmx: spend.cmx,
-                position: spend.position,
-                address,
-                rk_replaced: spend.randomizer_installed,
-                signed: spend.signed,
-            })
+            ZcashShieldedSpend::from_verified(spend, z.network().to_coin_name())
+                .map_err(|e| ZcashParseTransactionError::Shielded(e.to_string()))
         })
         .collect::<Result<Vec<_>, ZcashParseTransactionError>>()?;
     Ok((outputs, spends, report.value_balance))
+}
+
+impl ZcashShieldedSpend {
+    /// A verified spend in the parse shape, with the single-receiver Unified Address of its
+    /// Orchard receiver on `coin_name`'s network.
+    ///
+    /// The stored Unified Addresses belong to the bundle's *outputs* (keyed by their action
+    /// index), so a spend's address is always rebuilt from its own receiver.
+    pub(crate) fn from_verified(
+        spend: &crate::zcash::ironwood_verify::VerifiedSpend,
+        coin_name: &str,
+    ) -> Result<Self, crate::zcash::unified_address::UnifiedAddressError> {
+        let address =
+            crate::zcash::unified_address::encode_orchard_receiver(&spend.recipient, coin_name)?;
+        Ok(ZcashShieldedSpend {
+            action_index: spend.action_index,
+            value: spend.value,
+            recipient: spend.recipient,
+            nullifier: spend.nullifier,
+            cmx: spend.cmx,
+            position: spend.position,
+            address,
+            rk_replaced: spend.randomizer_installed,
+            signed: spend.signed,
+        })
+    }
 }

@@ -19,7 +19,8 @@ pub enum IronwoodPsbtError {
     /// silently overwrite the first batch, whose value the transparent side is funding.
     AlreadyAdded,
     /// A caller-supplied Unified Address is not a valid Unified Address, has no Orchard
-    /// receiver, or its Orchard receiver is not the output's `recipient`.
+    /// receiver, or its Orchard receiver is not the output's `recipient`; or a verified
+    /// spend's Orchard receiver could not be encoded as a Unified Address.
     BadUnifiedAddress(String),
     /// The PSBT carries no Ironwood PCZT, or its bundle is not a spend bundle (no real
     /// spends), and the operation needs one.

@@ -1,7 +1,4 @@
 import assert from "node:assert";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, it } from "mocha";
 
 import {
@@ -16,67 +13,13 @@ import type {
   ZcashShieldedOutputRequest,
   ZcashShieldedSpendRequest,
 } from "../../js/fixedScriptWallet/ZcashIronwoodTypes.js";
-
-/**
- * One `test/fixtures/zcash/ironwood_spend_*.json` fixture, generated in Rust by the
- * `#[ignore]`d `generate_ts_spend_fixtures` test (under `orchard-proving`):
- *
- * - `request` is what the builder replays through `addShieldedSpends`;
- * - `psbt` is the seeded post-construction PSBT the lifecycle drives;
- * - `outCiphertexts` / `proof` are the viewing-key holder's and prover's responses (they need
- *   the FVK / Halo2, which the TS
- *   side does not hold);
- * - `randomizers` / `signatures` are the FROST stand-in round, keyed to the same run's
- *   ciphertexts (the sighash chain depends on them);
- * - `proofRequest` is the exact alpha-patched PCZT `getProofRequest` must return.
- */
-type IronwoodSpendFixture = {
-  name: string;
-  network: "zcashTest";
-  blockHeight: number;
-  request: {
-    anchor: string;
-    spends: Array<{
-      recipient: string;
-      value: string;
-      rho: string;
-      rseed: string;
-      cmx: string;
-      witness: { position: number; authPath: string[] };
-      nullifier: string;
-    }>;
-    outputs: Array<{
-      recipient: string;
-      amount: string;
-      memo: string;
-      unifiedAddress: string | null;
-    }>;
-    transparentOutput: { script: string; value: string } | null;
-  };
-  psbt: string;
-  spendActionIndices: number[];
-  outputActionIndices: number[];
-  ak: string;
-  outCiphertexts: Array<{ actionIndex: number; outCiphertext: string }>;
-  randomizers: Array<{ actionIndex: number; alpha: string; rk: string }>;
-  sighash: string;
-  signatures: Array<{ actionIndex: number; signature: string }>;
-  proofRequest: string;
-  proof: string;
-  expectedTxid: string;
-  zip317ConventionalFee: string;
-};
-
-const hex = (value: string): Uint8Array => Buffer.from(value, "hex");
-const base64 = (value: string): Uint8Array => Buffer.from(value, "base64");
-
-const fixtureDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../fixtures/zcash");
-
-function loadFixture(name: string): IronwoodSpendFixture {
-  return JSON.parse(
-    fs.readFileSync(path.join(fixtureDir, `ironwood_spend_${name}.json`), "utf8"),
-  ) as IronwoodSpendFixture;
-}
+import {
+  assertErrorCode,
+  freshPsbt,
+  hex,
+  loadFixture,
+  type IronwoodSpendFixture,
+} from "./zcashIronwoodSpend.util.js";
 
 /** The fixture's spend request, with witnesses rebuilt (and re-validated) from the raw path. */
 function spendRequests(fixture: IronwoodSpendFixture): ZcashShieldedSpendRequest[] {
@@ -105,25 +48,9 @@ function outputRequests(fixture: IronwoodSpendFixture): ZcashShieldedOutputReque
   }));
 }
 
-/** A fresh PSBT at the fixture's post-construction state (the deterministic seeded build). */
-function freshPsbt(fixture: IronwoodSpendFixture): ZcashIronwoodBitGoPsbt {
-  return ZcashIronwoodBitGoPsbt.fromBytes(base64(fixture.psbt), "zcashTest");
-}
-
 /** `serialize` → `fromBytes`: the wire round-trip every lifecycle step must survive. */
 function roundtrip(psbt: ZcashIronwoodBitGoPsbt): ZcashIronwoodBitGoPsbt {
   return ZcashIronwoodBitGoPsbt.fromBytes(psbt.serialize(), "zcashTest");
-}
-
-/** Asserts `call` throws with the given typed error code. */
-function assertErrorCode(call: () => unknown, expectedCode: string): void {
-  try {
-    call();
-  } catch (err) {
-    assert.strictEqual((err as Error & { code?: string }).code, expectedCode);
-    return;
-  }
-  assert.fail(`expected ${expectedCode}, but the call succeeded`);
 }
 
 /** Whether `needle`'s byte sequence appears anywhere in `haystack`. */
