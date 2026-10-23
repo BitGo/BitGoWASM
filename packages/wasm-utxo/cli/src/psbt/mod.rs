@@ -6,13 +6,19 @@ use crate::network::NetworkArg;
 
 mod add_input;
 mod add_output;
+mod add_shielded_input;
 mod add_shielded_output;
+mod add_spend_signature;
+mod build_witness;
 mod combine_ironwood_proof;
 mod common;
 mod create;
 mod create_zcash_v6;
 mod extract_transparent_only;
+mod out_ciphertexts;
 mod parse;
+mod prove;
+mod set_spend_randomizer;
 mod sign;
 mod sign_v6_input;
 
@@ -139,6 +145,139 @@ pub enum PsbtCommand {
         /// instead of being reconstructed as a single-receiver UA when the PSBT is later parsed.
         #[arg(long)]
         unified_address: Option<String>,
+    },
+    /// Constructor role for the **spend** flow: add the shielded spends (and optionally
+    /// shielded outputs) to a v6 PSBT as a single keyless orchard PCZT, from a JSON notes
+    /// file. The PSBT must not carry transparent inputs, and only one call is supported per
+    /// PSBT. Prints the updated PSBT as hex to stdout, with the action map on stderr.
+    AddShieldedInput {
+        /// Path to the PSBT file (use '-' to read from stdin)
+        path: PathBuf,
+        /// Network (must be zec or tzec)
+        #[arg(long, short, value_enum)]
+        network: NetworkArg,
+        /// Notes file (JSON): `{"anchor", "spends": [{"recipient", "value", "rho", "rseed",
+        /// "cmx", "witness": {"position", "authPath"}, "nullifier"?}], "outputs"?: [{"recipient",
+        /// "amount", "memo"?, "unifiedAddress"?}]}`, bytes hex-encoded
+        #[arg(long)]
+        notes_file: PathBuf,
+        /// Full viewing key file (96-byte hex): derives any missing nullifiers locally
+        #[arg(long)]
+        fvk_file: Option<PathBuf>,
+        /// Current Ironwood note-commitment-tree root, hex-encoded (32 bytes). Overrides the
+        /// anchor in the notes file.
+        #[arg(long)]
+        anchor: Option<String>,
+    },
+    /// The viewing-key holder's ciphertext round: request the pending real outputs, re-encrypt
+    /// each under the FVK's external `ovk`, and apply the response. A PSBT with nothing pending
+    /// passes through unchanged. Prints the PSBT as hex to stdout, with the served action
+    /// indices on stderr.
+    OutCiphertexts {
+        /// Path to the PSBT file (use '-' to read from stdin)
+        path: PathBuf,
+        /// Network (must be zec or tzec)
+        #[arg(long, short, value_enum)]
+        network: NetworkArg,
+        /// Full viewing key file (96-byte hex)
+        #[arg(long)]
+        fvk_file: PathBuf,
+    },
+    /// Install the randomized signing key `rk = ak.randomize(alpha)` for one real spend (the
+    /// FROST stand-in). Only `rk` is stored; the alpha is needed again for
+    /// `add-spend-signature` and `prove`. With no `--alpha`, a fresh random one is generated.
+    /// Prints the updated PSBT as hex to stdout, with the alpha on stderr.
+    SetSpendRandomizer {
+        /// Path to the PSBT file (use '-' to read from stdin)
+        path: PathBuf,
+        /// Network (must be zec or tzec)
+        #[arg(long, short, value_enum)]
+        network: NetworkArg,
+        /// Action index of the real spend (from `add-shielded-input`'s action map)
+        #[arg(long)]
+        action_index: usize,
+        /// Full viewing key file (96-byte hex); its `ak` checks `rk == ak.randomize(alpha)`
+        #[arg(long)]
+        fvk_file: PathBuf,
+        /// The randomizer scalar, hex-encoded (32 bytes). Random when omitted.
+        #[arg(long)]
+        alpha: Option<String>,
+    },
+    /// Sign one real spend's ZIP-244 spend sighash: locally with the spending key stand-in
+    /// (`--sk-file` + `--alpha`, signing `ask.randomize(alpha)`) or ingest an externally
+    /// produced RedPallas signature (`--signature`, the FROST case). Prints the updated PSBT as
+    /// hex to stdout.
+    #[command(group(ArgGroup::new("signer").required(true).args(["sk_file", "signature"])))]
+    AddSpendSignature {
+        /// Path to the PSBT file (use '-' to read from stdin)
+        path: PathBuf,
+        /// Network (must be zec or tzec)
+        #[arg(long, short, value_enum)]
+        network: NetworkArg,
+        /// Action index of the real spend
+        #[arg(long)]
+        action_index: usize,
+        /// The randomizer scalar `set-spend-randomizer` installed for this action, hex (32
+        /// bytes). Required with --sk-file.
+        #[arg(long, requires = "sk_file")]
+        alpha: Option<String>,
+        /// Spending key file (32-byte hex): signs locally with `ask.randomize(alpha)`
+        #[arg(long, requires = "alpha")]
+        sk_file: Option<PathBuf>,
+        /// An externally produced 64-byte RedPallas signature, hex-encoded
+        #[arg(long)]
+        signature: Option<String>,
+    },
+    /// The prover role: with `--request`, print the alpha-patched PCZT bytes an external prover
+    /// consumes; otherwise produce the Halo2 proof locally and print the proof hex for
+    /// `combine-ironwood-proof --proof`. One `--alpha <action_index>:<hex32>` per real spend —
+    /// the PSBT never stores the randomizers.
+    Prove {
+        /// Path to the PSBT file (use '-' to read from stdin)
+        path: PathBuf,
+        /// Network (must be zec or tzec)
+        #[arg(long, short, value_enum)]
+        network: NetworkArg,
+        /// One randomizer per real spend, as `<action_index>:<hex32>` (repeatable)
+        #[arg(long = "alpha")]
+        alphas: Vec<String>,
+        /// Full viewing key file (96-byte hex); required for local proving
+        #[arg(long, required_unless_present = "request")]
+        fvk_file: Option<PathBuf>,
+        /// Print the alpha-patched proof request (the PCZT bytes) instead of proving locally
+        #[arg(long, conflicts_with = "fvk_file")]
+        request: bool,
+    },
+    /// Build (and validate) an Ironwood Merkle witness for a note commitment — from the full
+    /// 32-entry sibling path or from a pruned shard + cap. Prints
+    /// `{"position": <u32>, "authPath": ["<hex32>" × 32]}` as JSON to stdout.
+    #[command(group(ArgGroup::new("source").required(true).args(["auth_path", "shard_file"])))]
+    BuildWitness {
+        /// The note commitment being witnessed, hex-encoded (32 bytes)
+        #[arg(long)]
+        cmx: String,
+        /// The leaf's position in the note-commitment tree
+        #[arg(long)]
+        position: u32,
+        /// The expected note-commitment-tree root, hex-encoded (32 bytes)
+        #[arg(long)]
+        anchor: String,
+        /// The 32 sibling hashes: a JSON array of hex strings, 32 comma-separated hex hashes,
+        /// or the flattened 1024-byte hex encoding
+        #[arg(long)]
+        auth_path: Option<String>,
+        /// Pruned shard subtree containing --position (ShardTreeNode JSON)
+        #[arg(long, requires_all = ["cap_file", "shard_height", "leaf_count"])]
+        shard_file: Option<PathBuf>,
+        /// Pruned cap above every shard (ShardTreeNode JSON)
+        #[arg(long, requires = "shard_file")]
+        cap_file: Option<PathBuf>,
+        /// The shard root's level (its height in the tree)
+        #[arg(long, requires = "shard_file")]
+        shard_height: Option<u8>,
+        /// Total leaves committed to the tree as of --anchor
+        #[arg(long, requires = "shard_file")]
+        leaf_count: Option<u64>,
     },
     /// Sign one transparent input of a v6 PSBT with a single private key, over the ZIP-244
     /// transparent sighash. Call once per required signature (2-of-3). Prints the updated PSBT
@@ -271,6 +410,78 @@ pub fn handle_command(command: PsbtCommand) -> Result<()> {
             memo,
             unified_address,
         ),
+        PsbtCommand::AddShieldedInput {
+            path,
+            network,
+            notes_file,
+            fvk_file,
+            anchor,
+        } => add_shielded_input::handle_add_shielded_input_command(
+            path,
+            network.into(),
+            notes_file,
+            fvk_file,
+            anchor,
+        ),
+        PsbtCommand::OutCiphertexts {
+            path,
+            network,
+            fvk_file,
+        } => out_ciphertexts::handle_out_ciphertexts_command(path, network.into(), fvk_file),
+        PsbtCommand::SetSpendRandomizer {
+            path,
+            network,
+            action_index,
+            fvk_file,
+            alpha,
+        } => set_spend_randomizer::handle_set_spend_randomizer_command(
+            path,
+            network.into(),
+            action_index,
+            fvk_file,
+            alpha,
+        ),
+        PsbtCommand::AddSpendSignature {
+            path,
+            network,
+            action_index,
+            alpha,
+            sk_file,
+            signature,
+        } => add_spend_signature::handle_add_spend_signature_command(
+            path,
+            network.into(),
+            action_index,
+            alpha,
+            sk_file,
+            signature,
+        ),
+        PsbtCommand::Prove {
+            path,
+            network,
+            alphas,
+            fvk_file,
+            request,
+        } => prove::handle_prove_command(path, network.into(), alphas, fvk_file, request),
+        PsbtCommand::BuildWitness {
+            cmx,
+            position,
+            anchor,
+            auth_path,
+            shard_file,
+            cap_file,
+            shard_height,
+            leaf_count,
+        } => build_witness::handle_build_witness_command(build_witness::BuildWitnessArgs {
+            cmx,
+            position,
+            anchor,
+            auth_path,
+            shard_file,
+            cap_file,
+            shard_height,
+            leaf_count,
+        }),
         PsbtCommand::SignV6Input {
             path,
             network,

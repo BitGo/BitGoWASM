@@ -218,6 +218,84 @@ wasm-utxo-cli psbt create-zcash-v6 --network tzec --consensus-branch-id 0x37a516
 # (txid aa7d9d9401cf70901cf76c81cab06e7001879607f60e1a2ffa4d4afa4a786238).
 ```
 
+#### Spend shielded notes in a Zcash v6 (Ironwood) transaction
+
+Six more subcommands — `add-shielded-input`, `out-ciphertexts`, `set-spend-randomizer`,
+`add-spend-signature`, `prove`, `build-witness` — drive the **spend** flow: a deshield
+(shielded → transparent) or a shielded → shielded transfer. A spend PSBT has no transparent
+inputs; the shielded notes fund it. Local key files stand in for the key holders: `--fvk-file`
+(96-byte hex full viewing key) for the viewing-key holder and the prover, `--sk-file` (32-byte
+hex spending key) for the spend-auth signer.
+
+```bash
+wasm-utxo-cli psbt add-shielded-input <PATH> --network <NETWORK> --notes-file <JSON> [--fvk-file <FILE>] [--anchor <HEX32>]
+wasm-utxo-cli psbt out-ciphertexts <PATH> --network <NETWORK> --fvk-file <FILE>
+wasm-utxo-cli psbt set-spend-randomizer <PATH> --network <NETWORK> --action-index <INDEX> --fvk-file <FILE> [--alpha <HEX32>]
+wasm-utxo-cli psbt add-spend-signature <PATH> --network <NETWORK> --action-index <INDEX> (--sk-file <FILE> --alpha <HEX32> | --signature <HEX64>)
+wasm-utxo-cli psbt prove <PATH> --network <NETWORK> --alpha <INDEX>:<HEX32>... (--request | --fvk-file <FILE>)
+wasm-utxo-cli psbt build-witness --cmx <HEX32> --position <POS> --anchor <HEX32> (--auth-path <HASHES> | --shard-file <JSON> --cap-file <JSON> --shard-height <H> --leaf-count <N>)
+```
+
+`add-shielded-input` takes the notes as JSON — `{"anchor", "spends": [{"recipient", "value",
+"rho", "rseed", "cmx", "witness": {"position", "authPath"}, "nullifier"?}], "outputs"?:
+[{"recipient", "amount", "memo"?, "unifiedAddress"?}]}`, bytes hex-encoded. Missing
+nullifiers are derived locally from `--fvk-file`. The actions are shuffled, so the action map
+it prints on stderr gives the `--action-index` for the later steps. `out-ciphertexts` passes the
+PSBT through unchanged when no real shielded output is pending (a deshield with no shielded
+change). The PSBT never stores a spend's randomizer `alpha`, so keep the one
+`set-spend-randomizer` prints and pass it to `add-spend-signature` and `prove`.
+
+**Example (deshield — spending shielded notes back to a transparent address):**
+
+```bash
+# 1. Build the transparent skeleton (no transparent inputs — a spend PSBT funds itself).
+wasm-utxo-cli psbt create-zcash-v6 --network tzec --consensus-branch-id 0x37a5165b \
+  | wasm-utxo-cli psbt add-output - --script a914ed68766fe37d9e2325758ed209ac78db505425a987 \
+      --value 99999000 \
+  > psbt.hex
+
+# 2. Constructor role, keyless: add the shielded spends from the notes file. The action map on
+#    stderr maps each spend and output to its action index.
+wasm-utxo-cli psbt add-shielded-input psbt.hex --network tzec --notes-file notes.json \
+    --fvk-file fvk.hex > psbt2.hex 2> action-map.json
+
+# 3. Viewing-key holder round: re-encrypt every pending output's out_ciphertext under the FVK's
+#    ovk (the stand-in for the KMS out-ciphertext step).
+wasm-utxo-cli psbt out-ciphertexts psbt2.hex --network tzec --fvk-file fvk.hex > psbt3.hex
+
+# 4. FROST stand-in rounds: install each spend's randomized key, then sign over the spend
+#    sighash. Keep the alphas — `prove` needs them later.
+wasm-utxo-cli psbt set-spend-randomizer psbt3.hex --network tzec \
+    --action-index 0 --fvk-file fvk.hex --alpha <alpha0> > psbt4.hex
+wasm-utxo-cli psbt add-spend-signature psbt4.hex --network tzec \
+    --action-index 0 --alpha <alpha0> --sk-file sk.hex > psbt5.hex
+
+# 5. Prover round: either print the alpha-patched proof request for an external prover...
+wasm-utxo-cli psbt prove psbt5.hex --network tzec --alpha 0:<alpha0> --request > proof-request.hex
+# ...or produce the Halo2 proof locally and combine it into the broadcast-ready transaction.
+wasm-utxo-cli psbt prove psbt5.hex --network tzec --alpha 0:<alpha0> --fvk-file fvk.hex > proof.hex
+wasm-utxo-cli psbt combine-ironwood-proof psbt5.hex --network tzec --proof "$(cat proof.hex)"
+
+# Inspect any stage: the `ironwood` node shows the input kind, what is still pending, the
+# key-free verification verdict, and whether the PSBT is ready for its proof.
+wasm-utxo-cli psbt parse psbt5.hex --network tzec
+```
+
+The witness each spend needs can be built from a note commitment and its sibling path (or from
+a pruned shard + cap, as a note-commitment tree store would supply it):
+
+```bash
+wasm-utxo-cli psbt build-witness --cmx <hex32> --position 0 --anchor <hex32> \
+    --auth-path '[ "<hex32>", ... 32 entries ... ]'
+```
+
+**Fixture generation.** The TypeScript spend fixtures (`test/fixtures/zcash/ironwood_spend_*.json`)
+are produced by the `#[ignore]`d Rust generator
+(`cargo test --features orchard-proving generate_ts_spend_fixtures -- --ignored --nocapture`).
+The spend-flow commands reproduce the same steps interactively: a fixture's `request` object is a
+valid `--notes-file`, and steps 3–5 above produce its out-ciphertexts, randomizers, signatures,
+proof request and proof.
+
 ### Supported Networks
 
 The CLI supports the following networks (use with `--network` flag):

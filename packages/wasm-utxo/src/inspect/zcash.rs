@@ -8,6 +8,8 @@ use super::psbt::{
     proprietary_to_nodes, psbt_inputs_to_node, psbt_outputs_to_node, tx_inputs_to_node,
     tx_outputs_to_node, tx_to_node, xpubs_to_node,
 };
+use crate::fixed_script_wallet::bitgo_psbt::zcash::ironwood_spend::IronwoodInputKind;
+use crate::fixed_script_wallet::bitgo_psbt::zcash::IronwoodPsbtError;
 use crate::fixed_script_wallet::bitgo_psbt::ZcashBitGoPsbt;
 use crate::networks::Network;
 use crate::zcash::transaction::ZcashTransactionParts;
@@ -178,69 +180,128 @@ fn transparent_signing_state(inputs: &[crate::bitcoin::psbt::Input]) -> &'static
     "half_signed"
 }
 
-/// The `ironwood` node: every real shielded output's value/recipient, every real shielded spend's
-/// value/nullifier (when the bundle spends notes), and the bundle's
-/// action-data (commitments, ciphertexts, flags, value balance, anchor) read from the PCZT stored
-/// in the proprietary map. Reports an error message inline rather than aborting the whole parse if
-/// the PCZT is malformed or missing (e.g. a v6 PSBT that had `add_ironwood_output`/
-/// `add_ironwood_outputs` never called, or was already extracted via `combine_ironwood_proof`).
+/// The `ironwood` node: the shielded workflow's state and the key-free verifier's verdict.
+///
+/// - **Workflow state** (from [`ZcashBitGoPsbt::shielded_status`]): the `input_kind`, what is
+///   still pending (out-ciphertexts, randomizers, spend signatures) and whether the bundle is
+///   ready for its proof.
+/// - **Verification** (from [`ZcashBitGoPsbt::verify_shielded_bundle`], with no caller key
+///   material — the inspector is unauthenticated): the real spends with their randomizer /
+///   signature state and Unified Addresses, and the real outputs. `failed` names the failing
+///   check; `not_applicable` when no PCZT is stored (a transparent-only v6 PSBT, or one
+///   already extracted).
+/// - The action-data view (action count, flags, value balance, anchor) the ZIP-244 txid
+///   commits to.
+///
+/// Reports errors inline rather than aborting the whole parse.
 fn ironwood_shielded_state_to_node(zcash_psbt: &ZcashBitGoPsbt) -> Node {
     let mut node = Node::new("ironwood", Primitive::None);
 
-    match zcash_psbt.ironwood_shielded_outputs_info() {
-        Ok(outputs) if outputs.is_empty() => {
+    // The workflow state: where this PSBT stands in the build → ciphertexts → sign → prove
+    // sequence.
+    match zcash_psbt.shielded_status() {
+        Ok(status) => {
             node.add_child(Node::new(
-                "shielded_outputs",
-                Primitive::String("none".to_string()),
+                "input_kind",
+                Primitive::String(
+                    match status.input_kind {
+                        IronwoodInputKind::Transparent => "transparent",
+                        IronwoodInputKind::Shielded => "shielded",
+                    }
+                    .to_string(),
+                ),
+            ));
+            add_pending(
+                &mut node,
+                "pending_out_ciphertexts",
+                &status.pending_out_ciphertexts,
+            );
+            add_pending(
+                &mut node,
+                "pending_randomizers",
+                &status.pending_randomizers,
+            );
+            add_pending(
+                &mut node,
+                "pending_spend_signatures",
+                &status.pending_spend_signatures,
+            );
+            node.add_child(Node::new(
+                "ready_for_proof",
+                Primitive::Boolean(status.ready_for_proof),
             ));
         }
-        Ok(outputs) => {
-            let mut outputs_node = Node::new("shielded_outputs", Primitive::None);
-            for (action_index, value, recipient) in outputs {
-                let mut output_node = Node::new("shielded_output", Primitive::None);
-                output_node.add_child(Node::new(
-                    "action_index",
-                    Primitive::U64(action_index as u64),
-                ));
-                output_node.add_child(Node::new("value", Primitive::U64(value)));
-                output_node.add_child(Node::new(
-                    "recipient",
-                    Primitive::Buffer(recipient.to_vec()),
-                ));
-                outputs_node.add_child(output_node);
+        Err(e) => node.add_child(Node::new("status_error", Primitive::String(e.to_string()))),
+    }
+
+    // The key-free verifier's verdict. No caller key material: an inspector can see what the
+    // bundle commits to, not whose wallet it spends from.
+    match zcash_psbt.verify_shielded_bundle(None, &[]) {
+        Ok(report) => {
+            let mut verification = Node::new("verification", Primitive::String("ok".to_string()));
+            if !report.spends.is_empty() {
+                let mut spends = Node::new("spends", Primitive::None);
+                for spend in &report.spends {
+                    let mut spend_node = Node::new("spend", Primitive::None);
+                    spend_node.add_child(Node::new(
+                        "action_index",
+                        Primitive::U64(spend.action_index as u64),
+                    ));
+                    spend_node.add_child(Node::new("value", Primitive::U64(spend.value)));
+                    spend_node.add_child(Node::new(
+                        "address",
+                        Primitive::String(spend.address.clone()),
+                    ));
+                    spend_node.add_child(Node::new(
+                        "randomizer",
+                        Primitive::String(
+                            if spend.rk_replaced {
+                                "installed"
+                            } else {
+                                "placeholder"
+                            }
+                            .to_string(),
+                        ),
+                    ));
+                    spend_node.add_child(Node::new("signed", Primitive::Boolean(spend.signed)));
+                    spends.add_child(spend_node);
+                }
+                verification.add_child(spends);
             }
-            node.add_child(outputs_node);
+            if !report.outputs.is_empty() {
+                let mut outputs = Node::new("outputs", Primitive::None);
+                for output in &report.outputs {
+                    let mut output_node = Node::new("output", Primitive::None);
+                    output_node.add_child(Node::new(
+                        "action_index",
+                        Primitive::U64(output.action_index as u64),
+                    ));
+                    output_node.add_child(Node::new("value", Primitive::U64(output.value)));
+                    output_node.add_child(Node::new(
+                        "recipient",
+                        Primitive::Buffer(output.recipient.to_vec()),
+                    ));
+                    outputs.add_child(output_node);
+                }
+                verification.add_child(outputs);
+            }
+            node.add_child(verification);
+        }
+        Err(IronwoodPsbtError::NotSpendBundle) => {
+            node.add_child(Node::new(
+                "verification",
+                Primitive::String("not_applicable".to_string()),
+            ));
         }
         Err(e) => {
-            node.add_child(Node::new("shielded_output_error", Primitive::String(e)));
+            let mut verification =
+                Node::new("verification", Primitive::String("failed".to_string()));
+            verification.add_child(Node::new("error", Primitive::String(e.to_string())));
+            node.add_child(verification);
         }
     }
 
-    // Only rendered for bundles that spend real notes, so shielding-only output is unchanged.
-    match zcash_psbt.ironwood_shielded_spends_info() {
-        Ok(spends) if spends.is_empty() => {}
-        Ok(spends) => {
-            let mut spends_node = Node::new("shielded_spends", Primitive::None);
-            for spend in spends {
-                let mut spend_node = Node::new("shielded_spend", Primitive::None);
-                spend_node.add_child(Node::new(
-                    "action_index",
-                    Primitive::U64(spend.action_index as u64),
-                ));
-                spend_node.add_child(Node::new("value", Primitive::U64(spend.value)));
-                spend_node.add_child(Node::new(
-                    "nullifier",
-                    Primitive::Buffer(spend.nullifier.to_vec()),
-                ));
-                spends_node.add_child(spend_node);
-            }
-            node.add_child(spends_node);
-        }
-        Err(e) => {
-            node.add_child(Node::new("shielded_spend_error", Primitive::String(e)));
-        }
-    }
-
+    // The action-data view: what the ZIP-244 txid commits to.
     match zcash_psbt.ironwood_action_data() {
         Ok(bundle) => {
             node.add_child(Node::new(
@@ -265,6 +326,20 @@ fn ironwood_shielded_state_to_node(zcash_psbt: &ZcashBitGoPsbt) -> Node {
     }
 
     node
+}
+
+/// Attach a pending-index list: a "none" marker when empty, otherwise one `index` child per
+/// action.
+fn add_pending(node: &mut Node, label: &str, indices: &[usize]) {
+    if indices.is_empty() {
+        node.add_child(Node::new(label, Primitive::String("none".to_string())));
+        return;
+    }
+    let mut list = Node::new(label, Primitive::None);
+    for index in indices {
+        list.add_child(Node::new("index", Primitive::U64(*index as u64)));
+    }
+    node.add_child(list);
 }
 
 /// Parsing of v6 (Ironwood) shielding PSBTs at unsigned/half-signed/fully-signed transparent
@@ -384,8 +459,13 @@ mod ironwood_v6_tests {
 
     fn assert_shielded_output(node: &Node, expected_value: u64, expected_recipient: &[u8; 43]) {
         let ironwood = find(node, "ironwood").expect("ironwood node present");
-        let outputs = find(ironwood, "shielded_outputs").expect("shielded_outputs node present");
-        let output = find(outputs, "shielded_output").expect("shielded_output node present");
+        let verification = find(ironwood, "verification").expect("verification node present");
+        assert!(matches!(
+            &verification.value,
+            Primitive::String(s) if s == "ok"
+        ));
+        let outputs = find(verification, "outputs").expect("outputs node present");
+        let output = find(outputs, "output").expect("output node present");
         let value = find(output, "value").expect("value present");
         match &value.value {
             Primitive::U64(v) => assert_eq!(*v, expected_value),
@@ -433,5 +513,221 @@ mod ironwood_v6_tests {
         let node = parse(&z);
         assert_shielded_output(&node, 100_000_000, &test_recipient());
         assert_eq!(signing_state(&node), "fully_signed");
+    }
+    /// A keyless shielded→shielded spend PSBT: two wallet notes into two wallet outputs, with
+    /// its action map and the wallet's spending key.
+    fn build_spend_psbt(
+        seed: &str,
+    ) -> (
+        ZcashBitGoPsbt,
+        crate::zcash::ironwood_build::IronwoodActionMap,
+        SpendingKey,
+    ) {
+        use crate::fixed_script_wallet::bitgo_psbt::zcash::IronwoodOutputRequest;
+        use crate::zcash::ironwood_construct::test_util::keyless_fixture;
+
+        let (specs, anchor, fvk, _ak) = keyless_fixture();
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+        let psbt = BitGoPsbt::new_zcash_v6_at_height(
+            NetEnum::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        let BitGoPsbt::Zcash(mut z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+        let outputs: Vec<IronwoodOutputRequest> = [100u32, 101]
+            .iter()
+            .map(|&diversifier| IronwoodOutputRequest {
+                recipient: fvk
+                    .address_at(diversifier, Scope::External)
+                    .to_raw_address_bytes(),
+                amount: 90_000_000,
+                ovk: None,
+                memo: [0u8; 512],
+                unified_address: None,
+            })
+            .collect();
+        let map = z
+            .add_shielded_spends(&specs, &outputs, &anchor, OsRng)
+            .unwrap();
+        let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([7u8; 32])).unwrap();
+        (z, map, sk)
+    }
+
+    fn string_value<'a>(node: &'a Node, label: &str) -> &'a str {
+        match &find(node, label)
+            .unwrap_or_else(|| panic!("{label} present"))
+            .value
+        {
+            Primitive::String(s) => s,
+            other => panic!("unexpected primitive for {label}: {other:?}"),
+        }
+    }
+
+    /// The action indices listed under a pending node, or empty for its "none" marker.
+    fn pending(ironwood: &Node, label: &str) -> Vec<usize> {
+        let node = find(ironwood, label).unwrap_or_else(|| panic!("{label} present"));
+        if matches!(&node.value, Primitive::String(s) if s == "none") {
+            return Vec::new();
+        }
+        node.children
+            .iter()
+            .map(|child| match child.value {
+                Primitive::U64(index) => index as usize,
+                ref other => panic!("unexpected primitive: {other:?}"),
+            })
+            .collect()
+    }
+
+    fn ready_for_proof(ironwood: &Node) -> bool {
+        match find(ironwood, "ready_for_proof").unwrap().value {
+            Primitive::Boolean(b) => b,
+            ref other => panic!("unexpected primitive: {other:?}"),
+        }
+    }
+
+    /// Every verified spend's `(randomizer, signed)` state.
+    fn spend_states(ironwood: &Node) -> Vec<(String, bool)> {
+        let verification = find(ironwood, "verification").expect("verification node present");
+        assert_eq!(string_value(ironwood, "verification"), "ok");
+        find(verification, "spends")
+            .expect("spends node present")
+            .children
+            .iter()
+            .map(|spend| {
+                let signed = match find(spend, "signed").unwrap().value {
+                    Primitive::Boolean(b) => b,
+                    ref other => panic!("unexpected primitive: {other:?}"),
+                };
+                (string_value(spend, "randomizer").to_string(), signed)
+            })
+            .collect()
+    }
+
+    fn sorted(indices: &[usize]) -> Vec<usize> {
+        let mut indices = indices.to_vec();
+        indices.sort_unstable();
+        indices
+    }
+
+    /// The `ironwood` node tracks a spend PSBT through ciphertexts → randomizers → signatures.
+    #[test]
+    fn parses_shielded_spend_psbt_at_every_stage() {
+        use crate::zcash::ironwood_build::compute_out_ciphertext;
+        use ff::{Field, PrimeField};
+        use orchard::keys::SpendAuthorizingKey;
+        use orchard::primitives::redpallas::{SpendAuth, VerificationKey};
+
+        let (mut z, map, sk) = build_spend_psbt("inspect_v6_spend");
+        let spends = sorted(map.spend_action_indices());
+        let outputs = sorted(map.output_action_indices());
+
+        let node = parse(&z);
+        let ironwood = find(&node, "ironwood").expect("ironwood node present");
+        assert_eq!(string_value(ironwood, "input_kind"), "shielded");
+        assert_eq!(pending(ironwood, "pending_out_ciphertexts"), outputs);
+        assert_eq!(pending(ironwood, "pending_randomizers"), spends);
+        assert_eq!(pending(ironwood, "pending_spend_signatures"), spends);
+        assert!(!ready_for_proof(ironwood));
+        assert!(spend_states(ironwood)
+            .iter()
+            .all(|(randomizer, signed)| randomizer == "placeholder" && !signed));
+
+        let ovk = *FullViewingKey::from(&sk).to_ovk(Scope::External).as_ref();
+        let pczt = z.ironwood_pczt().unwrap();
+        let ciphertexts: Vec<_> = outputs
+            .iter()
+            .map(|&i| {
+                (
+                    i,
+                    compute_out_ciphertext(&pczt, i, ovk, &mut OsRng).unwrap(),
+                )
+            })
+            .collect();
+        z.add_out_ciphertexts(&ciphertexts).unwrap();
+        let node = parse(&z);
+        let ironwood = find(&node, "ironwood").unwrap();
+        assert!(pending(ironwood, "pending_out_ciphertexts").is_empty());
+        assert_eq!(pending(ironwood, "pending_randomizers"), spends);
+
+        let ask = SpendAuthorizingKey::from(&sk);
+        let alphas: Vec<(usize, pasta_curves::pallas::Scalar)> = spends
+            .iter()
+            .map(|&i| (i, pasta_curves::pallas::Scalar::random(&mut OsRng)))
+            .collect();
+        let triples: Vec<(usize, [u8; 32], [u8; 32])> = alphas
+            .iter()
+            .map(|(i, alpha)| {
+                let rk = VerificationKey::<SpendAuth>::from(&ask.randomize(alpha));
+                (*i, alpha.to_repr(), <[u8; 32]>::from(rk))
+            })
+            .collect();
+        z.add_spend_randomizers(&triples, None).unwrap();
+        let node = parse(&z);
+        let ironwood = find(&node, "ironwood").unwrap();
+        assert!(pending(ironwood, "pending_randomizers").is_empty());
+        assert_eq!(pending(ironwood, "pending_spend_signatures"), spends);
+        assert!(!ready_for_proof(ironwood));
+        assert!(spend_states(ironwood)
+            .iter()
+            .all(|(randomizer, signed)| randomizer == "installed" && !signed));
+
+        let sighash = z.spend_sighash().unwrap();
+        let signatures: Vec<(usize, [u8; 64])> = alphas
+            .iter()
+            .map(|(i, alpha)| {
+                (
+                    *i,
+                    <[u8; 64]>::from(&ask.randomize(alpha).sign(OsRng, &sighash)),
+                )
+            })
+            .collect();
+        z.add_spend_signatures(&signatures).unwrap();
+        let node = parse(&z);
+        let ironwood = find(&node, "ironwood").unwrap();
+        assert!(pending(ironwood, "pending_spend_signatures").is_empty());
+        assert!(ready_for_proof(ironwood));
+        let states = spend_states(ironwood);
+        assert_eq!(states.len(), spends.len());
+        assert!(states
+            .iter()
+            .all(|(randomizer, signed)| randomizer == "installed" && *signed));
+    }
+
+    /// A transparent-only v6 PSBT has no bundle to verify.
+    #[test]
+    fn parses_transparent_only_v6_psbt_as_not_applicable() {
+        let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("inspect_v6_transparent"));
+        let mut psbt = BitGoPsbt::new_zcash_v6_at_height(
+            NetEnum::ZcashTestnet,
+            &wallet_keys,
+            NetworkUpgrade::Nu6_3.testnet_activation_height(),
+            None,
+            None,
+        )
+        .unwrap();
+        psbt.add_wallet_input(
+            Txid::from_byte_array([0x66u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+        psbt.add_wallet_output(0, 1, 199_900_000, &wallet_keys)
+            .unwrap();
+        let BitGoPsbt::Zcash(z, _) = psbt else {
+            panic!("expected Zcash PSBT");
+        };
+        let node = parse(&z);
+        let ironwood = find(&node, "ironwood").expect("ironwood node present");
+        assert_eq!(string_value(ironwood, "input_kind"), "transparent");
+        assert_eq!(string_value(ironwood, "verification"), "not_applicable");
+        assert!(!ready_for_proof(ironwood));
     }
 }
