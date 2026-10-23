@@ -754,7 +754,7 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
 
     it("re-encrypts out_ciphertext, changing the sighash and txid, without touching anything else", function () {
       // Server: build the keyless PSBT (`addShieldedOutput` with no `ovk`) and hand off the bytes,
-      // matching the microservice build/serve flow — round-tripping through bytes rather than
+      // matching a build-then-hand-off flow — round-tripping through bytes rather than
       // reusing the in-memory object, so this exercises exactly what a real client receives.
       const server = buildShieldPsbt();
       const txidBefore = server.getId();

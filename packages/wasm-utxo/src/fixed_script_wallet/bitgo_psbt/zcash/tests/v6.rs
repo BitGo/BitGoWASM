@@ -672,15 +672,15 @@ fn add_transparent_output_rejects_unified_address_on_v6_psbt() {
 
 /// `combine_inputs` refuses a v6 PSBT outright.
 ///
-/// It parses the incoming bytes with `deserialize_stripped`, whose whole purpose is to accept an
-/// HSM response that has dropped everything but the signatures. v6 bytes short-circuit to
+/// It parses the incoming bytes with `deserialize_stripped`, whose whole purpose is to accept a
+/// signer response that has dropped everything but the signatures. v6 bytes short-circuit to
 /// `deserialize_v6`, which requires the branch id and the PCZT, so a stripped v6 response would
 /// otherwise fail with "missing its Ironwood PCZT" — an error describing a corrupt PSBT rather
 /// than an unsupported code path.
 #[test]
 fn combine_inputs_rejects_a_v6_psbt() {
     let z = build_shield_psbt("v6_combine_inputs");
-    // A stripped response: the same PSBT with the shielded state removed, as an HSM would return.
+    // A stripped response: the same PSBT with the shielded state removed, as a stripped signer response would carry.
     let mut stripped = z.clone();
     stripped.mark_ironwood_extracted();
     let stripped_bytes = stripped.serialize_v6();

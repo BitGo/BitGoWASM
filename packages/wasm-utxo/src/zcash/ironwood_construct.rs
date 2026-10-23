@@ -3,11 +3,11 @@
 //!
 //! The keyed constructor ([`construct_spend_pczt_multi`]) needs each spend's FVK — the orchard
 //! [`Builder`](orchard::builder::Builder) derives the nullifier and checks note ownership with
-//! it — but the build service holds no keys. This module assembles the same actions field by
+//! it — but the builder holds no keys. This module assembles the same actions field by
 //! field instead:
 //!
 //! - each real spend carries its **note plaintext** (`recipient`/`value`/`rho`/`rseed`/`cmx`), a
-//!   **witness** and a caller-supplied **nullifier** (from the note store, or from KMS);
+//!   **witness** and a caller-supplied **nullifier** (from the note store, or derived by the viewing-key holder);
 //! - each real output carries its recipient, value and memo; its note (and therefore
 //!   `cmx`/`enc_ciphertext`) is fabricated here, keyed to the paired spend's nullifier;
 //! - every action's `rcv`/`cv_net` pair is sampled here, and the bundle's committed
@@ -17,7 +17,7 @@
 //! - no FVK ever enters the constructed bundle: real spends carry `fvk = None`, so the wire
 //!   form stays keyless by construction;
 //! - each output's `out_ciphertext` is a random **placeholder** (encrypted under `ovk = ⊥`):
-//!   KMS re-encrypts it under its FVK `ovk` and splices the real one in via
+//!   the viewing-key holder re-encrypts it under its FVK `ovk` and splices the real one in via
 //!   [`with_out_ciphertext`](super::ironwood_pczt::with_out_ciphertext).
 //!
 //! Surplus outputs (more outputs than spends) are fabricated as **dummy-spend** actions by an
@@ -60,12 +60,12 @@ const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 
 /// One Ironwood note to spend, as passed to [`construct_spend_pczt_keyless`].
 ///
-/// Everything here is the note's plaintext from the wallet's own note record (or a KMS
-/// nullifier response): the reconstructed note must commit to `cmx`, and the witness must
+/// Everything here is the note's plaintext from the wallet's own note record (or a
+/// derived nullifier): the reconstructed note must commit to `cmx`, and the witness must
 /// recompute to the bundle's anchor. The **nullifier is not verified here** — that needs the
-/// FVK, which the build service does not hold. A wrong nullifier only produces an invalid
-/// transaction: the proof fails, and the KMS worker (which re-derives every nullifier) rejects
-/// the bundle before proving.
+/// FVK, which the builder does not hold. A wrong nullifier only produces an invalid
+/// transaction: the proof fails, and a prover that re-derives every nullifier rejects the
+/// bundle before proving.
 #[derive(Clone, Copy, Debug)]
 pub struct IronwoodKeylessSpendSpec {
     /// The spent note's recipient: 43-byte raw Orchard/Ironwood address.
@@ -81,7 +81,7 @@ pub struct IronwoodKeylessSpendSpec {
     pub cmx: [u8; 32],
     /// Merkle witness for `cmx` at the bundle's anchor.
     pub witness: IronwoodWitness,
-    /// The nullifier this spend reveals, from the note store or from KMS. Installed verbatim:
+    /// The nullifier this spend reveals, from the note store or the viewing-key holder. Installed verbatim:
     /// a wrong value fails the proof, never misdirects value.
     pub nullifier: [u8; 32],
 }
@@ -112,8 +112,8 @@ struct ActionOrigin {
 /// (replaced by the signer's randomized `rk` later), and real spends carry no FVK, `ak` or
 /// `alpha`.
 ///
-/// Every output must have `ovk: None` and a positive amount: KMS owns encryption in the spend
-/// flow, and a zero-valued output is how a bundle marks fabricated dummies.
+/// Every output must have `ovk: None` and a positive amount: encryption belongs to the
+/// viewing-key holder in the spend flow, and a zero-valued output is how a bundle marks fabricated dummies.
 ///
 /// The returned [`IronwoodActionMap`] gives, for each `spends[i]`/`outputs[i]`, the action
 /// index it landed at in the bundle — the actions are shuffled, so request order does not
@@ -140,7 +140,7 @@ pub fn construct_spend_pczt_keyless<R: RngCore + CryptoRng>(
     }
     let mut recipients = Vec::with_capacity(outputs.len());
     for (output_index, spec) in outputs.iter().enumerate() {
-        // KMS owns encryption in the spend flow — no caller-chosen `ovk`.
+        // Encryption belongs to the viewing-key holder in the spend flow — no caller-chosen `ovk`.
         if spec.ovk.is_some() {
             return Err(IronwoodBuildError::OvkNotAllowed { output_index });
         }
@@ -401,7 +401,7 @@ fn real_output_wire<R: RngCore>(
 
 /// Encrypt an output note: the real `enc_ciphertext` (recoverable by whoever holds the
 /// recipient's `ivk`) and the ephemeral key it rode in on, plus a placeholder `out_ciphertext`
-/// under `ovk = ⊥` — random bytes, replaced by KMS's real one later.
+/// under `ovk = ⊥` — random bytes, replaced by the real one later.
 fn encrypt_output<R: RngCore>(
     note: Note,
     memo: &MemoBytes,
@@ -609,9 +609,9 @@ pub(crate) mod test_util {
     use crate::zcash::ironwood_build::test_util::{real_two_leaf_tree, RealLeaf};
 
     /// Two real notes (100M and 80M zatoshi) of one wallet under a real two-leaf tree, as the
-    /// keyless Constructor receives them (nullifiers as the note store / KMS would report
+    /// keyless Constructor receives them (nullifiers as the note store would report
     /// them), plus the anchor, the wallet's FVK (the test oracle's key holder, standing in for
-    /// KMS) and its spend-validating key `ak` (the client's key, never passed to the
+    /// the viewing-key holder) and its spend-validating key `ak` (the client's key, never passed to the
     /// Constructor).
     pub(crate) fn keyless_fixture() -> (
         Vec<IronwoodKeylessSpendSpec>,
@@ -683,7 +683,7 @@ mod tests {
     }
 
     /// Patch every requested output's `out_ciphertext` to the real encryption under `ovk` —
-    /// what KMS does in the production flow.
+    /// what the viewing-key holder does in the production flow.
     fn patch_out_ciphertexts(
         bundle: &PcztBundle,
         output_indices: &[usize],
@@ -698,7 +698,7 @@ mod tests {
     }
 
     /// The oracle round trip: a bundle built by the keyless Constructor
-    /// behaves exactly like one built by the keyed oracle — KMS's `out_ciphertext`s splice in,
+    /// behaves exactly like one built by the keyed oracle — the real `out_ciphertext`s splice in,
     /// the FROST randomizers install, the keyed verifier and the key-free verifier both pass,
     /// and the FROST stand-in signatures verify.
     fn oracle_round_trip(spends: usize, outputs: usize) -> (PcztBundle, IronwoodActionMap) {
@@ -712,7 +712,7 @@ mod tests {
         // Shape: UNPADDED means exactly max(S, O) actions.
         assert_eq!(bundle.actions().len(), spends.max(outputs));
 
-        // KMS's out_ciphertext round: every requested output gets its real ciphertext.
+        // The out_ciphertext round: every requested output gets its real ciphertext.
         let ovk = *fvk.to_ovk(Scope::External).as_ref();
         let bundle = patch_out_ciphertexts(&bundle, map.output_action_indices(), ovk);
 

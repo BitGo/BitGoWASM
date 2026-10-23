@@ -1,10 +1,12 @@
 /**
  * Shared Zcash Ironwood (v6) types for the shielded-spend flow.
  *
- * These describe what the build service, the client and KMS each see as the PSBT moves
- * through the build → KMS → sign → prove → combine flow. Parse-facing types live in
+ * These describe what each party sees as the PSBT moves through the
+ * build → ciphertexts → sign → prove → combine flow. Parse-facing types live in
  * `ZcashIronwoodBitGoPsbt.ts`; this module holds the shared vocabulary.
  */
+
+import { type ZcashIronwoodWitness } from "./ZcashIronwoodWitness.js";
 
 /** One shielded note to spend, as passed to `addShieldedSpends`. */
 export type ZcashShieldedSpendRequest = {
@@ -18,9 +20,13 @@ export type ZcashShieldedSpendRequest = {
   rseed: Uint8Array;
   /** The note commitment the on-chain action carried. */
   cmx: Uint8Array;
-  /** Merkle witness (position + auth path) proving `cmx` under the bundle's anchor. */
-  witness: { position: number; authPath: Uint8Array[] };
-  /** The spend's nullifier, from the note store or from KMS. */
+  /**
+   * Merkle witness proving `cmx` under the bundle's anchor — a validated
+   * {@link ZcashIronwoodWitness}, built with `ZcashIronwoodWitness.build(cmx, position,
+   * authPath, anchor)`.
+   */
+  witness: ZcashIronwoodWitness;
+  /** The spend's nullifier, from the note store or derived by the viewing-key holder. */
   nullifier: Uint8Array;
 };
 

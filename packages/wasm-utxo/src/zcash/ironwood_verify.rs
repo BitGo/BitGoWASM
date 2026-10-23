@@ -1,6 +1,6 @@
 //! The key-free verifier for Ironwood (Zcash v6) PCZT bundles.
 //!
-//! A party without viewing keys — the client co-signing, or a build service — cannot check
+//! A party without viewing keys — the client co-signing, or a keyless builder — cannot check
 //! nullifier ownership or decrypt anything, but it CAN check that the transaction it is
 //! asked to sign moves exactly the values it was shown:
 //!
@@ -153,7 +153,7 @@ pub fn verify_bundle_without_keys(
         let output = action.output();
         let is_real_spend = spend.dummy_sk().is_none();
 
-        // Every action keeps its full plaintext — the prover (KMS) needs it to build the
+        // Every action keeps its full plaintext — the prover needs it to build the
         // proof, and it is what lets anyone reading the PSBT see exactly what moves where.
         // A missing field could otherwise hide a value from the checks below.
         let (spend_value, output_value, output_recipient) = action_plaintext(action_index, action)?;

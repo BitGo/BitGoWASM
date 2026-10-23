@@ -11,11 +11,11 @@
 // `VersionGroupId`/`ExpiryHeight` subtypes; `version_group_id`'s presence marks the PSBT as v6 so
 // it round-trips through a plain PSBT serialization without the v4 tx-replacement dance.
 //
-// The lifecycle mirrors the microservice PSBT flow: the server builds (Constructor, no keys). For
+// The lifecycle: the PSBT is built first (Constructor, no keys). For
 // real spends, the signer then installs each spend's randomizer pair (`add_spend_randomizers`)
 // before any sighash is fixed, and later its spend-auth signature (`add_spend_signatures`). The
-// client + HSM sign the transparent inputs over the ZIP-244 sighash this module exposes, the
-// signed PSBT goes to the external proof service for the Halo2 `zkproof`, and
+// signers sign the transparent inputs over the ZIP-244 sighash this module exposes, the
+// signed PSBT goes to an external prover for the Halo2 `zkproof`, and
 // `combine_ironwood_proof` finalizes the transparent inputs and splices in the proof + shielded
 // bundle to produce the broadcast-ready v6 transaction. See `crate::zcash::ironwood_build` for
 // the PCZT role bridge.
@@ -482,7 +482,7 @@ impl ZcashBitGoPsbt {
         ))
     }
 
-    /// Ingest a transparent-input signature returned by the client/HSM into `partial_sigs`, after
+    /// Ingest a transparent-input signature returned by a signer into `partial_sigs`, after
     /// verifying it against [`Self::v6_transparent_sighash`] for that input. `sig` is a DER ECDSA
     /// signature with the trailing SIGHASH_ALL byte (as it appears in a scriptSig).
     pub fn add_v6_transparent_signature(
@@ -766,7 +766,7 @@ impl ZcashBitGoPsbt {
     /// Deserialize a v6 PSBT that may not yet carry its Ironwood PCZT — for tooling (e.g. the
     /// CLI) that builds the transparent skeleton (inputs/outputs) across separate
     /// serialize/deserialize round-trips before calling [`Self::add_ironwood_output`], unlike the
-    /// in-process microservice flow [`Self::deserialize_v6`] otherwise assumes. Still validates
+    /// in-process flow [`Self::deserialize_v6`] otherwise assumes. Still validates
     /// the v6 params and consensus branch id, so a bare transparent skeleton round-trips exactly
     /// like a fully-shielded one.
     pub fn deserialize_v6_pre_shield(

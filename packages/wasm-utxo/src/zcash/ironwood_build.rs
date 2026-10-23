@@ -256,9 +256,9 @@ pub enum IronwoodBuildError {
     /// for it.
     NoSpends,
     /// An output passed to the keyless spend constructor carried an explicit `ovk`: in the
-    /// spend flow KMS owns encryption, so the PSBT side may not choose
-    /// one. The placeholder `out_ciphertext` the constructor installs is replaced by KMS's
-    /// `out_ciphertext` later.
+    /// spend flow encryption belongs to the viewing-key holder, so the PSBT side may not
+    /// choose one. The placeholder `out_ciphertext` the constructor installs is replaced by
+    /// the real `out_ciphertext` later.
     OvkNotAllowed {
         /// The offending output's position in the `outputs` slice.
         output_index: usize,
@@ -524,7 +524,7 @@ impl core::fmt::Display for IronwoodBuildError {
             Self::OvkNotAllowed { output_index } => write!(
                 f,
                 "ironwood-build: output {output_index} carries an explicit ovk; the keyless \
-                 spend constructor leaves encryption to the KMS"
+                 spend constructor leaves encryption to the viewing-key holder"
             ),
             Self::BadSpendValidatingKey => write!(
                 f,
@@ -598,7 +598,7 @@ pub struct IronwoodOutputSpec {
 ///
 /// The keyed (FVK-carrying) spend spec — the **test oracle** for the keyless constructor
 /// (`ironwood_construct::construct_spend_pczt_keyless`). Production builds never see the FVK:
-/// the build service is keyless, and the shipped WASM must not carry this path.
+/// the PSBT is built keyless, and the shipped WASM must not carry this path.
 #[cfg(any(test, feature = "orchard-proving"))]
 #[derive(Clone, Copy, Debug)]
 pub struct IronwoodSpendSpec {
@@ -2839,7 +2839,7 @@ mod tests {
         ));
     }
 
-    /// Server-side (HSM) validation: ECDH agreement is symmetric, so the server — holding
+    /// Server-side validation: ECDH agreement is symmetric, so the server — holding
     /// `bitgo_privkey` — can derive the *same* `ovk` from the other side of the key pair
     /// (`ECDH(bitgo_privkey, user_pubkey)`, vs. the client's `ECDH(bitgo_pubkey, user_privkey)`)
     /// without ever learning `user_privkey` or the `ovk` itself over the wire. It then uses that

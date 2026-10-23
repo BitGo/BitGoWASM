@@ -152,7 +152,7 @@ fn ironwood_v6_psbt_to_node(zcash_psbt: &ZcashBitGoPsbt, network: Network) -> No
     psbt_node.add_child(psbt_outputs_to_node(&psbt.outputs));
 
     // Overall signing state of the transparent side, since a v6 PSBT is never "fully signed" on
-    // the shielded side until the external proof service and `combine_ironwood_proof` run (that
+    // the shielded side until the external prover and `combine_ironwood_proof` run (that
     // step produces a broadcast-ready transaction, not another PSBT).
     psbt_node.add_child(Node::new(
         "transparent_signing_state",

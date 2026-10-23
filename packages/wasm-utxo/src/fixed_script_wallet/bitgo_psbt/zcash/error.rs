@@ -28,8 +28,8 @@ pub enum IronwoodPsbtError {
     UnknownAction,
     /// The action index names a fabricated (dummy) half, not a real spend or output.
     DummyAction,
-    /// Ciphertexts first: these real outputs' `out_ciphertext`s are still pending — the KMS
-    /// ciphertext round must run before randomizers, sighashes, or proof requests.
+    /// Ciphertexts first: these real outputs' `out_ciphertext`s are still pending — the
+    /// ciphertexts must be installed before randomizers, sighashes, or proof requests.
     OutCiphertextPending {
         /// The pending real outputs' action indices.
         action_indices: Vec<usize>,
@@ -76,6 +76,15 @@ pub enum IronwoodPsbtError {
     },
     /// The operation has nothing to act on: there is no pending item, or the batch is empty.
     NothingPending,
+    /// A caller-supplied byte field has the wrong length.
+    BadLength {
+        /// The field's name as the caller spelled it (`outCiphertext`, `anchor`, …).
+        field: &'static str,
+        /// The field's fixed size.
+        expected: usize,
+        /// The supplied length.
+        actual: usize,
+    },
     /// The Ironwood Constructor rejected the request; the wrapped
     /// [`IronwoodBuildError`](crate::zcash::ironwood_build::IronwoodBuildError) carries the
     /// reason (and its own `IronwoodBuildError.*` code).
@@ -119,7 +128,7 @@ impl std::fmt::Display for IronwoodPsbtError {
             IronwoodPsbtError::OutCiphertextPending { action_indices } => write!(
                 f,
                 "real outputs {action_indices:?} are still pending their out_ciphertext; \
-                 run the KMS ciphertext round first"
+                 install the out_ciphertexts first"
             ),
             IronwoodPsbtError::OutCiphertextConflict { action_index } => write!(
                 f,
@@ -158,6 +167,11 @@ impl std::fmt::Display for IronwoodPsbtError {
             IronwoodPsbtError::NothingPending => {
                 write!(f, "there is nothing pending for this operation")
             }
+            IronwoodPsbtError::BadLength {
+                field,
+                expected,
+                actual,
+            } => write!(f, "{field} must be {expected} bytes, got {actual}"),
             IronwoodPsbtError::Build(e) => write!(f, "{e}"),
             IronwoodPsbtError::Pczt(e) => write!(f, "{e}"),
             IronwoodPsbtError::Verify(e) => write!(f, "{e}"),

@@ -11,6 +11,8 @@ use crate::fixed_script_wallet::script_id::ScriptId;
 use crate::networks::Network;
 use crate::zcash::ironwood_build::{compute_out_ciphertext, IronwoodActionMap};
 use crate::zcash::ironwood_construct::test_util::keyless_fixture;
+#[cfg(feature = "orchard-proving")]
+use crate::zcash::ironwood_construct::IronwoodKeylessSpendSpec;
 use crate::zcash::NetworkUpgrade;
 use ff::{Field, PrimeField};
 use orchard::keys::{FullViewingKey, Scope, SpendAuthorizingKey, SpendingKey};
@@ -109,11 +111,11 @@ fn keyless_transfer_psbt(
     )
 }
 
-/// KMS's out-ciphertext round: re-encrypt every requested output's
+/// The out-ciphertext round: re-encrypt every requested output's
 /// `out_ciphertext` under the FVK's external `ovk` and deliver it through
 /// [`ZcashBitGoPsbt::add_out_ciphertexts`] — the production entry point, so the pending
 /// marker tracks every install.
-fn kms_out_ciphertexts(z: &mut ZcashBitGoPsbt, map: &IronwoodActionMap, fvk: &FullViewingKey) {
+fn fvk_out_ciphertexts(z: &mut ZcashBitGoPsbt, map: &IronwoodActionMap, fvk: &FullViewingKey) {
     let ovk = *fvk.to_ovk(Scope::External).as_ref();
     let pczt = z.ironwood_pczt().unwrap();
     let entries: Vec<_> = map
@@ -229,7 +231,7 @@ fn keyless_deshield_lifecycle_round_trips() {
     let bytes = z.serialize_v6();
     let z = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap();
 
-    // No shielded outputs ⇒ no KMS out-ciphertext round for this shape.
+    // No shielded outputs ⇒ no out-ciphertext round for this shape.
     let raw = z
         .combine_ironwood_proof(vec![0u8; Proof::expected_proof_size(1)], OsRng)
         .unwrap();
@@ -249,7 +251,7 @@ fn keyless_deshield_lifecycle_round_trips() {
     );
 }
 
-/// The shielded→shielded lifecycle: two spends into two outputs, with the KMS out-ciphertext
+/// The shielded→shielded lifecycle: two spends into two outputs, with the out-ciphertext
 /// round — the patched ciphertexts are exactly what the FVK's `ovk` recovers, and they
 /// survive to the broadcast transaction.
 #[test]
@@ -262,8 +264,8 @@ fn keyless_shielded_transfer_lifecycle_round_trips() {
 
     assert_eq!(z.ironwood_bundle_info().unwrap().value_balance, 0);
 
-    // KMS round: every output's out_ciphertext becomes recoverable under the FVK's ovk.
-    kms_out_ciphertexts(&mut z, &map, &fvk);
+    // Ciphertext round: every output's out_ciphertext becomes recoverable under the FVK's ovk.
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
     let expected = z.ironwood_action_data().unwrap();
 
     let pairs = install_randomizers(&mut z, &map, &ask);
@@ -300,7 +302,7 @@ fn keyless_shielded_transfer_lifecycle_round_trips() {
         assert_eq!(
             action.out_ciphertext.to_vec(),
             expected.actions[i].out_ciphertext.to_vec(),
-            "action {i}'s KMS out_ciphertext survives to the broadcast transaction"
+            "action {i}'s real out_ciphertext survives to the broadcast transaction"
         );
     }
 
@@ -361,7 +363,7 @@ fn keyless_surplus_output_lifecycle_round_trips() {
     let (mut z, map, _ak, fvk, ask) = keyless_surplus_psbt(seed);
     assert_eq!(z.ironwood_bundle_info().unwrap().value_balance, 10_000_000);
 
-    kms_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
     let pairs = install_randomizers(&mut z, &map, &ask);
     install_spend_signatures(&mut z, &pairs, &ask);
 
@@ -690,7 +692,7 @@ fn keyless_spends_prove_and_verify_locally() {
     ];
     for (seed, build, n_actions) in shapes {
         let (mut z, map, _ak, fvk, ask) = build(seed);
-        kms_out_ciphertexts(&mut z, &map, &fvk);
+        fvk_out_ciphertexts(&mut z, &map, &fvk);
         let pairs = install_randomizers(&mut z, &map, &ask);
         install_spend_signatures(&mut z, &pairs, &ask);
         prove_and_verify_locally(z, &pairs, &fvk, n_actions);
@@ -771,10 +773,10 @@ fn prove_and_verify_locally(
         .expect("the keyless bundle's locally-produced proof verifies");
 }
 
-// ---- The KMS out_ciphertext / proof-request workflow ----
+// ---- The out_ciphertext / proof-request workflow ----
 
-/// KMS's ciphertext for one action, under the FVK's external `ovk`.
-fn kms_out_ciphertext(z: &ZcashBitGoPsbt, fvk: &FullViewingKey, action_index: usize) -> [u8; 80] {
+/// The real ciphertext for one action, under the FVK's external `ovk`.
+fn fvk_out_ciphertext(z: &ZcashBitGoPsbt, fvk: &FullViewingKey, action_index: usize) -> [u8; 80] {
     let ovk = *fvk.to_ovk(Scope::External).as_ref();
     compute_out_ciphertext(&z.ironwood_pczt().unwrap(), action_index, ovk, &mut OsRng).unwrap()
 }
@@ -829,8 +831,8 @@ fn out_ciphertext_request_lists_real_outputs_and_errors_when_empty() {
     assert_eq!(pending, vec![map.output_action_index(0).unwrap()]);
     assert_eq!(z.pending_out_ciphertexts().unwrap(), pending);
 
-    // The KMS round resolves the request; a further request errors with NothingPending.
-    let ct = kms_out_ciphertext(&z, &fvk, pending[0]);
+    // The ciphertext round resolves the request; a further request errors with NothingPending.
+    let ct = fvk_out_ciphertext(&z, &fvk, pending[0]);
     z.add_out_ciphertexts(&[(pending[0], ct)]).unwrap();
     assert!(z.pending_out_ciphertexts().unwrap().is_empty());
     assert!(matches!(
@@ -873,7 +875,7 @@ fn add_out_ciphertexts_is_atomic() {
     let (mut z, map, fvk) = keyless_two_to_one_psbt("ironwood_v6_keyless_atomic");
     let before = z.raw_ironwood_pczt_bytes().unwrap();
     let real_index = map.output_action_index(0).unwrap();
-    let ct = kms_out_ciphertext(&z, &fvk, real_index);
+    let ct = fvk_out_ciphertext(&z, &fvk, real_index);
 
     let error = z
         .add_out_ciphertexts(&[(real_index, ct), (99, [0u8; 80])])
@@ -900,7 +902,7 @@ fn add_out_ciphertexts_is_atomic() {
 fn add_out_ciphertexts_is_idempotent_for_identical_bytes_only() {
     let (mut z, map, fvk) = keyless_two_to_one_psbt("ironwood_v6_keyless_idempotent");
     let action_index = map.output_action_index(0).unwrap();
-    let ct = kms_out_ciphertext(&z, &fvk, action_index);
+    let ct = fvk_out_ciphertext(&z, &fvk, action_index);
 
     z.add_out_ciphertexts(&[(action_index, ct)]).unwrap();
     let after = z.raw_ironwood_pczt_bytes().unwrap();
@@ -927,7 +929,7 @@ fn add_out_ciphertexts_is_idempotent_for_identical_bytes_only() {
 fn add_out_ciphertexts_rejects_conflicting_duplicates_in_one_batch() {
     let (mut z, map, fvk) = keyless_two_to_one_psbt("ironwood_v6_keyless_batch_duplicates");
     let action_index = map.output_action_index(0).unwrap();
-    let ct = kms_out_ciphertext(&z, &fvk, action_index);
+    let ct = fvk_out_ciphertext(&z, &fvk, action_index);
     let before = z.raw_ironwood_pczt_bytes().unwrap();
 
     let error = z
@@ -953,12 +955,12 @@ fn add_out_ciphertexts_rejects_conflicting_duplicates_in_one_batch() {
 }
 
 /// A spend bundle whose bitset was stripped fails closed: every real output counts as
-/// pending, the gates hold, and the KMS round still completes (re-creating the bitset).
+/// pending, the gates hold, and the ciphertext round still completes (re-creating the bitset).
 #[test]
 fn missing_out_ciphertexts_marker_fails_closed() {
     let seed = "ironwood_v6_keyless_marker_stripped";
     let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
-    kms_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
     assert!(z.pending_out_ciphertexts().unwrap().is_empty());
 
     strip_out_ciphertexts_marker(&mut z);
@@ -975,11 +977,11 @@ fn missing_out_ciphertexts_marker_fails_closed() {
     let mut z = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap();
     assert_eq!(z.pending_out_ciphertexts().unwrap(), expected);
 
-    // Re-delivering (the same KMS response would carry fresh randomness) resolves it.
+    // Re-delivering (a fresh response would carry fresh randomness) resolves it.
     let entries: Vec<_> = map
         .output_action_indices()
         .iter()
-        .map(|&action_index| (action_index, kms_out_ciphertext(&z, &fvk, action_index)))
+        .map(|&action_index| (action_index, fvk_out_ciphertext(&z, &fvk, action_index)))
         .collect();
     z.add_out_ciphertexts(&entries).unwrap();
     assert!(z.pending_out_ciphertexts().unwrap().is_empty());
@@ -995,7 +997,7 @@ fn add_out_ciphertexts_rejects_after_a_spend_signature() {
     let seed = "ironwood_v6_keyless_rule3_spend_sig";
     let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
 
-    kms_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
     let pairs = install_randomizers(&mut z, &map, &ask);
     install_spend_signatures(&mut z, &pairs, &ask);
 
@@ -1048,7 +1050,7 @@ fn proof_request_requires_ciphertexts_randomizers_then_signatures() {
         Err(IronwoodPsbtError::OutCiphertextPending { action_indices }) if action_indices == outputs
     ));
 
-    kms_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
     let mut spends = map.spend_action_indices().to_vec();
     spends.sort_unstable();
     assert!(matches!(
@@ -1149,12 +1151,12 @@ fn sign_then_prove_lifecycle_combines_the_requested_proof() {
     let seed = "ironwood_v6_keyless_sign_then_prove";
     let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
 
-    kms_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
     let pairs = install_randomizers(&mut z, &map, &ask);
     install_spend_signatures(&mut z, &pairs, &ask);
     let sighash = z.v6_sig_digest().unwrap();
 
-    // Finalize, possibly in another request: the signed PSBT is all KMS needs.
+    // Finalize, possibly in another request: the signed PSBT is all the prover needs.
     let bytes = z.serialize_v6();
     let z = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap();
     let request = z.proof_request(&pairs).unwrap();
@@ -1201,7 +1203,7 @@ fn add_spend_randomizers_is_atomic_and_checks_the_pair_against_the_callers_ak() 
 
     let seed = "ironwood_v6_keyless_randomizer_batch";
     let (mut z, map, ak, fvk, ask) = keyless_transfer_psbt(seed);
-    kms_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
     let [first, second] = [map.spend_action_indices()[0], map.spend_action_indices()[1]];
     let pair = |action_index: usize| {
         let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng);
@@ -1274,7 +1276,7 @@ fn add_spend_randomizers_is_atomic_and_checks_the_pair_against_the_callers_ak() 
 fn add_spend_randomizers_rejects_dummy_spends_and_shielding_bundles() {
     let seed = "ironwood_v6_keyless_randomizer_targets";
     let (mut z, map, ak, fvk, _ask) = keyless_surplus_psbt(seed);
-    kms_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
     let dummy = (0..2)
         .find(|i| !map.spend_action_indices().contains(i))
         .unwrap();
@@ -1302,7 +1304,7 @@ fn add_spend_signatures_is_atomic() {
 
     let seed = "ironwood_v6_keyless_signature_batch";
     let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
-    kms_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
     let pairs = install_randomizers(&mut z, &map, &ask);
     let sighash = z.spend_sighash().unwrap();
     let sign = |&(action_index, alpha): &(usize, [u8; 32])| {
@@ -1354,7 +1356,7 @@ fn add_spend_signatures_is_atomic() {
 fn combine_rejects_an_unsigned_spend_with_a_typed_error() {
     let seed = "ironwood_v6_keyless_combine_unsigned";
     let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
-    kms_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
     install_randomizers(&mut z, &map, &ask);
     let mut spends = map.spend_action_indices().to_vec();
     spends.sort_unstable();
@@ -1389,7 +1391,7 @@ fn shielded_status_tracks_every_stage() {
     assert_eq!(status.pending_spend_signatures, spends);
     assert!(!status.ready_for_proof);
 
-    kms_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
     let status = z.shielded_status().unwrap();
     assert!(status.pending_out_ciphertexts.is_empty());
     assert!(!status.ready_for_proof);
@@ -1419,4 +1421,239 @@ fn shielded_status_tracks_every_stage() {
         .unwrap();
     assert_eq!(status.input_kind, IronwoodInputKind::Transparent);
     assert!(!status.ready_for_proof);
+}
+
+// ---- The TS fixture generator (test/fixedScript/zcashIronwoodSpend.ts) ----
+//
+// The TS suite cannot produce the viewing-key holder's or prover's responses — the out-ciphertexts need the FVK and the proof
+// needs Halo2 — so this `#[ignore]`d generator writes them into `test/fixtures/zcash/`. Run:
+//
+//   cargo test --features orchard-proving generate_ts_spend_fixtures -- --ignored --nocapture
+//
+// The construction is seeded, so the post-construction PSBT bytes, the action map and the
+// ZIP-317 fee are reproducible across runs. The ciphertexts, signatures and proof draw
+// fresh `OsRng` entropy each run — they are internally consistent (same run produced the
+// sighash chain and the proof), so regenerate every field together.
+
+#[cfg(feature = "orchard-proving")]
+#[allow(clippy::too_many_arguments)]
+fn spend_fixture_json(
+    name: &str,
+    mut z: ZcashBitGoPsbt,
+    map: IronwoodActionMap,
+    anchor: [u8; 32],
+    fvk: &FullViewingKey,
+    ak: [u8; 32],
+    ask: &SpendAuthorizingKey,
+    specs: &[IronwoodKeylessSpendSpec],
+    outputs: &[IronwoodOutputRequest],
+    transparent_output: Option<(Vec<u8>, u64)>,
+) -> serde_json::Value {
+    use base64::Engine;
+    let to_hex = |bytes: &[u8]| hex::encode(bytes);
+
+    // Deterministic construction: the shuffle (and therefore the action map) must be
+    // reproducible, since the TS lifecycle replays this exact PSBT.
+    let psbt_bytes = z.serialize_v6();
+    let fee = z.zip317_conventional_fee().unwrap();
+
+    // The ciphertext round: one 80-byte ciphertext per real output, under the FVK's
+    // external `ovk`. A pure deshield has no real outputs and the request errors instead.
+    let out_ciphertexts: Vec<(usize, [u8; 80])> = match z.out_ciphertext_request() {
+        Ok((_, pending)) => {
+            let ovk = *fvk.to_ovk(Scope::External).as_ref();
+            let pczt = z.ironwood_pczt().unwrap();
+            let entries: Vec<(usize, [u8; 80])> = pending
+                .iter()
+                .map(|&action_index| {
+                    (
+                        action_index,
+                        compute_out_ciphertext(&pczt, action_index, ovk, &mut OsRng).unwrap(),
+                    )
+                })
+                .collect();
+            z.add_out_ciphertexts(&entries).unwrap();
+            entries
+        }
+        Err(IronwoodPsbtError::NothingPending) => Vec::new(),
+        Err(error) => panic!("unexpected out-ciphertext request error: {error}"),
+    };
+
+    // The FROST stand-in: one (alpha, rk = ak.randomize(alpha)) pair per real spend. Only
+    // `rk` is stored; the alphas ride along out of band for the proof request.
+    let randomizers: Vec<(usize, [u8; 32], [u8; 32])> = map
+        .spend_action_indices()
+        .iter()
+        .map(|&action_index| {
+            let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng);
+            let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&ask.randomize(&alpha)));
+            (action_index, alpha.to_repr(), rk)
+        })
+        .collect();
+    z.add_spend_randomizers(&randomizers, Some(&ak)).unwrap();
+
+    let sighash = z.spend_sighash().unwrap();
+    let signatures: Vec<(usize, [u8; 64])> = randomizers
+        .iter()
+        .map(|&(action_index, alpha_repr, _)| {
+            let alpha = pasta_curves::pallas::Scalar::from_repr(alpha_repr).unwrap();
+            (
+                action_index,
+                <[u8; 64]>::from(&ask.randomize(&alpha).sign(OsRng, &sighash)),
+            )
+        })
+        .collect();
+    z.add_spend_signatures(&signatures).unwrap();
+
+    let alphas: Vec<(usize, [u8; 32])> = randomizers
+        .iter()
+        .map(|&(action_index, alpha, _)| (action_index, alpha))
+        .collect();
+    let proof_request_bytes = z.proof_request(&alphas).unwrap();
+    // The ZIP-244 txid commits the action data but neither signatures nor the proof, so it is
+    // the one stage value the TS run reproduces exactly. Recorded in display order, matching
+    // the `ironwood_v6_txid` wasm binding's `Txid::to_string()` convention (the TS test
+    // compares it against `getId()`).
+    let expected_txid = Txid::from_byte_array(z.v6_txid().unwrap()).to_string();
+
+    // The proof: what the keyed prover (here, the local prover) returns
+    // for the alpha-patched request bytes. Prove-and-combine locally, then slice the proof
+    // out of the transaction; the TS run re-does the combine itself via `combineProof`.
+    let raw = z
+        .clone()
+        .combine_ironwood_proof_locally_with_alphas(&alphas, Some(&fvk.to_bytes()), OsRng)
+        .unwrap();
+    let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+    let proof = tx.ironwood_bundle.as_ref().unwrap().proof.clone();
+
+    serde_json::json!({
+        "name": name,
+        "network": "zcashTest",
+        "blockHeight": crate::zcash::NetworkUpgrade::Nu6_3.testnet_activation_height(),
+        "request": {
+            "anchor": to_hex(&anchor),
+            "spends": specs.iter().map(|spec| serde_json::json!({
+                "recipient": to_hex(&spec.recipient),
+                "value": spec.value.to_string(),
+                "rho": to_hex(&spec.rho),
+                "rseed": to_hex(&spec.rseed),
+                "cmx": to_hex(&spec.cmx),
+                "witness": {
+                    "position": spec.witness.position,
+                    "authPath": spec.witness.auth_path.iter().map(|h| to_hex(h)).collect::<Vec<_>>(),
+                },
+                "nullifier": to_hex(&spec.nullifier),
+            })).collect::<Vec<_>>(),
+            "outputs": outputs.iter().map(|output| serde_json::json!({
+                "recipient": to_hex(&output.recipient),
+                "amount": output.amount.to_string(),
+                "memo": to_hex(&output.memo),
+                "unifiedAddress": output.unified_address,
+            })).collect::<Vec<_>>(),
+            "transparentOutput": transparent_output.map(|(script, value)| serde_json::json!({
+                "script": to_hex(&script),
+                "value": value.to_string(),
+            })),
+        },
+        "psbt": base64::engine::general_purpose::STANDARD.encode(&psbt_bytes),
+        "spendActionIndices": map.spend_action_indices(),
+        "outputActionIndices": map.output_action_indices(),
+        "ak": to_hex(&ak),
+        "outCiphertexts": out_ciphertexts.iter().map(|&(action_index, out_ciphertext)|
+            serde_json::json!({
+                "actionIndex": action_index,
+                "outCiphertext": to_hex(&out_ciphertext),
+            })).collect::<Vec<_>>(),
+        "randomizers": randomizers.iter().map(|&(action_index, alpha, rk)|
+            serde_json::json!({
+                "actionIndex": action_index,
+                "alpha": to_hex(&alpha),
+                "rk": to_hex(&rk),
+            })).collect::<Vec<_>>(),
+        "sighash": to_hex(&sighash),
+        "signatures": signatures.iter().map(|&(action_index, signature)|
+            serde_json::json!({
+                "actionIndex": action_index,
+                "signature": to_hex(&signature),
+            })).collect::<Vec<_>>(),
+        "expectedTxid": expected_txid,
+        "proofRequest": to_hex(&proof_request_bytes),
+        "proof": to_hex(&proof),
+        "zip317ConventionalFee": fee.to_string(),
+    })
+}
+
+/// The transparent payout of the deshield fixture.
+#[cfg(feature = "orchard-proving")]
+const DESHIELD_PAYOUT_SCRIPT: [u8; 5] = [0x76, 0xa9, 0x14, 0x88, 0xac];
+
+/// Generate both TS fixtures: the 1→0 deshield (transparent payout, no shielded outputs, so
+/// no ciphertext round) and the 2→2 shielded→shielded transfer (ciphertexts). Both pay
+/// exactly the ZIP-317 conventional fee for their shape.
+#[test]
+#[ignore]
+#[cfg(feature = "orchard-proving")]
+fn generate_ts_spend_fixtures() {
+    use rand::{rngs::StdRng, SeedableRng};
+
+    let dir = std::path::Path::new("test/fixtures/zcash");
+    std::fs::create_dir_all(dir).unwrap();
+
+    for (seed, (name, is_deshield)) in [("deshield", true), ("transfer", false)]
+        .into_iter()
+        .enumerate()
+    {
+        let (specs, anchor, fvk, ak) = keyless_fixture();
+        let ask = SpendAuthorizingKey::from(&test_spending_key());
+        let mut z = empty_v6_psbt(&format!("ironwood_ts_spend_{name}"));
+        // Both shapes come to two logical actions (the deshield's Ironwood action plus its
+        // transparent output, the transfer's two Ironwood actions): the ZIP-317 grace floor.
+        let fee = 10_000;
+        let (specs_used, outputs, transparent_output) = if is_deshield {
+            let payout = specs[0].value - fee;
+            z.add_transparent_output(
+                miniscript::bitcoin::ScriptBuf::from(DESHIELD_PAYOUT_SCRIPT.to_vec()),
+                payout,
+                None,
+            )
+            .unwrap();
+            (
+                &specs[..1],
+                Vec::new(),
+                Some((DESHIELD_PAYOUT_SCRIPT.to_vec(), payout)),
+            )
+        } else {
+            let total: u64 = specs.iter().map(|spec| spec.value).sum::<u64>() - fee;
+            let outputs = vec![
+                wallet_output(&fvk, 100, total / 2),
+                wallet_output(&fvk, 101, total - total / 2),
+            ];
+            (&specs[..], outputs, None)
+        };
+        // Seeded construction: the shuffle and the action map are reproducible.
+        let map = z
+            .add_shielded_spends(
+                specs_used,
+                &outputs,
+                &anchor,
+                StdRng::seed_from_u64(0xC511_0000 + seed as u64),
+            )
+            .unwrap();
+        assert_eq!(z.zip317_conventional_fee().unwrap(), fee);
+        let fixture = spend_fixture_json(
+            name,
+            z,
+            map,
+            anchor,
+            &fvk,
+            ak,
+            &ask,
+            specs_used,
+            &outputs,
+            transparent_output,
+        );
+        let path = dir.join(format!("ironwood_spend_{name}.json"));
+        std::fs::write(&path, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
+        println!("wrote {}", path.display());
+    }
 }
