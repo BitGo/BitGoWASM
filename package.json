@@ -9,6 +9,9 @@
     "url": "git+https://github.com/BitGo/BitGoWASM.git"
   },
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "check-fmt": "npm run --workspaces check-fmt",
     "prepare": "husky"
