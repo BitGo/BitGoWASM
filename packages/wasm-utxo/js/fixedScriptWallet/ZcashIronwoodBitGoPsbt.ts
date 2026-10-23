@@ -16,6 +16,7 @@ import {
 } from "./BitGoPsbt.js";
 import {
   type IronwoodShieldedStatus,
+  type IronwoodVerificationReport,
   type ZcashShieldedOutputRequest,
   type ZcashShieldedSpend,
   type ZcashShieldedSpendRequest,
@@ -111,7 +112,8 @@ type IronwoodParsedBase = ParsedTransaction<ZcashIronwoodParsedOutput, ZcashPars
  *   FROST round
  *   ({@link addSpendRandomizers} → {@link spendSighash} → FROST →
  *   {@link addSpendSignatures}), and the proof round ({@link getProofRequest} → prover →
- *   {@link combineProof}) follow, in that order.
+ *   {@link combineProof}) follow, in that order. Before signing, the client checks the bundle
+ *   against its own spend-validating key and randomizers with {@link verifyShieldedBundle}.
  *
  * **Sign first, prove last.** Spend signatures are made over {@link spendSighash}, which
  * commits `rk` but neither the proof nor the randomizers `alpha`; the alphas reach the prover
@@ -559,6 +561,52 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
    */
   shieldedStatus(): IronwoodShieldedStatus {
     return this.wasm.ironwood_shielded_status() as IronwoodShieldedStatus;
+  }
+
+  /**
+   * The client's key-free verification of the stored shielded bundle, driven by the caller's
+   * own expectations. The PSBT is never trusted for who a spend belongs to: the
+   * spend-validating key and the signer's randomized keys come in from the caller, never
+   * from the PSBT.
+   *
+   * Runs the key-free verifier's checks — every output's plaintext note commits to its
+   * recorded `cmx`, every action's net value commits to its `cv`, the bundle's value balance
+   * equals the shown totals, every real spend's note commits to a leaf under the bundle's
+   * anchor, no viewing-key material or stray randomizer rides the bundle, and every present
+   * spend-auth signature verifies against its spend's `rk`. Once it passes, the only
+   * transaction the client can sign over this bundle that verifies on-chain is one that
+   * moves exactly the values shown; what the client *cannot* check (note ownership,
+   * nullifier validity, a fresh anchor) can only make the transaction invalid, never
+   * misdirected.
+   *
+   * @param options.spendValidatingKey - the client's own spend-validating key (32 bytes,
+   *   optional). When given, every randomized real spend must carry
+   *   `rk == ak.randomize(alpha)` for the matching `randomizers` entry: the client checks it
+   *   is signing for its own wallet (`IronwoodVerifyError.Rk` otherwise).
+   * @param options.randomizers - the signer's randomizers, one
+   *   `{ actionIndex, alpha, rk }` per randomized real spend (optional). Each entry must
+   *   land on a real spend; a spend whose installed `rk` does not match its entry is
+   *   rejected.
+   *
+   * When every real spend's randomized `rk` is installed, the ZIP-244 sig digest is computed
+   * here and any present spend-auth signature is verified over it
+   * (`IronwoodVerifyError.SpendSignature`); a mid-flow bundle (placeholder `rk`s still
+   * pending) verifies without the signature check instead.
+   *
+   * @returns the verified view of the bundle: {@link IronwoodVerificationReport}.
+   * @throws Error with a typed `err.code`: `IronwoodVerifyError.<Check>` when any check
+   *   fails, `IronwoodPsbtError.NotSpendBundle` when the PSBT carries no shielded bundle, and
+   *   `IronwoodPsbtError.OutCiphertextPending` when randomized `rk`s are installed while a
+   *   real output's `out_ciphertext` is still pending.
+   */
+  verifyShieldedBundle(options?: {
+    spendValidatingKey?: Uint8Array;
+    randomizers?: Array<{ actionIndex: number; alpha: Uint8Array; rk: Uint8Array }>;
+  }): IronwoodVerificationReport {
+    return this.wasm.verify_ironwood_shielded_bundle(
+      options?.spendValidatingKey,
+      options?.randomizers ?? [],
+    ) as IronwoodVerificationReport;
   }
 
   /**

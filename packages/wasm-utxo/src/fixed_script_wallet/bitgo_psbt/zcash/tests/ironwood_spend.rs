@@ -9,7 +9,9 @@ use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::WalletInputOption
 use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt;
 use crate::fixed_script_wallet::script_id::ScriptId;
 use crate::networks::Network;
-use crate::zcash::ironwood_build::{compute_out_ciphertext, IronwoodActionMap};
+use crate::zcash::ironwood_build::{
+    compute_out_ciphertext, IronwoodActionMap, IronwoodVerifyCheck, IronwoodVerifyError,
+};
 use crate::zcash::ironwood_construct::test_util::keyless_fixture;
 #[cfg(feature = "orchard-proving")]
 use crate::zcash::ironwood_construct::IronwoodKeylessSpendSpec;
@@ -141,20 +143,31 @@ fn install_randomizers(
     map: &IronwoodActionMap,
     ask: &SpendAuthorizingKey,
 ) -> Vec<(usize, [u8; 32])> {
-    let mut pairs = Vec::new();
-    for &action_index in map.spend_action_indices() {
-        let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng);
-        let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&ask.randomize(&alpha)));
-        pairs.push((action_index, alpha.to_repr(), rk));
-    }
     let ak = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(
         &ask.randomize(&pasta_curves::pallas::Scalar::ZERO),
     ));
-    z.add_spend_randomizers(&pairs, Some(&ak)).unwrap();
-    pairs
+    install_randomizer_triples(z, map, ask, &ak)
         .into_iter()
         .map(|(action_index, alpha_repr, _)| (action_index, alpha_repr))
         .collect()
+}
+
+/// [`install_randomizers`], returning the full `(action, alpha, rk)` triples — what the
+/// signer hands the client for its key-free verification.
+fn install_randomizer_triples(
+    z: &mut ZcashBitGoPsbt,
+    map: &IronwoodActionMap,
+    ask: &SpendAuthorizingKey,
+    ak: &[u8; 32],
+) -> Vec<(usize, [u8; 32], [u8; 32])> {
+    let mut triples = Vec::new();
+    for &action_index in map.spend_action_indices() {
+        let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng);
+        let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&ask.randomize(&alpha)));
+        triples.push((action_index, alpha.to_repr(), rk));
+    }
+    z.add_spend_randomizers(&triples, Some(ak)).unwrap();
+    triples
 }
 
 /// The PSBT never carries the wallet's `ak` or a spend's `alpha`: neither appears anywhere in
@@ -1656,4 +1669,252 @@ fn generate_ts_spend_fixtures() {
         std::fs::write(&path, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
         println!("wrote {}", path.display());
     }
+}
+
+// ---- The client's key-free verification (`verify_shielded_bundle`) ----
+
+/// A second, unrelated wallet's `ak`, for the foreign-key check.
+fn foreign_ak() -> [u8; 32] {
+    let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([9u8; 32])).unwrap();
+    let fvk = FullViewingKey::from(&sk);
+    fvk.to_bytes()[..32].try_into().unwrap()
+}
+
+fn sorted_indices(indices: &[usize]) -> Vec<usize> {
+    let mut indices = indices.to_vec();
+    indices.sort_unstable();
+    indices
+}
+
+/// The report tracks the build-side state at every stage of the transfer lifecycle: what is
+/// placeholder/installed/signed per spend, the verified plaintext values, and the anchor.
+#[test]
+fn verify_shielded_bundle_tracks_the_lifecycle() {
+    let seed = "ironwood_v6_verify_transfer";
+    let (mut z, map, ak, fvk, ask) = keyless_transfer_psbt(seed);
+    let spend_indices = sorted_indices(map.spend_action_indices());
+    let output_indices = sorted_indices(map.output_action_indices());
+
+    // Mid-flow, placeholder rks: the caller's ak alone checks nothing (nothing is installed),
+    // and the report shows every spend unrandomized and unsigned.
+    let report = z.verify_shielded_bundle(Some(&ak), &[]).unwrap();
+    assert_eq!(report.spends.len(), 2);
+    assert!(report
+        .spends
+        .iter()
+        .all(|spend| !spend.rk_replaced && !spend.signed));
+    assert_eq!(
+        sorted_indices(
+            &report
+                .spends
+                .iter()
+                .map(|s| s.action_index)
+                .collect::<Vec<_>>()
+        ),
+        spend_indices
+    );
+    assert_eq!(report.value_balance, 0);
+    assert_eq!(
+        sorted_indices(
+            &report
+                .outputs
+                .iter()
+                .map(|o| o.action_index)
+                .collect::<Vec<_>>()
+        ),
+        output_indices
+    );
+    // The verified plaintext matches the Constructor's request: 90M zatoshi per output.
+    assert!(report
+        .outputs
+        .iter()
+        .all(|output| output.value == 90_000_000));
+
+    // The same call without any caller key material passes identically.
+    z.verify_shielded_bundle(None, &[]).unwrap();
+
+    // The real outputs take their ciphertexts before any randomizer is installed. The
+    // installed triples are then checked against a copy whose rks are still placeholders: an
+    // expectation aimed at a spend whose rk is not installed yet is a mismatch, not a pass.
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
+    let placeholder = z.clone();
+    let installed = install_randomizer_triples(&mut z, &map, &ask, &ak);
+    let error = placeholder
+        .verify_shielded_bundle(Some(&ak), &installed)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::Verify(IronwoodVerifyError::Action {
+            check: IronwoodVerifyCheck::Rk,
+            ..
+        })
+    ));
+
+    // The caller's ak + the signer's triples check every spend's rk, and the sighash is computed
+    // (no signatures yet, so the SpendSignature check is vacuous).
+    let report = z.verify_shielded_bundle(Some(&ak), &installed).unwrap();
+    assert!(report
+        .spends
+        .iter()
+        .all(|spend| spend.rk_replaced && !spend.signed));
+
+    install_spend_signatures(
+        &mut z,
+        &installed
+            .iter()
+            .map(|&(action, alpha, _)| (action, alpha))
+            .collect::<Vec<_>>(),
+        &ask,
+    );
+
+    // Signed: the report shows every spend signed, with the sigs verified over the
+    // internally computed sighash.
+    let report = z.verify_shielded_bundle(Some(&ak), &installed).unwrap();
+    assert!(report
+        .spends
+        .iter()
+        .all(|spend| spend.rk_replaced && spend.signed));
+
+    // A foreign wallet's ak rejects the pairs: its randomize(α) is not the installed rk.
+    let error = z
+        .verify_shielded_bundle(Some(&foreign_ak()), &installed)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::Verify(IronwoodVerifyError::Action {
+            check: IronwoodVerifyCheck::Rk,
+            ..
+        })
+    ));
+
+    // A mismatched rk in the caller's own triples is rejected the same way.
+    let mismatched = installed
+        .iter()
+        .enumerate()
+        .map(|(i, &(action, alpha, rk))| {
+            if i == 0 {
+                let mut broken_rk = rk;
+                broken_rk[0] ^= 1;
+                (action, alpha, broken_rk)
+            } else {
+                (action, alpha, rk)
+            }
+        })
+        .collect::<Vec<_>>();
+    let error = z
+        .verify_shielded_bundle(Some(&ak), &mismatched)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::Verify(IronwoodVerifyError::Action {
+            check: IronwoodVerifyCheck::Rk,
+            ..
+        })
+    ));
+}
+
+/// The deshield's report: one spend, no shielded outputs, the payout visible as the value
+/// balance.
+#[test]
+fn verify_shielded_bundle_reports_the_deshield() {
+    let seed = "ironwood_v6_verify_deshield";
+    let (mut z, map, ak, _fvk, ask) = keyless_deshield_psbt(seed);
+    let triples = install_randomizer_triples(&mut z, &map, &ask, &ak);
+    install_spend_signatures(
+        &mut z,
+        &triples
+            .iter()
+            .map(|&(action, alpha, _)| (action, alpha))
+            .collect::<Vec<_>>(),
+        &ask,
+    );
+    let report = z.verify_shielded_bundle(Some(&ak), &triples).unwrap();
+    assert_eq!(report.spends.len(), 1);
+    assert_eq!(report.spends[0].value, 100_000_000);
+    assert!(report.spends[0].rk_replaced && report.spends[0].signed);
+    assert!(
+        report.outputs.is_empty(),
+        "a deshield fabricates no real outputs"
+    );
+    assert_eq!(report.value_balance, 100_000_000);
+    assert_ne!(report.anchor, [0u8; 32]);
+}
+
+/// A tampered bundle fails with the failing check's error code: a swapped output recipient
+/// no longer commits to the output's `cmx` (`NoteCommitment`).
+#[test]
+fn verify_shielded_bundle_rejects_a_tampered_bundle() {
+    let seed = "ironwood_v6_verify_tampered";
+    let (mut z, map, ak, fvk, ask) = keyless_transfer_psbt(seed);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
+    let triples = install_randomizer_triples(&mut z, &map, &ask, &ak);
+
+    let action_index = map.output_action_indices()[0];
+    let bytes =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::get_ironwood_pczt(&z.psbt).unwrap();
+    let other_recipient = fvk
+        .address_at(200u32, Scope::External)
+        .to_raw_address_bytes();
+    let tampered = crate::zcash::ironwood_pczt::with_output_recipient_for_test(
+        &bytes,
+        action_index,
+        &other_recipient,
+    )
+    .unwrap();
+    crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::set_ironwood_pczt(&mut z.psbt, tampered);
+
+    let error = z.verify_shielded_bundle(Some(&ak), &triples).unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::Verify(IronwoodVerifyError::Action {
+            check: IronwoodVerifyCheck::NoteCommitment,
+            ..
+        })
+    ));
+}
+
+/// A randomizer aimed at a fabricated (dummy) spend is rejected instead of silently ignored.
+#[test]
+fn verify_shielded_bundle_rejects_a_randomizer_aimed_at_a_dummy() {
+    let seed = "ironwood_v6_verify_dummy";
+    let (mut z, map, ak, fvk, ask) = keyless_surplus_psbt(seed);
+    fvk_out_ciphertexts(&mut z, &map, &fvk);
+    let triples = install_randomizer_triples(&mut z, &map, &ask, &ak);
+    let dummy_action = (0..2)
+        .find(|action| !map.spend_action_indices().contains(action))
+        .unwrap();
+    let alpha = [7u8; 32];
+    let aimed_at_dummy = [(dummy_action, alpha, [8u8; 32])];
+    let error = z
+        .verify_shielded_bundle(Some(&ak), &aimed_at_dummy)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::Verify(IronwoodVerifyError::Action {
+            check: IronwoodVerifyCheck::Rk,
+            ..
+        })
+    ));
+    // The real spends still verify, with the dummy ignored.
+    z.verify_shielded_bundle(Some(&ak), &triples).unwrap();
+}
+
+/// A PSBT without a stored PCZT has nothing to verify; a shielding PCZT verifies its outputs.
+#[test]
+fn verify_shielded_bundle_needs_a_spend_bundle() {
+    let error = empty_v6_psbt("ironwood_v6_verify_empty")
+        .verify_shielded_bundle(None, &[])
+        .unwrap_err();
+    assert!(matches!(error, IronwoodPsbtError::NotSpendBundle));
+
+    // A shielding bundle (dummy spends only) is a transparent-kind PSBT for the spend flow:
+    // it verifies with no spends and its shielded outputs in the report.
+    let shield = build_shield_psbt("ironwood_v6_verify_shield");
+    let report = shield.verify_shielded_bundle(None, &[]).unwrap();
+    assert!(report.spends.is_empty());
+    assert_eq!(report.outputs.len(), 1);
+    assert!(
+        report.value_balance < 0,
+        "shielding moves value into the pool"
+    );
 }

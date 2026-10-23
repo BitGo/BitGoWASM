@@ -76,7 +76,7 @@ pub struct IronwoodSpendInfo {
     pub nullifier: [u8; 32],
     /// Raw 43-byte Orchard recipient of the spent note.
     pub recipient: crate::zcash::ironwood_build::OrchardAddressBytes,
-    /// Whether the signer replaced the Constructor's placeholder `rk` (the wire marker).
+    /// Whether the signer replaced the Constructor's placeholder `rk` with a randomized one.
     pub rk_replaced: bool,
     /// Whether a spend-auth signature is installed.
     pub signed: bool,

@@ -20,6 +20,7 @@
 //! adders call for their Zcash arms, and in `decode_v6` at deserialize time.
 
 use super::error::IronwoodPsbtError;
+use super::parse::ZcashShieldedSpend;
 use super::{IronwoodOutputRequest, ZcashBitGoPsbt};
 
 impl ZcashBitGoPsbt {
@@ -623,6 +624,67 @@ impl ZcashBitGoPsbt {
             ready_for_proof,
         })
     }
+
+    /// The client's key-free verification of the stored shielded bundle, driven by the
+    /// caller's own expectations — the PSBT is never trusted for who a spend belongs to.
+    ///
+    /// This runs [`verify_bundle_without_keys`] over the stored PCZT with
+    /// the caller's spend-validating key `ak` and its signer's `(action, alpha, rk)`
+    /// triples; nothing is read back from the PSBT for the `Rk` check. When every real
+    /// spend's randomized `rk` is installed, the ZIP-244 sig digest is computed here and any
+    /// present spend-auth signature is verified over it; a mid-flow bundle (placeholder
+    /// `rk`s still pending) verifies without the signature check instead. On success the
+    /// returned report carries the verified plaintext values: the only transaction the
+    /// client can sign over this bundle that verifies on-chain is one that moves exactly the
+    /// values shown.
+    ///
+    /// A PSBT without a stored PCZT fails with [`IronwoodPsbtError::NotSpendBundle`]. A
+    /// shielding bundle (dummy spends only) verifies with no spends and its shielded outputs
+    /// in the report.
+    ///
+    /// [`verify_bundle_without_keys`]: crate::zcash::ironwood_verify::verify_bundle_without_keys
+    pub fn verify_shielded_bundle(
+        &self,
+        ak: Option<&[u8; 32]>,
+        randomizers: &[(usize, [u8; 32], [u8; 32])],
+    ) -> Result<IronwoodVerifiedBundle, IronwoodPsbtError> {
+        use crate::zcash::ironwood_verify::{verify_bundle_without_keys, KeylessVerifyContext};
+
+        let (_, pczt) = self.stored_ironwood_pczt()?;
+        // Only real spends carry spend-auth signatures to check, and the digest is only
+        // well-defined once every real spend's randomized `rk` is installed (and every real
+        // output's `out_ciphertext` is set); `spend_sighash` enforces both.
+        let sighash = if Self::bundle_has_real_spends(&pczt)
+            && Self::pending_randomizers_in(&pczt).is_empty()
+        {
+            Some(self.spend_sighash()?)
+        } else {
+            None
+        };
+        let report = verify_bundle_without_keys(
+            &pczt,
+            &KeylessVerifyContext {
+                expected_ak: ak.copied(),
+                expected_randomizers: randomizers.to_vec(),
+                sighash,
+            },
+        )
+        .map_err(IronwoodPsbtError::Verify)?;
+        let spends = report
+            .spends
+            .iter()
+            .map(|spend| {
+                ZcashShieldedSpend::from_verified(spend, self.network().to_coin_name())
+                    .map_err(|e| IronwoodPsbtError::BadUnifiedAddress(e.to_string()))
+            })
+            .collect::<Result<Vec<_>, IronwoodPsbtError>>()?;
+        Ok(IronwoodVerifiedBundle {
+            spends,
+            outputs: report.outputs,
+            value_balance: report.value_balance,
+            anchor: report.anchor,
+        })
+    }
 }
 
 /// Which input kind a v6 PSBT carries.
@@ -650,6 +712,21 @@ pub struct IronwoodShieldedStatus {
     /// (given the alphas), and [`ZcashBitGoPsbt::combine_ironwood_proof`] then needs only the
     /// proof.
     pub ready_for_proof: bool,
+}
+
+/// The client-facing verified view of the stored shielded bundle, from
+/// [`ZcashBitGoPsbt::verify_shielded_bundle`] — the key-free verifier's report with each
+/// spend's Unified Address filled in.
+#[derive(Clone, Debug)]
+pub struct IronwoodVerifiedBundle {
+    /// The bundle's real spends, as verified, in the parse's [`ZcashShieldedSpend`] shape.
+    pub spends: Vec<ZcashShieldedSpend>,
+    /// The bundle's real outputs, as verified.
+    pub outputs: Vec<crate::zcash::ironwood_verify::VerifiedOutput>,
+    /// The bundle's value balance (Σv_spend − Σv_out).
+    pub value_balance: i64,
+    /// The anchor the spends' witnesses commit to.
+    pub anchor: [u8; 32],
 }
 
 /// Whether the little-endian bitset has bit `index` set (bit `i` = byte `i / 8`, mask
