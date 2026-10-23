@@ -14,7 +14,6 @@ on:
 
 env:
   RUST_TOOLCHAIN: nightly-2025-10-23
-  NODE_VERSION: 20
   NPM_VERSION: 11.5.1
   WASM_PACK_VERSION: 0.14.0
   WASM_OPT_VERSION: 0.116.1
@@ -70,7 +69,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .nvmrc
 
       - name: Install npm and wasm tools
         run: |
@@ -149,19 +148,15 @@ jobs:
           path: packages/webui/dist
 
   test:
-    name: "Test ${{ matrix.package }}"
+    name: "Test ${{ matrix.package }} @ node ${{ matrix.node-version }}"
     needs: [detect-changes, build]
     runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
-        # `detect-changes` emits an array of objects
-        # [{package, needs-wasm-pack, has-wasm-pack-tests}, ...] filtered to
-        # changed packages. Using `include:` here (not a static list keyed on
-        # `package`) is what makes the matrix actually shrink: a workflow
-        # `include:` entry whose `package` conflicts with the base matrix
-        # spawns a NEW job instead of being filtered, which previously
-        # re-added every package on every PR.
+        # `detect-changes` emits an array of objects with package + node-version.
+        # Each object becomes one matrix row.
         include: ${{ fromJson(needs.detect-changes.outputs.packages) }}
     steps:
       - uses: actions/checkout@v4
@@ -184,7 +179,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ matrix.node-version }}
 
       - name: Install npm
         run: npm install -g npm@${{ env.NPM_VERSION }}
@@ -257,7 +252,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .nvmrc
 
       - name: Install npm
         run: npm install -g npm@${{ env.NPM_VERSION }}
@@ -335,6 +330,7 @@ jobs:
 
   # This job provides a stable "test / Test" status check for branch protection.
   # It runs after all other jobs complete successfully.
+
   gate:
     name: "Test"
     needs: [build, test, finalize]
