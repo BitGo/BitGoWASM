@@ -167,7 +167,7 @@ pub enum PsbtCommand {
         /// Network (must be zec or tzec)
         #[arg(long, short, value_enum)]
         network: NetworkArg,
-        /// Halo2 proof bytes from the external proof service, hex-encoded
+        /// Halo2 proof bytes from the external prover, hex-encoded
         #[arg(long)]
         proof: Option<String>,
         /// Produce the proof locally instead of supplying one via --proof (heavier: builds a

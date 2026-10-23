@@ -14,7 +14,13 @@ import {
   type ParseOutputsOptions,
   type ParseTransactionOptions,
 } from "./BitGoPsbt.js";
-import { type ZcashShieldedSpend } from "./ZcashIronwoodTypes.js";
+import {
+  type IronwoodShieldedStatus,
+  type ZcashShieldedOutputRequest,
+  type ZcashShieldedSpend,
+  type ZcashShieldedSpendRequest,
+} from "./ZcashIronwoodTypes.js";
+import { Zip317Dimensions } from "./Zip317Dimensions.js";
 
 /**
  * Options for creating an empty Zcash v6 (Ironwood) shielding PSBT.
@@ -93,19 +99,53 @@ type IronwoodParsedBase = ParsedTransaction<ZcashIronwoodParsedOutput, ZcashPars
 };
 
 /**
- * A Zcash **v6 (Ironwood / NU6.3)** shielding PSBT.
+ * A Zcash **v6 (Ironwood / NU6.3)** PSBT covering both shielded flows:
+ *
+ * - **Shielding** (transparent inputs → shielded outputs): `createEmpty`, the usual
+ *   `addWalletInput` / `addWalletOutput`, then {@link addShieldedOutput}, transparent signing
+ *   over {@link transparentSighash}, and {@link combineProof}.
+ * - **Shielded spends** (deshield / shielded→shielded): `createEmpty` (transparent outputs
+ *   only — a spend PSBT has no transparent *inputs*), then {@link addShieldedSpends}, which is
+ *   **keyless**: no viewing key is needed to build it. The ciphertext round
+ *   ({@link getOutCiphertextRequest} → viewing-key holder → {@link addOutCiphertexts}), the
+ *   FROST round
+ *   ({@link addSpendRandomizers} → {@link spendSighash} → FROST →
+ *   {@link addSpendSignatures}), and the proof round ({@link getProofRequest} → prover →
+ *   {@link combineProof}) follow, in that order.
+ *
+ * **Sign first, prove last.** Spend signatures are made over {@link spendSighash}, which
+ * commits `rk` but neither the proof nor the randomizers `alpha`; the alphas reach the prover
+ * out of band via {@link getProofRequest}. Signing freezes the bundle, so the proof is always
+ * made over the final action data and can never go stale, and an unapproved build never costs
+ * a proof.
+ *
+ * The ordering is enforced in Rust, and each violation surfaces as a typed `err.code`
+ * (`IronwoodPsbtError.*`):
+ *
+ * - **One input kind** — a v6 PSBT spends either transparent inputs or shielded notes,
+ *   never both (`MixedInputKinds`);
+ * - **Ciphertexts first** — every real output's `out_ciphertext` before any randomizer,
+ *   sighash or proof request (`OutCiphertextPending`);
+ * - **Randomizers next** — every real spend's randomized `rk` before any sighash or
+ *   signature (`RandomizerPending`);
+ * - **Frozen once signed** — ciphertexts and randomizers rejected after any signature
+ *   (`AlreadySigned`);
+ * - **Signed before proven** — the proof is requested only once every real spend is signed
+ *   (`SpendSignaturePending`).
+ *
+ * {@link shieldedStatus} reports where a PSBT stands in that sequence.
  *
  * Distinct from the generic `ZcashBitGoPsbt` (v4/Sapling-shaped transactions): a v6 PSBT carries
  * its shielded side as an orchard PCZT in the proprietary map rather than Sapling fields, and its
- * lifecycle mirrors the microservice build → sign → combine flow rather than the v4 ZIP-243
+ * lifecycle follows a build → sign → combine flow rather than the v4 ZIP-243
  * signing path.
  *
  * Method names carry no `ironwood` prefix — the class name already says it. They follow the base
  * `BitGoPsbt` vocabulary (`createEmpty`, `fromBytes`, `addOutput`-style adders, `getId`) so the v6
- * surface reads the same as the v4 one; the wasm bindings keep their `ironwood_v6_*` names because
+ * surface reads the same as the v4 one; the wasm bindings keep an `ironwood` prefix because
  * they live on the single flat `BitGoPsbt` struct, where the prefix is what disambiguates them.
  *
- * @example
+ * @example shielding
  * ```typescript
  * const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcash", walletKeys, { blockHeight });
  * psbt.addWalletInput(...);
@@ -115,6 +155,22 @@ type IronwoodParsedBase = ParsedTransaction<ZcashIronwoodParsedOutput, ZcashPars
  * // ... sign sighash externally, then:
  * psbt.addTransparentSignature(0, pubkey, sig);
  * const tx = psbt.combineProof(proof);
+ * ```
+ *
+ * @example deshielding (one note → a transparent payout)
+ * ```typescript
+ * const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcash", walletKeys, { blockHeight });
+ * psbt.addTransparentOutput(payoutScript, payoutValue); // no transparent inputs
+ * const { spendActionIndices } = psbt.addShieldedSpends([note], [], { anchor });
+ * // Ciphertext round: ciphertexts first
+ * const { pczt, actionIndices } = psbt.getOutCiphertextRequest();
+ * psbt.addOutCiphertexts(await reEncryptOutputs(pczt, actionIndices));
+ * // FROST round: randomizers (only rk is stored), then signatures
+ * psbt.addSpendRandomizers(frostRandomizers, { spendValidatingKey: ak });
+ * psbt.addSpendSignatures(await frostSign(psbt.spendSighash()));
+ * // Proof round: alphas patched into the returned bytes, never stored
+ * const proofRequest = psbt.getProofRequest(frostRandomizers);
+ * const tx = psbt.combineProof(await prove(proofRequest));
  * ```
  */
 export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
@@ -332,6 +388,189 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
       ),
     );
   }
+  // ---- The shielded-spend flow: build → ciphertexts → sign → prove ----
+
+  /**
+   * Add the shielded spends (and optionally shielded outputs) as a single **keyless** orchard
+   * PCZT stored in the PSBT — the deshield and shielded→shielded Constructor for a build
+   * service that holds no viewing keys.
+   *
+   * One input kind: a v6 PSBT spends either transparent inputs or shielded notes, never both —
+   * this throws if a transparent input is already present, and the transparent input adders
+   * throw once real shielded spends exist. One call per PSBT.
+   *
+   * Every real spend carries the placeholder `rk` and no `alpha`; the signer installs the
+   * randomized `rk` via {@link addSpendRandomizers} before any sighash is computed. Every
+   * output's `out_ciphertext` is a random placeholder, replaced under the FVK's `ovk` (see
+   * {@link getOutCiphertextRequest}). No key material is accepted or stored.
+   *
+   * @param spends - one entry per spent note: the note's plaintext (`recipient`, `value`,
+   *   `rho`, `rseed`, `cmx`), its {@link ZcashIronwoodWitness} (validated against
+   *   `options.anchor`), and the nullifier (from the note store or derived by the viewing-key
+   *   holder)
+   * @param outputs - zero or more requested shielded outputs; every amount must be > 0, and
+   *   there is no `ovk` — encryption belongs to the viewing-key holder in the spend flow. `memo` defaults per-entry to
+   *   the ZIP-302 "no memo" encoding, as {@link addShieldedOutput}'s does
+   * @param options.anchor - the Ironwood note-commitment-tree root every spend's witness
+   *   commits to (32 bytes)
+   * @returns the action index each requested spend/output landed at. The actions are shuffled,
+   *   so request order does not equal action order: any caller correlating per-action data (a
+   *   stored Unified Address, an out-ciphertext) must go through these indices.
+   */
+  addShieldedSpends(
+    spends: ZcashShieldedSpendRequest[],
+    outputs: ZcashShieldedOutputRequest[],
+    options: { anchor: Uint8Array },
+  ): { spendActionIndices: number[]; outputActionIndices: number[] } {
+    const map = this.wasm.add_ironwood_shielded_spends(
+      spends.map((spend) => ({
+        recipient: spend.recipient,
+        value: spend.value,
+        rho: spend.rho,
+        rseed: spend.rseed,
+        cmx: spend.cmx,
+        nullifier: spend.nullifier,
+        witness: { position: spend.witness.position, authPath: spend.witness.authPath },
+      })),
+      outputs.map((output) => ({
+        recipient: output.recipient,
+        amount: output.amount,
+        memo: output.memo ?? zip302NoMemo(),
+        unifiedAddress: output.unifiedAddress,
+      })),
+      options.anchor,
+    ) as { spendActionIndices: number[]; outputActionIndices: number[] };
+    return {
+      spendActionIndices: Array.from(map.spendActionIndices),
+      outputActionIndices: Array.from(map.outputActionIndices),
+    };
+  }
+
+  /**
+   * The out-ciphertext request: the raw PCZT bytes plus the real outputs still pending their
+   * `out_ciphertext`. The viewing-key holder re-encrypts each pending output under its FVK
+   * `ovk` and returns one 80-byte ciphertext per action index, applied with {@link addOutCiphertexts}.
+   *
+   * Throws when the PSBT is not a spend bundle (`IronwoodPsbtError.NotSpendBundle`) or
+   * nothing is pending (`IronwoodPsbtError.NothingPending`, e.g. a pure deshield, whose only
+   * output is transparent and carries no ciphertext).
+   */
+  getOutCiphertextRequest(): { pczt: Uint8Array; actionIndices: number[] } {
+    const request = this.wasm.ironwood_out_ciphertext_request() as {
+      pczt: Uint8Array;
+      actionIndices: number[];
+    };
+    return { pczt: request.pczt, actionIndices: Array.from(request.actionIndices) };
+  }
+
+  /**
+   * Apply the out-ciphertext response: one `{ actionIndex, outCiphertext }` entry per
+   * pending real output. **Atomic** — every entry is validated before anything is written, so
+   * one bad entry stores nothing. Idempotent for identical bytes; different bytes for an
+   * already-set index throw (`IronwoodPsbtError.OutCiphertextConflict`). Frozen once signed:
+   * rejected once any signature exists (`IronwoodPsbtError.AlreadySigned`).
+   */
+  addOutCiphertexts(entries: Array<{ actionIndex: number; outCiphertext: Uint8Array }>): void {
+    this.wasm.add_ironwood_out_ciphertexts(entries);
+  }
+
+  /** Single-output counterpart to {@link addOutCiphertexts}. */
+  addOutCiphertext(actionIndex: number, outCiphertext: Uint8Array): void {
+    this.addOutCiphertexts([{ actionIndex, outCiphertext }]);
+  }
+
+  /**
+   * Install the signer's randomized `rk`s: one `{ actionIndex, alpha, rk }` entry per real
+   * spend, with `rk = ak.randomize(alpha)`. **Only `rk` is stored** — the PSBT never carries
+   * `alpha` or the wallet's `ak` (with `rk`, an `alpha` would reveal `ak`).
+   *
+   * `options.spendValidatingKey` (the wallet's spend-validating key `ak`, 32 bytes, optional)
+   * makes the installer check `rk == ak.randomize(alpha)` before storing; without it the pair
+   * is checked later, by the client's key-free verifier and by the keyed prover.
+   *
+   * Ciphertexts first: rejected while any real output's `out_ciphertext` is pending
+   * (`IronwoodPsbtError.OutCiphertextPending`). Frozen once signed
+   * (`IronwoodPsbtError.AlreadySigned`). **Atomic** — one bad entry stores nothing.
+   */
+  addSpendRandomizers(
+    entries: Array<{ actionIndex: number; alpha: Uint8Array; rk: Uint8Array }>,
+    options?: { spendValidatingKey?: Uint8Array },
+  ): void {
+    this.wasm.add_ironwood_spend_randomizers(entries, options?.spendValidatingKey);
+  }
+
+  /** Single-spend counterpart to {@link addSpendRandomizers}. */
+  setSpendRandomizer(
+    actionIndex: number,
+    alpha: Uint8Array,
+    rk: Uint8Array,
+    options?: { spendValidatingKey?: Uint8Array },
+  ): void {
+    this.addSpendRandomizers([{ actionIndex, alpha, rk }], options);
+  }
+
+  /**
+   * The ZIP-244 sig digest (32 bytes) the real spends' spend-auth signatures are computed
+   * over — the input to the FROST signing round. Every real output's `out_ciphertext` and
+   * every real spend's randomized `rk` must be installed first: the digest commits both
+   * (`IronwoodPsbtError.OutCiphertextPending` / `IronwoodPsbtError.RandomizerPending`
+   * otherwise).
+   */
+  spendSighash(): Uint8Array {
+    return this.wasm.ironwood_spend_sighash();
+  }
+
+  /**
+   * Apply the signer's spend-auth signatures: one `{ actionIndex, signature }` entry per real
+   * spend, each a 64-byte RedPallas signature over {@link spendSighash}, verified against the
+   * spend's installed `rk` before it is stored. **Atomic.** Signing does not freeze this
+   * method: every spend-auth signature is over the same digest, so signatures may arrive in
+   * several batches.
+   */
+  addSpendSignatures(entries: Array<{ actionIndex: number; signature: Uint8Array }>): void {
+    this.wasm.add_ironwood_spend_signatures(entries);
+  }
+
+  /** Single-spend counterpart to {@link addSpendSignatures}. */
+  addSpendSignature(actionIndex: number, signature: Uint8Array): void {
+    this.addSpendSignatures([{ actionIndex, signature }]);
+  }
+
+  /**
+   * The proof request for the keyed prover: the raw PCZT bytes with each real spend's
+   * randomizer `alpha` patched in — `randomizers` is one `{ actionIndex, alpha }` per real
+   * spend. The alphas are written only to the returned bytes, never stored (with `rk`, an
+   * `alpha` would reveal the wallet's `ak`); they travel out of band from the FROST round to
+   * the prover with the proof request.
+   *
+   * Gated: every real output's `out_ciphertext`, every real spend's randomized `rk`, and
+   * every real spend's spend-auth signature must be installed first. This is the gated
+   * counterpart to the raw {@link getPczt} accessor, and replaces it for spend bundles.
+   */
+  getProofRequest(randomizers: Array<{ actionIndex: number; alpha: Uint8Array }>): Uint8Array {
+    return this.wasm.ironwood_proof_request(randomizers);
+  }
+
+  /**
+   * The orchestration view of the shielded workflow: the input kind, what is still pending at
+   * each stage, and whether the PSBT is ready for its proof — `readyForProof` means
+   * {@link getProofRequest} succeeds (given the alphas) and {@link combineProof} then needs
+   * only the proof.
+   */
+  shieldedStatus(): IronwoodShieldedStatus {
+    return this.wasm.ironwood_shielded_status() as IronwoodShieldedStatus;
+  }
+
+  /**
+   * The ZIP-317 conventional fee (zatoshi) for this PSBT's shape: the transparent terms plus
+   * the Ironwood action count (`max(real spends, real outputs)`) of the stored PCZT — shorthand
+   * for `Zip317Dimensions.fromPsbt(psbt).getConventionalFee()`. Before {@link addShieldedSpends}
+   * there is no PCZT, so the shielded term is zero; size a change output from the planned
+   * counts with {@link Zip317Dimensions} instead.
+   */
+  zip317ConventionalFee(): bigint {
+    return Zip317Dimensions.fromPsbt(this).getConventionalFee();
+  }
 
   /**
    * Client-managed `ovk`: re-encrypt the shielded output's `out_ciphertext` under **this wallet's**
@@ -388,7 +627,7 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
   }
 
   /**
-   * Ingest a transparent-input signature returned by the client/HSM, after verifying it against
+   * Ingest a transparent-input signature returned by a signer, after verifying it against
    * {@link transparentSighash} for that input.
    *
    * @param index - transparent input index
@@ -502,12 +741,21 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
     const wasmECPair = ECPair.from(key).wasm;
     return this.wasm.verify_ironwood_v6_signature_with_pub(inputIndex, wasmECPair);
   }
-
   /**
    * Transaction Extractor role: given the external prover's `proof` bytes, finalize the
    * transparent inputs, apply the shielded binding signature, and return the broadcast-ready v6
-   * transaction bytes. Requires every transparent input to be signed via
-   * {@link addTransparentSignature}.
+   * transaction bytes.
+   *
+   * What must be signed depends on the PSBT's input kind ({@link shieldedStatus}):
+   *
+   * - **Shielding** — every transparent input, via {@link addTransparentSignature} (2-of-3).
+   * - **Shielded spends** — every real spend's spend-auth signature, via
+   *   {@link addSpendSignatures}; there are no transparent inputs to sign. The proof here is
+   *   the one the prover returned for {@link getProofRequest}'s bytes — pass it straight in.
+   *
+   * The proof's length must match the bundle's action count (`ProofLength` otherwise), and the
+   * shielded binding signature is derived from the actions' value-commitment trapdoors, so the
+   * alphas never need to be present at combine time.
    *
    * Terminal: the wasm binding drops the stored PCZT on success, so any later v6 call on this PSBT
    * throws — including after a `serialize`/{@link fromBytes} round-trip, since the PCZT is gone
@@ -546,9 +794,17 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
    * run — the Halo2 `zkproof` and binding signature, bridging this PSBT to the external proof
    * service and back.
    *
-   * Present only after {@link addShieldedOutput} has been called; `undefined` beforehand, and
-   * `undefined` again after {@link combineProof} succeeds, since that call drops the stored PCZT
-   * to make extraction terminal (see its doc comment).
+   * **Raw accessor.** It hands over whatever is stored, with no workflow gate. For a spend
+   * bundle, the gated counterpart is {@link getProofRequest}: it only returns bytes once the
+   * ciphertexts and randomizers are installed and every real spend is signed, with the alphas
+   * patched in — exactly what the keyed prover needs. Shielding keeps
+   * using `getPczt()`: the finalize step re-encrypts the dummy actions' ciphertexts itself, so
+   * the raw bytes are already final when the proof is requested.
+   *
+   * Present only after {@link addShieldedOutput} (shielding) or {@link addShieldedSpends}
+   * (spends) has been called; `undefined` beforehand, and `undefined` again after
+   * {@link combineProof} succeeds, since that call drops the stored PCZT to make extraction
+   * terminal (see its doc comment).
    */
   getPczt(): Uint8Array | undefined {
     return this.wasm.ironwood_pczt_bytes();

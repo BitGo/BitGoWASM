@@ -13,6 +13,10 @@ use super::fee_policy_from_js;
 use super::parse_network;
 use super::BitGoPsbt;
 use crate::error::WasmUtxoError;
+use crate::fixed_script_wallet::bitgo_psbt::zcash::error::IronwoodPsbtError;
+use crate::fixed_script_wallet::bitgo_psbt::zcash::ironwood_spend::{
+    IronwoodInputKind, IronwoodShieldedStatus,
+};
 use crate::fixed_script_wallet::bitgo_psbt::zcash::parse::{
     ZcashParsedInput, ZcashParsedInputs, ZcashParsedOutput, ZcashParsedTransaction,
     ZcashShieldedSpend,
@@ -20,15 +24,17 @@ use crate::fixed_script_wallet::bitgo_psbt::zcash::parse::{
 use crate::fixed_script_wallet::bitgo_psbt::zcash::IronwoodOutputRequest;
 use crate::wasm::bip32::WasmBIP32;
 use crate::wasm::ecpair::WasmECPair;
-use crate::wasm::try_from_js_value::Bytes;
-use crate::wasm::try_from_js_value::TryFromJsValue;
+use crate::wasm::try_from_js_value::{
+    get_field, get_required_raw_field, get_required_u64_field, TryFromJsValue,
+};
 use crate::wasm::try_into_js_value::js_obj;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use crate::wasm::wallet_keys::WasmRootWalletKeys;
 use crate::zcash::ironwood_build::{
-    AnchorBytes, MemoBytes, OrchardAddressBytes, OvkBytes, ANCHOR_SIZE, MEMO_SIZE,
-    ORCHARD_ADDRESS_SIZE, OVK_SIZE,
+    AnchorBytes, IronwoodActionMap, IronwoodWitness, MemoBytes, OrchardAddressBytes, OvkBytes,
+    WitnessAuthPath, IRONWOOD_MERKLE_DEPTH,
 };
+use crate::zcash::ironwood_construct::IronwoodKeylessSpendSpec;
 
 impl BitGoPsbt {
     /// Borrow the inner `ZcashBitGoPsbt`, erroring if this is not a Zcash PSBT.
@@ -261,17 +267,10 @@ impl BitGoPsbt {
         memo: &[u8],
         unified_address: Option<String>,
     ) -> Result<(), WasmUtxoError> {
-        /// Length-check a boundary byte string, naming the field and its expected size in the error.
-        fn fixed<const N: usize>(bytes: &[u8], field: &str) -> Result<[u8; N], WasmUtxoError> {
-            bytes.try_into().map_err(|_| {
-                WasmUtxoError::new(&format!("{field} must be {N} bytes, got {}", bytes.len()))
-            })
-        }
-
-        let recipient: OrchardAddressBytes = fixed::<ORCHARD_ADDRESS_SIZE>(recipient, "recipient")?;
-        let anchor: AnchorBytes = fixed::<ANCHOR_SIZE>(anchor, "anchor")?;
-        let memo: MemoBytes = fixed::<MEMO_SIZE>(memo, "memo")?;
-        let ovk: Option<OvkBytes> = ovk.map(|v| fixed::<OVK_SIZE>(&v, "ovk")).transpose()?;
+        let recipient: OrchardAddressBytes = fixed_bytes(recipient, "recipient")?;
+        let anchor: AnchorBytes = fixed_bytes(anchor, "anchor")?;
+        let memo: MemoBytes = fixed_bytes(memo, "memo")?;
+        let ovk: Option<OvkBytes> = ovk.map(|v| fixed_bytes(&v, "ovk")).transpose()?;
         self.zcash_mut()?
             .add_ironwood_output(
                 &recipient,
@@ -304,12 +303,7 @@ impl BitGoPsbt {
         outputs: JsValue,
         anchor: &[u8],
     ) -> Result<Vec<u32>, WasmUtxoError> {
-        let anchor: AnchorBytes = anchor.try_into().map_err(|_| {
-            WasmUtxoError::new(&format!(
-                "anchor must be {ANCHOR_SIZE} bytes, got {}",
-                anchor.len()
-            ))
-        })?;
+        let anchor: AnchorBytes = fixed_bytes(anchor, "anchor")?;
 
         let arr = js_sys::Array::from(&outputs);
         let requests = arr
@@ -456,7 +450,7 @@ impl BitGoPsbt {
     /// A PCZT is the shielded-bundle counterpart to a PSBT: it accumulates the orchard action
     /// (spend + output), the ZIP-244-committed `out_ciphertext`, and — once
     /// [`Self::combine_ironwood_proof`] has run — the Halo2 `zkproof` and binding signature,
-    /// bridging this PSBT to the external proof service and back (see
+    /// bridging this PSBT to an external prover and back (see
     /// [`crate::zcash::ironwood_pczt`] / [`crate::zcash::ironwood_build`]).
     ///
     /// Present only after [`Self::add_ironwood_output`] has been called on a v6 PSBT; `undefined`
@@ -632,6 +626,306 @@ impl BitGoPsbt {
         ))
     }
 }
+// =============================================================================
+// Zcash v6 (Ironwood) shielded spends: the build → ciphertexts → sign → prove flow
+// =============================================================================
+
+#[wasm_bindgen]
+impl BitGoPsbt {
+    /// Constructor: add the shielded spends (and optionally shielded outputs) as a single
+    /// **keyless** orchard PCZT stored in the PSBT — the deshield and shielded→shielded
+    /// Constructor for a caller that holds no viewing keys.
+    ///
+    /// * `spends` - one entry per spent note: `{ recipient: Uint8Array, value: bigint,
+    ///   rho: Uint8Array, rseed: Uint8Array, cmx: Uint8Array, witness: { position: number,
+    ///   authPath: Uint8Array }, nullifier: Uint8Array }` — the note's plaintext, its Merkle
+    ///   witness (`authPath` is the 32 sibling hashes flattened, as `IronwoodWitness.auth_path`
+    ///   returns it; validated against the anchor at construction), and the nullifier (from
+    ///   the note store or derived by the viewing-key holder)
+    /// * `outputs` - zero or more requested shielded outputs, shaped exactly like
+    ///   `add_ironwood_outputs`' entries; every output's `ovk` must be omitted (encryption
+    ///   belongs to the viewing-key holder in the spend flow) and its amount must be > 0
+    /// * `anchor` - the Ironwood note-commitment-tree root every spend's witness commits to
+    ///   (32 bytes)
+    ///
+    /// One input kind: rejected when the PSBT already carries transparent inputs, and one
+    /// call per PSBT. Every real spend carries the placeholder `rk` and no `alpha`; the
+    /// signer installs the randomized `rk` (`add_ironwood_spend_randomizers`) before any
+    /// sighash is computed. Every output's `out_ciphertext` is a random placeholder,
+    /// replaced under the FVK's `ovk`. No key material is accepted or stored.
+    ///
+    /// Returns `{ spendActionIndices: number[], outputActionIndices: number[] }` — the action
+    /// index each requested spend/output landed at. The actions are shuffled, so request
+    /// order does not equal action order: any caller correlating per-action data (a stored
+    /// Unified Address, an out-ciphertext) must go through these indices.
+    pub fn add_ironwood_shielded_spends(
+        &mut self,
+        spends: JsValue,
+        outputs: JsValue,
+        anchor: &[u8],
+    ) -> Result<JsValue, WasmUtxoError> {
+        let anchor: AnchorBytes = fixed_bytes(anchor, "anchor")?;
+        let spends = js_sys::Array::from(&spends)
+            .iter()
+            .map(|item| IronwoodKeylessSpendSpec::try_from_js_value(&item))
+            .collect::<Result<Vec<_>, _>>()?;
+        let outputs = js_sys::Array::from(&outputs)
+            .iter()
+            .map(|item| IronwoodOutputRequest::try_from_js_value(&item))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.zcash_mut()?
+            .add_shielded_spends(&spends, &outputs, &anchor, rand::rngs::OsRng)
+            .map_err(WasmUtxoError::from)?
+            .try_to_js_value()
+    }
+
+    /// The out-ciphertext request: `{ pczt: Uint8Array, actionIndices: number[] }` — the raw
+    /// PCZT bytes plus the real outputs still pending their `out_ciphertext`. The viewing-key
+    /// holder re-encrypts each pending output under its FVK `ovk` and returns one 80-byte
+    /// ciphertext per action index, applied with `add_ironwood_out_ciphertexts`.
+    ///
+    /// Throws when the PSBT carries no spend bundle (`IronwoodPsbtError.NotSpendBundle`) or
+    /// nothing is pending (`IronwoodPsbtError.NothingPending`, e.g. a pure deshield).
+    pub fn ironwood_out_ciphertext_request(&self) -> Result<JsValue, WasmUtxoError> {
+        let (pczt, action_indices) = self
+            .zcash()?
+            .out_ciphertext_request()
+            .map_err(WasmUtxoError::from)?;
+        js_obj!(
+            "pczt" => pczt,
+            "actionIndices" => action_indices,
+        )
+    }
+
+    /// Apply the out-ciphertext response: an array of
+    /// `{ actionIndex: number, outCiphertext: Uint8Array }` — one per pending real output.
+    /// **Atomic**: every entry is validated before anything is written, so one bad entry
+    /// stores nothing. Idempotent for identical bytes; different bytes for an already-set
+    /// index throw (`IronwoodPsbtError.OutCiphertextConflict`). Rejected once any signature
+    /// exists (`IronwoodPsbtError.AlreadySigned`).
+    pub fn add_ironwood_out_ciphertexts(&mut self, entries: JsValue) -> Result<(), WasmUtxoError> {
+        let entries: Vec<OutCiphertextEntry> = serde_wasm_bindgen::from_value(entries)
+            .map_err(|e| WasmUtxoError::new(&format!("invalid out-ciphertext entries: {e}")))?;
+        let entries = entries
+            .into_iter()
+            .map(|entry| {
+                Ok((
+                    entry.action_index,
+                    fixed_bytes(&entry.out_ciphertext, "outCiphertext")?,
+                ))
+            })
+            .collect::<Result<Vec<_>, IronwoodPsbtError>>()?;
+        self.zcash_mut()?
+            .add_out_ciphertexts(&entries)
+            .map_err(WasmUtxoError::from)
+    }
+
+    /// Install the signer's randomized `rk`s: an array of
+    /// `{ actionIndex: number, alpha: Uint8Array, rk: Uint8Array }` — one per real spend,
+    /// with `rk = ak.randomize(alpha)`. **Only `rk` is stored**: the PSBT never carries
+    /// `alpha` or the wallet's `ak` (with `rk`, an `alpha` would reveal `ak`).
+    ///
+    /// `spendValidatingKey` (the wallet's 32-byte `ak`, optional) makes the installer check
+    /// `rk == ak.randomize(alpha)` before storing; without it the pair is checked later, by
+    /// the client's key-free verifier and by the keyed prover. **Atomic**, and rejected once
+    /// any signature exists (`IronwoodPsbtError.AlreadySigned`).
+    pub fn add_ironwood_spend_randomizers(
+        &mut self,
+        entries: JsValue,
+        spend_validating_key: Option<Vec<u8>>,
+    ) -> Result<(), WasmUtxoError> {
+        let entries: Vec<SpendRandomizerEntry> = serde_wasm_bindgen::from_value(entries)
+            .map_err(|e| WasmUtxoError::new(&format!("invalid spend randomizer entries: {e}")))?;
+        let ak: Option<[u8; 32]> = spend_validating_key
+            .map(|bytes| fixed_bytes(&bytes, "spendValidatingKey"))
+            .transpose()?;
+        let entries = entries
+            .into_iter()
+            .map(|entry| {
+                Ok((
+                    entry.action_index,
+                    fixed_bytes(&entry.alpha, "alpha")?,
+                    fixed_bytes(&entry.rk, "rk")?,
+                ))
+            })
+            .collect::<Result<Vec<_>, IronwoodPsbtError>>()?;
+        self.zcash_mut()?
+            .add_spend_randomizers(&entries, ak.as_ref())
+            .map_err(WasmUtxoError::from)
+    }
+
+    /// The ZIP-244 sig digest (32 bytes) the real spends' spend-auth signatures are computed
+    /// over. Every real output's `out_ciphertext` and every real spend's randomized `rk`
+    /// must be installed first — the digest commits both.
+    pub fn ironwood_spend_sighash(&self) -> Result<Vec<u8>, WasmUtxoError> {
+        self.zcash()?
+            .spend_sighash()
+            .map(|digest| digest.to_vec())
+            .map_err(WasmUtxoError::from)
+    }
+
+    /// Apply the signer's spend-auth signatures: an array of
+    /// `{ actionIndex: number, signature: Uint8Array }` — one per real spend, each a 64-byte
+    /// RedPallas signature over `ironwood_spend_sighash`, verified against the spend's
+    /// installed `rk` before it is stored. **Atomic.**
+    pub fn add_ironwood_spend_signatures(&mut self, entries: JsValue) -> Result<(), WasmUtxoError> {
+        let entries: Vec<SpendSignatureEntry> = serde_wasm_bindgen::from_value(entries)
+            .map_err(|e| WasmUtxoError::new(&format!("invalid spend signature entries: {e}")))?;
+        let entries = entries
+            .into_iter()
+            .map(|entry| {
+                Ok((
+                    entry.action_index,
+                    fixed_bytes(&entry.signature, "signature")?,
+                ))
+            })
+            .collect::<Result<Vec<_>, IronwoodPsbtError>>()?;
+        self.zcash_mut()?
+            .add_spend_signatures(&entries)
+            .map_err(WasmUtxoError::from)
+    }
+
+    /// The proof request for the keyed prover: the raw PCZT bytes with each real spend's
+    /// randomizer `alpha` patched in — `randomizers` is an array of
+    /// `{ actionIndex: number, alpha: Uint8Array }`, exactly one per real spend. The alphas
+    /// are written only to the returned bytes, never stored (with `rk`, an `alpha` would
+    /// reveal the wallet's `ak`). The proof the prover returns goes
+    /// straight to `combine_ironwood_proof`.
+    ///
+    /// Gated: every real output's `out_ciphertext`, every real spend's randomized `rk`, and
+    /// every real spend's spend-auth signature must be installed first. A shielding bundle
+    /// (dummy spends only) takes an empty array and is served as-is — but the shielding flow
+    /// hands the prover `getPczt()` bytes instead.
+    pub fn ironwood_proof_request(&self, randomizers: JsValue) -> Result<Vec<u8>, WasmUtxoError> {
+        let randomizers: Vec<ProofRequestAlpha> = serde_wasm_bindgen::from_value(randomizers)
+            .map_err(|e| WasmUtxoError::new(&format!("invalid proof request randomizers: {e}")))?;
+        let alphas = randomizers
+            .into_iter()
+            .map(|entry| Ok((entry.action_index, fixed_bytes(&entry.alpha, "alpha")?)))
+            .collect::<Result<Vec<_>, IronwoodPsbtError>>()?;
+        self.zcash()?
+            .proof_request(&alphas)
+            .map_err(WasmUtxoError::from)
+    }
+
+    /// The orchestration view of the shielded workflow, as
+    /// `{ inputKind: "transparent" | "shielded", pendingOutCiphertexts: number[],
+    /// pendingRandomizers: number[], pendingSpendSignatures: number[], readyForProof:
+    /// boolean }` — `readyForProof` means `ironwood_proof_request(randomizers)` succeeds and
+    /// `combine_ironwood_proof` then needs only the proof.
+    pub fn ironwood_shielded_status(&self) -> Result<JsValue, WasmUtxoError> {
+        self.zcash()?
+            .shielded_status()
+            .map_err(WasmUtxoError::from)?
+            .try_to_js_value()
+    }
+}
+
+/// Length-check a boundary byte string, naming the field and its expected size in the error.
+fn fixed_bytes<const N: usize>(
+    bytes: &[u8],
+    field: &'static str,
+) -> Result<[u8; N], IronwoodPsbtError> {
+    bytes.try_into().map_err(|_| IronwoodPsbtError::BadLength {
+        field,
+        expected: N,
+        actual: bytes.len(),
+    })
+}
+
+/// Read a required fixed-size byte field off a JS object.
+fn required_fixed_bytes<const N: usize>(
+    item: &JsValue,
+    field: &'static str,
+) -> Result<[u8; N], WasmUtxoError> {
+    let bytes = Vec::<u8>::try_from_js_value(&get_required_raw_field(item, field)?)?;
+    Ok(fixed_bytes(&bytes, field)?)
+}
+
+/// One `add_ironwood_out_ciphertexts` entry from JS: `{ actionIndex, outCiphertext }`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutCiphertextEntry {
+    action_index: usize,
+    out_ciphertext: serde_bytes::ByteBuf,
+}
+
+/// One `add_ironwood_spend_randomizers` entry from JS: `{ actionIndex, alpha, rk }`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpendRandomizerEntry {
+    action_index: usize,
+    alpha: serde_bytes::ByteBuf,
+    rk: serde_bytes::ByteBuf,
+}
+
+/// One `add_ironwood_spend_signatures` entry from JS: `{ actionIndex, signature }`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpendSignatureEntry {
+    action_index: usize,
+    signature: serde_bytes::ByteBuf,
+}
+
+/// One `ironwood_proof_request` randomizer from JS: `{ actionIndex, alpha }`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProofRequestAlpha {
+    action_index: usize,
+    alpha: serde_bytes::ByteBuf,
+}
+
+/// One shielded note to spend, as passed to `add_ironwood_shielded_spends`: the note's
+/// plaintext, its Merkle witness (`{ position, authPath }`, re-validated against the bundle's
+/// anchor at construction), and the nullifier.
+impl TryFromJsValue for IronwoodKeylessSpendSpec {
+    fn try_from_js_value(item: &JsValue) -> Result<Self, WasmUtxoError> {
+        let witness = get_required_raw_field(item, "witness")?;
+        let auth_path: [u8; IRONWOOD_MERKLE_DEPTH * 32] =
+            required_fixed_bytes(&witness, "authPath")?;
+        let mut path: WitnessAuthPath = [[0u8; 32]; IRONWOOD_MERKLE_DEPTH];
+        for (node, chunk) in path.iter_mut().zip(auth_path.chunks_exact(32)) {
+            node.copy_from_slice(chunk);
+        }
+        Ok(Self {
+            recipient: required_fixed_bytes(item, "recipient")?,
+            value: get_required_u64_field(item, "value")?,
+            rho: required_fixed_bytes(item, "rho")?,
+            rseed: required_fixed_bytes(item, "rseed")?,
+            cmx: required_fixed_bytes(item, "cmx")?,
+            witness: IronwoodWitness {
+                position: get_field(&witness, "position")?,
+                auth_path: path,
+            },
+            nullifier: required_fixed_bytes(item, "nullifier")?,
+        })
+    }
+}
+
+impl TryIntoJsValue for IronwoodActionMap {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "spendActionIndices" => self.spend_action_indices().to_vec(),
+            "outputActionIndices" => self.output_action_indices().to_vec(),
+        )
+    }
+}
+
+impl TryIntoJsValue for IronwoodShieldedStatus {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        let input_kind = match self.input_kind {
+            IronwoodInputKind::Transparent => "transparent",
+            IronwoodInputKind::Shielded => "shielded",
+        };
+        js_obj!(
+            "inputKind" => input_kind.to_string(),
+            "pendingOutCiphertexts" => self.pending_out_ciphertexts.clone(),
+            "pendingRandomizers" => self.pending_randomizers.clone(),
+            "pendingSpendSignatures" => self.pending_spend_signatures.clone(),
+            "readyForProof" => self.ready_for_proof,
+        )
+    }
+}
 
 // =============================================================================
 // IronwoodOutputRequest: one requested multi-recipient Ironwood shielded output
@@ -639,59 +933,13 @@ impl BitGoPsbt {
 
 impl TryFromJsValue for IronwoodOutputRequest {
     fn try_from_js_value(item: &JsValue) -> Result<Self, WasmUtxoError> {
-        let recipient_val = js_sys::Reflect::get(item, &"recipient".into())
-            .map_err(|_| WasmUtxoError::new("Missing 'recipient' field on Ironwood output"))?;
-        if recipient_val.is_undefined() {
-            return Err(WasmUtxoError::new(
-                "Missing 'recipient' field on Ironwood output",
-            ));
-        }
-        let recipient: OrchardAddressBytes = Bytes::<43>::try_from_js_value(&recipient_val)?.into();
-
-        let amount_val = js_sys::Reflect::get(item, &"amount".into())
-            .map_err(|_| WasmUtxoError::new("Missing 'amount' field on Ironwood output"))?;
-        if amount_val.is_undefined() {
-            return Err(WasmUtxoError::new(
-                "Missing 'amount' field on Ironwood output",
-            ));
-        }
-        if !amount_val.is_bigint() {
-            return Err(WasmUtxoError::new("'amount' must be a bigint"));
-        }
-        let amount = u64::try_from(js_sys::BigInt::unchecked_from_js(amount_val))
-            .map_err(|_| WasmUtxoError::new("'amount' must be a bigint convertible to u64"))?;
-
-        let memo_val = js_sys::Reflect::get(item, &"memo".into())
-            .map_err(|_| WasmUtxoError::new("Missing 'memo' field on Ironwood output"))?;
-        if memo_val.is_undefined() {
-            return Err(WasmUtxoError::new(
-                "Missing 'memo' field on Ironwood output",
-            ));
-        }
-        let memo: MemoBytes = Bytes::<512>::try_from_js_value(&memo_val)?.into();
-
-        let ovk_val = js_sys::Reflect::get(item, &"ovk".into()).unwrap_or(JsValue::UNDEFINED);
-        let ovk: Option<OvkBytes> = if ovk_val.is_undefined() || ovk_val.is_null() {
-            None
-        } else {
-            Some(Bytes::<32>::try_from_js_value(&ovk_val)?.into())
-        };
-
-        let unified_address_val =
-            js_sys::Reflect::get(item, &"unifiedAddress".into()).unwrap_or(JsValue::UNDEFINED);
-        let unified_address = if unified_address_val.is_undefined() || unified_address_val.is_null()
-        {
-            None
-        } else {
-            Some(String::try_from_js_value(&unified_address_val)?)
-        };
-
+        let ovk: Option<Vec<u8>> = get_field(item, "ovk")?;
         Ok(IronwoodOutputRequest {
-            recipient,
-            amount,
-            ovk,
-            memo,
-            unified_address,
+            recipient: required_fixed_bytes(item, "recipient")?,
+            amount: get_required_u64_field(item, "amount")?,
+            ovk: ovk.map(|ovk| fixed_bytes(&ovk, "ovk")).transpose()?,
+            memo: required_fixed_bytes(item, "memo")?,
+            unified_address: get_field(item, "unifiedAddress")?,
         })
     }
 }

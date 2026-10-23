@@ -149,6 +149,25 @@ pub(crate) fn get_nested_field<T: TryFromJsValue>(
         .map_err(|e| WasmUtxoError::new(&format!("{} (path: {})", e, path)))
 }
 
+/// Get a required raw field: present and not `undefined`
+pub(crate) fn get_required_raw_field(obj: &JsValue, key: &str) -> Result<JsValue, WasmUtxoError> {
+    let field_value = get_raw_field(obj, key)?;
+    if field_value.is_undefined() {
+        return Err(WasmUtxoError::new(&format!("Missing '{}' field", key)));
+    }
+    Ok(field_value)
+}
+
+/// Get a required `bigint` field as a `u64`
+pub(crate) fn get_required_u64_field(obj: &JsValue, key: &str) -> Result<u64, WasmUtxoError> {
+    let field_value = get_required_raw_field(obj, key)?;
+    if !field_value.is_bigint() {
+        return Err(WasmUtxoError::new(&format!("'{}' must be a bigint", key)));
+    }
+    u64::try_from(js_sys::BigInt::unchecked_from_js(field_value))
+        .map_err(|_| WasmUtxoError::new(&format!("'{}' must be a bigint convertible to u64", key)))
+}
+
 // =============================================================================
 // TryFromJsValue implementations for domain types
 // =============================================================================

@@ -44,9 +44,8 @@ pub fn zcash_ironwood_version_group_id() -> u32 {
 }
 
 /// A validated Merkle witness for an Ironwood/Orchard note commitment, from
-/// [`ironwood_build_witness`].
-///
-/// Not yet installed anywhere — see [`ironwood_build_witness`]'s docs.
+/// [`ironwood_build_witness`]. Its `position` and `auth_path` are what
+/// `BitGoPsbt::add_ironwood_shielded_spends` takes as a spend's witness.
 #[wasm_bindgen]
 pub struct IronwoodWitness {
     inner: crate::zcash::ironwood_build::IronwoodWitness,
@@ -75,8 +74,8 @@ impl IronwoodWitness {
 /// any input isn't a canonical field element, or if the witness doesn't recompute to `anchor`.
 ///
 /// This crate has no chain state, so the raw sibling-hash path must be supplied by the caller
-/// (typically BitGo's backend, querying a Zcash-aware service). The returned witness is not yet
-/// installed anywhere — hook it into a spend once real-spend construction exists.
+/// (typically BitGo's backend, querying a Zcash-aware service). The returned witness's
+/// `position` and `auth_path` feed a spend in `BitGoPsbt::add_ironwood_shielded_spends`.
 #[wasm_bindgen]
 pub fn ironwood_build_witness(
     cmx: &[u8],

@@ -965,8 +965,8 @@ impl ZcashBitGoPsbt {
 
     /// Like [`Self::combine_ironwood_proof`], but produces the `zkproof` itself (via
     /// [`crate::zcash::ironwood_build::create_proof`]) rather than requiring it from an external
-    /// proof service. Behind the `orchard-proving` feature — standalone tooling (e.g. the CLI)
-    /// that has no external proof service to call can enable it; the shipped WASM build must not,
+    /// prover. Behind the `orchard-proving` feature — standalone tooling (e.g. the CLI)
+    /// that has no external prover to call can enable it; the shipped WASM build must not,
     /// since it would link the halo2 circuit into every consumer. Consumes `self`.
     #[cfg(feature = "orchard-proving")]
     pub fn combine_ironwood_proof_locally<R: rand::RngCore + rand::CryptoRng>(

@@ -1493,7 +1493,7 @@ impl BitGoPsbt {
     ///
     /// Copies per input: partial_sigs, tap_key_sig, tap_script_sigs, proprietary.
     ///
-    /// Not supported for Zcash v6 (Ironwood) PSBTs: `deserialize_stripped` exists to accept an HSM
+    /// Not supported for Zcash v6 (Ironwood) PSBTs: `deserialize_stripped` exists to accept a signer
     /// response that has dropped everything but the signatures, but v6 bytes route to
     /// `deserialize_v6`, which requires the consensus branch id and the PCZT — so a stripped v6
     /// response would fail with a "missing its Ironwood PCZT" error describing a corrupt PSBT

@@ -1,9 +1,9 @@
 //! The Ironwood **spend** PSBT workflow: the keyless Constructor entry point
 //! ([`ZcashBitGoPsbt::add_shielded_spends`]) and the one-input-kind rule.
 //!
-//! The build service (IMS) selects notes and calls [`ZcashBitGoPsbt::add_shielded_spends`]
-//! with the notes' plaintext, their witnesses, the KMS-derived nullifiers and the requested
-//! outputs — and no key at all. The constructed PCZT is stored in the PSBT together with the
+//! The caller selects notes and calls [`ZcashBitGoPsbt::add_shielded_spends`] with the notes'
+//! plaintext, their witnesses, their nullifiers and the requested outputs — and no key at
+//! all. The constructed PCZT is stored in the PSBT together with the
 //! per-output Unified Addresses.
 //!
 //! The PSBT never carries the wallet's spend-validating key `ak`, nor the spends' randomizers
@@ -25,20 +25,21 @@ use super::{IronwoodOutputRequest, ZcashBitGoPsbt};
 impl ZcashBitGoPsbt {
     /// Constructor role: build the shielded spends (and optionally shielded outputs) as a
     /// single **keyless** orchard PCZT and store it in the PSBT — the deshield and
-    /// shielded→shielded Constructor for a build service that holds no viewing keys.
+    /// shielded→shielded Constructor for a caller that holds no viewing keys.
     ///
     /// Each entry of `spends` carries the spent note's plaintext (`recipient`/`value`/`rho`/
-    /// `rseed`/`cmx`), its Merkle witness, and the nullifier (from the note store, or from
-    /// KMS's `generate-nullifiers`). Each entry of `outputs` is a requested shielded output
-    /// (its `ovk` must be `None`: KMS owns encryption in the spend flow). The bundle has
+    /// `rseed`/`cmx`), its Merkle witness, and the nullifier (from the note store, or derived
+    /// by the viewing-key holder). Each entry of `outputs` is a requested shielded output
+    /// (its `ovk` must be `None`: encryption belongs to the viewing-key holder in the spend
+    /// flow). The bundle has
     /// `max(spends, outputs)` actions; the actions are shuffled, so the returned
     /// [`IronwoodActionMap`](crate::zcash::ironwood_build::IronwoodActionMap) gives, for each
     /// `spends[i]`/`outputs[i]`, the action index it landed at.
     ///
     /// Every real spend carries [`PLACEHOLDER_RK`](crate::zcash::ironwood_build::PLACEHOLDER_RK)
     /// as its `rk` and no `alpha`; the signer installs the randomized `rk = ak.randomize(alpha)`
-    /// before any sighash is computed. Every output's `out_ciphertext` is a random placeholder —
-    /// KMS replaces it under its FVK `ovk`. No FVK ever enters the stored
+    /// before any sighash is computed. Every output's `out_ciphertext` is a random placeholder,
+    /// replaced under the FVK's `ovk`. No FVK ever enters the stored
     /// PCZT.
     ///
     /// Rules enforced here:
@@ -89,7 +90,7 @@ impl ZcashBitGoPsbt {
             self.store_ironwood_pczt_and_unified_addresses(pczt, action_map, outputs)?;
         // Every real output starts pending its `out_ciphertext`: the
         // little-endian bitset over the bundle's actions starts all-clear, so
-        // `pending_out_ciphertexts` reports the full request until KMS's ciphertexts land.
+        // `pending_out_ciphertexts` reports the full request until the ciphertexts land.
         super::propkv::set_ironwood_out_ciphertexts_set(
             &mut self.psbt,
             vec![0u8; action_count.div_ceil(8)],
@@ -124,7 +125,7 @@ impl ZcashBitGoPsbt {
         Ok(())
     }
 
-    // ---- The KMS out_ciphertext / proof workflow ----
+    // ---- The out_ciphertext / proof workflow ----
 
     /// The stored PCZT, raw and deserialized, or [`IronwoodPsbtError::NotSpendBundle`] if
     /// absent.
@@ -142,7 +143,7 @@ impl ZcashBitGoPsbt {
     ///
     /// The ciphertexts-first gate runs on bundles mid-way through the signer's randomizer writes,
     /// which the full verifier rejects, so it uses this classification alone; the paths that hand
-    /// data to KMS run the verifier first.
+    /// the PCZT out run the verifier first.
     fn real_output_indices(pczt: &orchard::pczt::Bundle) -> Vec<usize> {
         pczt.actions()
             .iter()
@@ -188,9 +189,8 @@ impl ZcashBitGoPsbt {
         self.pending_out_ciphertexts_in(&pczt)
     }
 
-    /// The KMS out-ciphertext request: the raw PCZT bytes plus the real
-    /// outputs still pending their `out_ciphertext`. KMS decrypts nothing here — it
-    /// re-encrypts each pending output under its FVK `ovk` and returns one 80-byte
+    /// The out-ciphertext request: the raw PCZT bytes plus the real outputs still pending
+    /// their `out_ciphertext`. The viewing-key holder decrypts nothing here — it re-encrypts each pending output under its FVK `ovk` and returns one 80-byte
     /// ciphertext per action index, applied with [`Self::add_out_ciphertexts`].
     ///
     /// Errors with [`IronwoodPsbtError::NotSpendBundle`] when no PCZT is stored or the
@@ -284,7 +284,7 @@ impl ZcashBitGoPsbt {
         Ok(())
     }
 
-    /// Apply the KMS out-ciphertext response: one `(action_index,
+    /// Apply the out-ciphertext response: one `(action_index,
     /// out_ciphertext)` pair per pending real output. **Atomic** — every entry is validated
     /// before anything is written, so one bad entry stores nothing.
     ///

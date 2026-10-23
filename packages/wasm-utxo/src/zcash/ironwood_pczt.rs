@@ -1,13 +1,12 @@
 //! Serialization of an `orchard` **PCZT** (Partially Constructed Zcash Transaction) Ironwood
-//! bundle — the witness payload exchanged with the external Ironwood proof service and carried
+//! bundle — the witness payload exchanged with an external Ironwood prover and carried
 //! through the PSBT.
 //!
 //! `orchard::pczt::Bundle` is not itself serde-serializable, so this module bridges it to a
 //! compact wire form: a 1-byte [`FORMAT_VERSION`] followed by a [`postcard`]-encoded *mirror*
 //! struct whose fields are exactly what `orchard`'s `Bundle/Action/Spend/Output::parse(...)`
 //! consume. Serialize reads the bundle's public getters; deserialize reconstructs it via
-//! `parse(...)`. Both `wasm-utxo` (build/combine) and the proof service (prove) use this format;
-//! see `docs/ironwood-proof-service-contract.md`.
+//! `parse(...)`. Both `wasm-utxo` (build/combine) and the external prover (prove) use this format.
 //!
 //! Fields orchard exposes only as `>32`-byte arrays are stored as `Vec<u8>` (serde derives arrays
 //! only up to length 32) and length-checked on the way back in. `zip32_derivation` is not a
