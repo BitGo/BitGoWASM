@@ -5,6 +5,7 @@ use wasm_utxo::fixed_script_wallet::bitgo_psbt::ZcashBitGoPsbt;
 use wasm_utxo::Network;
 
 use crate::input::{decode_input, read_input_bytes};
+use crate::psbt::common::zip302_no_memo;
 
 #[allow(clippy::too_many_arguments)]
 pub fn handle_add_shielded_output_command(
@@ -19,8 +20,8 @@ pub fn handle_add_shielded_output_command(
 ) -> Result<()> {
     let raw_bytes = read_input_bytes(&path, "PSBT")?;
     let bytes = decode_input(&raw_bytes)?;
-    let mut psbt = ZcashBitGoPsbt::deserialize_v6_pre_shield(&bytes, network)
-        .map_err(|e| anyhow!("Failed to parse v6 PSBT: {e}"))?;
+    let mut psbt = ZcashBitGoPsbt::deserialize(&bytes, network)
+        .map_err(|e| anyhow!("Failed to parse PSBT: {e}"))?;
 
     let recipient: [u8; 43] = hex::decode(&recipient)
         .context("invalid --recipient hex")?
@@ -43,7 +44,7 @@ pub fn handle_add_shielded_output_command(
             .context("invalid --memo hex")?
             .try_into()
             .map_err(|v: Vec<u8>| anyhow!("--memo must be 512 bytes, got {}", v.len()))?,
-        None => [0u8; 512],
+        None => zip302_no_memo(),
     };
 
     psbt.add_ironwood_output(
