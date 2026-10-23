@@ -1408,23 +1408,172 @@ mod tests {
         assert_eq!(hex::encode(internal), txid_display.trim(), "txid mismatch");
     }
 
+    /// Shielded → shielded: no transparent inputs or outputs, a fully-flagged Ironwood bundle
+    /// whose value balance is the ZIP-317 fee (exercises the empty transparent digest branch).
     #[test]
-    fn golden_selfsend_tx_parses_and_txid_matches() {
-        // Ironwood -> Ironwood self-send: no transparent inputs or outputs
-        // (exercises the empty transparent digest branch).
+    fn golden_shielded_selfsend_tx_parses_and_txid_matches() {
         assert_golden("selfsend");
 
         let raw = hex::decode(load_zcash_fixture("v6_selfsend_rawtx.hex").trim()).unwrap();
         let tx = decode_v6_transaction(&raw).unwrap();
         assert!(tx.transparent.input.is_empty());
         assert!(tx.transparent.output.is_empty());
-        assert_eq!(tx.ironwood_bundle.unwrap().actions.len(), 1);
+        let bundle = tx.ironwood_bundle.unwrap();
+        assert_eq!(bundle.actions.len(), 1);
+        assert_eq!(bundle.flags, 0x07, "spends | outputs | cross-address");
+        // A self-send still pays its ZIP-317 fee out of the pool: the value balance is the
+        // fee, not zero (100M in, 99.98M out).
+        assert_eq!(bundle.value_balance, 20_000);
+    }
+
+    /// A spend golden's `details.json`: the public values of a mined shielded-spend
+    /// transaction (see `test/fixtures/zcash/v6_unshield_details.json`).
+    #[derive(serde::Deserialize)]
+    struct SpendGoldenDetails {
+        txid: String,
+        block_height: u32,
+        consensus_branch_id: String,
+        expiry_height: u32,
+        lock_time: u32,
+        transparent_utxos_spent: Vec<serde_json::Value>,
+        transparent_outputs: Vec<GoldenTransparentOutput>,
+        fee_zat: i64,
+        value_balance_zat: i64,
+        ironwood_anchor: String,
+        flags_byte: u8,
+        num_actions: usize,
+        proof_size_bytes: usize,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct GoldenTransparentOutput {
+        value_zat: u64,
+        script_pubkey: String,
+    }
+
+    fn spend_golden_details(name: &str) -> SpendGoldenDetails {
+        serde_json::from_str(
+            &crate::fixed_script_wallet::test_utils::fixtures::load_fixture(&format!(
+                "zcash/v6_{name}_details.json"
+            ))
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// Assert what a shielded-spend golden's details file records beyond the `(rawtx, txid)`
+    /// pair: header fields, the bundle's flags/anchor/action count/proof size, the transparent
+    /// I/O, and that the value balance pays exactly the fee plus the transparent outputs.
+    fn assert_spend_golden_details(name: &str) {
+        let details = spend_golden_details(name);
+        let raw = hex::decode(load_zcash_fixture(&format!("v6_{name}_rawtx.hex")).trim()).unwrap();
+        let tx = decode_v6_transaction(&raw).unwrap();
+        assert_eq!(
+            format!("{:#010x}", tx.consensus_branch_id),
+            details.consensus_branch_id
+        );
+        assert_eq!(tx.expiry_height, details.expiry_height);
+        assert_eq!(
+            tx.transparent.lock_time.to_consensus_u32(),
+            details.lock_time
+        );
+        let mut internal = compute_v6_txid(&tx);
+        internal.reverse();
+        assert_eq!(hex::encode(internal), details.txid, "txid mismatch");
+
+        assert_eq!(
+            tx.transparent.input.len(),
+            details.transparent_utxos_spent.len()
+        );
+        let outputs: Vec<(u64, String)> = tx
+            .transparent
+            .output
+            .iter()
+            .map(|out| {
+                (
+                    out.value.to_sat(),
+                    hex::encode(out.script_pubkey.as_bytes()),
+                )
+            })
+            .collect();
+        let expected_outputs: Vec<(u64, String)> = details
+            .transparent_outputs
+            .iter()
+            .map(|out| (out.value_zat, out.script_pubkey.clone()))
+            .collect();
+        assert_eq!(outputs, expected_outputs);
+
+        let bundle = tx.ironwood_bundle.as_ref().unwrap();
+        assert_eq!(bundle.flags, details.flags_byte);
+        assert_eq!(bundle.actions.len(), details.num_actions);
+        assert_eq!(hex::encode(bundle.anchor), details.ironwood_anchor);
+        assert_eq!(bundle.proof.len(), details.proof_size_bytes);
+        assert_eq!(bundle.value_balance, details.value_balance_zat);
+        let paid_out: u64 = outputs.iter().map(|(value, _)| value).sum();
+        assert_eq!(
+            bundle.value_balance,
+            details.fee_zat + paid_out as i64,
+            "the pool pays the fee plus the transparent outputs"
+        );
+    }
+
+    /// Ironwood → transparent deshielding: a mined transaction spending an Ironwood note into a
+    /// transparent P2PKH payout (valueBalance > 0, one transparent output).
+    #[test]
+    fn golden_unshield_tx_parses_and_txid_matches() {
+        assert_golden("unshield");
+        assert_spend_golden_details("unshield");
+    }
+
+    /// Ironwood → Ironwood shielded transfer: a mined transaction spending a note into a single
+    /// shielded output (zero transparent I/O; the value balance is the fee).
+    #[test]
+    fn golden_shielded_transfer_tx_parses_and_txid_matches() {
+        assert_golden("shielded_transfer");
+        assert_spend_golden_details("shielded_transfer");
     }
 
     #[test]
     fn golden_shield_1zec_tx_parses_and_txid_matches() {
         // Transparent -> Ironwood shielding of 1 ZEC.
         assert_golden("shield1zec");
+    }
+
+    /// Each golden's header branch id is the branch in force at its testnet mined height, and
+    /// that same branch is in force on mainnet from the upgrade's mainnet activation height.
+    /// The v6 wire carries no network field, so the goldens double as mainnet vectors for that
+    /// upgrade.
+    #[test]
+    fn golden_branch_ids_match_both_networks() {
+        use crate::zcash::{branch_id_for_height, network_upgrade_at_height};
+
+        let unshield_height = spend_golden_details("unshield").block_height;
+        let shielded_transfer_height = spend_golden_details("shielded_transfer").block_height;
+        for (name, testnet_height) in [
+            ("shield", 4_189_926),
+            ("selfsend", 4_190_523),
+            ("shield1zec", 4_190_501),
+            ("shield_multisig", 4_253_129),
+            ("unshield", unshield_height),
+            ("shielded_transfer", shielded_transfer_height),
+        ] {
+            let raw =
+                hex::decode(load_zcash_fixture(&format!("v6_{name}_rawtx.hex")).trim()).unwrap();
+            let branch_id = decode_v6_transaction(&raw).unwrap().consensus_branch_id;
+            let upgrade = network_upgrade_at_height(testnet_height, false).unwrap();
+            assert_eq!(upgrade.branch_id(), branch_id, "{name} on testnet");
+            let mainnet_height = upgrade.mainnet_activation_height();
+            assert_eq!(
+                branch_id_for_height(mainnet_height, true),
+                Some(branch_id),
+                "{name} on mainnet"
+            );
+            assert_ne!(
+                branch_id_for_height(mainnet_height - 1, true),
+                Some(branch_id),
+                "{name} is not valid on mainnet before the upgrade"
+            );
+        }
     }
 
     #[test]
@@ -1507,6 +1656,23 @@ mod tests {
         #[test]
         fn shield1zec_matches_zebra() {
             cross_check("shield1zec");
+        }
+
+        #[test]
+        fn shield_multisig_matches_zebra() {
+            cross_check("shield_multisig");
+        }
+
+        /// The real mined deshield (Ironwood → transparent payout), captured under NU7.
+        #[test]
+        fn unshield_matches_zebra() {
+            cross_check("unshield");
+        }
+
+        /// The real mined shielded → shielded transfer, captured under NU7.
+        #[test]
+        fn shielded_transfer_matches_zebra() {
+            cross_check("shielded_transfer");
         }
     }
 }

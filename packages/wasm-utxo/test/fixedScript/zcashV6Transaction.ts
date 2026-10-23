@@ -13,8 +13,16 @@ function readFixture(name: string): string {
 }
 
 describe("ZcashV6Transaction", function () {
-  // Real testnet transactions captured from the Ironwood reference.
-  for (const name of ["shield", "selfsend", "shield1zec"]) {
+  // Mined testnet transactions: shield, selfsend, shield1zec and shield_multisig under NU6.3,
+  // unshield and shielded_transfer under NU7 (see docs/zcash-v6-transaction.md).
+  for (const name of [
+    "shield",
+    "selfsend",
+    "shield1zec",
+    "shield_multisig",
+    "unshield",
+    "shielded_transfer",
+  ]) {
     it(`decodes, round-trips, and reports the canonical txid for ${name}`, function () {
       const raw = Buffer.from(readFixture(`v6_${name}_rawtx.hex`), "hex");
       const expectedTxid = readFixture(`v6_${name}_txid.hex`);
@@ -32,15 +40,33 @@ describe("ZcashV6Transaction", function () {
     });
   }
 
-  it("exposes inspection fields for the self-send (fully shielded) tx", function () {
+  // Shielded → shielded (self-send): the bundle is fully flagged and the only value leaving
+  // the pool is the fee.
+  it("exposes inspection fields for the shielded→shielded self-send tx", function () {
     const tx = ZcashV6Transaction.fromBytes(
       Buffer.from(readFixture("v6_selfsend_rawtx.hex"), "hex"),
     );
     assert.strictEqual(tx.consensusBranchId, 0x37a5165b);
     assert.strictEqual(tx.expiryHeight, 0);
     assert.strictEqual(tx.ironwoodFlags, 0x07);
+    // A self-send still pays its ZIP-317 fee out of the pool (100M in, 99.98M out).
+    assert.strictEqual(tx.ironwoodValueBalance, 20000n);
+    assert.strictEqual(tx.ironwoodActionCount, 1);
     assert.strictEqual(tx.ironwoodAnchor?.length, 32);
     assert.strictEqual(typeof tx.ironwoodValueBalance, "bigint");
+  });
+
+  // Deshield: the Ironwood pool pays out (valueBalance > 0) under the NU7 branch, with a
+  // transparent P2PKH payout on the wire.
+  it("exposes inspection fields for the unshield tx", function () {
+    const tx = ZcashV6Transaction.fromBytes(
+      Buffer.from(readFixture("v6_unshield_rawtx.hex"), "hex"),
+    );
+    assert.strictEqual(tx.consensusBranchId, 0x77190ad9);
+    assert.strictEqual(tx.expiryHeight, 4532274);
+    assert.strictEqual(tx.ironwoodFlags, 0x07);
+    assert.strictEqual(tx.ironwoodActionCount, 1);
+    assert.ok(tx.ironwoodValueBalance > 0n, "a deshield pays out of the pool");
   });
 
   it("exposes the transparent inputs' prevouts of the reference shield tx", function () {

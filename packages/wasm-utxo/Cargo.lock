@@ -3801,6 +3801,7 @@ dependencies = [
  "colored",
  "ff 0.13.1",
  "hex",
+ "incrementalmerkletree 0.8.2",
  "num-bigint 0.4.6",
  "orchard 0.15.0",
  "pasta_curves 0.5.1",
@@ -3808,7 +3809,9 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "serde_json",
+ "shardtree",
  "wasm-utxo",
+ "zcash_note_encryption 0.4.1",
 ]
 
 [[package]]

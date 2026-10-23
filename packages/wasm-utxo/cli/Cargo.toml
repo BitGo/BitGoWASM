@@ -25,3 +25,9 @@ num-bigint = "0.4"
 colored = "2.1"
 ptree = "0.5"
 rand = "0.8"
+
+# Used only by the `examples/` Ironwood capture tools (note scanning and tree witnessing).
+[dev-dependencies]
+incrementalmerkletree = { version = "0.8", features = ["legacy-api"] }
+shardtree = "=0.6.2"
+zcash_note_encryption = "0.4"

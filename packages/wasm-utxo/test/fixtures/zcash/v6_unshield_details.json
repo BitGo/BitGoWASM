@@ -1,0 +1,24 @@
+{
+  "description": "Ironwood -> transparent deshielding transaction (v6, ironwood_v3, PostNu6_3 circuit). Built and signed with this codebase's CLI (one Ironwood spend, one transparent P2PKH payout), proven locally with the orchard-proving feature, broadcast to a live Zcash testnet zebrad node via sendrawtransaction and mined at block 4532255 under the NU7 consensus branch.",
+  "network": "test",
+  "txid": "93b98b4a68527e10246b577bef45edee65a7d6e8d27acc0e82abc8836f26ed54",
+  "block_height": 4532255,
+  "consensus_branch_id": "0x77190ad9",
+  "version_group_id": "0xd884b698",
+  "expiry_height": 4532274,
+  "lock_time": 0,
+  "transparent_utxos_spent": [],
+  "transparent_outputs": [
+    {
+      "value_zat": 99980000,
+      "script_pubkey": "76a91413ce104504a9104edf1655c9a30a3d5b594591b488ac"
+    }
+  ],
+  "spent_note_zat": 99990000,
+  "fee_zat": 10000,
+  "value_balance_zat": 99990000,
+  "ironwood_anchor": "0360e5993f01c34883ca23882249e04a9003865ac9a826205097652567a74c21",
+  "flags_byte": 7,
+  "num_actions": 1,
+  "proof_size_bytes": 4992
+}
