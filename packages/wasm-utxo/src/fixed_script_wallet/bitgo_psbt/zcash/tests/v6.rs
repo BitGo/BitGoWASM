@@ -379,16 +379,14 @@ fn combine_uses_only_required_signatures() {
 /// The v4 code paths refuse a v6 PSBT instead of emitting a v4-shaped transaction (which would
 /// be unbroadcastable) or a ZIP-243 signature (which could never verify).
 ///
-/// `serialize()` is deliberately excluded: it is v6-aware (routes to `serialize_v6()` when
-/// `is_ironwood_v6()`), so a v6 PSBT round-trips through the standard `serialize`/`fromBytes`
-/// path without the v4 tx-replacement dance — see `serialize()`'s doc comment.
+/// `serialize()` and `extract_unsigned_zcash_transaction()` are deliberately excluded: both are
+/// v6-aware (they route to the v6 encoder when `is_ironwood_v6()`), so a v6 PSBT round-trips
+/// through the standard `serialize`/`fromBytes` path and yields its embedded unsigned v6
+/// transaction — see their doc comments.
 #[test]
 fn v4_paths_reject_a_v6_psbt() {
     let z = build_shield_psbt("v6_v4_guard");
     for err in [
-        z.extract_unsigned_zcash_transaction()
-            .unwrap_err()
-            .to_string(),
         z.compute_txid().unwrap_err().to_string(),
         z.clone().extract_tx().unwrap_err().to_string(),
     ] {
@@ -415,6 +413,99 @@ fn v4_paths_reject_a_v6_psbt() {
     assert!(
         generic.psbt().inputs[0].partial_sigs.is_empty(),
         "no ZIP-243 signature reached partial_sigs"
+    );
+}
+
+/// `extract_unsigned_zcash_transaction` is v6-aware: for a transparent-only v6 PSBT (the shape
+/// IMS builds for post-NU7 t->t sends) it returns the bundle-less unsigned v6 transaction,
+/// whose ZIP-244 txid equals `unsigned_v6_txid()` — the same invariant the JS-level
+/// `getUnsignedTransaction()` relies on for sizing and diffing.
+#[test]
+fn extract_unsigned_v6_tx_transparent_only_round_trips() {
+    let seed = "v6_unsigned_transparent";
+    let wallet_keys = RootWalletKeys::new(get_test_wallet_keys(seed));
+    let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
+
+    let mut psbt =
+        BitGoPsbt::new_zcash_v6_at_height(Network::ZcashTestnet, &wallet_keys, nu6_3, None, None)
+            .unwrap();
+    psbt.add_wallet_input(
+        Txid::from_byte_array([0x44u8; 32]),
+        0,
+        200_000_000,
+        &wallet_keys,
+        ScriptId { chain: 0, index: 0 },
+        WalletInputOptions::default(),
+    )
+    .unwrap();
+    psbt.add_wallet_output(0, 1, 199_900_000, &wallet_keys)
+        .unwrap();
+
+    let BitGoPsbt::Zcash(z, _) = psbt else {
+        panic!("expected Zcash PSBT");
+    };
+    assert!(z.require_no_shielded_output_ever_added().unwrap());
+
+    let raw = z.extract_unsigned_zcash_transaction().unwrap();
+    let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+    assert_eq!(tx.transparent.input.len(), 1);
+    assert_eq!(tx.transparent.output.len(), 1);
+    assert!(
+        tx.transparent.input[0].script_sig.is_empty(),
+        "unsigned: no signatures yet"
+    );
+    assert!(
+        tx.ironwood_bundle.is_none(),
+        "transparent-only v6 tx has no Ironwood bundle"
+    );
+    assert_eq!(
+        crate::zcash::v6::compute_v6_txid(&tx),
+        z.unsigned_v6_txid().unwrap(),
+        "serialized bytes must commit to the same ZIP-244 txid as unsigned_v6_txid"
+    );
+}
+
+/// Same v6-awareness for a shielding v6 PSBT: extraction succeeds pre-signing and pre-proof
+/// (unlike `extract_transparent_only_v6_tx`/`combine_ironwood_proof`) and is deterministic.
+///
+/// Size honesty: the zero-padded spend-auth slots and proof slot make the unsigned bytes
+/// structurally complete — they round-trip the wire decoder, the proof field carries exactly
+/// `Proof::expected_proof_size(n_actions)` bytes (what the finalized transaction will, so a
+/// fee check on these bytes prices the Halo2 proof correctly instead of under-counting it
+/// by several KB), and the ZIP-244 txid still equals `unsigned_v6_txid()` since ZIP-244
+/// commits to neither slot.
+#[test]
+fn extract_unsigned_v6_tx_shielded_succeeds_pre_proof() {
+    let z = build_shield_psbt("v6_unsigned_shield");
+    assert!(!z.require_no_shielded_output_ever_added().unwrap());
+
+    let raw = z.extract_unsigned_zcash_transaction().unwrap();
+    assert!(!raw.is_empty(), "unsigned v6 tx bytes must be non-empty");
+    let raw_again = z.extract_unsigned_zcash_transaction().unwrap();
+    assert_eq!(raw, raw_again, "extraction must be deterministic");
+
+    let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+    let bundle = tx
+        .ironwood_bundle
+        .as_ref()
+        .expect("shielded extraction carries the Ironwood bundle");
+    assert_eq!(
+        bundle.proof.len(),
+        orchard::Proof::expected_proof_size(bundle.actions.len()),
+        "proof slot must be padded to the finalized size, not empty"
+    );
+    assert!(
+        bundle.spend_auth_sigs.iter().all(|sig| sig == &[0u8; 64]),
+        "unsigned: spend-auth slots are zero-padded"
+    );
+    assert!(
+        bundle.binding_sig == [0u8; 64],
+        "unsigned: binding signature slot is zero"
+    );
+    assert_eq!(
+        crate::zcash::v6::compute_v6_txid(&tx),
+        z.unsigned_v6_txid().unwrap(),
+        "padded slots are txid-neutral: ZIP-244 commits to neither"
     );
 }
 
