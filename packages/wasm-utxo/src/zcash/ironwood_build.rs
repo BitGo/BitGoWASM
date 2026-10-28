@@ -32,7 +32,7 @@
 use rand::{CryptoRng, RngCore};
 
 use orchard::builder::{Builder, BundleType};
-use orchard::bundle::BundleVersion;
+use orchard::bundle::{BundleVersion, Flags};
 #[cfg(any(test, feature = "orchard-proving"))]
 use orchard::keys::Scope;
 use orchard::keys::{FullViewingKey, OutgoingViewingKey};
@@ -326,8 +326,11 @@ pub enum IronwoodVerifyCheck {
     /// A real spend carries its randomizer `alpha` on the wire: with `rk` it reveals the
     /// wallet's `ak` (`ak = rk − [alpha]·G`).
     RandomizerPresent,
-    /// The bundle is not an Ironwood V3 bundle with the default flags.
+    /// The bundle is not an Ironwood V3 bundle.
     BundleVersion,
+    /// The bundle's flags do not match its contents (spends enabled iff a real spend is
+    /// present, outputs iff a real output is, cross-address always enabled).
+    Flags,
     /// A value-0 (dummy) output is paired with a dummy spend, so the value-based
     /// accounting cannot distinguish it from a real output.
     ZeroValueOutput,
@@ -371,6 +374,7 @@ impl core::fmt::Display for IronwoodVerifyCheck {
             Self::ViewingKeyPresent => "viewing key present",
             Self::RandomizerPresent => "randomizer present",
             Self::BundleVersion => "bundle version",
+            Self::Flags => "flags",
             Self::ZeroValueOutput => "zero-value output",
             Self::SpendSignature => "spend signature",
             Self::MissingPlaintext => "missing plaintext",
@@ -666,6 +670,27 @@ impl IronwoodActionMap {
     }
 }
 
+/// The Ironwood bundle flags for a build with the given real sides: spends are enabled iff the
+/// bundle carries real spends, outputs iff it carries real outputs, and cross-address transfers
+/// are always enabled (the least-restrictive value the Ironwood V3 version permits). Fabricated
+/// value-0 halves — the dummy spends on shielding builds, the dummy outputs on deshields —
+/// satisfy the disabled bits: the action circuit only forbids non-zero value on a disabled side.
+pub(crate) fn ironwood_flags(has_spends: bool, has_outputs: bool) -> Flags {
+    // Flag-byte layout (Zcash §7.1): bit 0 enables spends, bit 1 outputs, and bit 2
+    // (`enableCrossAddress`) is set on every Ironwood V3 bundle.
+    let byte = 0b100 | u8::from(has_spends) | (u8::from(has_outputs) << 1);
+    Flags::from_byte(byte, BundleVersion::ironwood_v3())
+        .expect("the Ironwood V3 flag byte is always representable")
+}
+
+/// The wire byte of [`ironwood_flags`].
+pub(crate) fn ironwood_flag_byte(has_spends: bool, has_outputs: bool) -> u8 {
+    let bundle_version = BundleVersion::ironwood_v3();
+    ironwood_flags(has_spends, has_outputs)
+        .to_byte(bundle_version)
+        .expect("the Ironwood V3 flag byte is always representable")
+}
+
 /// Constructor: build an Ironwood bundle as an orchard PCZT from real spends and/or requested
 /// outputs — the general Constructor for the shielding (outputs only), unshielding (spends only),
 /// and shielded-transfer flows.
@@ -714,7 +739,7 @@ pub fn construct_spend_pczt_multi<R: RngCore + CryptoRng>(
     let mut builder = Builder::new(
         BundleType::UNPADDED,
         bundle_version,
-        bundle_version.default_flags(),
+        ironwood_flags(!spends.is_empty(), !outputs.is_empty()),
         anchor_root,
     )
     .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
@@ -846,6 +871,8 @@ fn validate_constructed_out_ciphertexts<R: RngCore + CryptoRng>(
 /// Constructor: build a transparent → Ironwood shielding bundle (no real spends) as an orchard
 /// PCZT, for one or more outputs. Each output rides an orchard-`Builder`-fabricated dummy spend
 /// (`BundleType::UNPADDED`, so exactly one action per output); no key is needed.
+/// The bundle's flags disable spends: the fabricated dummy spends are declared dummies, not
+/// real spends.
 ///
 /// Also the dummy-spend fabricator the keyless spend constructor
 /// ([`crate::zcash::ironwood_construct::construct_spend_pczt_keyless`]) reuses for surplus
@@ -864,7 +891,7 @@ pub fn construct_shield_pczt_multi<R: RngCore + CryptoRng>(
     let mut builder = Builder::new(
         BundleType::UNPADDED,
         bundle_version,
-        bundle_version.default_flags(),
+        ironwood_flags(false, true),
         anchor_root,
     )
     .map_err(|e| IronwoodBuildError::Builder(e.to_string()))?;
@@ -1822,8 +1849,9 @@ mod tests {
         .unwrap();
         let data = pczt_action_data(&pczt).unwrap();
         assert_eq!(data.actions.len(), 1, "UNPADDED single output ⇒ one action");
-        // ironwood_v3 default flags = spends | outputs | cross-address.
-        assert_eq!(data.flags, 0x07);
+        // A shielding bundle disables spends (its only spend is the fabricated dummy):
+        // outputs | cross-address.
+        assert_eq!(data.flags, 0x06);
         // A pure output bundle (dummy spend has value 0): value_balance = 0 - amount.
         assert_eq!(data.value_balance, -(amount as i64));
     }
@@ -2391,7 +2419,7 @@ mod tests {
         assert_eq!(bundle.actions.len(), 1);
         assert_eq!(bundle.spend_auth_sigs.len(), 1);
         assert_eq!(bundle.proof.len(), Proof::expected_proof_size(1));
-        assert_eq!(bundle.flags, 0x07);
+        assert_eq!(bundle.flags, 0x06);
 
         // The action data survived unchanged from build → combine (digests are stable).
         assert_eq!(
@@ -2525,7 +2553,7 @@ mod tests {
 
         let orchard_bundle = OrchardBundle::<EffectsOnly, i64>::from_parts(
             actions,
-            BundleVersion::ironwood_v3().default_flags(),
+            Flags::from_byte(bundle.flags, BundleVersion::ironwood_v3()).expect("valid flags"),
             bundle.value_balance,
             Option::from(Anchor::from_bytes(bundle.anchor)).expect("valid anchor"),
             EffectsOnly,
@@ -3275,7 +3303,7 @@ mod tests {
         verify_spend_pczt(&bundle).unwrap();
 
         // Shielding bundle (dummy spend): every check is skipped, the cross-address restriction
-        // is a no-op under the default flags.
+        // is a no-op with cross-address enabled.
         let shield =
             construct_shield_pczt(&test_recipient(), 1_000, None, &anchor, &[0u8; 512], OsRng)
                 .unwrap();

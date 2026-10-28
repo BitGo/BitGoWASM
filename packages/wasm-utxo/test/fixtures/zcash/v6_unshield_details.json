@@ -1,5 +1,5 @@
 {
-  "description": "Ironwood -> transparent deshielding transaction (v6, ironwood_v3, PostNu6_3 circuit). Built and signed with this codebase's CLI (one Ironwood spend, one transparent P2PKH payout), proven locally with the orchard-proving feature, broadcast to a live Zcash testnet zebrad node via sendrawtransaction and mined at block 4532255 under the NU7 consensus branch.",
+  "description": "Ironwood -> transparent deshielding transaction (v6, ironwood_v3, PostNu6_3 circuit). Built and signed with this codebase's CLI (one Ironwood spend, one transparent P2PKH payout), proven locally with the orchard-proving feature, broadcast to a live Zcash testnet zebrad node via sendrawtransaction and mined at block 4532255 under the NU7 consensus branch. Built before the Constructor switched to content-matched flags: it carries 0x07, where the current code would emit 0x05 (spends | cross-address) for this spends-only bundle.",
   "network": "test",
   "txid": "93b98b4a68527e10246b577bef45edee65a7d6e8d27acc0e82abc8836f26ed54",
   "block_height": 4532255,

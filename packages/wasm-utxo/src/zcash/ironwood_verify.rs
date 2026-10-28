@@ -16,7 +16,9 @@
 //!   caller's own `ak` and FROST randomizers, each randomized `rk` is `ak.randomize(alpha)`;
 //! - `ViewingKeyPresent`: no viewing-key material (`fvk`, ZIP-32 derivation) leaks on a real spend;
 //! - `RandomizerPresent`: no real spend carries its `alpha`, which with `rk` reveals `ak`;
-//! - `BundleVersion`: the bundle is an Ironwood V3 bundle with the default flags;
+//! - `BundleVersion`: the bundle is an Ironwood V3 bundle;
+//! - `Flags`: the bundle's flags match its contents (spends enabled iff a real spend is
+//!   present, outputs iff a real output is, cross-address always enabled);
 //! - `ZeroValueOutput`: value-0 (dummy) outputs only sit on actions with a real spend;
 //! - `SpendSignature`: every present spend-auth signature verifies against the spend's `rk` over
 //!   the caller's sighash.
@@ -39,8 +41,8 @@ use orchard::{
 };
 
 use super::ironwood_build::{
-    spend_rk_is_placeholder, IronwoodVerifyCheck, IronwoodVerifyError, OrchardAddressBytes,
-    CMX_PROPRIETARY_KEY,
+    ironwood_flag_byte, spend_rk_is_placeholder, IronwoodVerifyCheck, IronwoodVerifyError,
+    OrchardAddressBytes, CMX_PROPRIETARY_KEY,
 };
 use super::ironwood_pczt::PcztSpend;
 
@@ -118,28 +120,16 @@ pub fn verify_bundle_without_keys(
     bundle: &PcztBundle,
     ctx: &KeylessVerifyContext,
 ) -> Result<IronwoodVerificationReport, IronwoodVerifyError> {
-    // `BundleVersion`: the bundle must be an Ironwood V3 bundle with the default flags — anything
-    // else changes the flag semantics the accounting below relies on.
+    // `BundleVersion`: the bundle must be an Ironwood V3 bundle. Its flags are checked against
+    // the bundle's contents after the action scan below.
     let ironwood_v3 = BundleVersion::ironwood_v3();
-    let expected_flags = ironwood_v3
-        .default_flags()
-        .to_byte(ironwood_v3)
-        .ok_or_else(|| {
-            action_error(
-                0,
-                IronwoodVerifyCheck::BundleVersion,
-                "the Ironwood V3 default flags have no byte encoding".to_string(),
-            )
-        })?;
-    if *bundle.bundle_version() != ironwood_v3 || bundle.flag_byte() != expected_flags {
+    if *bundle.bundle_version() != ironwood_v3 {
         return Err(action_error(
             0,
             IronwoodVerifyCheck::BundleVersion,
             format!(
-                "bundle version is {:?} with flag byte {:#04x}, expected Ironwood V3 with {:#04x}",
-                bundle.bundle_version(),
-                bundle.flag_byte(),
-                expected_flags
+                "bundle version is {:?}, expected Ironwood V3",
+                bundle.bundle_version()
             ),
         ));
     }
@@ -218,6 +208,28 @@ pub fn verify_bundle_without_keys(
                 recipient: output_recipient,
             });
         }
+    }
+
+    // `Flags`: the bundle must enable exactly what it carries — the spends flag iff a
+    // real spend exists, the outputs flag iff a real output exists (cross-address transfers are
+    // always enabled for Ironwood V3). This is a canonical-form policy, not a value check: a
+    // disabled flag only adds a value-0 constraint, and the commitment checks above already pin
+    // every value. Pinning one flag byte per bundle shape keeps every party agreeing on the
+    // exact bytes (and so the txid) the Constructor produced.
+    let expected_flags = ironwood_flag_byte(!spends.is_empty(), !outputs.is_empty());
+    if bundle.flag_byte() != expected_flags {
+        return Err(action_error(
+            0,
+            IronwoodVerifyCheck::Flags,
+            format!(
+                "flag byte {:#04x} does not match the bundle's contents ({} real spends, {} real \
+                 outputs; expected {:#04x})",
+                bundle.flag_byte(),
+                spends.len(),
+                outputs.len(),
+                expected_flags,
+            ),
+        ));
     }
 
     // Every caller-expected randomizer must land on a real spend: one aimed at a dummy or a
@@ -536,7 +548,7 @@ mod tests {
         IronwoodSpendSpec, OrchardAddressBytes, WitnessAuthPath, ANCHOR_SIZE,
     };
     use crate::zcash::ironwood_pczt::{
-        deserialize_pczt, serialize_pczt, with_action_rewrite_for_test,
+        deserialize_pczt, serialize_pczt, with_action_rewrite_for_test, with_flags_for_test,
         with_output_recipient_for_test, with_spend_alpha, with_spend_auth_sig, with_spend_fvk,
         with_spend_rk, with_spend_value, with_spend_witness_for_test, with_value_sum_for_test,
         without_output_recipient_for_test, ActionRewriteForTest,
@@ -719,6 +731,77 @@ mod tests {
         assert_eq!(report.outputs.len(), 1);
         assert_eq!(report.outputs[0].value, 1_000);
         assert_eq!(report.value_balance, -1_000);
+    }
+
+    /// A spends-only (deshield) bundle in wire form — one real spend, no outputs.
+    fn test_deshield_bundle() -> Vec<u8> {
+        let (spec, anchor) = test_spend_spec();
+        let (bundle, _) = construct_spend_pczt_multi(&[spec], &[], &anchor, OsRng).unwrap();
+        serialize_pczt(&bundle).unwrap()
+    }
+
+    #[test]
+    fn honest_deshield_bundle_verifies_with_spends_only_flags() {
+        let bytes = test_deshield_bundle();
+        let report = verify_check(&bytes, &ctx()).unwrap();
+        assert_eq!(report.spends.len(), 1);
+        assert!(report.outputs.is_empty());
+        // The deshield's flags enable spends but not outputs: spends | cross-address.
+        assert_eq!(deserialize_pczt(&bytes).unwrap().flag_byte(), 0x05);
+    }
+
+    /// A flag that lies in either direction fails `Flags`: enabling outputs on an output-free
+    /// bundle, disabling spends while a real spend is present, or clearing cross-address.
+    #[test]
+    fn flags_disagreeing_with_the_real_sides_fail_flags() {
+        let bytes = test_deshield_bundle();
+        for lying_flags in [0x01, 0x04, 0x06, 0x07] {
+            let patched = with_flags_for_test(&bytes, lying_flags).unwrap();
+            assert_eq!(
+                verify_check(&patched, &ctx()).unwrap_err(),
+                IronwoodVerifyCheck::Flags,
+                "flag byte {:#04x} must be rejected",
+                lying_flags
+            );
+        }
+    }
+
+    /// A transfer (real spend and real output) must enable both sides, and a shielding bundle
+    /// (dummy spends only) must leave spends disabled; both keep cross-address enabled.
+    #[test]
+    fn transfer_and_shield_flags_must_match_their_real_sides() {
+        let (transfer, anchor, _) = test_bundle();
+        assert_eq!(deserialize_pczt(&transfer).unwrap().flag_byte(), 0x07);
+        for lying_flags in [0x03, 0x04, 0x05, 0x06] {
+            let patched = with_flags_for_test(&transfer, lying_flags).unwrap();
+            assert_eq!(
+                verify_check(&patched, &ctx()).unwrap_err(),
+                IronwoodVerifyCheck::Flags,
+                "transfer flag byte {:#04x} must be rejected",
+                lying_flags
+            );
+        }
+
+        let shield = crate::zcash::ironwood_build::construct_shield_pczt(
+            &test_recipient(),
+            1_000,
+            None,
+            &anchor,
+            &[0u8; 512],
+            OsRng,
+        )
+        .unwrap();
+        let shield = serialize_pczt(&shield).unwrap();
+        assert_eq!(deserialize_pczt(&shield).unwrap().flag_byte(), 0x06);
+        for lying_flags in [0x02, 0x04, 0x05, 0x07] {
+            let patched = with_flags_for_test(&shield, lying_flags).unwrap();
+            assert_eq!(
+                verify_check(&patched, &ctx()).unwrap_err(),
+                IronwoodVerifyCheck::Flags,
+                "shield flag byte {:#04x} must be rejected",
+                lying_flags
+            );
+        }
     }
 
     #[test]
