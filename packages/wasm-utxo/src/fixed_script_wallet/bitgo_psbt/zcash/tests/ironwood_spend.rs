@@ -6,6 +6,9 @@ use super::*;
 use crate::bitcoin::hashes::Hash;
 use crate::bitcoin::Txid;
 use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::WalletInputOptions;
+use crate::fixed_script_wallet::bitgo_psbt::zcash::ironwood_spend::{
+    IronwoodSpendActionMap, IronwoodSpendChange,
+};
 use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt;
 use crate::fixed_script_wallet::script_id::ScriptId;
 use crate::networks::Network;
@@ -45,7 +48,7 @@ fn keyless_deshield_psbt(
     seed: &str,
 ) -> (
     ZcashBitGoPsbt,
-    IronwoodActionMap,
+    IronwoodSpendActionMap,
     [u8; 32],
     FullViewingKey,
     SpendAuthorizingKey,
@@ -66,7 +69,7 @@ fn keyless_deshield_psbt(
     )
     .unwrap();
     let map = z
-        .add_shielded_spends(&specs[..1], &[], &anchor, OsRng)
+        .add_shielded_spends(&specs[..1], &[], None, &anchor, OsRng)
         .unwrap();
     (
         z,
@@ -83,7 +86,7 @@ fn keyless_transfer_psbt(
     seed: &str,
 ) -> (
     ZcashBitGoPsbt,
-    IronwoodActionMap,
+    IronwoodSpendActionMap,
     [u8; 32],
     FullViewingKey,
     SpendAuthorizingKey,
@@ -102,7 +105,7 @@ fn keyless_transfer_psbt(
         wallet_output(&fvk, 101, 90_000_000),
     ];
     let map = z
-        .add_shielded_spends(&specs, &outputs, &anchor, OsRng)
+        .add_shielded_spends(&specs, &outputs, None, &anchor, OsRng)
         .unwrap();
     (
         z,
@@ -234,7 +237,7 @@ fn keyless_deshield_lifecycle_round_trips() {
     let bytes = z.serialize_v6();
     z = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap();
 
-    let pairs = install_randomizers(&mut z, &map, &ask);
+    let pairs = install_randomizers(&mut z, &map.actions, &ask);
     assert_no_ak_or_alpha(&z, &ak, &pairs);
     let bytes = z.serialize_v6();
     z = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap();
@@ -278,10 +281,10 @@ fn keyless_shielded_transfer_lifecycle_round_trips() {
     assert_eq!(z.ironwood_bundle_info().unwrap().value_balance, 0);
 
     // Ciphertext round: every output's out_ciphertext becomes recoverable under the FVK's ovk.
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
     let expected = z.ironwood_action_data().unwrap();
 
-    let pairs = install_randomizers(&mut z, &map, &ask);
+    let pairs = install_randomizers(&mut z, &map.actions, &ask);
     install_spend_signatures(&mut z, &pairs, &ask);
 
     // Round-trip: the patched ciphertexts and signatures survive the PSBT wire.
@@ -331,7 +334,7 @@ fn keyless_surplus_psbt(
     seed: &str,
 ) -> (
     ZcashBitGoPsbt,
-    IronwoodActionMap,
+    IronwoodSpendActionMap,
     [u8; 32],
     FullViewingKey,
     SpendAuthorizingKey,
@@ -356,7 +359,7 @@ fn keyless_surplus_psbt(
         wallet_output(&fvk, 101, 50_000_000),
     ];
     let map = z
-        .add_shielded_spends(&specs[..1], &outputs, &anchor, OsRng)
+        .add_shielded_spends(&specs[..1], &outputs, None, &anchor, OsRng)
         .unwrap();
     (
         z,
@@ -376,8 +379,8 @@ fn keyless_surplus_output_lifecycle_round_trips() {
     let (mut z, map, _ak, fvk, ask) = keyless_surplus_psbt(seed);
     assert_eq!(z.ironwood_bundle_info().unwrap().value_balance, 10_000_000);
 
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
-    let pairs = install_randomizers(&mut z, &map, &ask);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let pairs = install_randomizers(&mut z, &map.actions, &ask);
     install_spend_signatures(&mut z, &pairs, &ask);
 
     let raw = z
@@ -397,7 +400,7 @@ fn keyless_surplus_output_lifecycle_round_trips() {
 fn keyless_parse_reports_verified_spends() {
     let seed = "ironwood_v6_keyless_parse";
     let (mut z, map, _ak, _fvk, ask) = keyless_deshield_psbt(seed);
-    install_randomizers(&mut z, &map, &ask);
+    install_randomizers(&mut z, &map.actions, &ask);
 
     let wallet_keys = root_wallet_keys(seed);
     let psbt = BitGoPsbt::Zcash(z.clone(), Network::ZcashTestnet);
@@ -415,7 +418,10 @@ fn keyless_parse_reports_verified_spends() {
         panic!("expected the shielded input kind");
     };
     assert_eq!(spends.len(), 1);
-    assert_eq!(spends[0].action_index, map.spend_action_index(0).unwrap());
+    assert_eq!(
+        spends[0].action_index,
+        map.actions.spend_action_index(0).unwrap()
+    );
     assert_eq!(spends[0].value, 100_000_000);
     assert!(spends[0].rk_replaced, "the randomizer was installed");
     assert!(!spends[0].signed, "no signature yet");
@@ -445,7 +451,7 @@ fn add_shielded_spends_rejects_transparent_inputs() {
         panic!("expected Zcash PSBT");
     };
     let error = z
-        .add_shielded_spends(&specs[..1], &[], &anchor, OsRng)
+        .add_shielded_spends(&specs[..1], &[], None, &anchor, OsRng)
         .unwrap_err();
     assert_eq!(
         crate::error::WasmErrorCode::code(&error),
@@ -538,10 +544,10 @@ fn second_add_shielded_spends_is_rejected() {
     let BitGoPsbt::Zcash(mut z, _) = psbt else {
         panic!("expected Zcash PSBT");
     };
-    z.add_shielded_spends(&specs[..1], &[], &anchor, OsRng)
+    z.add_shielded_spends(&specs[..1], &[], None, &anchor, OsRng)
         .unwrap();
     let error = z
-        .add_shielded_spends(&specs[..1], &[], &anchor, OsRng)
+        .add_shielded_spends(&specs[..1], &[], None, &anchor, OsRng)
         .unwrap_err();
     assert_eq!(
         crate::error::WasmErrorCode::code(&error),
@@ -582,13 +588,13 @@ fn add_shielded_spends_stores_unified_addresses_by_action_index() {
         output.unified_address = Some(ua.clone());
     }
     let map = z
-        .add_shielded_spends(&specs, &outputs, &anchor, OsRng)
+        .add_shielded_spends(&specs, &outputs, None, &anchor, OsRng)
         .unwrap();
 
     let z = ZcashBitGoPsbt::deserialize_v6(&z.serialize_v6(), Network::ZcashTestnet).unwrap();
     let pczt = z.ironwood_pczt().unwrap();
     for (j, ua) in uas.iter().enumerate() {
-        let action_index = map.output_action_index(j).unwrap();
+        let action_index = map.actions.output_action_index(j).unwrap();
         assert_eq!(
             crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::get_ironwood_unified_address(
                 &z.psbt,
@@ -626,7 +632,7 @@ fn add_shielded_spends_rejects_mismatched_unified_address_atomically() {
         .unwrap(),
     );
     let error = z
-        .add_shielded_spends(&specs[..1], &[output], &anchor, OsRng)
+        .add_shielded_spends(&specs[..1], &[output], None, &anchor, OsRng)
         .unwrap_err();
     assert_eq!(
         crate::error::WasmErrorCode::code(&error),
@@ -639,6 +645,105 @@ fn add_shielded_spends_rejects_mismatched_unified_address_atomically() {
     );
 }
 
+/// The `change` half of `add_shielded_spends`: the change output rides the chosen spend's own
+/// address, is reported at its own action index, and verifies as `is_change` — the only
+/// shielded change a keyless client can recognize. A change spend index outside the request
+/// rejects the whole call.
+#[test]
+fn add_shielded_spends_routes_change_to_the_spend_address() {
+    let seed = "ironwood_v6_keyless_change";
+    let (specs, anchor, fvk, _ak) = keyless_fixture();
+    let mut z = empty_v6_psbt(seed);
+    let map = z
+        .add_shielded_spends(
+            &specs,
+            &[wallet_output(&fvk, 200, 10_000_000)],
+            Some(IronwoodSpendChange {
+                amount: 80_000_000,
+                spend_index: 1,
+            }),
+            &anchor,
+            OsRng,
+        )
+        .unwrap();
+    let change_action_index = map.change_action_index.unwrap();
+    assert_eq!(
+        change_action_index,
+        *map.actions.output_action_indices().last().unwrap(),
+        "the change output is the last requested output"
+    );
+
+    let report = z.verify_shielded_bundle(None, &[]).unwrap();
+    let change = report
+        .outputs
+        .iter()
+        .find(|output| output.action_index == change_action_index)
+        .unwrap();
+    assert!(change.is_change, "change rides a spent note's address");
+    assert_eq!(change.value, 80_000_000);
+    // The report lists spends in (shuffled) action order: find request 1 by its action index.
+    let spent_from = report
+        .spends
+        .iter()
+        .find(|spend| spend.action_index == map.actions.spend_action_index(1).unwrap())
+        .unwrap();
+    assert_eq!(spent_from.recipient, change.recipient);
+    // Every other output is external.
+    assert!(report
+        .outputs
+        .iter()
+        .filter(|output| output.action_index != change_action_index)
+        .all(|output| !output.is_change));
+
+    // The parse keeps the change out of `spend_amount` but still counts it as output value:
+    // 180M spent − (10M external + 80M change) leaves a 90M fee.
+    let parsed =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_transaction_with_wallet_keys(
+            &BitGoPsbt::Zcash(z.clone(), Network::ZcashTestnet),
+            &root_wallet_keys(seed),
+            &crate::fixed_script_wallet::ReplayProtection::new(vec![]),
+            &[],
+        )
+        .unwrap();
+    assert_eq!(parsed.spend_amount, 10_000_000);
+    assert_eq!(parsed.miner_fee, 90_000_000);
+    let parsed_change = parsed
+        .outputs
+        .iter()
+        .find(|output| output.action_index == Some(change_action_index))
+        .unwrap();
+    assert!(parsed_change.is_shielded && parsed_change.is_change);
+    assert_eq!(
+        parsed
+            .outputs
+            .iter()
+            .filter(|output| output.is_change)
+            .count(),
+        1
+    );
+
+    // A bad spend index rejects the whole call atomically.
+    let mut z = empty_v6_psbt(seed);
+    let before = z.serialize_v6();
+    let error = z
+        .add_shielded_spends(
+            &specs,
+            &[],
+            Some(IronwoodSpendChange {
+                amount: 1,
+                spend_index: 7,
+            }),
+            &anchor,
+            OsRng,
+        )
+        .unwrap_err();
+    assert_eq!(
+        crate::error::WasmErrorCode::code(&error),
+        "IronwoodPsbtError.BadChangeSpend"
+    );
+    assert_eq!(z.serialize_v6(), before);
+}
+
 /// Constructor errors wrapped by `IronwoodPsbtError` surface the Constructor's own code
 /// (`IronwoodBuildError.*`), and leave the PSBT untouched.
 #[test]
@@ -647,18 +752,19 @@ fn add_shielded_spends_surfaces_constructor_error_codes() {
     let (specs, anchor, fvk, _ak) = keyless_fixture();
     let mut z = empty_v6_psbt(seed);
     let before = z.serialize_v6();
-
     let mut with_ovk = wallet_output(&fvk, 100, 40_000_000);
     with_ovk.ovk = Some([3u8; 32]);
     let error = z
-        .add_shielded_spends(&specs[..1], &[with_ovk], &anchor, OsRng)
+        .add_shielded_spends(&specs[..1], &[with_ovk], None, &anchor, OsRng)
         .unwrap_err();
     assert_eq!(
         crate::error::WasmErrorCode::code(&error),
         "IronwoodBuildError.OvkNotAllowed"
     );
 
-    let error = z.add_shielded_spends(&[], &[], &anchor, OsRng).unwrap_err();
+    let error = z
+        .add_shielded_spends(&[], &[], None, &anchor, OsRng)
+        .unwrap_err();
     assert_eq!(
         crate::error::WasmErrorCode::code(&error),
         "IronwoodBuildError.NoSpends"
@@ -681,7 +787,7 @@ fn keyless_spends_prove_and_verify_locally() {
         &str,
     ) -> (
         ZcashBitGoPsbt,
-        IronwoodActionMap,
+        IronwoodSpendActionMap,
         [u8; 32],
         FullViewingKey,
         SpendAuthorizingKey,
@@ -705,8 +811,8 @@ fn keyless_spends_prove_and_verify_locally() {
     ];
     for (seed, build, n_actions) in shapes {
         let (mut z, map, _ak, fvk, ask) = build(seed);
-        fvk_out_ciphertexts(&mut z, &map, &fvk);
-        let pairs = install_randomizers(&mut z, &map, &ask);
+        fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+        let pairs = install_randomizers(&mut z, &map.actions, &ask);
         install_spend_signatures(&mut z, &pairs, &ask);
         prove_and_verify_locally(z, &pairs, &fvk, n_actions);
     }
@@ -795,13 +901,14 @@ fn fvk_out_ciphertext(z: &ZcashBitGoPsbt, fvk: &FullViewingKey, action_index: us
 }
 
 /// A 2→1 PSBT: one real output and one fabricated dummy output (on a real spend).
-fn keyless_two_to_one_psbt(seed: &str) -> (ZcashBitGoPsbt, IronwoodActionMap, FullViewingKey) {
+fn keyless_two_to_one_psbt(seed: &str) -> (ZcashBitGoPsbt, IronwoodSpendActionMap, FullViewingKey) {
     let (specs, anchor, fvk, _ak) = keyless_fixture();
     let mut z = empty_v6_psbt(seed);
     let map = z
         .add_shielded_spends(
             &specs,
             &[wallet_output(&fvk, 100, 90_000_000)],
+            None,
             &anchor,
             OsRng,
         )
@@ -841,7 +948,7 @@ fn out_ciphertext_request_lists_real_outputs_and_errors_when_empty() {
     let (mut z, map, fvk) = keyless_two_to_one_psbt("ironwood_v6_keyless_request");
     let (bytes, pending) = z.out_ciphertext_request().unwrap();
     assert_eq!(bytes, z.raw_ironwood_pczt_bytes().unwrap());
-    assert_eq!(pending, vec![map.output_action_index(0).unwrap()]);
+    assert_eq!(pending, vec![map.actions.output_action_index(0).unwrap()]);
     assert_eq!(z.pending_out_ciphertexts().unwrap(), pending);
 
     // The ciphertext round resolves the request; a further request errors with NothingPending.
@@ -857,7 +964,7 @@ fn out_ciphertext_request_lists_real_outputs_and_errors_when_empty() {
     let (specs, anchor, _fvk, _ak) = keyless_fixture();
     let mut spend_only = empty_v6_psbt("ironwood_v6_keyless_request_spend_only");
     spend_only
-        .add_shielded_spends(&specs[..1], &[], &anchor, OsRng)
+        .add_shielded_spends(&specs[..1], &[], None, &anchor, OsRng)
         .unwrap();
     assert!(matches!(
         spend_only.out_ciphertext_request(),
@@ -887,7 +994,7 @@ fn out_ciphertext_request_lists_real_outputs_and_errors_when_empty() {
 fn add_out_ciphertexts_is_atomic() {
     let (mut z, map, fvk) = keyless_two_to_one_psbt("ironwood_v6_keyless_atomic");
     let before = z.raw_ironwood_pczt_bytes().unwrap();
-    let real_index = map.output_action_index(0).unwrap();
+    let real_index = map.actions.output_action_index(0).unwrap();
     let ct = fvk_out_ciphertext(&z, &fvk, real_index);
 
     let error = z
@@ -914,7 +1021,7 @@ fn add_out_ciphertexts_is_atomic() {
 #[test]
 fn add_out_ciphertexts_is_idempotent_for_identical_bytes_only() {
     let (mut z, map, fvk) = keyless_two_to_one_psbt("ironwood_v6_keyless_idempotent");
-    let action_index = map.output_action_index(0).unwrap();
+    let action_index = map.actions.output_action_index(0).unwrap();
     let ct = fvk_out_ciphertext(&z, &fvk, action_index);
 
     z.add_out_ciphertexts(&[(action_index, ct)]).unwrap();
@@ -941,7 +1048,7 @@ fn add_out_ciphertexts_is_idempotent_for_identical_bytes_only() {
 #[test]
 fn add_out_ciphertexts_rejects_conflicting_duplicates_in_one_batch() {
     let (mut z, map, fvk) = keyless_two_to_one_psbt("ironwood_v6_keyless_batch_duplicates");
-    let action_index = map.output_action_index(0).unwrap();
+    let action_index = map.actions.output_action_index(0).unwrap();
     let ct = fvk_out_ciphertext(&z, &fvk, action_index);
     let before = z.raw_ironwood_pczt_bytes().unwrap();
 
@@ -973,11 +1080,11 @@ fn add_out_ciphertexts_rejects_conflicting_duplicates_in_one_batch() {
 fn missing_out_ciphertexts_marker_fails_closed() {
     let seed = "ironwood_v6_keyless_marker_stripped";
     let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
     assert!(z.pending_out_ciphertexts().unwrap().is_empty());
 
     strip_out_ciphertexts_marker(&mut z);
-    let mut expected = map.output_action_indices().to_vec();
+    let mut expected = map.actions.output_action_indices().to_vec();
     expected.sort_unstable();
     assert_eq!(z.pending_out_ciphertexts().unwrap(), expected);
     assert!(matches!(
@@ -992,13 +1099,14 @@ fn missing_out_ciphertexts_marker_fails_closed() {
 
     // Re-delivering (a fresh response would carry fresh randomness) resolves it.
     let entries: Vec<_> = map
+        .actions
         .output_action_indices()
         .iter()
         .map(|&action_index| (action_index, fvk_out_ciphertext(&z, &fvk, action_index)))
         .collect();
     z.add_out_ciphertexts(&entries).unwrap();
     assert!(z.pending_out_ciphertexts().unwrap().is_empty());
-    let pairs = install_randomizers(&mut z, &map, &ask);
+    let pairs = install_randomizers(&mut z, &map.actions, &ask);
     install_spend_signatures(&mut z, &pairs, &ask);
     z.proof_request(&pairs).unwrap();
 }
@@ -1010,11 +1118,12 @@ fn add_out_ciphertexts_rejects_after_a_spend_signature() {
     let seed = "ironwood_v6_keyless_rule3_spend_sig";
     let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
 
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
-    let pairs = install_randomizers(&mut z, &map, &ask);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let pairs = install_randomizers(&mut z, &map.actions, &ask);
     install_spend_signatures(&mut z, &pairs, &ask);
 
     let entries: Vec<(usize, [u8; 80])> = map
+        .actions
         .output_action_indices()
         .iter()
         .map(|&action_index| (action_index, [0u8; 80]))
@@ -1056,22 +1165,22 @@ fn proof_request_requires_ciphertexts_randomizers_then_signatures() {
     let seed = "ironwood_v6_keyless_proof_request";
     let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
 
-    let mut outputs = map.output_action_indices().to_vec();
+    let mut outputs = map.actions.output_action_indices().to_vec();
     outputs.sort_unstable();
     assert!(matches!(
         z.proof_request(&[]),
         Err(IronwoodPsbtError::OutCiphertextPending { action_indices }) if action_indices == outputs
     ));
 
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
-    let mut spends = map.spend_action_indices().to_vec();
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let mut spends = map.actions.spend_action_indices().to_vec();
     spends.sort_unstable();
     assert!(matches!(
         z.proof_request(&[]),
         Err(IronwoodPsbtError::RandomizerPending { action_indices }) if action_indices == spends
     ));
 
-    let pairs = install_randomizers(&mut z, &map, &ask);
+    let pairs = install_randomizers(&mut z, &map.actions, &ask);
     assert!(matches!(
         z.proof_request(&pairs),
         Err(IronwoodPsbtError::SpendSignaturePending { action_indices }) if action_indices == spends
@@ -1090,7 +1199,7 @@ fn proof_request_requires_ciphertexts_randomizers_then_signatures() {
         Err(IronwoodPsbtError::DuplicateAction { .. })
     ));
     assert!(matches!(
-        z.proof_request(&[(map.output_action_indices().len() + 7, [1u8; 32])]),
+        z.proof_request(&[(map.actions.output_action_indices().len() + 7, [1u8; 32])]),
         Err(IronwoodPsbtError::UnknownAction)
     ));
     assert!(matches!(
@@ -1132,7 +1241,7 @@ fn proof_request_requires_ciphertexts_randomizers_then_signatures() {
 fn pending_out_ciphertexts_gate_sighashes_randomizers_and_signatures() {
     let seed = "ironwood_v6_keyless_rule1_gates";
     let (mut z, map, _ak, _fvk, _ask) = keyless_transfer_psbt(seed);
-    let spend_index = map.spend_action_indices()[0];
+    let spend_index = map.actions.spend_action_indices()[0];
     let is_ciphertext_pending = |e: &str| e.contains("pending their out_ciphertext");
 
     let error = z.v6_sig_digest().unwrap_err();
@@ -1164,8 +1273,8 @@ fn sign_then_prove_lifecycle_combines_the_requested_proof() {
     let seed = "ironwood_v6_keyless_sign_then_prove";
     let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
 
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
-    let pairs = install_randomizers(&mut z, &map, &ask);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let pairs = install_randomizers(&mut z, &map.actions, &ask);
     install_spend_signatures(&mut z, &pairs, &ask);
     let sighash = z.v6_sig_digest().unwrap();
 
@@ -1216,8 +1325,11 @@ fn add_spend_randomizers_is_atomic_and_checks_the_pair_against_the_callers_ak() 
 
     let seed = "ironwood_v6_keyless_randomizer_batch";
     let (mut z, map, ak, fvk, ask) = keyless_transfer_psbt(seed);
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
-    let [first, second] = [map.spend_action_indices()[0], map.spend_action_indices()[1]];
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let [first, second] = [
+        map.actions.spend_action_indices()[0],
+        map.actions.spend_action_indices()[1],
+    ];
     let pair = |action_index: usize| {
         let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng);
         let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&ask.randomize(&alpha)));
@@ -1289,9 +1401,9 @@ fn add_spend_randomizers_is_atomic_and_checks_the_pair_against_the_callers_ak() 
 fn add_spend_randomizers_rejects_dummy_spends_and_shielding_bundles() {
     let seed = "ironwood_v6_keyless_randomizer_targets";
     let (mut z, map, ak, fvk, _ask) = keyless_surplus_psbt(seed);
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
     let dummy = (0..2)
-        .find(|i| !map.spend_action_indices().contains(i))
+        .find(|i| !map.actions.spend_action_indices().contains(i))
         .unwrap();
     assert!(matches!(
         z.add_spend_randomizers(&[(dummy, [1u8; 32], [0u8; 32])], Some(&ak)),
@@ -1317,8 +1429,8 @@ fn add_spend_signatures_is_atomic() {
 
     let seed = "ironwood_v6_keyless_signature_batch";
     let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
-    let pairs = install_randomizers(&mut z, &map, &ask);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let pairs = install_randomizers(&mut z, &map.actions, &ask);
     let sighash = z.spend_sighash().unwrap();
     let sign = |&(action_index, alpha): &(usize, [u8; 32])| {
         let alpha = pasta_curves::pallas::Scalar::from_repr(alpha).unwrap();
@@ -1369,9 +1481,9 @@ fn add_spend_signatures_is_atomic() {
 fn combine_rejects_an_unsigned_spend_with_a_typed_error() {
     let seed = "ironwood_v6_keyless_combine_unsigned";
     let (mut z, map, _ak, fvk, ask) = keyless_transfer_psbt(seed);
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
-    install_randomizers(&mut z, &map, &ask);
-    let mut spends = map.spend_action_indices().to_vec();
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    install_randomizers(&mut z, &map.actions, &ask);
+    let mut spends = map.actions.spend_action_indices().to_vec();
     spends.sort_unstable();
     assert!(matches!(
         z.combine_ironwood_proof(patterned_proof(2), OsRng),
@@ -1393,8 +1505,8 @@ fn shielded_status_tracks_every_stage() {
         indices
     };
     let (spends, outputs) = (
-        sorted(map.spend_action_indices()),
-        sorted(map.output_action_indices()),
+        sorted(map.actions.spend_action_indices()),
+        sorted(map.actions.output_action_indices()),
     );
 
     let status = z.shielded_status().unwrap();
@@ -1404,12 +1516,12 @@ fn shielded_status_tracks_every_stage() {
     assert_eq!(status.pending_spend_signatures, spends);
     assert!(!status.ready_for_proof);
 
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
     let status = z.shielded_status().unwrap();
     assert!(status.pending_out_ciphertexts.is_empty());
     assert!(!status.ready_for_proof);
 
-    let pairs = install_randomizers(&mut z, &map, &ask);
+    let pairs = install_randomizers(&mut z, &map.actions, &ask);
     let status = z.shielded_status().unwrap();
     assert!(status.pending_randomizers.is_empty());
     assert_eq!(status.pending_spend_signatures, spends);
@@ -1453,7 +1565,7 @@ fn shielded_status_tracks_every_stage() {
 fn spend_fixture_json(
     name: &str,
     mut z: ZcashBitGoPsbt,
-    map: IronwoodActionMap,
+    map: IronwoodSpendActionMap,
     anchor: [u8; 32],
     fvk: &FullViewingKey,
     ak: [u8; 32],
@@ -1495,6 +1607,7 @@ fn spend_fixture_json(
     // The FROST stand-in: one (alpha, rk = ak.randomize(alpha)) pair per real spend. Only
     // `rk` is stored; the alphas ride along out of band for the proof request.
     let randomizers: Vec<(usize, [u8; 32], [u8; 32])> = map
+        .actions
         .spend_action_indices()
         .iter()
         .map(|&action_index| {
@@ -1569,8 +1682,8 @@ fn spend_fixture_json(
             })),
         },
         "psbt": base64::engine::general_purpose::STANDARD.encode(&psbt_bytes),
-        "spendActionIndices": map.spend_action_indices(),
-        "outputActionIndices": map.output_action_indices(),
+        "spendActionIndices": map.actions.spend_action_indices(),
+        "outputActionIndices": map.actions.output_action_indices(),
         "ak": to_hex(&ak),
         "outCiphertexts": out_ciphertexts.iter().map(|&(action_index, out_ciphertext)|
             serde_json::json!({
@@ -1648,6 +1761,7 @@ fn generate_ts_spend_fixtures() {
             .add_shielded_spends(
                 specs_used,
                 &outputs,
+                None,
                 &anchor,
                 StdRng::seed_from_u64(0xC511_0000 + seed as u64),
             )
@@ -1694,8 +1808,8 @@ fn sorted_indices(indices: &[usize]) -> Vec<usize> {
 fn verify_shielded_bundle_tracks_the_lifecycle() {
     let seed = "ironwood_v6_verify_transfer";
     let (mut z, map, ak, fvk, ask) = keyless_transfer_psbt(seed);
-    let spend_indices = sorted_indices(map.spend_action_indices());
-    let output_indices = sorted_indices(map.output_action_indices());
+    let spend_indices = sorted_indices(map.actions.spend_action_indices());
+    let output_indices = sorted_indices(map.actions.output_action_indices());
 
     // Mid-flow, placeholder rks: the caller's ak alone checks nothing (nothing is installed),
     // and the report shows every spend unrandomized and unsigned.
@@ -1738,9 +1852,9 @@ fn verify_shielded_bundle_tracks_the_lifecycle() {
     // The real outputs take their ciphertexts before any randomizer is installed. The
     // installed triples are then checked against a copy whose rks are still placeholders: an
     // expectation aimed at a spend whose rk is not installed yet is a mismatch, not a pass.
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
     let placeholder = z.clone();
-    let installed = install_randomizer_triples(&mut z, &map, &ask, &ak);
+    let installed = install_randomizer_triples(&mut z, &map.actions, &ask, &ak);
     let error = placeholder
         .verify_shielded_bundle(Some(&ak), &installed)
         .unwrap_err();
@@ -1821,7 +1935,7 @@ fn verify_shielded_bundle_tracks_the_lifecycle() {
 fn verify_shielded_bundle_reports_the_deshield() {
     let seed = "ironwood_v6_verify_deshield";
     let (mut z, map, ak, _fvk, ask) = keyless_deshield_psbt(seed);
-    let triples = install_randomizer_triples(&mut z, &map, &ask, &ak);
+    let triples = install_randomizer_triples(&mut z, &map.actions, &ask, &ak);
     install_spend_signatures(
         &mut z,
         &triples
@@ -1848,10 +1962,10 @@ fn verify_shielded_bundle_reports_the_deshield() {
 fn verify_shielded_bundle_rejects_a_tampered_bundle() {
     let seed = "ironwood_v6_verify_tampered";
     let (mut z, map, ak, fvk, ask) = keyless_transfer_psbt(seed);
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
-    let triples = install_randomizer_triples(&mut z, &map, &ask, &ak);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let triples = install_randomizer_triples(&mut z, &map.actions, &ask, &ak);
 
-    let action_index = map.output_action_indices()[0];
+    let action_index = map.actions.output_action_indices()[0];
     let bytes =
         crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::get_ironwood_pczt(&z.psbt).unwrap();
     let other_recipient = fvk
@@ -1880,10 +1994,10 @@ fn verify_shielded_bundle_rejects_a_tampered_bundle() {
 fn verify_shielded_bundle_rejects_a_randomizer_aimed_at_a_dummy() {
     let seed = "ironwood_v6_verify_dummy";
     let (mut z, map, ak, fvk, ask) = keyless_surplus_psbt(seed);
-    fvk_out_ciphertexts(&mut z, &map, &fvk);
-    let triples = install_randomizer_triples(&mut z, &map, &ask, &ak);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let triples = install_randomizer_triples(&mut z, &map.actions, &ask, &ak);
     let dummy_action = (0..2)
-        .find(|action| !map.spend_action_indices().contains(action))
+        .find(|action| !map.actions.spend_action_indices().contains(action))
         .unwrap();
     let alpha = [7u8; 32];
     let aimed_at_dummy = [(dummy_action, alpha, [8u8; 32])];

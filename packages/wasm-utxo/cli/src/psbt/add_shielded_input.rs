@@ -146,7 +146,7 @@ pub fn handle_add_shielded_input_command(
         .collect::<Result<Vec<_>>>()?;
 
     let map = psbt
-        .add_shielded_spends(&spends, &outputs, &anchor, OsRng)
+        .add_shielded_spends(&spends, &outputs, None, &anchor, OsRng)
         .map_err(|e| anyhow!("failed to add the shielded spends: {e}"))?;
 
     // The actions are shuffled, so the later steps' --action-index arguments must come from
@@ -154,8 +154,8 @@ pub fn handle_add_shielded_input_command(
     eprintln!(
         "{}",
         serde_json::json!({
-            "spendActionIndices": map.spend_action_indices(),
-            "outputActionIndices": map.output_action_indices(),
+            "spendActionIndices": map.actions.spend_action_indices(),
+            "outputActionIndices": map.actions.output_action_indices(),
         })
     );
     print_zcash_psbt(&psbt)

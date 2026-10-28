@@ -50,7 +50,7 @@ use orchard::Address;
 use super::ironwood_build::{
     build_ironwood_witness, construct_shield_pczt_multi, AnchorBytes, IronwoodActionMap,
     IronwoodBuildError, IronwoodOutputSpec, IronwoodWitness, MemoBytes, OrchardAddressBytes,
-    CMX_PROPRIETARY_KEY, MEMO_SIZE, PLACEHOLDER_RK,
+    CMX_PROPRIETARY_KEY, PLACEHOLDER_RK, ZIP302_NO_MEMO,
 };
 use super::ironwood_pczt::{ActionWire, OutputWire, SpendWire, WitnessWire};
 use super::ironwood_verify::{verify_bundle_without_keys, KeylessVerifyContext};
@@ -479,8 +479,6 @@ fn output_wire_from_note<R: RngCore>(
 /// A fresh random address (a random `SpendingKey`'s external address at diversifier 0) and the
 /// ZIP-302 no-memo field — the dummy output's recipient and memo.
 fn dummy_output<R: RngCore>(rng: &mut R) -> (OrchardAddressBytes, MemoBytes) {
-    let mut memo = [0u8; MEMO_SIZE];
-    memo[0] = 0xf6; // ZIP-302 "no memo"
     loop {
         let mut bytes = [0u8; 32];
         rng.fill_bytes(&mut bytes);
@@ -488,7 +486,7 @@ fn dummy_output<R: RngCore>(rng: &mut R) -> (OrchardAddressBytes, MemoBytes) {
             let fvk = FullViewingKey::from(&sk);
             return (
                 fvk.address_at(0u32, Scope::External).to_raw_address_bytes(),
-                memo,
+                ZIP302_NO_MEMO,
             );
         }
     }

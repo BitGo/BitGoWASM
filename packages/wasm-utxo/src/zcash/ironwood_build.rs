@@ -59,6 +59,12 @@ pub const ANCHOR_SIZE: usize = 32;
 pub const OVK_SIZE: usize = 32;
 /// Length of the ZIP-302 memo field in bytes.
 pub const MEMO_SIZE: usize = 512;
+/// The ZIP-302 "no memo" memo field: the `0xf6` marker followed by zeros.
+pub const ZIP302_NO_MEMO: [u8; MEMO_SIZE] = {
+    let mut memo = [0u8; MEMO_SIZE];
+    memo[0] = 0xf6;
+    memo
+};
 
 /// Length of an Orchard/Ironwood full viewing key in bytes (`ak ‖ nk ‖ rivk`).
 pub const FVK_SIZE: usize = 96;

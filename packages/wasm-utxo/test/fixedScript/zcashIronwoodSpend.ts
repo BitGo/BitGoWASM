@@ -238,6 +238,81 @@ describe("ZcashIronwoodBitGoPsbt shielded spends", function () {
     });
   });
 
+  describe("shielded change (addShieldedSpends options.change)", function () {
+    it("routes change to the chosen spend's own address and verifies as isChange", function () {
+      const fixture = loadFixture("transfer");
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty(
+        fixture.network,
+        walletKeys,
+        createOptions(fixture.blockHeight),
+      );
+      const spends = spendRequests(fixture);
+      // One external output alongside the change: 180M spent − (89.995M + 80M) = 10.005M fee.
+      const [external] = outputRequests(fixture);
+      const { spendActionIndices, outputActionIndices, changeActionIndex } = psbt.addShieldedSpends(
+        spends,
+        [external],
+        {
+          anchor: hex(fixture.request.anchor),
+          change: { amount: 80_000_000n, spendIndex: 1 },
+        },
+      );
+      assert.strictEqual(spendActionIndices.length, spends.length);
+      assert.notStrictEqual(changeActionIndex, null);
+      // The change output is the extra, last entry of outputActionIndices.
+      assert.strictEqual(outputActionIndices.length, 2);
+      assert.strictEqual(outputActionIndices[1], changeActionIndex);
+
+      const report = psbt.verifyShieldedBundle();
+      assert.strictEqual(report.outputs.length, 2);
+      const change = report.outputs.find((output) => output.actionIndex === changeActionIndex);
+      assert.ok(change);
+      assert.strictEqual(change.isChange, true);
+      assert.strictEqual(change.value, 80_000_000n);
+      assert.strictEqual(change.memo.length, 512);
+      const spentFrom = report.spends.find((spend) => spend.actionIndex === spendActionIndices[1]);
+      assert.ok(spentFrom);
+      assert.deepStrictEqual(Buffer.from(change.recipient), Buffer.from(spentFrom.recipient));
+      // The requested output pays an address no spend comes from: it stays external.
+      const sent = report.outputs.find((output) => output.actionIndex === outputActionIndices[0]);
+      assert.ok(sent);
+      assert.strictEqual(sent.isChange, false);
+      assert.strictEqual(sent.value, external.amount);
+      assert.deepStrictEqual(
+        Buffer.from(sent.memo),
+        Buffer.from(hex(fixture.request.outputs[0].memo)),
+      );
+
+      // The parse keeps the change out of spendAmount but still counts it as output value.
+      const parsed = psbt.parseTransactionWithWalletKeys(walletKeys, {
+        replayProtection: { publicKeys: [] },
+      });
+      assert.strictEqual(parsed.spendAmount, external.amount);
+      assert.strictEqual(parsed.minerFee, 180_000_000n - external.amount - 80_000_000n);
+      assert.deepStrictEqual(
+        parsed.outputs.map((output) => [output.actionIndex, output.isChange]),
+        report.outputs.map((output) => [output.actionIndex, output.isChange]),
+      );
+    });
+
+    it("rejects change naming a spend index outside the request", function () {
+      const fixture = loadFixture("deshield");
+      const psbt = ZcashIronwoodBitGoPsbt.createEmpty(
+        fixture.network,
+        walletKeys,
+        createOptions(fixture.blockHeight),
+      );
+      assertErrorCode(
+        () =>
+          psbt.addShieldedSpends(spendRequests(fixture), [], {
+            anchor: hex(fixture.request.anchor),
+            change: { amount: 1n, spendIndex: 7 },
+          }),
+        "IronwoodPsbtError.BadChangeSpend",
+      );
+    });
+  });
+
   for (const name of ["deshield", "transfer"]) {
     describe(`lifecycle: ${name}`, function () {
       const fixture = loadFixture(name);

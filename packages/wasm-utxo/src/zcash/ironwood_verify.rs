@@ -99,6 +99,11 @@ pub struct VerifiedOutput {
     pub recipient: OrchardAddressBytes,
     /// The memo the recipient will decrypt (`EncCiphertext` checked it rides the output).
     pub memo: [u8; 512],
+    /// Whether this output pays back to a real spend's own address (byte-equal 43-byte
+    /// recipient). Such a note is spendable only under the same keys as the note it came from,
+    /// so it is change; every other output — including one to another diversified address of
+    /// the same wallet — is reported as an external send.
+    pub is_change: bool,
 }
 
 /// The verified view of a bundle: the real spends and outputs with their plaintext values,
@@ -195,6 +200,7 @@ pub fn verify_bundle_without_keys(
                 recipient: output_recipient,
                 // `EncCiphertext`: the on-wire ciphertext must carry exactly this note.
                 memo: verify_enc_ciphertext(action_index, action)?,
+                is_change: false,
             });
             continue;
         }
@@ -214,6 +220,7 @@ pub fn verify_bundle_without_keys(
                 value: output_value,
                 recipient: output_recipient,
                 memo: verify_enc_ciphertext(action_index, action)?,
+                is_change: false,
             });
         }
     }
@@ -253,6 +260,13 @@ pub fn verify_bundle_without_keys(
                 "an expected randomizer targets an action without a real spend".to_string(),
             ));
         }
+    }
+
+    // Change: an output back to one of the spent notes' own addresses.
+    for output in &mut outputs {
+        output.is_change = spends
+            .iter()
+            .any(|spend| spend.recipient == output.recipient);
     }
 
     // `ValueSum`: the committed value_sum must equal Σ(v_spend − v_out) over exactly the reported

@@ -22,6 +22,11 @@ pub enum IronwoodPsbtError {
     /// receiver, or its Orchard receiver is not the output's `recipient`; or a verified
     /// spend's Orchard receiver could not be encoded as a Unified Address.
     BadUnifiedAddress(String),
+    /// The requested shielded change names a spend index outside the request's spends.
+    BadChangeSpend {
+        /// The offending spend index.
+        spend_index: usize,
+    },
     /// The PSBT carries no Ironwood PCZT, or its bundle is not a spend bundle (no real
     /// spends), and the operation needs one.
     NotSpendBundle,
@@ -116,6 +121,10 @@ impl std::fmt::Display for IronwoodPsbtError {
                 "an Ironwood PCZT is already present; only one call is supported"
             ),
             IronwoodPsbtError::BadUnifiedAddress(e) => write!(f, "invalid unified address: {e}"),
+            IronwoodPsbtError::BadChangeSpend { spend_index } => write!(
+                f,
+                "change names spend {spend_index}, which is not among the requested spends"
+            ),
             IronwoodPsbtError::NotSpendBundle => {
                 write!(f, "this PSBT carries no Ironwood spend bundle")
             }

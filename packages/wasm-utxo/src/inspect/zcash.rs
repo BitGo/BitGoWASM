@@ -552,10 +552,10 @@ mod ironwood_v6_tests {
             })
             .collect();
         let map = z
-            .add_shielded_spends(&specs, &outputs, &anchor, OsRng)
+            .add_shielded_spends(&specs, &outputs, None, &anchor, OsRng)
             .unwrap();
         let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes([7u8; 32])).unwrap();
-        (z, map, sk)
+        (z, map.actions, sk)
     }
 
     fn string_value<'a>(node: &'a Node, label: &str) -> &'a str {
