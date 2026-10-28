@@ -207,7 +207,7 @@ fn build_sign_combine_produces_valid_v6_tx() {
 #[test]
 fn combine_ironwood_proof_locally_produces_a_verifying_proof() {
     use nonempty::NonEmpty;
-    use orchard::bundle::{Authorized, Bundle as OrchardBundle, BundleVersion};
+    use orchard::bundle::{Authorized, Bundle as OrchardBundle, BundleVersion, Flags};
     use orchard::circuit::{OrchardCircuitVersion, VerifyingKey};
     use orchard::note::{ExtractedNoteCommitment, Nullifier, TransmittedNoteCiphertext};
     use orchard::primitives::redpallas::{Binding, Signature, SpendAuth, VerificationKey};
@@ -297,7 +297,7 @@ fn combine_ironwood_proof_locally_produces_a_verifying_proof() {
     );
     let orchard_bundle = OrchardBundle::<Authorized, i64>::try_from_parts(
         actions,
-        BundleVersion::ironwood_v3().default_flags(),
+        Flags::from_byte(bundle.flags, BundleVersion::ironwood_v3()).expect("valid flags"),
         bundle.value_balance,
         Option::from(Anchor::from_bytes(bundle.anchor)).expect("valid anchor"),
         authorization,
@@ -2236,7 +2236,7 @@ fn combine_rejects_a_proof_sized_for_a_different_action_count() {
 #[test]
 fn multi_spend_multi_output_proves_and_verifies_locally() {
     use nonempty::NonEmpty;
-    use orchard::bundle::{Authorized, Bundle as OrchardBundle, BundleVersion};
+    use orchard::bundle::{Authorized, Bundle as OrchardBundle, BundleVersion, Flags};
     use orchard::circuit::{OrchardCircuitVersion, VerifyingKey};
     use orchard::note::{ExtractedNoteCommitment, Nullifier, TransmittedNoteCiphertext};
     use orchard::primitives::redpallas::{Binding, Signature, SpendAuth, VerificationKey};
@@ -2292,7 +2292,7 @@ fn multi_spend_multi_output_proves_and_verifies_locally() {
     );
     let orchard_bundle = OrchardBundle::<Authorized, i64>::try_from_parts(
         actions,
-        BundleVersion::ironwood_v3().default_flags(),
+        Flags::from_byte(bundle.flags, BundleVersion::ironwood_v3()).expect("valid flags"),
         bundle.value_balance,
         Option::from(orchard::tree::Anchor::from_bytes(bundle.anchor)).expect("valid anchor"),
         authorization,

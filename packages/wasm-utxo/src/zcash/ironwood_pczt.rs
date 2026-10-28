@@ -502,6 +502,17 @@ pub(crate) fn with_output_rseed_for_test(
     })
 }
 
+/// Test-only: replace the bundle's flags byte, producing a PCZT whose declared enables disagree
+/// with its actions. Exists to exercise the key-free verifier's flag-consistency rejection
+/// ([`IronwoodVerifyCheck::Flags`]).
+#[cfg(test)]
+pub(crate) fn with_flags_for_test(bytes: &[u8], flags: u8) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        wire.flags = flags;
+        Ok(())
+    })
+}
+
 /// Reconstruct an `orchard` PCZT Ironwood bundle from its wire form.
 pub fn deserialize_pczt(bytes: &[u8]) -> Result<PcztBundle, IronwoodPcztError> {
     let (&version, body) = bytes.split_first().ok_or(IronwoodPcztError::Empty)?;
@@ -765,6 +776,7 @@ mod tests {
     use rand::rngs::OsRng;
 
     use crate::zcash::ironwood_build::test_field_bytes as field_bytes;
+    use crate::zcash::ironwood_build::{ironwood_flag_byte, ironwood_flags};
 
     /// Construct a shielding PCZT (one Ironwood output, dummy spend) via the orchard Constructor.
     fn sample_pczt() -> PcztBundle {
@@ -772,11 +784,10 @@ mod tests {
         let fvk = FullViewingKey::from(&sk);
         let recipient = fvk.address_at(0u32, Scope::External);
         let bundle_version = BundleVersion::ironwood_v3();
-        let flags = bundle_version.default_flags();
         let mut builder = Builder::new(
             BundleType::UNPADDED,
             bundle_version,
-            flags,
+            ironwood_flags(false, true),
             Anchor::empty_tree(),
         )
         .unwrap();
@@ -801,14 +812,7 @@ mod tests {
         // directions, so also assert against sample_pczt()'s known values.
         let wire: BundleWire = postcard::from_bytes(&bytes[1..]).unwrap();
         assert_eq!(wire.anchor, Anchor::empty_tree().to_bytes());
-        let bundle_version = BundleVersion::ironwood_v3();
-        assert_eq!(
-            wire.flags,
-            bundle_version
-                .default_flags()
-                .to_byte(bundle_version)
-                .unwrap()
-        );
+        assert_eq!(wire.flags, ironwood_flag_byte(false, true));
         assert_eq!(wire.actions.len(), 1);
         assert_eq!(wire.value_sum_magnitude, 100_000_000);
         assert!(wire.value_sum_negative);
@@ -946,7 +950,7 @@ mod tests {
         let mut builder = Builder::new(
             BundleType::UNPADDED,
             bundle_version,
-            bundle_version.default_flags(),
+            ironwood_flags(false, true),
             Anchor::empty_tree(),
         )
         .unwrap();

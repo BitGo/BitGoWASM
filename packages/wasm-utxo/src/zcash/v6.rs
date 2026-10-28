@@ -224,7 +224,8 @@ impl IronwoodAction {
 pub struct IronwoodBundle {
     /// Action array (each 820 bytes on the wire).
     pub actions: Vec<IronwoodAction>,
-    /// Flag byte: `0x07` = spends | outputs | cross-address.
+    /// Flag byte: bit 0 enables spends, bit 1 outputs, bit 2 cross-address
+    /// (`0x07` = all three).
     pub flags: u8,
     /// Net value crossing the Ironwood pool boundary.
     pub value_balance: i64,

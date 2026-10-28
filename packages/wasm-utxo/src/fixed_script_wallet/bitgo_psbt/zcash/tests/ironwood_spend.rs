@@ -720,7 +720,7 @@ fn prove_and_verify_locally(
     n_actions: usize,
 ) {
     use nonempty::NonEmpty;
-    use orchard::bundle::{Authorized, Bundle as OrchardBundle, BundleVersion};
+    use orchard::bundle::{Authorized, Bundle as OrchardBundle, BundleVersion, Flags};
     use orchard::circuit::{OrchardCircuitVersion, VerifyingKey};
     use orchard::note::{ExtractedNoteCommitment, Nullifier, TransmittedNoteCiphertext};
     use orchard::primitives::redpallas::{Binding, Signature};
@@ -773,7 +773,7 @@ fn prove_and_verify_locally(
     );
     let orchard_bundle = OrchardBundle::<Authorized, i64>::try_from_parts(
         actions,
-        BundleVersion::ironwood_v3().default_flags(),
+        Flags::from_byte(bundle.flags, BundleVersion::ironwood_v3()).expect("valid flags"),
         bundle.value_balance,
         Option::from(orchard::tree::Anchor::from_bytes(bundle.anchor)).expect("valid anchor"),
         authorization,
@@ -1666,7 +1666,9 @@ fn generate_ts_spend_fixtures() {
             transparent_output,
         );
         let path = dir.join(format!("ironwood_spend_{name}.json"));
-        std::fs::write(&path, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
+        let mut json = serde_json::to_string_pretty(&fixture).unwrap();
+        json.push('\n');
+        std::fs::write(&path, json).unwrap();
         println!("wrote {}", path.display());
     }
 }

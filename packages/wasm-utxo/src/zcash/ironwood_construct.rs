@@ -101,8 +101,8 @@ struct ActionOrigin {
 /// and/or requested outputs — the deshield and shielded→shielded Constructor for a build
 /// service that holds no viewing keys.
 ///
-/// The bundle has `max(spends.len(), outputs.len())` actions (the Ironwood V3 default flags
-/// enable cross-address transfers, so a spend and an output share an action): where one side
+/// The bundle has `max(spends.len(), outputs.len())` actions (cross-address transfers are
+/// enabled in the bundle's flags, so a spend and an output share an action): where one side
 /// runs out, the missing half is a protocol dummy — a value-0 output to a fresh random address
 /// for surplus spends, an orchard-`Builder`-fabricated dummy spend for surplus outputs. At
 /// least one real spend is required: output-only bundles are *shielding* builds
@@ -245,7 +245,7 @@ pub fn construct_spend_pczt_keyless<R: RngCore + CryptoRng>(
         (output_total - spend_total, true)
     };
 
-    let bundle = assemble_bundle(wires, value_sum, anchor)?;
+    let bundle = assemble_bundle(wires, value_sum, anchor, !outputs.is_empty())?;
 
     // Self-check: the Constructor's own output must pass every key-free
     // check the client will later run on it — note commitments, value commitments, the
@@ -570,16 +570,12 @@ fn assemble_bundle(
     actions: Vec<ActionWire>,
     value_sum: (u64, bool),
     anchor: &AnchorBytes,
+    has_outputs: bool,
 ) -> Result<PcztBundle, IronwoodBuildError> {
-    let bundle_version = BundleVersion::ironwood_v3();
-    let flags = bundle_version
-        .default_flags()
-        .to_byte(bundle_version)
-        .ok_or_else(|| {
-            IronwoodBuildError::Builder(
-                "the Ironwood V3 default flags have no byte encoding".to_string(),
-            )
-        })?;
+    // The keyless constructor always carries real spends; outputs are enabled iff any were
+    // requested. The fabricated halves on the surplus side (value-0 dummies) satisfy the
+    // disabled bit.
+    let flags = super::ironwood_build::ironwood_flag_byte(true, has_outputs);
     let wire = super::ironwood_pczt::BundleWire {
         flags,
         value_pool: 1,       // Ironwood

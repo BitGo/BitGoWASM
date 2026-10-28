@@ -40,6 +40,15 @@ Ironwood:    nActionsIronwood(varint) actions[820×n] flags(1) valueBalance(8)
              // whole block present only if nActionsIronwood > 0
 ```
 
+The `flags` byte: bit 0 `enableSpends`, bit 1 `enableOutputs`, bit 2
+`enableCrossAddress` (Ironwood-only; reserved-and-zero in the Orchard slot). A bundle
+built here sets spends/outputs exactly when it carries real spends/outputs — a
+shielding build is `0x06` (its one spend per output is the fabricated value-0 dummy),
+a deshield is `0x05` (its unpaired output halves are value-0 dummies), and a
+shielded transfer is `0x07`. The mined `unshield` and `shield*` goldens predate this and
+carry `0x07` (all three enables, as the reference wallet sets). Both forms are valid:
+a disabled side only adds a value-0 constraint.
+
 Each Ironwood action is 820 bytes: `cv(32) nullifier(32) rk(32) cmx(32) epk(32)
 encCiphertext(580) outCiphertext(80)`. This codec supports empty Sapling/Orchard
 slots plus a populated Ironwood bundle; non-empty Sapling/Orchard are rejected with a
