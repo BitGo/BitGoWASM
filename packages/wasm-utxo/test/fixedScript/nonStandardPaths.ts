@@ -14,7 +14,7 @@
 
 import assert from "node:assert";
 
-import { BIP32Interface } from "@bitgo/utxo-lib";
+import type { BIP32Interface } from "@bitgo/utxo-lib";
 import { getKey } from "@bitgo/utxo-lib/dist/src/testutil";
 
 import { formatNode } from "../../js/ast/index.js";

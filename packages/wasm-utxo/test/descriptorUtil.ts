@@ -1,7 +1,7 @@
 import * as assert from "node:assert";
 import * as fs from "fs/promises";
 import * as utxolib from "@bitgo/utxo-lib";
-import { DescriptorNode, MiniscriptNode, formatNode } from "../js/ast/index.js";
+import { type DescriptorNode, type MiniscriptNode, formatNode } from "../js/ast/index.js";
 
 async function assertEqualJSON(path: string, value: unknown): Promise<void> {
   try {

@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 
 import * as utxolib from "@bitgo/utxo-lib";
 import assert from "node:assert";
-import { utxolibCompat, address as addressNs, AddressFormat } from "../../js/index.js";
+import { utxolibCompat, address as addressNs, type AddressFormat } from "../../js/index.js";
 import { getCoinNameForNetwork } from "../networks.js";
 
 const __filename = fileURLToPath(import.meta.url);

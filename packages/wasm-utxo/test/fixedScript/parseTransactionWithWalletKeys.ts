@@ -2,7 +2,7 @@ import assert from "node:assert";
 import { fixedScriptWallet, isWasmUtxoError } from "../../js/index.js";
 import {
   BitGoPsbt,
-  InputScriptType,
+  type InputScriptType,
   supportsScriptType,
 } from "../../js/fixedScriptWallet/index.js";
 import type { RootWalletKeys } from "../../js/fixedScriptWallet/RootWalletKeys.js";

@@ -4,8 +4,8 @@ import { ECPair } from "../../../js/ecpair.js";
 import {
   getNewSignatureCountForInput,
   getNewSignatureCount,
-  SignPsbtInputResult,
-  SignPsbtResult,
+  type SignPsbtInputResult,
+  type SignPsbtResult,
 } from "../../../js/descriptorWallet/psbt/sign.js";
 
 describe("descriptorWallet/psbt/sign", () => {

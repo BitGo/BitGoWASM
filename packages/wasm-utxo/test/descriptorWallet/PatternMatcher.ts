@@ -1,5 +1,5 @@
 import * as assert from "assert";
-import { PatternMatcher, Pattern } from "../../js/descriptorWallet/parse/PatternMatcher.js";
+import { PatternMatcher, type Pattern } from "../../js/descriptorWallet/parse/PatternMatcher.js";
 
 describe("descriptorWallet/PatternMatcher", () => {
   const matcher = new PatternMatcher();
