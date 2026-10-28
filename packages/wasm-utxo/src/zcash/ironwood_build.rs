@@ -342,6 +342,10 @@ pub enum IronwoodVerifyCheck {
     MissingPlaintext,
     /// A fabricated (dummy) spend carries a non-zero value.
     DummySpendValue,
+    /// An output's `ephemeral_key`/`enc_ciphertext` do not carry its plaintext note: the
+    /// ciphertext does not decrypt under the note's own `esk` and recipient `pk_d` to exactly
+    /// the shown note, so the recipient could never find it.
+    EncCiphertext,
 }
 
 /// The full orchard Verifier role's failure modes (see [`verify_ironwood_spends`]).
@@ -379,6 +383,7 @@ impl core::fmt::Display for IronwoodVerifyCheck {
             Self::SpendSignature => "spend signature",
             Self::MissingPlaintext => "missing plaintext",
             Self::DummySpendValue => "dummy spend value",
+            Self::EncCiphertext => "enc ciphertext",
         };
         f.write_str(s)
     }
