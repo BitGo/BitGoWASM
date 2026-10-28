@@ -52,13 +52,18 @@ pub struct ZcashParsedInput {
 }
 
 /// A Zcash output: the transparent parse shape plus the shielded marker and, for shielded
-/// outputs, the PCZT action index.
+/// outputs, the PCZT action index and change marker.
 #[derive(Clone, Debug)]
 pub struct ZcashParsedOutput {
     pub base: ParsedOutput,
     pub is_shielded: bool,
     /// The output's action index in the orchard bundle; `None` for transparent outputs.
     pub action_index: Option<usize>,
+    /// For a shielded output: whether it pays back to a spent note's own address (see
+    /// [`crate::zcash::ironwood_verify::VerifiedOutput::is_change`]); such outputs are
+    /// excluded from `spend_amount`. Always `false` for transparent outputs, whose wallet
+    /// ownership is the base parse's `script_id`.
+    pub is_change: bool,
 }
 
 /// The inputs of a Zcash transaction: transparent, or the shielded spends of a deshield /
@@ -235,11 +240,13 @@ pub(crate) fn parse_transaction_with_wallet_keys(
                 index: output_index,
             },
         )?;
-        spend_amount = spend_amount.checked_add(output.base.value).ok_or(
-            ParseTransactionError::SpendAmountOverflow {
-                index: output_index,
-            },
-        )?;
+        if !output.is_change {
+            spend_amount = spend_amount.checked_add(output.base.value).ok_or(
+                ParseTransactionError::SpendAmountOverflow {
+                    index: output_index,
+                },
+            )?;
+        }
         outputs.push(output);
     }
 
@@ -281,32 +288,33 @@ fn transparent_outputs(outputs: Vec<ParsedOutput>) -> Vec<ZcashParsedOutput> {
             base,
             is_shielded: false,
             action_index: None,
+            is_change: false,
         })
         .collect()
 }
 
-/// Synthesize a [`ZcashParsedOutput`] for every real shielded output
-/// `(action_index, value, recipient)`.
+/// Synthesize a [`ZcashParsedOutput`] for every real shielded output the key-free verifier
+/// reported.
 fn shielded_parsed_outputs(
     z: &ZcashBitGoPsbt,
-    shielded_outputs: &[(usize, u64, OrchardAddressBytes)],
+    shielded_outputs: &[crate::zcash::ironwood_verify::VerifiedOutput],
 ) -> Result<Vec<ZcashParsedOutput>, ZcashParseTransactionError> {
     shielded_outputs
         .iter()
-        .map(|(action_index, value, recipient)| {
+        .map(|output| {
             // Prefer the caller's original Unified Address (if `add_ironwood_output` was
             // given one for this action): it may carry a transparent/Sapling receiver
             // alongside the Orchard one, which a single-receiver reconstruction from
             // `recipient` alone cannot recover.
-            let address = match super::propkv::get_ironwood_unified_address(&z.psbt, *action_index)
-            {
-                Some(ua) => ua,
-                None => crate::zcash::unified_address::encode_orchard_receiver(
-                    recipient,
-                    z.network().to_coin_name(),
-                )
-                .map_err(|e| ZcashParseTransactionError::Shielded(e.to_string()))?,
-            };
+            let address =
+                match super::propkv::get_ironwood_unified_address(&z.psbt, output.action_index) {
+                    Some(ua) => ua,
+                    None => crate::zcash::unified_address::encode_orchard_receiver(
+                        &output.recipient,
+                        z.network().to_coin_name(),
+                    )
+                    .map_err(|e| ZcashParseTransactionError::Shielded(e.to_string()))?,
+                };
             Ok(ZcashParsedOutput {
                 base: ParsedOutput {
                     address: Some(address),
@@ -314,14 +322,15 @@ fn shielded_parsed_outputs(
                     // still available here (not a scriptPubKey, but the same "raw
                     // output-destination bytes" role this field plays for transparent
                     // outputs).
-                    script: recipient.to_vec(),
-                    value: *value,
+                    script: output.recipient.to_vec(),
+                    value: output.value,
                     script_id: None,
                     paygo: false,
                     derivation_path: None,
                 },
                 is_shielded: true,
-                action_index: Some(*action_index),
+                action_index: Some(output.action_index),
+                is_change: output.is_change,
             })
         })
         .collect()
@@ -347,14 +356,7 @@ fn shielded_side(
         .ironwood_pczt()
         .map_err(ZcashParseTransactionError::Shielded)?;
     let report = z.keyless_verify(&pczt)?;
-    let outputs = shielded_parsed_outputs(
-        z,
-        &report
-            .outputs
-            .iter()
-            .map(|output| (output.action_index, output.value, output.recipient))
-            .collect::<Vec<_>>(),
-    )?;
+    let outputs = shielded_parsed_outputs(z, &report.outputs)?;
     let spends = report
         .spends
         .iter()

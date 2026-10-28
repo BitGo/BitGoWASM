@@ -79,12 +79,29 @@ export type ZcashShieldedSpend = {
   signed: boolean;
 };
 
+/** One real shielded output, as surfaced by the verification report. */
+export type ZcashShieldedOutput = {
+  /** The output's action index in the orchard bundle. */
+  actionIndex: number;
+  /** Output value in zatoshi. */
+  value: bigint;
+  /** Raw Orchard recipient (43 bytes). */
+  recipient: Uint8Array;
+  /** The memo the recipient will decrypt. */
+  memo: Uint8Array;
+  /**
+   * Whether this output pays back to a real spend's own address — the shielded change a
+   * keyless client can recognize. Every other output is an external send.
+   */
+  isChange: boolean;
+};
+
 /** The client-side verification report of a shielded bundle. */
 export type IronwoodVerificationReport = {
   /** The bundle's real spends, as verified. */
   spends: ZcashShieldedSpend[];
   /** The bundle's real outputs. */
-  outputs: Array<{ actionIndex: number; value: bigint; recipient: Uint8Array }>;
+  outputs: ZcashShieldedOutput[];
   /** The bundle's value balance (Σv_spend − Σv_out). */
   valueBalance: bigint;
   /** The anchor the spends' witnesses commit to. */

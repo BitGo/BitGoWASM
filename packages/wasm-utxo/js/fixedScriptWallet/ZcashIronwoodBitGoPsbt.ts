@@ -74,10 +74,18 @@ export function zip302NoMemo(): Uint8Array {
 
 /**
  * The parsed shape of a Zcash output through the Ironwood parse: the Zcash output shape plus
- * the PCZT action index (`null` for transparent outputs).
+ * the PCZT action index (`null` for transparent outputs) and, for shielded outputs, the
+ * change marker.
  */
 export type ZcashIronwoodParsedOutput = ZcashParsedOutput & {
   actionIndex: number | null;
+  /**
+   * For a shielded output: whether it pays back to a spent note's own address (see
+   * `verifyShieldedBundle`'s report); such outputs are excluded from the parse's
+   * `spendAmount`. Always `false` for transparent outputs, whose wallet ownership is the
+   * `scriptId` they carry.
+   */
+  isChange: boolean;
 };
 
 /**
@@ -197,7 +205,7 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
 
   /**
    * Parse outputs through the Zcash parse: every output carries `isShielded` and, for
-   * shielded outputs, its `actionIndex`.
+   * shielded outputs, its `actionIndex` and `isChange`.
    */
   override parseOutputsWithWalletKeys(
     walletKeys: WalletKeysArg,
@@ -415,15 +423,30 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
    *   the ZIP-302 "no memo" encoding, as {@link addShieldedOutput}'s does
    * @param options.anchor - the Ironwood note-commitment-tree root every spend's witness
    *   commits to (32 bytes)
-   * @returns the action index each requested spend/output landed at. The actions are shuffled,
-   *   so request order does not equal action order: any caller correlating per-action data (a
-   *   stored Unified Address, an out-ciphertext) must go through these indices.
+   * @param options.change - optional `{ amount, spendIndex }`: one more shielded output paying
+   *   `amount` back to `spends[spendIndex]`'s own address — the only shielded change a keyless
+   *   client can recognize (its address is derived from the wallet's spend-authorizing key, so a
+   *   note back to it is spendable only by this wallet). Without it every shielded output is an
+   *   external send. Only an exact address match counts: change to another diversified address
+   *   of the same wallet is reported as an external send.
+   * @returns the action index each requested spend/output landed at, and the change output's
+   *   action index when requested. With change, `outputActionIndices` has one more entry than
+   *   `outputs`: its last entry is `changeActionIndex`. The actions are shuffled, so request
+   *   order does not equal action order: any caller correlating per-action data (a stored
+   *   Unified Address, an out-ciphertext) must go through these indices.
    */
   addShieldedSpends(
     spends: ZcashShieldedSpendRequest[],
     outputs: ZcashShieldedOutputRequest[],
-    options: { anchor: Uint8Array },
-  ): { spendActionIndices: number[]; outputActionIndices: number[] } {
+    options: {
+      anchor: Uint8Array;
+      change?: { amount: bigint; spendIndex: number };
+    },
+  ): {
+    spendActionIndices: number[];
+    outputActionIndices: number[];
+    changeActionIndex: number | null;
+  } {
     const map = this.wasm.add_ironwood_shielded_spends(
       spends.map((spend) => ({
         recipient: spend.recipient,
@@ -441,10 +464,18 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
         unifiedAddress: output.unifiedAddress,
       })),
       options.anchor,
-    ) as { spendActionIndices: number[]; outputActionIndices: number[] };
+      options.change
+        ? { amount: options.change.amount, spendIndex: options.change.spendIndex }
+        : null,
+    ) as {
+      spendActionIndices: number[];
+      outputActionIndices: number[];
+      changeActionIndex: number | null;
+    };
     return {
       spendActionIndices: Array.from(map.spendActionIndices),
       outputActionIndices: Array.from(map.outputActionIndices),
+      changeActionIndex: map.changeActionIndex,
     };
   }
 

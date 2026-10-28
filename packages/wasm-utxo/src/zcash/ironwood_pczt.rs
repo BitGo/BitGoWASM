@@ -512,6 +512,23 @@ pub(crate) fn with_flags_for_test(bytes: &[u8], flags: u8) -> Result<Vec<u8>, Ir
         Ok(())
     })
 }
+/// Test-only: decode the wire form of a serialized PCZT, for tamper tests that splice fields
+/// across two bundles (the in-bundle helpers cannot do that).
+#[cfg(test)]
+pub(crate) fn wire_bytes_to_bundle_wire(bytes: &[u8]) -> BundleWire {
+    let (&version, body) = bytes.split_first().expect("non-empty serialized PCZT");
+    assert_eq!(version, FORMAT_VERSION);
+    postcard::from_bytes(body).expect("a serialized PCZT re-decodes")
+}
+
+/// Test-only: re-encode a wire form produced by [`wire_bytes_to_bundle_wire`].
+#[cfg(test)]
+pub(crate) fn bundle_wire_to_wire_bytes(wire: &BundleWire) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + 4096);
+    out.push(FORMAT_VERSION);
+    out.extend_from_slice(&postcard::to_stdvec(wire).expect("a wire form re-encodes"));
+    out
+}
 
 /// Reconstruct an `orchard` PCZT Ironwood bundle from its wire form.
 pub fn deserialize_pczt(bytes: &[u8]) -> Result<PcztBundle, IronwoodPcztError> {

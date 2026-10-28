@@ -15,7 +15,8 @@ use super::BitGoPsbt;
 use crate::error::WasmUtxoError;
 use crate::fixed_script_wallet::bitgo_psbt::zcash::error::IronwoodPsbtError;
 use crate::fixed_script_wallet::bitgo_psbt::zcash::ironwood_spend::{
-    IronwoodInputKind, IronwoodShieldedStatus, IronwoodVerifiedBundle,
+    IronwoodInputKind, IronwoodShieldedStatus, IronwoodSpendActionMap, IronwoodSpendChange,
+    IronwoodVerifiedBundle,
 };
 use crate::fixed_script_wallet::bitgo_psbt::zcash::parse::{
     ZcashParsedInput, ZcashParsedInputs, ZcashParsedOutput, ZcashParsedTransaction,
@@ -31,8 +32,8 @@ use crate::wasm::try_into_js_value::js_obj;
 use crate::wasm::try_into_js_value::TryIntoJsValue;
 use crate::wasm::wallet_keys::WasmRootWalletKeys;
 use crate::zcash::ironwood_build::{
-    AnchorBytes, IronwoodActionMap, IronwoodWitness, MemoBytes, OrchardAddressBytes, OvkBytes,
-    WitnessAuthPath, IRONWOOD_MERKLE_DEPTH,
+    AnchorBytes, IronwoodWitness, MemoBytes, OrchardAddressBytes, OvkBytes, WitnessAuthPath,
+    IRONWOOD_MERKLE_DEPTH,
 };
 use crate::zcash::ironwood_construct::IronwoodKeylessSpendSpec;
 use crate::zcash::ironwood_verify::VerifiedOutput;
@@ -648,6 +649,9 @@ impl BitGoPsbt {
     ///   belongs to the viewing-key holder in the spend flow) and its amount must be > 0
     /// * `anchor` - the Ironwood note-commitment-tree root every spend's witness commits to
     ///   (32 bytes)
+    /// * `change` - optional `{ amount: bigint, spendIndex: number }`: one more shielded
+    ///   output paying `amount` back to `spends[spendIndex]`'s own address — the shielded
+    ///   change a keyless client recognizes
     ///
     /// One input kind: rejected when the PSBT already carries transparent inputs, and one
     /// call per PSBT. Every real spend carries the placeholder `rk` and no `alpha`; the
@@ -655,15 +659,17 @@ impl BitGoPsbt {
     /// sighash is computed. Every output's `out_ciphertext` is a random placeholder,
     /// replaced under the FVK's `ovk`. No key material is accepted or stored.
     ///
-    /// Returns `{ spendActionIndices: number[], outputActionIndices: number[] }` — the action
-    /// index each requested spend/output landed at. The actions are shuffled, so request
-    /// order does not equal action order: any caller correlating per-action data (a stored
-    /// Unified Address, an out-ciphertext) must go through these indices.
+    /// Returns `{ spendActionIndices: number[], outputActionIndices: number[],
+    /// changeActionIndex: number | null }` — the action index each requested spend/output
+    /// (and the change) landed at. The actions are shuffled, so request order does not
+    /// equal action order: any caller correlating per-action data (a stored Unified
+    /// Address, an out-ciphertext) must go through these indices.
     pub fn add_ironwood_shielded_spends(
         &mut self,
         spends: JsValue,
         outputs: JsValue,
         anchor: &[u8],
+        change: JsValue,
     ) -> Result<JsValue, WasmUtxoError> {
         let anchor: AnchorBytes = fixed_bytes(anchor, "anchor")?;
         let spends = js_sys::Array::from(&spends)
@@ -674,8 +680,16 @@ impl BitGoPsbt {
             .iter()
             .map(|item| IronwoodOutputRequest::try_from_js_value(&item))
             .collect::<Result<Vec<_>, _>>()?;
+        let change = if change.is_undefined() || change.is_null() {
+            None
+        } else {
+            Some(IronwoodSpendChange {
+                amount: get_required_u64_field(&change, "amount")?,
+                spend_index: get_field::<u32>(&change, "spendIndex")? as usize,
+            })
+        };
         self.zcash_mut()?
-            .add_shielded_spends(&spends, &outputs, &anchor, rand::rngs::OsRng)
+            .add_shielded_spends(&spends, &outputs, change, &anchor, rand::rngs::OsRng)
             .map_err(WasmUtxoError::from)?
             .try_to_js_value()
     }
@@ -878,6 +892,8 @@ impl TryIntoJsValue for VerifiedOutput {
             "actionIndex" => self.action_index,
             "value" => self.value,
             "recipient" => self.recipient.to_vec(),
+            "memo" => self.memo.to_vec(),
+            "isChange" => self.is_change,
         )
     }
 }
@@ -974,12 +990,19 @@ impl TryFromJsValue for IronwoodKeylessSpendSpec {
     }
 }
 
-impl TryIntoJsValue for IronwoodActionMap {
+impl TryIntoJsValue for IronwoodSpendActionMap {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
-        js_obj!(
-            "spendActionIndices" => self.spend_action_indices().to_vec(),
-            "outputActionIndices" => self.output_action_indices().to_vec(),
-        )
+        let obj = js_obj!(
+            "spendActionIndices" => self.actions.spend_action_indices().to_vec(),
+            "outputActionIndices" => self.actions.output_action_indices().to_vec(),
+        )?;
+        let change = match self.change_action_index {
+            Some(index) => JsValue::from_f64(index as f64),
+            None => JsValue::NULL,
+        };
+        js_sys::Reflect::set(&obj, &"changeActionIndex".into(), &change)
+            .map_err(|_| WasmUtxoError::new("Failed to set object property"))?;
+        Ok(obj)
     }
 }
 
@@ -1075,6 +1098,12 @@ impl TryIntoJsValue for ZcashParsedOutput {
         };
         js_sys::Reflect::set(&obj, &"actionIndex".into(), &action_index)
             .map_err(|_| WasmUtxoError::new("Failed to set object property"))?;
+        js_sys::Reflect::set(
+            &obj,
+            &"isChange".into(),
+            &JsValue::from_bool(self.is_change),
+        )
+        .map_err(|_| WasmUtxoError::new("Failed to set object property"))?;
         Ok(obj)
     }
 }

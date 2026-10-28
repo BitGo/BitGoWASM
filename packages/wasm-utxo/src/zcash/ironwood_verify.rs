@@ -20,6 +20,9 @@
 //! - `Flags`: the bundle's flags match its contents (spends enabled iff a real spend is
 //!   present, outputs iff a real output is, cross-address always enabled);
 //! - `ZeroValueOutput`: value-0 (dummy) outputs only sit on actions with a real spend;
+//! - `EncCiphertext`: every output's `ephemeral_key`/`enc_ciphertext` decrypt, under the note's
+//!   own `esk` (derived from its plaintext `rseed`) and its recipient's `pk_d`, to exactly the
+//!   shown note — so the recipient can find it; the decrypted memo is reported;
 //! - `SpendSignature`: every present spend-auth signature verifies against the spend's `rk` over
 //!   the caller's sighash.
 //!
@@ -94,6 +97,13 @@ pub struct VerifiedOutput {
     pub value: u64,
     /// Raw Orchard recipient (43 bytes).
     pub recipient: OrchardAddressBytes,
+    /// The memo the recipient will decrypt (`EncCiphertext` checked it rides the output).
+    pub memo: [u8; 512],
+    /// Whether this output pays back to a real spend's own address (byte-equal 43-byte
+    /// recipient). Such a note is spendable only under the same keys as the note it came from,
+    /// so it is change; every other output — including one to another diversified address of
+    /// the same wallet — is reported as an external send.
+    pub is_change: bool,
 }
 
 /// The verified view of a bundle: the real spends and outputs with their plaintext values,
@@ -188,6 +198,9 @@ pub fn verify_bundle_without_keys(
                 action_index,
                 value: output_value,
                 recipient: output_recipient,
+                // `EncCiphertext`: the on-wire ciphertext must carry exactly this note.
+                memo: verify_enc_ciphertext(action_index, action)?,
+                is_change: false,
             });
             continue;
         }
@@ -206,6 +219,8 @@ pub fn verify_bundle_without_keys(
                 action_index,
                 value: output_value,
                 recipient: output_recipient,
+                memo: verify_enc_ciphertext(action_index, action)?,
+                is_change: false,
             });
         }
     }
@@ -245,6 +260,13 @@ pub fn verify_bundle_without_keys(
                 "an expected randomizer targets an action without a real spend".to_string(),
             ));
         }
+    }
+
+    // Change: an output back to one of the spent notes' own addresses.
+    for output in &mut outputs {
+        output.is_change = spends
+            .iter()
+            .any(|spend| spend.recipient == output.recipient);
     }
 
     // `ValueSum`: the committed value_sum must equal Σ(v_spend − v_out) over exactly the reported
@@ -346,6 +368,63 @@ fn action_plaintext(
         .map(|address| address.to_raw_address_bytes())
         .ok_or_else(|| missing("output recipient"))?;
     Ok((spend_value, output_value, output_recipient))
+}
+
+/// `EncCiphertext`: decrypt the output's `enc_ciphertext` with the note's own ephemeral secret
+/// (derived from its plaintext `rseed` and `rho`) against the recipient's `pk_d` — exactly what
+/// sender-side recovery does, and needs no key. Recovery also checks the `ephemeral_key` is
+/// `[esk]·g_d` and the decrypted note commits to the action's `cmx`; the decrypted note and
+/// recipient must then equal the plaintext ones. Returns the decrypted memo.
+fn verify_enc_ciphertext(
+    action_index: usize,
+    action: &orchard::pczt::Action,
+) -> Result<[u8; 512], IronwoodVerifyError> {
+    use orchard::note::Rho;
+    use orchard::note_encryption::IronwoodDomain;
+    use zcash_note_encryption::{try_output_recovery_with_pkd_esk, Domain};
+
+    let fail = |detail: &str| {
+        action_error(
+            action_index,
+            IronwoodVerifyCheck::EncCiphertext,
+            detail.to_string(),
+        )
+    };
+    let output = action.output();
+    let (Some(recipient), Some(value), Some(rseed)) =
+        (output.recipient(), output.value(), output.rseed())
+    else {
+        return Err(fail("the output is missing its plaintext note"));
+    };
+    // The output note's `rho` is the paired spend's nullifier.
+    let rho = Option::<Rho>::from(Rho::from_bytes(&action.spend().nullifier().to_bytes()))
+        .ok_or_else(|| fail("the paired nullifier is not a valid rho"))?;
+    let note = Option::<Note>::from(Note::from_parts(
+        *recipient,
+        *value,
+        rho,
+        *rseed,
+        *output.note_version(),
+    ))
+    .ok_or_else(|| fail("the output's plaintext fields do not form a valid note"))?;
+    let esk = <IronwoodDomain as Domain>::derive_esk(&note)
+        .ok_or_else(|| fail("no ephemeral secret derives from the note"))?;
+    let pk_d = <IronwoodDomain as Domain>::get_pk_d(&note);
+    let (decrypted, to, memo) = try_output_recovery_with_pkd_esk(
+        &IronwoodDomain::for_pczt_action(action),
+        pk_d,
+        esk,
+        action,
+    )
+    .ok_or_else(|| {
+        fail("enc_ciphertext does not decrypt to a note under the shown recipient and rseed")
+    })?;
+    if decrypted != note || to != *recipient {
+        return Err(fail(
+            "enc_ciphertext decrypts to a different note than the shown plaintext",
+        ));
+    }
+    Ok(memo)
 }
 
 /// Run the real-spend-only checks (`SpendWitness`, `Rk`, `ViewingKeyPresent`, `SpendSignature`) on
@@ -548,10 +627,11 @@ mod tests {
         IronwoodSpendSpec, OrchardAddressBytes, WitnessAuthPath, ANCHOR_SIZE,
     };
     use crate::zcash::ironwood_pczt::{
-        deserialize_pczt, serialize_pczt, with_action_rewrite_for_test, with_flags_for_test,
-        with_output_recipient_for_test, with_spend_alpha, with_spend_auth_sig, with_spend_fvk,
-        with_spend_rk, with_spend_value, with_spend_witness_for_test, with_value_sum_for_test,
-        without_output_recipient_for_test, ActionRewriteForTest,
+        bundle_wire_to_wire_bytes, deserialize_pczt, serialize_pczt, wire_bytes_to_bundle_wire,
+        with_action_rewrite_for_test, with_flags_for_test, with_output_recipient_for_test,
+        with_spend_alpha, with_spend_auth_sig, with_spend_fvk, with_spend_rk, with_spend_value,
+        with_spend_witness_for_test, with_value_sum_for_test, without_output_recipient_for_test,
+        ActionRewriteForTest,
     };
     use ff::{Field, PrimeField};
     use orchard::{
@@ -819,6 +899,41 @@ mod tests {
         assert_eq!(
             verify_check(&tampered, &ctx()).unwrap_err(),
             IronwoodVerifyCheck::NoteCommitment
+        );
+    }
+
+    /// An `enc_ciphertext` that does not decrypt to the plaintext note fails `EncCiphertext`.
+    #[test]
+    fn swapped_enc_ciphertext_fails_enc_ciphertext() {
+        let (bytes, _anchor, _recipient) = test_bundle();
+        // A valid ciphertext of a DIFFERENT note, from a freshly constructed bundle.
+        let (specs, other_anchor, _fvk, _ak) =
+            crate::zcash::ironwood_construct::test_util::keyless_fixture();
+        let (other, _) = crate::zcash::ironwood_construct::construct_spend_pczt_keyless(
+            &specs[..1],
+            &[IronwoodOutputSpec {
+                recipient: test_recipient(),
+                amount: 1_000,
+                ovk: None,
+                memo: [0u8; 512],
+            }],
+            &other_anchor,
+            OsRng,
+        )
+        .unwrap();
+        // Splice `other`'s action-0 ciphertext over action 0 of `bytes` on the wire form: the
+        // plaintext note, its cmx and the value stay untouched, so only the ciphertext check
+        // can catch a builder that hands the recipient a note it can never decrypt.
+        let mut wire = wire_bytes_to_bundle_wire(&bytes);
+        wire.actions[0].output.enc_ciphertext =
+            wire_bytes_to_bundle_wire(&serialize_pczt(&other).unwrap()).actions[0]
+                .output
+                .enc_ciphertext
+                .clone();
+        let tampered = bundle_wire_to_wire_bytes(&wire);
+        assert_eq!(
+            verify_check(&tampered, &ctx()).unwrap_err(),
+            IronwoodVerifyCheck::EncCiphertext
         );
     }
 

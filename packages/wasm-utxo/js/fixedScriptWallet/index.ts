@@ -66,6 +66,7 @@ export type {
   IronwoodRandomizerState,
   ZcashInputKind,
   ZcashShieldedSpend,
+  ZcashShieldedOutput,
   IronwoodVerificationReport,
   IronwoodShieldedStatus,
 } from "./ZcashIronwoodTypes.js";

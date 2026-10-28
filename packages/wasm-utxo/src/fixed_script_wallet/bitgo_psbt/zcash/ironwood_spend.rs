@@ -49,15 +49,21 @@ impl ZcashBitGoPsbt {
     /// - **one call per PSBT** — a second call would silently overwrite the first batch
     ///   ([`IronwoodPsbtError::AlreadyAdded`]).
     ///
+    /// `change`, when given, adds one more shielded output paying `change.amount` back to
+    /// `spends[change.spend_index]`'s own address — the only shielded change a keyless client
+    /// can recognize (see [`crate::zcash::ironwood_verify::VerifiedOutput::is_change`]). Its
+    /// action index is reported as [`IronwoodSpendActionMap::change_action_index`].
+    ///
     /// Also stored: each output's Unified Address, keyed by its action index, and the
     /// all-clear `out_ciphertext` bitset (proprietary key `0x09`).
     pub fn add_shielded_spends<R: rand::RngCore + rand::CryptoRng>(
         &mut self,
         spends: &[crate::zcash::ironwood_construct::IronwoodKeylessSpendSpec],
         outputs: &[IronwoodOutputRequest],
+        change: Option<IronwoodSpendChange>,
         anchor: &crate::zcash::ironwood_build::AnchorBytes,
         rng: R,
-    ) -> Result<crate::zcash::ironwood_build::IronwoodActionMap, IronwoodPsbtError> {
+    ) -> Result<IronwoodSpendActionMap, IronwoodPsbtError> {
         use crate::zcash::{ironwood_build, ironwood_construct};
 
         // One input kind: a spend PSBT has no transparent inputs — the shielded side funds itself.
@@ -74,6 +80,24 @@ impl ZcashBitGoPsbt {
                     .map_err(IronwoodPsbtError::BadUnifiedAddress)?;
             }
         }
+        // Change goes back to a spent note's own address: append it as the last request.
+        let mut requests = outputs.to_vec();
+        if let Some(change) = change {
+            let spend =
+                spends
+                    .get(change.spend_index)
+                    .ok_or(IronwoodPsbtError::BadChangeSpend {
+                        spend_index: change.spend_index,
+                    })?;
+            requests.push(IronwoodOutputRequest {
+                recipient: spend.recipient,
+                amount: change.amount,
+                ovk: None,
+                memo: crate::zcash::ironwood_build::ZIP302_NO_MEMO,
+                unified_address: None,
+            });
+        }
+        let outputs = requests.as_slice();
 
         let output_specs: Vec<ironwood_build::IronwoodOutputSpec> = outputs
             .iter()
@@ -96,7 +120,12 @@ impl ZcashBitGoPsbt {
             &mut self.psbt,
             vec![0u8; action_count.div_ceil(8)],
         );
-        Ok(action_map)
+        let change_action_index =
+            change.and_then(|_| action_map.output_action_index(outputs.len() - 1));
+        Ok(IronwoodSpendActionMap {
+            actions: action_map,
+            change_action_index,
+        })
     }
 
     /// The one-input-kind rule on the transparent side: reject adding a transparent input to a PSBT
@@ -685,6 +714,28 @@ impl ZcashBitGoPsbt {
             anchor: report.anchor,
         })
     }
+}
+
+/// The change half of [`ZcashBitGoPsbt::add_shielded_spends`]: `amount` zatoshi back to
+/// `spends[spend_index]`'s own address.
+#[derive(Clone, Copy, Debug)]
+pub struct IronwoodSpendChange {
+    /// Change value in zatoshi (> 0).
+    pub amount: u64,
+    /// Which requested spend's address receives the change.
+    pub spend_index: usize,
+}
+
+/// Where [`ZcashBitGoPsbt::add_shielded_spends`]' requests landed: the requested spends and
+/// outputs (the change output, when requested, is the last output entry) plus the change's
+/// action index.
+#[derive(Clone, Debug)]
+pub struct IronwoodSpendActionMap {
+    /// The action index of every requested spend and output; the change output, if any, is
+    /// the last entry of `output_action_indices`.
+    pub actions: crate::zcash::ironwood_build::IronwoodActionMap,
+    /// The change output's action index, when change was requested.
+    pub change_action_index: Option<usize>,
 }
 
 /// Which input kind a v6 PSBT carries.
