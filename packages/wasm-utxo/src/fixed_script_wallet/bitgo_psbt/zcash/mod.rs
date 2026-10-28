@@ -183,8 +183,9 @@ impl ZcashBitGoPsbt {
         &self,
         tx: &Transaction,
     ) -> Result<Vec<u8>, super::DeserializeError> {
-        // Chokepoint for the v4 wire encoding — also covers
-        // `extract_unsigned_zcash_transaction`, `compute_txid` and `serialize`.
+        // Chokepoint for the v4 wire encoding — also covers `compute_txid` and `serialize`.
+        // `extract_unsigned_zcash_transaction` is v6-aware and routes around this chokepoint
+        // (see its doc comment).
         if self.is_ironwood_v6() {
             return Err(super::DeserializeError::Network(
                 V6_NOT_SUPPORTED_BY_V4_PATH.to_string(),
@@ -205,7 +206,47 @@ impl ZcashBitGoPsbt {
     }
 
     /// Reconstruct the unsigned Zcash transaction bytes from the PSBT
+    ///
+    /// v6-aware, unlike the v4-only extraction paths (`compute_txid`, `extract_tx`) which keep
+    /// refusing a v6 PSBT: for a v6 (Ironwood) PSBT this serializes the embedded unsigned v6
+    /// transaction — the same construction [`Self::unsigned_v6_txid`] commits to (the
+    /// transparent skeleton plus the current action data, or a bundle-less v6 tx for
+    /// transparent-only PSBTs) — so `get_unsigned_tx_bytes` can size and diff unsigned v6
+    /// transactions the way utxo-lib does for v4.
+    ///
+    /// Two unsigned-state compromises, both size-honest and txid-neutral: the per-action
+    /// spend-auth slots are padded with zero signatures and the Halo2 proof slot with
+    /// zero bytes of `orchard::Proof::expected_proof_size(n_actions)` — each a fixed wire
+    /// slot the finalized transaction carries anyway, so the byte length equals the
+    /// final form's (what the fee/size calculation consumes; an empty proof slot would
+    /// under-price a shielded spend by several KB). The proof itself is unknowable
+    /// before `combine_ironwood_proof`; ZIP-244 commits to neither slot, so the txid
+    /// is unchanged.
     pub fn extract_unsigned_zcash_transaction(&self) -> Result<Vec<u8>, super::DeserializeError> {
+        if self.is_ironwood_v6() {
+            let no_shielded_output = self
+                .require_no_shielded_output_ever_added()
+                .map_err(super::DeserializeError::Network)?;
+            let bundle = if no_shielded_output {
+                None
+            } else {
+                let mut action_data = self
+                    .ironwood_action_data()
+                    .map_err(super::DeserializeError::Network)?;
+                action_data.spend_auth_sigs = vec![[0u8; 64]; action_data.actions.len()];
+                // Size-honest proof slot: the finalized transaction carries
+                // expected_proof_size(n_actions) bytes here. The proof is unknowable
+                // before combine_ironwood_proof, but the slot length is not.
+                action_data.proof =
+                    vec![0u8; orchard::Proof::expected_proof_size(action_data.actions.len())];
+                Some(action_data)
+            };
+            let tx = self
+                .to_v6_transaction(self.psbt.unsigned_tx.clone(), bundle)
+                .map_err(super::DeserializeError::Network)?;
+            return crate::zcash::v6::encode_v6_transaction(&tx)
+                .map_err(|e| super::DeserializeError::Network(e.to_string()));
+        }
         self.serialize_as_zcash_transaction(&self.psbt.unsigned_tx)
     }
 
@@ -274,11 +315,20 @@ impl ZcashBitGoPsbt {
         crate::zcash::transaction::encode_zcash_transaction_parts(&parts)
             .map_err(super::DeserializeError::Network)
     }
-
     /// Compute the transaction ID for the unsigned Zcash transaction
     ///
-    /// The txid is the double SHA256 of the full Zcash transaction bytes.
+    /// The txid is the double SHA256 of the full Zcash transaction bytes — v4 (ZIP-243)
+    /// semantics only. Still refuses a v6 (Ironwood) PSBT even though
+    /// [`Self::extract_unsigned_zcash_transaction`] is v6-aware: a v6 txid is ZIP-244
+    /// (BLAKE2b), not double-SHA256, so hashing the extracted v6 wire bytes here would
+    /// produce a meaningless value. Use [`Self::unsigned_v6_txid`]/[`Self::v6_txid`]
+    /// (the JS `getId()` path) for v6.
     pub fn compute_txid(&self) -> Result<[u8; 32], super::DeserializeError> {
+        if self.is_ironwood_v6() {
+            return Err(super::DeserializeError::Network(
+                V6_NOT_SUPPORTED_BY_V4_PATH.to_string(),
+            ));
+        }
         use miniscript::bitcoin::hashes::{sha256d, Hash};
         let tx_bytes = self.extract_unsigned_zcash_transaction()?;
         let hash = sha256d::Hash::hash(&tx_bytes);

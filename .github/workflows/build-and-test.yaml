@@ -151,7 +151,6 @@ jobs:
     name: "Test ${{ matrix.package }} @ node ${{ matrix.node-version }}"
     needs: [detect-changes, build]
     runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:

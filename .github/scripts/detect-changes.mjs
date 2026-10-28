@@ -7,8 +7,6 @@ import { appendFileSync } from "fs";
 // Node versions. The flags gate steps there:
 //   - needs-wasm-pack:      download the build artifact (wasm .js/.wasm)
 //   - has-wasm-pack-tests:  run `npm run test:wasm-pack-{node,chrome}`
-//   - experimental:         allow the Current release line to fail without
-//                           blocking the workflow
 // Keeping the flags here (instead of a static `include:` block in the
 // workflow) is what actually lets `detect-changes` shrink the matrix — a
 // workflow `include:` entry whose `package` conflicts with the base matrix
@@ -24,11 +22,7 @@ const PACKAGE_CONFIG = [
   { package: "wasm-privacy-coin", "needs-wasm-pack": false, "has-wasm-pack-tests": false },
 ];
 
-const NODE_MATRIX = [
-  { "node-version": "22.x", experimental: false },
-  { "node-version": "24.x", experimental: false },
-  { "node-version": "26.x", experimental: true },
-];
+const NODE_MATRIX = [{ "node-version": "22.x" }, { "node-version": "24.x" }];
 
 const ALL_PACKAGES = PACKAGE_CONFIG.map((p) => p.package);
 
