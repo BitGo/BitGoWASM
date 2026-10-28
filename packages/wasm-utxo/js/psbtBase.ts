@@ -1,6 +1,7 @@
 import type {
   PsbtInputData,
   PsbtInputKeyValue,
+  PsbtInputOutpoint,
   PsbtOutputData,
   WasmBIP32,
 } from "./wasm/wasm_utxo.js";
@@ -15,6 +16,7 @@ interface WasmPsbtBase {
   unsigned_tx_id(): string;
   serialize(): Uint8Array;
   get_inputs(): unknown;
+  get_input_outpoints(): unknown;
   get_input_key_values(index: number): unknown;
   get_outputs(): unknown;
   get_global_xpubs(): unknown;
@@ -58,6 +60,9 @@ export abstract class PsbtBase<W extends WasmPsbtBase> {
   }
   getInputs(): PsbtInputData[] {
     return this._wasm.get_inputs() as PsbtInputData[];
+  }
+  getInputOutpoints(): PsbtInputOutpoint[] {
+    return this._wasm.get_input_outpoints() as PsbtInputOutpoint[];
   }
   getInputKeyValues(index: number): PsbtInputKeyValue[] {
     return this._wasm.get_input_key_values(index) as PsbtInputKeyValue[];

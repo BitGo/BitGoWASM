@@ -16,6 +16,59 @@ use orchard::tree::Anchor;
 use orchard::Proof;
 use rand::rngs::OsRng;
 
+/// `input_outpoints` is version-symmetric: the same mock outpoint spent by a v4 and a v6
+/// PSBT yields the identical display-order `{txid, vout}` pair — the wasm counterpart of
+/// utxo-lib's raw `txInputs` + `getOutputIdForInput`, so unspent-id extraction (bms's
+/// PA-creation path) behaves the same for both versions.
+#[test]
+fn input_outpoints_are_version_symmetric() {
+    let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("outpoints"));
+    let mock_txid = Txid::from_byte_array([0x44u8; 32]);
+    let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
+
+    let mut v6 =
+        BitGoPsbt::new_zcash_v6_at_height(Network::ZcashTestnet, &wallet_keys, nu6_3, None, None)
+            .unwrap();
+    let mut v4 = BitGoPsbt::new_zcash_at_height(
+        Network::ZcashTestnet,
+        &wallet_keys,
+        2_000_000,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    for psbt in [&mut v6, &mut v4] {
+        psbt.add_wallet_input(
+            mock_txid,
+            7,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+    }
+
+    let BitGoPsbt::Zcash(z6, _) = &v6 else {
+        panic!("expected Zcash PSBT");
+    };
+    let BitGoPsbt::Zcash(z4, _) = &v4 else {
+        panic!("expected Zcash PSBT");
+    };
+    let out6 = crate::wasm::input_outpoints(&z6.psbt);
+    let out4 = crate::wasm::input_outpoints(&z4.psbt);
+    assert_eq!(out6, out4, "v4 and v6 outpoints must be identical");
+    assert_eq!(out6.len(), 1);
+    assert_eq!(
+        out6[0].txid,
+        mock_txid.to_string(),
+        "txid must be in display (reversed) order, like utxo-lib's getOutputIdForInput"
+    );
+    assert_eq!(out6[0].vout, 7);
+}
+
 /// A transparent-only v6 (Ironwood) PSBT — no shielded output is ever added — is the shape
 /// IMS will build once t->t ZEC sends move to v6 ahead of a shielded-send path existing for
 /// them. Verifies the dedicated no-PCZT extractor produces a structurally valid, zebra-chain-

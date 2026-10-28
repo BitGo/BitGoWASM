@@ -33,6 +33,7 @@ pub use inscriptions::InscriptionsNamespace;
 pub use message::MessageNamespace;
 pub use miniscript::WrapMiniscript;
 pub use package_info::WasmUtxoNamespace;
+pub use psbt::input_outpoints;
 pub use psbt::WrapPsbt;
 pub use replay_protection::WasmReplayProtection;
 pub use transaction::{WasmTransaction, WasmZcashTransaction};

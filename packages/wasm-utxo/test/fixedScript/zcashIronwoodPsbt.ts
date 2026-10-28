@@ -1298,3 +1298,22 @@ describe("ZcashIronwoodBitGoPsbt v6 (Ironwood)", function () {
     });
   });
 });
+
+describe("getInputOutpoints", () => {
+  it("is version-symmetric: a v4 and a v6 PSBT spending the same outpoint return identical {txid, vout} in display order", () => {
+    const keys = getWalletKeysForSeed("outpoints");
+    // asymmetric txid so the display-order assertion cannot pass by accident
+    const mockTxid = `a1${"00".repeat(30)}b2`;
+    const v6 = ZcashIronwoodBitGoPsbt.createEmpty("tzec", keys, {
+      blockHeight: NU6_3_TESTNET_HEIGHT + 1,
+    });
+    const v4 = ZcashBitGoPsbt.createEmpty("tzec", keys, { blockHeight: 2_000_000 });
+    for (const psbt of [v6, v4]) {
+      psbt.addWalletInput({ txid: mockTxid, vout: 7, value: 200_000_000n }, keys, {
+        scriptId: SCRIPT_ID,
+      });
+    }
+    assert.deepEqual(v6.getInputOutpoints(), v4.getInputOutpoints());
+    assert.deepEqual(v6.getInputOutpoints(), [{ txid: mockTxid, vout: 7 }]);
+  });
+});
