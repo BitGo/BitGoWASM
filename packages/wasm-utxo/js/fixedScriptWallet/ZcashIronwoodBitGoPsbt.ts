@@ -56,6 +56,21 @@ export type CreateEmptyIronwoodWithConsensusBranchIdOptions = {
 };
 
 /**
+ * Options for creating an empty Zcash v6 (Ironwood) shielding PSBT **without** wallet keys —
+ * the MPC-shielded build, where no fixed-script xpub triple exists to stamp.
+ *
+ * Shape matches {@link CreateEmptyIronwoodOptions} minus `walletKeys`.
+ */
+export type CreateEmptyKeylessOptions = {
+  /** Block height to determine the consensus branch ID automatically (at/after NU6.3 activation) */
+  blockHeight: number;
+  /** Zcash transaction expiry height */
+  expiryHeight?: number;
+  /** Lock time (default: 0) */
+  lockTime?: number;
+};
+
+/**
  * A fresh ZIP-302 "no memo" memo field: the `0xf6` marker byte followed by 511 zero bytes. The
  * default for {@link ZcashIronwoodBitGoPsbt.addShieldedOutput}'s `memo` option.
  *
@@ -102,6 +117,31 @@ export type ZcashIronwoodParsedTransaction =
       shieldedSpends: ZcashShieldedSpend[];
     });
 
+/**
+ * The keyless parse of a v6 (Ironwood) transaction — the MPC-shielded shape, and the
+ * wallet-keys-free counterpart to {@link ZcashIronwoodParsedTransaction}. The key-free
+ * verifier runs first: a tampered bundle throws with the failing check's `err.code`.
+ */
+export type ZcashShieldedParsedTransaction = {
+  /** The verified shielded spends, in action order. */
+  shieldedSpends: ZcashShieldedSpend[];
+  /**
+   * Every output: transparent first (tx output order), then the shielded ones (action
+   * order) — the same order {@link parseOutputsWithWalletKeys} reports. A transparent
+   * output's address is its stored `unifiedAddress` (when `addTransparentOutput` was given
+   * one) or the address decoded from the scriptPubKey; the wallet-ownership fields
+   * (`scriptId`, `derivationPath`) are always null.
+   */
+  outputs: ZcashIronwoodParsedOutput[];
+  /** The orchard bundle's value balance (Σv_spend − Σv_out); `0` without a bundle. */
+  valueBalance: bigint;
+  /**
+   * Fee: total input value (transparent inputs + shielded spends) − total output value.
+   * Transparent input values come from the PSBT's utxo fields as-is.
+   */
+  fee: bigint;
+};
+
 /** The parse fields shared by both `inputKind` arms. */
 type IronwoodParsedBase = ParsedTransaction<ZcashIronwoodParsedOutput, ZcashParsedInput> & {
   valueBalance: bigint;
@@ -122,6 +162,11 @@ type IronwoodParsedBase = ParsedTransaction<ZcashIronwoodParsedOutput, ZcashPars
  *   {@link addSpendSignatures}), and the proof round ({@link getProofRequest} → prover →
  *   {@link combineProof}) follow, in that order. Before signing, the client checks the bundle
  *   against its own spend-validating key and randomizers with {@link verifyShieldedBundle}.
+ *
+ * For custodial MPC shielded wallets — no fixed-script xpub triple at all — the constructor
+ * is {@link createEmptyKeyless} (no `walletKeys`), and {@link parseShieldedTransaction}
+ * surfaces the built transaction (`shieldedSpends` / `outputs` / `valueBalance` / `fee`)
+ * without ever needing the keys.
  *
  * **Sign first, prove last.** Spend signatures are made over {@link spendSighash}, which
  * commits `rk` but neither the proof nor the randomizers `alpha`; the alphas reach the prover
@@ -215,6 +260,28 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
   }
 
   /**
+   * The keyless parse — the MPC-shielded shape, and the wallet-keys-free counterpart to
+   * {@link parseTransactionWithWalletKeys}: the verified shielded spends, every output, the
+   * bundle's value balance, and the fee. Transparent inputs are not surfaced (a spend bundle
+   * has none) and transparent outputs are decoded without keys, so the wallet-ownership
+   * fields (`scriptId`, `derivationPath`) stay null.
+   *
+   * Transparent input values are taken from the PSBT's utxo fields as-is — nothing here
+   * can verify them against the chain — so a transparent-input parse's `fee` trusts those
+   * fields; the MPC spend shapes carry no transparent inputs, so their `fee` is fully
+   * verified.
+   *
+   * Throws `ZcashParseTransactionError.NotIronwoodV6` on a non-v6 PSBT, and
+   * `ZcashParseTransactionError.MixedInputKinds` when transparent inputs ride alongside
+   * shielded spends. After {@link combineProof} the PCZT is gone (that call is terminal),
+   * so the parse throws `ZcashParseTransactionError.Shielded` rather than reporting no
+   * shielded side.
+   */
+  parseShieldedTransaction(): ZcashShieldedParsedTransaction {
+    return this.wasm.parse_shielded_transaction() as ZcashShieldedParsedTransaction;
+  }
+
+  /**
    * Create an empty Zcash **v6 (Ironwood)** shielding PSBT, with the consensus branch ID
    * determined from block height.
    *
@@ -266,6 +333,33 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
       network,
       keys.wasm,
       options.consensusBranchId,
+      options.lockTime,
+      options.expiryHeight,
+    );
+    return new ZcashIronwoodBitGoPsbt(wasm);
+  }
+
+  /**
+   * Create an empty Zcash **v6 (Ironwood)** shielding PSBT **without** wallet keys — the
+   * MPC-shielded constructor, with the consensus branch ID determined from block height.
+   *
+   * A custodial MPC shielded wallet has no fixed-script xpub triple, so there are no global
+   * xpubs to stamp: the xpubs {@link createEmpty} embeds are purely informational metadata,
+   * and every other v6 method reads/writes only the proprietary-map fields this constructor
+   * also sets. The transparent side uses `addWalletInput` / `addWalletOutput`, the shielded
+   * side {@link addShieldedSpends} / {@link addShieldedOutput};
+   * {@link parseShieldedTransaction} surfaces what was built, without needing any keys.
+   *
+   * @param network - Zcash network name ("zcash", "zcashTest", "zec", "tzec")
+   * @param options - Options including blockHeight (at/after NU6.3 activation)
+   */
+  static createEmptyKeyless(
+    network: ZcashNetworkName,
+    options: CreateEmptyKeylessOptions,
+  ): ZcashIronwoodBitGoPsbt {
+    const wasm = WasmBitGoPsbt.create_empty_zcash_v6_bare_at_height(
+      network,
+      options.blockHeight,
       options.lockTime,
       options.expiryHeight,
     );

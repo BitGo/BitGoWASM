@@ -20,7 +20,7 @@ use crate::fixed_script_wallet::bitgo_psbt::zcash::ironwood_spend::{
 };
 use crate::fixed_script_wallet::bitgo_psbt::zcash::parse::{
     ZcashParsedInput, ZcashParsedInputs, ZcashParsedOutput, ZcashParsedTransaction,
-    ZcashShieldedSpend,
+    ZcashShieldedParsedTransaction, ZcashShieldedSpend,
 };
 use crate::fixed_script_wallet::bitgo_psbt::zcash::IronwoodOutputRequest;
 use crate::wasm::bip32::WasmBIP32;
@@ -200,6 +200,38 @@ impl BitGoPsbt {
         let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::new_zcash_v6_at_height(
             network,
             wallet_keys,
+            block_height,
+            lock_time,
+            expiry_height,
+        )
+        .map_err(|e| WasmUtxoError::new(&e))?;
+        Ok(BitGoPsbt {
+            psbt,
+            first_rounds: HashMap::new(),
+        })
+    }
+
+    /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT **without embedding any xpubs**,
+    /// with the consensus branch id resolved from `block_height` (which must be at or after
+    /// NU6.3 activation).
+    ///
+    /// The keyless MPC-shielded constructor: a custodial MPC shielded wallet has no
+    /// fixed-script xpub triple, so there is nothing to stamp — the xpubs
+    /// `create_empty_zcash_v6_at_height` embeds are purely informational metadata, and every
+    /// other v6 method reads/writes only the proprietary-map fields this constructor also
+    /// sets. Transparent inputs/outputs are added with the usual `add_wallet_input` /
+    /// `add_wallet_output`; the shielded side uses the dedicated `add_ironwood_output` /
+    /// `add_ironwood_shielded_spends` methods; `parse_shielded_transaction` surfaces what was
+    /// built without keys.
+    pub fn create_empty_zcash_v6_bare_at_height(
+        network: &str,
+        block_height: u32,
+        lock_time: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<BitGoPsbt, WasmUtxoError> {
+        let network = parse_network(network)?;
+        let psbt = crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt::new_zcash_v6_bare_at_height(
+            network,
             block_height,
             lock_time,
             expiry_height,
@@ -884,6 +916,30 @@ impl BitGoPsbt {
             .map_err(WasmUtxoError::from)?
             .try_to_js_value()
     }
+
+    /// The keyless Zcash parse — `parse_shielded_transaction`: what a caller without wallet
+    /// keys can account for on a v6 (Ironwood) PSBT.
+    ///
+    /// Returns `{shieldedSpends, outputs, valueBalance, fee}`: the verified shielded spends
+    /// (the key-free verifier runs first), every output (transparent + shielded, with
+    /// `isShielded`/`actionIndex`/`isChange`), the bundle's value balance, and the fee.
+    /// Transparent outputs carry the stored `unified_address` when one was set, else the
+    /// address decoded from the scriptPubKey; transparent inputs are counted toward the fee
+    /// but not surfaced. Their values come from the PSBT's utxo fields as-is — nothing here
+    /// can verify them against the chain — so a transparent-input parse's `fee` trusts
+    /// those fields; the MPC spend shapes carry no transparent inputs, so their `fee` is
+    /// fully verified.
+    ///
+    /// Throws `ZcashParseTransactionError.NotIronwoodV6` on a non-v6 PSBT,
+    /// `ZcashParseTransactionError.MixedInputKinds` when transparent inputs ride alongside
+    /// shielded spends, and `ZcashParseTransactionError.Shielded` once
+    /// `combine_ironwood_proof` has consumed the PCZT.
+    pub fn parse_shielded_transaction(&self) -> Result<JsValue, WasmUtxoError> {
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_shielded_transaction(
+            &self.psbt,
+        )?
+        .try_to_js_value()
+    }
 }
 
 impl TryIntoJsValue for VerifiedOutput {
@@ -1153,6 +1209,17 @@ impl TryIntoJsValue for ZcashParsedTransaction {
             ? "inputKind" => ironwood.then(|| input_kind.to_string()),
             ? "shieldedSpends" => ironwood.then_some(shielded_spends),
             ? "valueBalance" => ironwood.then_some(self.value_balance)
+        )
+    }
+}
+
+impl TryIntoJsValue for ZcashShieldedParsedTransaction {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "shieldedSpends" => self.shielded_spends.clone(),
+            "outputs" => self.outputs.clone(),
+            "valueBalance" => self.value_balance,
+            "fee" => self.fee
         )
     }
 }

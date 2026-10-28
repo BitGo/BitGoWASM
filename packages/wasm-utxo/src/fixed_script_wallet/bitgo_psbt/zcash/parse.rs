@@ -8,8 +8,14 @@
 //! [`ZcashParsedTransaction`] (per-action output indices, shielded spends, the bundle's
 //! value balance). The key-free verifier checks the bundle before any plaintext value is
 //! returned.
+//!
+//! [`parse_shielded_transaction`] is the wallet-keys-free counterpart: the
+//! MPC-shielded shape (`shieldedSpends` / `outputs` / `valueBalance` / `fee`) for callers
+//! without a fixed-script xpub triple.
 
+use super::super::psbt_wallet_input;
 use super::ZcashBitGoPsbt;
+use crate::address::networks::from_output_script_with_network;
 use crate::fixed_script_wallet::bitgo_psbt::{
     BitGoPsbt, ParseTransactionError, ParsedInput, ParsedOutput,
 };
@@ -90,6 +96,26 @@ pub struct ZcashParsedTransaction {
     pub is_ironwood_v6: bool,
 }
 
+/// The keyless parse of a v6 (Ironwood) transaction — the MPC-shielded shape.
+///
+/// The wallet-keys-free counterpart to [`ZcashParsedTransaction`]: the verified shielded
+/// side, every output, the bundle's value balance, and the fee. Transparent inputs are not
+/// surfaced — a spend bundle has none, and the shielding flow's wallet-owned inputs are
+/// the keyed parse's job ([`parse_transaction_with_wallet_keys`]).
+#[derive(Clone, Debug)]
+pub struct ZcashShieldedParsedTransaction {
+    /// The verified shielded spends, in action order.
+    pub shielded_spends: Vec<ZcashShieldedSpend>,
+    /// Every output: transparent first (tx output order), then the shielded ones (action
+    /// order) — the same order [`parse_transaction_with_wallet_keys`] reports.
+    pub outputs: Vec<ZcashParsedOutput>,
+    /// The orchard bundle's value balance (Σv_spend − Σv_out); `0` when the PSBT carries
+    /// no Ironwood bundle.
+    pub value_balance: i64,
+    /// Fee: total input value (transparent inputs + shielded spends) − total output value.
+    pub fee: u64,
+}
+
 /// Errors from the Zcash-specific parse.
 #[derive(Debug, strum::IntoStaticStr)]
 pub enum ZcashParseTransactionError {
@@ -100,6 +126,10 @@ pub enum ZcashParseTransactionError {
     /// The shielded side could not be read (no usable PCZT, an unencodable address, or a
     /// value overflow).
     Shielded(String),
+    /// The keyless shielded parse ([`parse_shielded_transaction`]) was handed a non-v6
+    /// PSBT: a v4/Sapling PSBT's shielded side cannot be parsed without keys, so the
+    /// keyless surface is v6-only.
+    NotIronwoodV6,
     /// The shielded side failed key-free verification; the error code is the
     /// failing verifier check (`IronwoodVerifyError.<check>`).
     Verify(crate::zcash::ironwood_build::IronwoodVerifyError),
@@ -112,6 +142,10 @@ impl std::fmt::Display for ZcashParseTransactionError {
             ZcashParseTransactionError::MixedInputKinds => write!(
                 f,
                 "a PSBT cannot mix transparent inputs with shielded spends"
+            ),
+            ZcashParseTransactionError::NotIronwoodV6 => write!(
+                f,
+                "the keyless shielded parse requires a v6 (Ironwood) PSBT"
             ),
             ZcashParseTransactionError::Shielded(error) => write!(f, "Shielded side: {error}"),
             ZcashParseTransactionError::Verify(error) => {
@@ -278,6 +312,114 @@ pub(crate) fn parse_transaction_with_wallet_keys(
         value_balance,
         is_ironwood_v6: z.is_ironwood_v6(),
     })
+}
+
+/// Parse a v6 (Ironwood) Zcash transaction without wallet keys — the MPC-shielded shape.
+///
+/// The key-free verifier runs before any plaintext value leaves here: a tampered bundle
+/// fails with the failing check's error code ([`ZcashParseTransactionError::Verify`]), and
+/// a PCZT already consumed by `combine_ironwood_proof` fails loudly
+/// ([`ZcashParseTransactionError::Shielded`]) rather than parsing as bundle-less.
+/// Transparent outputs are decoded without keys: the address is the stored
+/// `unified_address` (when `add_transparent_output` was given one) or the address the
+/// scriptPubKey decodes to. Transparent inputs contribute only their values, taken as-is
+/// from the `witness_utxo`/`non_witness_utxo` the PSBT carries — nothing here can verify
+/// them against the chain, so `fee` trusts those fields; the MPC spend shapes (deshield /
+/// shielded→shielded) carry no transparent inputs at all, so their `fee` rests entirely on
+/// verified values. Transparent inputs are never surfaced as wallet inputs, and a PSBT
+/// that mixes them with shielded spends fails loudly.
+pub(crate) fn parse_shielded_transaction(
+    bitgo_psbt: &BitGoPsbt,
+) -> Result<ZcashShieldedParsedTransaction, ZcashParseTransactionError> {
+    let z = zcash_psbt(bitgo_psbt)?;
+    if !z.is_ironwood_v6() {
+        return Err(ZcashParseTransactionError::NotIronwoodV6);
+    }
+    let (shielded_outputs, shielded_spends, value_balance) = shielded_side(z)?;
+
+    // One input kind, defense in depth: the adders already refuse the mix, so only a
+    // PSBT assembled from parts can trip this.
+    let psbt = bitgo_psbt.psbt();
+    if !psbt.unsigned_tx.input.is_empty() && !shielded_spends.is_empty() {
+        return Err(ZcashParseTransactionError::MixedInputKinds);
+    }
+
+    let mut total_input_value = shielded_spends.iter().try_fold(0u64, |sum, spend| {
+        sum.checked_add(spend.value).ok_or_else(|| {
+            ZcashParseTransactionError::Shielded(format!(
+                "action {}: shielded spend value overflow",
+                spend.action_index
+            ))
+        })
+    })?;
+    for (index, (tx_input, psbt_input)) in
+        psbt.unsigned_tx.input.iter().zip(&psbt.inputs).enumerate()
+    {
+        let value =
+            psbt_wallet_input::get_output_script_and_value(psbt_input, tx_input.previous_output)
+                .map(|(_script, amount)| amount.to_sat())
+                .map_err(|e| ParseTransactionError::Input {
+                    index,
+                    error: psbt_wallet_input::ParseInputError::Utxo(e),
+                })?;
+        total_input_value = total_input_value
+            .checked_add(value)
+            .ok_or(ParseTransactionError::InputValueOverflow { index })?;
+    }
+
+    let mut outputs = Vec::with_capacity(psbt.unsigned_tx.output.len() + shielded_outputs.len());
+    let mut total_output_value = 0u64;
+    for (index, tx_output) in psbt.unsigned_tx.output.iter().enumerate() {
+        total_output_value = total_output_value
+            .checked_add(tx_output.value.to_sat())
+            .ok_or(ParseTransactionError::OutputValueOverflow { index })?;
+        outputs.push(ZcashParsedOutput {
+            base: ParsedOutput {
+                address: transparent_output_address(z, index, &tx_output.script_pubkey),
+                script: tx_output.script_pubkey.to_bytes(),
+                value: tx_output.value.to_sat(),
+                // No wallet keys: ownership is undecidable, so no script id, no derivation.
+                script_id: None,
+                paygo: false,
+                derivation_path: None,
+            },
+            is_shielded: false,
+            action_index: None,
+            is_change: false,
+        });
+    }
+    for output in shielded_outputs {
+        total_output_value = total_output_value.checked_add(output.base.value).ok_or(
+            ParseTransactionError::OutputValueOverflow {
+                index: outputs.len(),
+            },
+        )?;
+        outputs.push(output);
+    }
+
+    let fee = total_input_value
+        .checked_sub(total_output_value)
+        .ok_or(ParseTransactionError::FeeCalculation)?;
+
+    Ok(ZcashShieldedParsedTransaction {
+        shielded_spends,
+        outputs,
+        value_balance,
+        fee,
+    })
+}
+
+/// A transparent output's address without wallet keys: the stored `unified_address` (when
+/// `add_transparent_output` was given one, see [`super::propkv`]) or, failing that, the
+/// address the scriptPubKey decodes to — `None` for a script with no standard address
+/// form.
+fn transparent_output_address(
+    z: &ZcashBitGoPsbt,
+    index: usize,
+    script: &miniscript::bitcoin::Script,
+) -> Option<String> {
+    super::propkv::get_transparent_output_unified_address(&z.psbt, index)
+        .or_else(|| from_output_script_with_network(script, z.network()).ok())
 }
 
 /// Wrap the coin-neutral parsed outputs as transparent Zcash outputs.

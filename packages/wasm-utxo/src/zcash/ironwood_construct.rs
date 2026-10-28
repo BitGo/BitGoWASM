@@ -1034,41 +1034,48 @@ mod tests {
 
     /// Randomness: two builds of the same request produce different action orders, `rcv`s
     /// and `rseed`s — linkability hinges on the Constructor randomizing everything it can.
+    ///
+    /// Deterministic: each build is driven by its own fixed seed, so every assertion here
+    /// is either always true or always false — no run-to-run flake. (The OsRng variant of
+    /// this test failed with probability 2^-7: eight fresh shuffles all colliding on the
+    /// 2! possible orders.)
     #[test]
     fn two_builds_randomize_order_rcvs_and_rseeds() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+
         let (specs, anchor, fvk, _ak) = fixture();
         let outs = [
             wallet_output(&fvk, 100, 30_000_000),
             wallet_output(&fvk, 101, 30_000_000),
         ];
-        let build = || {
+        let build = |seed: u64| {
+            let mut rng = StdRng::seed_from_u64(seed);
             let (bundle, map) =
-                construct_spend_pczt_keyless(&specs, &outs, &anchor, OsRng).unwrap();
+                construct_spend_pczt_keyless(&specs, &outs, &anchor, &mut rng).unwrap();
             (serialize_pczt(&bundle).unwrap(), map)
         };
-        // The action ORDER differs: the maps disagree on where spend 0 landed. 2! orders are
-        // possible (a collision has probability 1/2 per pair), so retry a few times.
+        // The action ORDER differs: some seed pair disagrees on where spend 0 landed. 2!
+        // orders are possible, so try a few fixed seed pairs and require one to disagree.
         let mut order_differs = false;
-        let mut first: Option<(Vec<u8>, IronwoodActionMap)> = None;
-        for _ in 0..8 {
-            let (bytes, map) = build();
-            if let Some((_, ref map_a)) = first {
-                if (0..2).any(|i| map_a.spend_action_index(i) != map.spend_action_index(i))
-                    || (0..2).any(|i| map_a.output_action_index(i) != map.output_action_index(i))
-                {
-                    order_differs = true;
-                }
-            } else {
-                first = Some((bytes, map));
+        for pair in 0..8u64 {
+            let (_, map_a) = build(0xC511_0000 + 2 * pair);
+            let (_, map_b) = build(0xC511_0000 + 2 * pair + 1);
+            if (0..2).any(|i| map_a.spend_action_index(i) != map_b.spend_action_index(i))
+                || (0..2).any(|i| map_a.output_action_index(i) != map_b.output_action_index(i))
+            {
+                order_differs = true;
+                break;
             }
         }
         assert!(
             order_differs,
             "the shuffle must reorder actions across builds"
         );
-        // The rseeds differ regardless of order: compare the ciphertexts of two builds.
-        let (a, _) = build();
-        let (b, _) = build();
+        // The rseeds differ regardless of order: two differently-seeded builds differ
+        // byte-for-byte.
+        let (a, _) = build(0xC511_0000 + 100);
+        let (b, _) = build(0xC511_0000 + 101);
         assert_ne!(
             a, b,
             "two builds of the same request must differ byte-for-byte"
