@@ -46,7 +46,7 @@ const WALLET = uaFixtures.testnetWallet;
 // address API rather than by reaching into the UA's internals.
 const TRANSPARENT_SCRIPT = addressNs.toOutputScriptWithCoin(WALLET.transparentAddress, "tzec");
 
-describe("ZcashBitGoPsbt.addTransparentOutput (legacy v4 unified_address)", function () {
+describe("ZcashBitGoPsbt.addTransparentOutput (unified_address)", function () {
   const walletKeys = getWalletKeysForSeed("v4-ua-transparent-ts");
 
   function buildLegacyPsbt(): ZcashBitGoPsbt {
@@ -125,6 +125,26 @@ describe("ZcashBitGoPsbt.addTransparentOutput (legacy v4 unified_address)", func
     assert.deepStrictEqual(new Uint8Array(outputs[plainIndex].script), plainScript);
   });
 
+  it("supports a unifiedAddress on a v6 (Ironwood) PSBT's transparent output", function () {
+    const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
+      blockHeight: NU6_3_TESTNET_HEIGHT,
+    });
+    const index = psbt.addTransparentOutput(TRANSPARENT_SCRIPT, 100_000_000n, WALLET.unified);
+    assert.strictEqual(psbt.transparentOutputUnifiedAddress(index), WALLET.unified);
+
+    // The bare form (no unifiedAddress) still stores nothing, right alongside a UA output.
+    const plain = psbt.addTransparentOutput(TRANSPARENT_SCRIPT, 100_000n);
+    assert.strictEqual(psbt.transparentOutputUnifiedAddress(plain), undefined);
+
+    const bytes = psbt.serialize();
+    const round = ZcashIronwoodBitGoPsbt.fromBytes(bytes, "zcashTest");
+    assert.strictEqual(round.transparentOutputUnifiedAddress(index), WALLET.unified);
+    const outputs = round.parseOutputsWithWalletKeys(walletKeys);
+    assert.deepStrictEqual(new Uint8Array(outputs[index].script), TRANSPARENT_SCRIPT);
+    // The parsed output's `address` is the exact UA the client passed in.
+    assert.strictEqual(outputs[index].address, WALLET.unified);
+  });
+
   describe("failure scenarios", function () {
     it("rejects a unifiedAddress whose transparent receiver does not match script", function () {
       const psbt = buildLegacyPsbt();
@@ -161,20 +181,6 @@ describe("ZcashBitGoPsbt.addTransparentOutput (legacy v4 unified_address)", func
       );
       // Nothing was inserted on the rejected call.
       assert.strictEqual(psbt.parseOutputsWithWalletKeys(walletKeys).length, 0);
-    });
-
-    it("rejects a unifiedAddress on a v6 (Ironwood) PSBT", function () {
-      const psbt = ZcashIronwoodBitGoPsbt.createEmpty("zcashTest", walletKeys, {
-        blockHeight: NU6_3_TESTNET_HEIGHT,
-      });
-      assert.throws(
-        () => psbt.addTransparentOutput(TRANSPARENT_SCRIPT, 100_000_000n, WALLET.unified),
-        /v4/,
-      );
-
-      // The legacy form (no unifiedAddress) is unaffected, even on a v6 PSBT.
-      const index = psbt.addTransparentOutput(TRANSPARENT_SCRIPT, 100_000_000n);
-      assert.strictEqual(psbt.transparentOutputUnifiedAddress(index), undefined);
     });
   });
 });
