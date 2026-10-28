@@ -526,6 +526,15 @@ impl TryIntoJsValue for crate::wasm::psbt::PsbtInputData {
     }
 }
 
+impl TryIntoJsValue for crate::wasm::psbt::PsbtInputOutpoint {
+    fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
+        js_obj!(
+            "txid" => self.txid.clone(),
+            "vout" => self.vout
+        )
+    }
+}
+
 impl TryIntoJsValue for crate::wasm::psbt::PsbtInputKeyValue {
     fn try_to_js_value(&self) -> Result<JsValue, WasmUtxoError> {
         match &self.key {

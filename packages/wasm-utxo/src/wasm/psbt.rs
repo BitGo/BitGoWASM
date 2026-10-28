@@ -45,6 +45,15 @@ pub struct PsbtInputData {
     pub tap_bip32_derivation: Vec<Bip32Derivation>,
 }
 
+/// A transparent input's previous-output outpoint, with the txid in display (reversed)
+/// order — the wasm counterpart of utxo-lib's raw `txInputs` access: callers that only
+/// need the spent outpoints (e.g. unspent-id extraction) behave the same for v4 and v6.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PsbtInputOutpoint {
+    pub txid: String,
+    pub vout: u32,
+}
+
 /// A PSBT input key classified from its BIP-174 key type.
 #[derive(Debug, Clone)]
 pub enum PsbtInputKey {
@@ -180,6 +189,26 @@ pub fn get_inputs_from_psbt(psbt: &Psbt) -> Result<JsValue, WasmUtxoError> {
     inputs.try_to_js_value()
 }
 
+/// Get every transparent input's previous-output outpoint from the embedded unsigned
+/// transaction, in input order — the wasm counterpart of utxo-lib's `txInputs` +
+/// `getOutputIdForInput` introspection, so callers extracting unspent ids behave
+/// identically for v4 and v6 PSBTs.
+pub fn get_input_outpoints_from_psbt(psbt: &Psbt) -> Result<JsValue, WasmUtxoError> {
+    input_outpoints(psbt).try_to_js_value()
+}
+
+/// The outpoints alone, as plain Rust values — separated from the JsValue wrapper so the
+/// extraction is unit-testable on non-wasm targets.
+pub fn input_outpoints(psbt: &Psbt) -> Vec<PsbtInputOutpoint> {
+    psbt.unsigned_tx
+        .input
+        .iter()
+        .map(|txin| PsbtInputOutpoint {
+            txid: txin.previous_output.txid.to_string(),
+            vout: txin.previous_output.vout,
+        })
+        .collect()
+}
 /// Get every serialized key-value record for one PSBT input.
 pub fn get_input_key_values_from_psbt(
     psbt: &Psbt,
@@ -886,6 +915,11 @@ macro_rules! impl_wasm_psbt_ops {
             ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
                 self.wasm_get_inputs()
             }
+            pub fn get_input_outpoints(
+                &self,
+            ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
+                self.wasm_get_input_outpoints()
+            }
             pub fn get_input_key_values(
                 &self,
                 index: usize,
@@ -999,6 +1033,11 @@ macro_rules! impl_wasm_psbt_ops {
                 &self,
             ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
                 self.$field.wasm_get_inputs()
+            }
+            pub fn get_input_outpoints(
+                &self,
+            ) -> Result<::wasm_bindgen::JsValue, $crate::error::WasmUtxoError> {
+                self.$field.wasm_get_input_outpoints()
             }
             pub fn get_input_key_values(
                 &self,

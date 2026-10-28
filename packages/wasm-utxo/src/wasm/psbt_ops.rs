@@ -37,6 +37,9 @@ pub(crate) trait WasmPsbtOps: PsbtAccess {
     fn wasm_get_inputs(&self) -> Result<JsValue, WasmUtxoError> {
         crate::wasm::psbt::get_inputs_from_psbt(self.psbt())
     }
+    fn wasm_get_input_outpoints(&self) -> Result<JsValue, WasmUtxoError> {
+        crate::wasm::psbt::get_input_outpoints_from_psbt(self.psbt())
+    }
 
     fn wasm_get_input_key_values(&self, index: usize) -> Result<JsValue, WasmUtxoError> {
         crate::wasm::psbt::get_input_key_values_from_psbt(self.psbt(), index)

@@ -123,6 +123,12 @@ declare module "./wasm/wasm_utxo.js" {
     tapBip32Derivation: PsbtBip32Derivation[];
   }
 
+  /** A transparent input's previous-output outpoint (display-order txid) returned by getInputOutpoints() */
+  interface PsbtInputOutpoint {
+    txid: string;
+    vout: number;
+  }
+
   /** A serialized input-map record with a standard PSBT key type. */
   interface PsbtKnownInputKeyValue {
     type: "known";
