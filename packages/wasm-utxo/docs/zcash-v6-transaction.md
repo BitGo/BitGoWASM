@@ -6,12 +6,21 @@ external link:
 
 - ZIP-225 (v5 tx format, the base v6 extends) — <https://zips.z.cash/zip-0225>
 - ZIP-244 (txid / sighash digest tree) — <https://zips.z.cash/zip-0244>
-- Cross-checked against **`zebra-chain` 11.2** (`Transaction::V6` / `ironwood_shielded_data`),
-  an independent NU6.3 implementation: the `zebra_oracle` tests in `src/zcash/v6.rs` decode
-  each golden fixture with zebra and assert zebra's `hash()` (ZIP-244 txid) equals ours, plus
-  matching transparent I/O and Ironwood action counts. The golden transactions in
-  `test/fixtures/zcash/` (shield / self-send / unshield) originate from a Zebra node on
-  branch id `37a5165b`.
+- Cross-checked against **`zebra-chain`**, an independent Ironwood implementation: the
+  `zebra_oracle` tests in `src/zcash/v6.rs` decode each golden fixture with zebra and assert
+  zebra's `hash()` (ZIP-244 txid) equals ours, plus matching transparent I/O and Ironwood
+  action counts.
+- The golden transactions in `test/fixtures/zcash/` are all mined Zcash testnet transactions
+  (see "Capturing golden fixtures" below):
+  - `shield`, `selfsend`, `shield1zec` — taken from a Zebra node under branch id `37a5165b`
+    (NU6.3);
+  - `shield_multisig` — a 2-of-3 P2SH multisig shield built with this codebase's CLI, mined
+    under branch id `37a5165b` (NU6.3);
+  - `unshield` (deshield: Ironwood → transparent P2PKH payout, `valueBalance > 0`) and
+    `shielded_transfer` (shielded → shielded, no transparent I/O) — built, signed and proven
+    with this codebase's CLI and mined under branch id `77190ad9` (NU7). Their
+    `*_details.json` record the provenance (block height, spent/output values, anchor, flags,
+    proof size).
 
 ## Wire layout
 
@@ -75,3 +84,61 @@ The shielded recipient itself is resolved with `ZcashUnifiedAddress` (its Orchar
 receiver), and its value becomes `valueBalanceIronwood` rather than a transparent
 `TxOut` — an indexer-side change in `buildTransaction` that reuses the existing
 unspent-selection / fee / change / response code unchanged.
+
+## Capturing golden fixtures
+
+Golden fixtures live in `test/fixtures/zcash/` as a `(v6_<name>_rawtx.hex,
+v6_<name>_txid.hex[, v6_<name>_details.json])` triple, and every one is asserted three ways:
+`assert_golden` (decode → byte-identical re-encode → canonical txid), the `zebra_oracle`
+cross-check (zebra's independent decode and ZIP-244 txid agree), and the TypeScript fixture
+loop in `test/fixedScript/zcashV6Transaction.ts`.
+
+The spend goldens (`unshield`, `shielded_transfer`) were produced end-to-end with this
+codebase, which is also how a new fixture is produced:
+
+1. **Generate a wallet** (testnet-only keys). `ironwood_keygen` writes `orchard_sk.hex`,
+   `orchard_fvk.hex`, `orchard_receiver.hex` and a `wallet.json` with the receiver's Unified
+   Address, the 2-of-3 funding address and the P2PKH payout address; `ironwood_derive` prints
+   further receivers:
+
+   ```bash
+   cargo run -p wasm-utxo-cli --example ironwood_keygen -- <dir>
+   cargo run -p wasm-utxo-cli --example ironwood_derive -- <dir>/orchard_sk.hex <count>
+   ```
+
+2. **Fund the receiver** with a v6 (Ironwood) shielded send from any Ironwood-aware wallet.
+   Note the funding txid and wait for it to confirm.
+3. **Recover the note and its witness** from chain data. Save the funding transaction
+   (`getrawtransaction <txid> 1`) and decrypt the received note with the FVK; node-JSON mode
+   reads both the Ironwood and Orchard bundles. Then witness the note's `cmx`:
+   `z_gettreestate <fundingHeight - 1>` gives the pre-block frontier (`finalState`), the
+   Ironwood `cmx` of every action from the funding block up to the anchor block (block,
+   transaction, then action order; `getblock <hash> 2`) gives the leaves, and
+   `z_gettreestate <anchorHeight>` gives the anchor root (`finalRoot`). `ironwood_tree` folds
+   them through `shardtree::ShardTree` and prints the `{position, authPath, anchor}` witness:
+
+   ```bash
+   cargo run -p wasm-utxo-cli --example ironwood_scan_note -- <node-tx.json> <fvk-file>
+   cargo run -p wasm-utxo-cli --example ironwood_tree -- \
+       <preBlockState> <anchorRoot> --append <leaves.json> --target <cmx>
+   ```
+
+4. **Build, sign, prove and broadcast** one of the two spend shapes with the command sequence
+   in [`cli/README.md`](../cli/README.md): `create-zcash-v6` → `add-shielded-input` (notes
+   file: `anchor`, and `spends` with `recipient`/`value`/`rho`/`rseed`/`cmx`/`witness`) →
+   `out-ciphertexts` → `set-spend-randomizer` → `add-spend-signature` → `prove` →
+   `combine-ironwood-proof`, then `sendrawtransaction` on the node. A transparent payout yields
+   the `unshield` shape; a shielded output yields `shielded_transfer`.
+5. **Record the mined transaction**: `getrawtransaction <txid> 0` → `v6_<name>_rawtx.hex`;
+   its txid (which the zebra oracle re-derives independently) → `v6_<name>_txid.hex`; and a
+   `v6_<name>_details.json` in the shape of the existing ones (description with provenance,
+   network, txid, block height, consensus branch id, header fields, spent/output values, fee,
+   `value_balance_zat`, anchor, flags, action count, proof size).
+6. **Wire the fixture in**: `assert_golden("<name>")` (plus `assert_spend_golden_details` for
+   a spend), a `cross_check("<name>")` and an entry in `golden_branch_ids_match_both_networks`
+   in `src/zcash/v6.rs`, and the name in the TypeScript fixture loop.
+
+A mainnet golden is captured the same way against a mainnet node. The v6 wire carries no
+network field, so a txid is network-independent; only the provenance (the branch id in force
+at the mined height) differs, and `golden_branch_ids_match_both_networks` checks that each
+golden's branch id is valid on both networks.

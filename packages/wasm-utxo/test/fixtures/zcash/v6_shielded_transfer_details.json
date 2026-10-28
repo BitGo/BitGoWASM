@@ -1,0 +1,20 @@
+{
+  "description": "Ironwood -> Ironwood shielded transfer transaction (v6, ironwood_v3, PostNu6_3 circuit). Built and signed with this codebase's CLI (one Ironwood spend, one shielded output back to the wallet's diversifier 1, no transparent I/O), proven locally with the orchard-proving feature, broadcast to a live Zcash testnet zebrad node via sendrawtransaction and mined at block 4532252 under the NU7 consensus branch.",
+  "network": "test",
+  "txid": "3ad1318af81358073ef512a50a48ccc935c67e228e891126d97449555e46d465",
+  "block_height": 4532252,
+  "consensus_branch_id": "0x77190ad9",
+  "version_group_id": "0xd884b698",
+  "expiry_height": 4532271,
+  "lock_time": 0,
+  "transparent_utxos_spent": [],
+  "transparent_outputs": [],
+  "spent_note_zat": 100000000,
+  "shielded_output_zat": 99990000,
+  "fee_zat": 10000,
+  "value_balance_zat": 10000,
+  "ironwood_anchor": "b3317339461db88c0b487ddf5d231e6c6658ebd85052ee0ea79eaa28cd608421",
+  "flags_byte": 7,
+  "num_actions": 1,
+  "proof_size_bytes": 4992
+}
