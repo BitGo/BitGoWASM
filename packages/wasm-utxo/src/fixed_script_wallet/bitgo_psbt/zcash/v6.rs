@@ -194,17 +194,18 @@ impl ZcashBitGoPsbt {
     /// Add a plain transparent output. Just `script`/`value` (`unified_address: None`) is exactly
     /// the legacy `add_output` behavior, unchanged, on either v4 or v6.
     ///
-    /// If `unified_address` is given, this must be a legacy v4 PSBT — the UA is stored under the
-    /// same `BITGO_ZEC_V6`-namespaced proprietary key space as the Ironwood UA storage, but that
-    /// namespace name is historical, not a v6 requirement; a v6 PSBT's shielded-side UA already
-    /// has its own path ([`Self::add_ironwood_output`]), so this one is reserved for legacy
-    /// transparent-only PSBTs. `unified_address` must be a Unified Address whose transparent
-    /// receiver is exactly `script` — mismatches are rejected rather than silently stored, the
-    /// same contract `add_ironwood_output` applies to its Orchard receiver. It is then stored
-    /// verbatim, keyed by this output's index in `unsigned_tx.output` (see
+    /// If `unified_address` is given, it must be a Unified Address whose transparent
+    /// receiver is exactly `script` — mismatches are rejected rather than silently stored,
+    /// the same contract `add_ironwood_output` applies to its Orchard receiver. It is then
+    /// stored verbatim, keyed by this output's index in `unsigned_tx.output` (see
     /// [`super::propkv::set_transparent_output_unified_address`]), so
     /// [`Self::transparent_output_unified_address`] can later return the original UA string
-    /// rather than just the bare scriptPubKey.
+    /// rather than just the bare scriptPubkey, and output parsing prefers it as `address`.
+    ///
+    /// This works on both v4 and v6 (Ironwood) PSBTs: the transparent UA lives under its own
+    /// `TransparentUnifiedAddress` subtype in the `BITGO_ZEC_V6` namespace, disjoint from the
+    /// shielded UAs (`UnifiedAddress`, keyed by *action index*), so a v6 PSBT can carry a
+    /// deshield payout's UA and shielded change UAs side by side without colliding.
     pub fn add_transparent_output(
         &mut self,
         script: miniscript::bitcoin::ScriptBuf,
@@ -225,12 +226,6 @@ impl ZcashBitGoPsbt {
                 miniscript::bitcoin::psbt::Output::default(),
             );
         };
-
-        if self.is_ironwood_v6() {
-            return Err(
-                "unified_address on a transparent output requires a legacy v4 PSBT".to_string(),
-            );
-        }
 
         let parsed =
             crate::zcash::unified_address::UnifiedAddress::parse(ua, self.network.to_coin_name())

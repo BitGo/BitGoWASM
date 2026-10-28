@@ -370,9 +370,10 @@ export class ZcashBitGoPsbt<
    * verbatim, keyed by this output's index, so {@link ZcashBitGoPsbt.transparentOutputUnifiedAddress}
    * can later return the original UA string rather than just the bare scriptPubkey.
    *
-   * `unifiedAddress` is only supported on a legacy v4 `ZcashBitGoPsbt` — the v6 (Ironwood)
-   * shielded side has its own UA path (`ZcashIronwoodBitGoPsbt.addShieldedOutput`'s
-   * `unifiedAddress` option).
+   * `unifiedAddress` works on both a legacy v4 `ZcashBitGoPsbt` and a v6 (Ironwood)
+   * `ZcashIronwoodBitGoPsbt`. The shielded side has its own, separate UA path
+   * (`ZcashIronwoodBitGoPsbt.addShieldedOutput`'s `unifiedAddress` option), so a v6 PSBT can
+   * carry both a transparent payout's UA and shielded outputs' UAs side by side.
    *
    * @param script - The output scriptPubkey
    * @param value - The value in zatoshi

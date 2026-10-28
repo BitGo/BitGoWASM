@@ -762,12 +762,15 @@ fn add_transparent_output_rejects_a_unified_address_with_no_transparent_receiver
     assert!(z.psbt.unsigned_tx.output.is_empty());
 }
 
-/// `add_transparent_output` rejects `unified_address` outright on a v6 (Ironwood) PSBT — that
-/// format's shielded side already has its own UA path (`add_ironwood_output`), so this one is
-/// reserved for legacy v4 PSBTs. A bare `script`/`value` call (no `unified_address`) is
-/// exactly the legacy Zcash form and must keep working unchanged on either format.
+/// A client passes a Unified Address as the recipient on a v6 (Ironwood) PSBT — a deshield's
+/// transparent payout, say. `add_transparent_output` verifies the UA's transparent receiver
+/// against `script`, stores the UA verbatim (under the `TransparentUnifiedAddress` subtype,
+/// disjoint from the shielded side's action-indexed `UnifiedAddress` keys), and adds the
+/// ordinary transparent output. The exact original UA — receivers and all — survives a
+/// serialize/deserialize round trip, and output parsing resolves the output's `address` to
+/// the stored UA rather than the bare t-address the scriptPubkey alone would produce.
 #[test]
-fn add_transparent_output_rejects_unified_address_on_v6_psbt() {
+fn add_transparent_output_unified_address_round_trips_on_v6() {
     let fixtures: serde_json::Value = serde_json::from_str(
         &crate::fixed_script_wallet::test_utils::fixtures::load_fixture(
             "zcash/unified_address.json",
@@ -779,7 +782,7 @@ fn add_transparent_output_rejects_unified_address_on_v6_psbt() {
     let parsed = crate::zcash::unified_address::UnifiedAddress::parse(ua, "tzec").unwrap();
     let transparent_script = parsed.transparent_script().unwrap().unwrap();
 
-    let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_ua_transparent_rejected"));
+    let wallet_keys = RootWalletKeys::new(get_test_wallet_keys("v6_ua_transparent_roundtrip"));
     let mut z = ZcashBitGoPsbt::new_v6_at_height(
         Network::ZcashTestnet,
         &wallet_keys,
@@ -790,28 +793,55 @@ fn add_transparent_output_rejects_unified_address_on_v6_psbt() {
     .unwrap();
     assert!(z.is_ironwood_v6());
 
-    let err = z
-        .add_transparent_output(
-            miniscript::bitcoin::ScriptBuf::from_bytes(transparent_script.clone()),
-            100_000_000,
-            Some(ua),
-        )
-        .unwrap_err();
-    assert!(err.contains("v4"), "unexpected error: {err}");
-
-    // The legacy form (no unified_address) is unaffected.
     let index = z
         .add_transparent_output(
             miniscript::bitcoin::ScriptBuf::from_bytes(transparent_script.clone()),
             100_000_000,
-            None,
+            Some(ua),
         )
         .unwrap();
     assert_eq!(
         z.psbt.unsigned_tx.output[index].script_pubkey.as_bytes(),
         transparent_script.as_slice()
     );
-    assert_eq!(z.transparent_output_unified_address(index), None);
+    assert_eq!(
+        z.transparent_output_unified_address(index),
+        Some(ua.to_string())
+    );
+
+    // The bare form (no unified_address) still stores nothing, right alongside a UA output.
+    let plain = z
+        .add_transparent_output(
+            miniscript::bitcoin::ScriptBuf::from_bytes(transparent_script.clone()),
+            100_000,
+            None,
+        )
+        .unwrap();
+    assert_eq!(z.transparent_output_unified_address(plain), None);
+
+    // Survives the serialize/deserialize round trip, not just in-memory state.
+    let bytes = z.serialize().unwrap();
+    let round = ZcashBitGoPsbt::deserialize_v6_pre_shield(&bytes, Network::ZcashTestnet).unwrap();
+    assert!(round.is_ironwood_v6());
+    assert_eq!(
+        round.psbt.unsigned_tx.output[index]
+            .script_pubkey
+            .as_bytes(),
+        transparent_script.as_slice()
+    );
+    assert_eq!(
+        round.transparent_output_unified_address(index),
+        Some(ua.to_string())
+    );
+
+    // Output parsing resolves the UA-carrying output's `address` to the stored UA itself,
+    // mirroring the shielded side's treatment of its stored UAs, while the plain output
+    // falls back to the bare transparent address.
+    let bitgo = BitGoPsbt::Zcash(round, Network::ZcashTestnet);
+    let parsed_outputs = bitgo
+        .parse_outputs_with_wallet_keys(&wallet_keys, &[])
+        .unwrap();
+    assert_eq!(parsed_outputs[index].address, Some(ua.to_string()));
 }
 
 /// `combine_inputs` refuses a v6 PSBT outright.
