@@ -94,6 +94,13 @@ receiver), and its value becomes `valueBalanceIronwood` rather than a transparen
 `TxOut` — an indexer-side change in `buildTransaction` that reuses the existing
 unspent-selection / fee / change / response code unchanged.
 
+The custodial **MPC** counterpart is implemented separately, keyless end to end:
+`ZcashIronwoodBitGoPsbt.createEmptyKeyless(network, { blockHeight, expiryHeight?, lockTime? })`
+builds a v6 PSBT **without any `walletKeys`** (no global xpubs — a custodial MPC shielded wallet
+has no fixed-script xpub triple), `addShieldedSpends` is already keyless, and
+`parseShieldedTransaction()` returns the keyless parse `{shieldedSpends, outputs, valueBalance,
+fee}` for a caller that never holds the keys.
+
 ## Capturing golden fixtures
 
 Golden fixtures live in `test/fixtures/zcash/` as a `(v6_<name>_rawtx.hex,

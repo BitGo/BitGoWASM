@@ -267,6 +267,53 @@ fn new_v6_at_height_rejects_pre_nu6_3_height() {
     .is_ok());
 }
 
+/// The bare (xpub-free) v6 constructor builds the same PSBT shape as the keyed one — minus the
+/// informational global xpubs — and round-trips through a serialize/deserialize.
+#[test]
+fn new_v6_bare_at_height_builds_a_valid_psbt_without_xpubs() {
+    let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
+    let z =
+        ZcashBitGoPsbt::new_v6_bare_at_height(Network::ZcashTestnet, nu6_3, Some(123), Some(456))
+            .unwrap();
+    assert!(z.is_ironwood_v6());
+    assert_eq!(
+        z.version_group_id,
+        Some(crate::zcash::transaction::ZCASH_IRONWOOD_VERSION_GROUP_ID)
+    );
+    assert_eq!(z.expiry_height, Some(456));
+    assert_eq!(z.psbt.unsigned_tx.lock_time.to_consensus_u32(), 123);
+    assert_eq!(
+        crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::get_zec_v6_consensus_branch_id(
+            &z.psbt
+        ),
+        crate::zcash::branch_id_for_height(nu6_3, false)
+    );
+    assert!(z.sapling_fields.is_empty(), "v6 carries no Sapling fields");
+    assert!(
+        z.psbt.xpub.is_empty(),
+        "the bare constructor stamps no xpubs"
+    );
+
+    let round =
+        ZcashBitGoPsbt::deserialize(&z.serialize().unwrap(), Network::ZcashTestnet).unwrap();
+    assert_eq!(round.version_group_id, z.version_group_id);
+    assert_eq!(round.expiry_height, Some(456));
+    assert!(round.psbt.xpub.is_empty());
+}
+
+/// The bare constructor enforces the NU6.3 floor, exactly like the keyed one.
+#[test]
+fn new_v6_bare_at_height_rejects_pre_nu6_3_height() {
+    let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
+    let err = ZcashBitGoPsbt::new_v6_bare_at_height(Network::ZcashTestnet, nu6_3 - 1, None, None)
+        .unwrap_err();
+    assert!(err.contains("NU6.3"), "unexpected error: {err}");
+    // The activation height itself is accepted.
+    assert!(
+        ZcashBitGoPsbt::new_v6_bare_at_height(Network::ZcashTestnet, nu6_3, None, None).is_ok()
+    );
+}
+
 /// `verify_v6_signature_with_pub`/`_with_xpub` on a transparent-only v6 PSBT (no shielded
 /// output ever added): a PR review comment on the Ironwood transparent-only PSBT work noted
 /// that `getId`/`verifySignature` still required a PCZT and would throw for a pure

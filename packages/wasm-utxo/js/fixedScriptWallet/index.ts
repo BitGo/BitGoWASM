@@ -56,7 +56,9 @@ export {
   zip302NoMemo,
   type ZcashIronwoodParsedOutput,
   type ZcashIronwoodParsedTransaction,
+  type ZcashShieldedParsedTransaction,
   type CreateEmptyIronwoodOptions,
+  type CreateEmptyKeylessOptions,
   type CreateEmptyIronwoodWithConsensusBranchIdOptions,
 } from "./ZcashIronwoodBitGoPsbt.js";
 // Shared Zcash Ironwood (shielded-spend flow) types

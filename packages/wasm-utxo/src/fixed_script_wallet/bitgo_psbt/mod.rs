@@ -551,6 +551,24 @@ impl BitGoPsbt {
         )
     }
 
+    /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT **without embedding any xpubs**,
+    /// with the consensus branch id resolved from block height. Delegates to
+    /// [`ZcashBitGoPsbt::new_v6_bare_at_height`].
+    ///
+    /// The keyless MPC-shielded constructor: a custodial MPC shielded wallet has no
+    /// fixed-script xpub triple to stamp. The transparent inputs/outputs use the usual
+    /// [`Self::add_wallet_input`] / [`Self::add_wallet_output`] machinery, the shielded side
+    /// the dedicated methods on [`ZcashBitGoPsbt`]; the keyless parse
+    /// ([`zcash::parse::parse_shielded_transaction`]) surfaces what was built.
+    pub fn new_zcash_v6_bare_at_height(
+        network: Network,
+        block_height: u32,
+        lock_time: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<Self, String> {
+        zcash::v6::new_bitgo_psbt_v6_bare_at_height(network, block_height, lock_time, expiry_height)
+    }
+
     /// Create a new empty PSBT with the same network parameters as an existing PSBT
     ///
     /// This is useful for reconstructing PSBTs - it copies:

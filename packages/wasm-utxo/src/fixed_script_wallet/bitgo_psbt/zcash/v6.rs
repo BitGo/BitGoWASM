@@ -85,6 +85,24 @@ impl std::fmt::Display for VerifyV6SignatureError {
 
 crate::impl_wasm_error_code!(VerifyV6SignatureError);
 
+/// Resolve the consensus branch id for `block_height`, rejecting heights before NU6.3
+/// activation: a v6 transaction stamped with a pre-NU6.3 branch id is only rejected at
+/// broadcast, long after signing.
+fn v6_branch_id_at_height(network: crate::Network, block_height: u32) -> Result<u32, String> {
+    let is_mainnet = matches!(network, crate::Network::Zcash);
+    let network_name = if is_mainnet { "mainnet" } else { "testnet" };
+    let nu6_3 = crate::zcash::NetworkUpgrade::Nu6_3.activation_height(is_mainnet);
+    if block_height < nu6_3 {
+        return Err(format!(
+            "Block height {block_height} is before NU6.3 (Ironwood) activation ({nu6_3}) on \
+             {network_name}; v6 transactions are not valid before then"
+        ));
+    }
+    crate::zcash::branch_id_for_height(block_height, is_mainnet).ok_or_else(|| {
+        format!("Block height {block_height} is before Overwinter activation on {network_name}")
+    })
+}
+
 impl ZcashBitGoPsbt {
     /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT, with the consensus branch id resolved
     /// from `block_height`, which must be at or after NU6.3 activation.
@@ -98,26 +116,28 @@ impl ZcashBitGoPsbt {
         lock_time: Option<u32>,
         expiry_height: Option<u32>,
     ) -> Result<Self, String> {
-        let is_mainnet = matches!(network, crate::Network::Zcash);
-        let network_name = if is_mainnet { "mainnet" } else { "testnet" };
-        let nu6_3 = crate::zcash::NetworkUpgrade::Nu6_3.activation_height(is_mainnet);
-        if block_height < nu6_3 {
-            return Err(format!(
-                "Block height {block_height} is before NU6.3 (Ironwood) activation ({nu6_3}) on \
-                 {network_name}; v6 transactions are not valid before then"
-            ));
-        }
-        let consensus_branch_id = crate::zcash::branch_id_for_height(block_height, is_mainnet)
-            .ok_or_else(|| {
-                format!(
-                    "Block height {} is before Overwinter activation on {}",
-                    block_height,
-                    if is_mainnet { "mainnet" } else { "testnet" }
-                )
-            })?;
+        let consensus_branch_id = v6_branch_id_at_height(network, block_height)?;
         Ok(Self::new_v6(
             network,
             wallet_keys,
+            consensus_branch_id,
+            lock_time,
+            expiry_height,
+        ))
+    }
+
+    /// Create an empty Zcash **v6 (Ironwood)** shielding PSBT without embedding any xpubs, with
+    /// the consensus branch id resolved from `block_height`, which must be at or after NU6.3
+    /// activation. The keyless counterpart to [`Self::new_v6_at_height`].
+    pub fn new_v6_bare_at_height(
+        network: crate::Network,
+        block_height: u32,
+        lock_time: Option<u32>,
+        expiry_height: Option<u32>,
+    ) -> Result<Self, String> {
+        let consensus_branch_id = v6_branch_id_at_height(network, block_height)?;
+        Ok(Self::new_v6_bare(
+            network,
             consensus_branch_id,
             lock_time,
             expiry_height,
@@ -893,6 +913,21 @@ pub(crate) fn new_bitgo_psbt_v6_at_height(
             lock_time,
             expiry_height,
         )?,
+        network,
+    ))
+}
+
+/// [`BitGoPsbt::new_zcash_v6_bare_at_height`]: an empty v6 (Ironwood) PSBT without embedded
+/// xpubs, with the consensus branch id resolved from block height. Delegates to
+/// [`ZcashBitGoPsbt::new_v6_bare_at_height`].
+pub(crate) fn new_bitgo_psbt_v6_bare_at_height(
+    network: Network,
+    block_height: u32,
+    lock_time: Option<u32>,
+    expiry_height: Option<u32>,
+) -> Result<BitGoPsbt, String> {
+    Ok(BitGoPsbt::Zcash(
+        ZcashBitGoPsbt::new_v6_bare_at_height(network, block_height, lock_time, expiry_height)?,
         network,
     ))
 }

@@ -427,6 +427,261 @@ fn keyless_parse_reports_verified_spends() {
     assert!(!spends[0].signed, "no signature yet");
 }
 
+/// A canonical testnet p2pkh script (address round-trips, see below).
+const TESTNET_P2PKH_SCRIPT: [u8; 25] = [
+    0x76, 0xa9, 0x14, 0xca, 0xd2, 0x68, 0x75, 0x8c, 0x5e, 0x71, 0x49, 0x30, 0x66, 0x44, 0x6b, 0x98,
+    0xe7, 0x1d, 0xf9, 0xd1, 0xd6, 0xa5, 0xca, 0x88, 0xac,
+];
+
+/// The script-decoded address encodes exactly the script it came from.
+fn assert_address_round_trips_to_script(address: &str, script: &[u8]) {
+    assert_eq!(
+        crate::address::networks::to_output_script_with_coin(address, "tzec")
+            .unwrap()
+            .to_bytes(),
+        script,
+        "the parsed address does not decode back to the output's scriptPubKey"
+    );
+}
+
+/// The keyless parse on a bare-built deshield: the verified spend, a transparent output with
+/// a script-decoded address (no keys, no stored UA), and the fee/value-balance accounting.
+#[test]
+fn keyless_parse_surfaces_spends_outputs_fee_and_value_balance() {
+    let (specs, anchor, _fvk, _ak) = keyless_fixture();
+    let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
+    let mut z =
+        ZcashBitGoPsbt::new_v6_bare_at_height(Network::ZcashTestnet, nu6_3, None, None).unwrap();
+    z.add_transparent_output(
+        miniscript::bitcoin::ScriptBuf::from(TESTNET_P2PKH_SCRIPT.to_vec()),
+        99_999_000,
+        None,
+    )
+    .unwrap();
+    let map = z
+        .add_shielded_spends(&specs[..1], &[], None, &anchor, OsRng)
+        .unwrap();
+
+    let parsed = crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_shielded_transaction(
+        &BitGoPsbt::Zcash(z, Network::ZcashTestnet),
+    )
+    .unwrap();
+
+    assert_eq!(parsed.shielded_spends.len(), 1);
+    assert_eq!(
+        parsed.shielded_spends[0].action_index,
+        map.actions.spend_action_index(0).unwrap()
+    );
+    assert_eq!(parsed.shielded_spends[0].value, 100_000_000);
+    assert!(
+        !parsed.shielded_spends[0].rk_replaced,
+        "no randomizer installed yet"
+    );
+
+    assert_eq!(parsed.outputs.len(), 1);
+    assert_eq!(parsed.outputs[0].base.value, 99_999_000);
+    let address = parsed.outputs[0]
+        .base
+        .address
+        .as_deref()
+        .expect("p2pkh decodes");
+    assert_address_round_trips_to_script(address, &TESTNET_P2PKH_SCRIPT);
+    assert!(parsed.outputs[0].base.derivation_path.is_none());
+    assert_eq!(parsed.outputs[0].action_index, None);
+    assert!(!parsed.outputs[0].is_shielded);
+
+    assert_eq!(parsed.fee, 1_000);
+    assert_eq!(parsed.value_balance, 100_000_000);
+}
+
+/// The keyless parse agrees with the keyed parse on the shielded side: the same verified
+/// spends, the same outputs, and the same fee/value-balance accounting.
+#[test]
+fn keyless_parse_matches_the_keyed_parse() {
+    let seed = "ironwood_v6_keyless_parse_agreement";
+    let (z, _map, _ak, _fvk, _ask) = keyless_transfer_psbt(seed);
+    let psbt = BitGoPsbt::Zcash(z, Network::ZcashTestnet);
+
+    let keyless =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_shielded_transaction(&psbt)
+            .unwrap();
+    let keyed =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_transaction_with_wallet_keys(
+            &psbt,
+            &root_wallet_keys(seed),
+            &crate::fixed_script_wallet::ReplayProtection::new(vec![]),
+            &[],
+        )
+        .unwrap();
+    let keyed_spends = match &keyed.inputs {
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::ZcashParsedInputs::Shielded(
+            spends,
+        ) => spends,
+        _ => panic!("expected the shielded input kind"),
+    };
+
+    assert_eq!(keyless.shielded_spends.len(), keyed_spends.len());
+    for (keyless_spend, keyed_spend) in keyless.shielded_spends.iter().zip(keyed_spends) {
+        assert_eq!(keyless_spend.action_index, keyed_spend.action_index);
+        assert_eq!(keyless_spend.value, keyed_spend.value);
+        assert_eq!(keyless_spend.recipient, keyed_spend.recipient);
+        assert_eq!(keyless_spend.nullifier, keyed_spend.nullifier);
+        assert_eq!(keyless_spend.cmx, keyed_spend.cmx);
+        assert_eq!(keyless_spend.position, keyed_spend.position);
+        assert_eq!(keyless_spend.address, keyed_spend.address);
+        assert_eq!(keyless_spend.rk_replaced, keyed_spend.rk_replaced);
+        assert_eq!(keyless_spend.signed, keyed_spend.signed);
+    }
+
+    assert_eq!(keyless.outputs.len(), keyed.outputs.len());
+    for (keyless_output, keyed_output) in keyless.outputs.iter().zip(&keyed.outputs) {
+        assert_eq!(keyless_output.base.address, keyed_output.base.address);
+        assert_eq!(keyless_output.base.value, keyed_output.base.value);
+        assert_eq!(keyless_output.action_index, keyed_output.action_index);
+        assert_eq!(keyless_output.is_shielded, keyed_output.is_shielded);
+        assert_eq!(keyless_output.is_change, keyed_output.is_change);
+    }
+
+    assert_eq!(keyless.value_balance, keyed.value_balance);
+    assert_eq!(keyless.fee, keyed.miner_fee);
+}
+
+/// The keyless parse also accounts for a transparent-only v6 PSBT (the shielding flow's
+/// shape): input values come from the PSBT's utxo fields, no keys needed, and no bundle
+/// means no spends and a zero value balance.
+#[test]
+fn keyless_parse_accounts_for_transparent_only_v6() {
+    let seed = "ironwood_v6_keyless_transparent_only";
+    let wallet_keys = root_wallet_keys(seed);
+    let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
+    let mut z =
+        ZcashBitGoPsbt::new_v6_bare_at_height(Network::ZcashTestnet, nu6_3, None, None).unwrap();
+    z.add_transparent_output(
+        miniscript::bitcoin::ScriptBuf::from(TESTNET_P2PKH_SCRIPT.to_vec()),
+        199_999_000,
+        None,
+    )
+    .unwrap();
+    let mut psbt = BitGoPsbt::Zcash(z, Network::ZcashTestnet);
+    psbt.add_wallet_input(
+        Txid::from_byte_array([0x51u8; 32]),
+        0,
+        200_000_000,
+        &wallet_keys,
+        ScriptId { chain: 0, index: 0 },
+        WalletInputOptions::default(),
+    )
+    .unwrap();
+
+    let parsed =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_shielded_transaction(&psbt)
+            .unwrap();
+    assert!(parsed.shielded_spends.is_empty());
+    assert_eq!(parsed.value_balance, 0);
+    assert_eq!(parsed.fee, 1_000);
+    assert_eq!(parsed.outputs.len(), 1);
+    assert_eq!(parsed.outputs[0].base.value, 199_999_000);
+    let address = parsed.outputs[0]
+        .base
+        .address
+        .as_deref()
+        .expect("p2pkh decodes");
+    assert_address_round_trips_to_script(address, &TESTNET_P2PKH_SCRIPT);
+}
+
+/// The keyless parse is v6-only: a v4/Sapling PSBT is rejected with the typed code, never
+/// silently reported as having no shielded side.
+#[test]
+fn keyless_parse_rejects_a_v4_psbt() {
+    let wallet_keys = root_wallet_keys("ironwood_v6_keyless_v4_guard");
+    let z = ZcashBitGoPsbt::new(
+        Network::ZcashTestnet,
+        &wallet_keys,
+        0xC2D6D0B4, // NU5
+        Some(4),
+        Some(0),
+        Some(ZCASH_SAPLING_VERSION_GROUP_ID),
+        Some(0),
+    );
+    let error = crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_shielded_transaction(
+        &BitGoPsbt::Zcash(z, Network::ZcashTestnet),
+    )
+    .unwrap_err();
+    assert_eq!(
+        crate::error::WasmErrorCode::code(&error),
+        "ZcashParseTransactionError.NotIronwoodV6"
+    );
+}
+
+/// Defense in depth: the keyless parse refuses a hand-assembled PSBT that rides shielded
+/// spends alongside transparent inputs — the adders reject the mix, so only bytes
+/// assembled outside this crate can reach the guard.
+#[test]
+fn keyless_parse_rejects_transparent_inputs_alongside_spends() {
+    let seed = "ironwood_v6_keyless_parse_mixed";
+    // A spend bundle built normally...
+    let (spend_psbt, _map, _ak, _fvk, _ask) = keyless_deshield_psbt(seed);
+    let pczt_bytes =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::get_ironwood_pczt(&spend_psbt.psbt)
+            .unwrap();
+    // ...transplanted onto a PSBT that also carries a transparent input.
+    let wallet_keys = root_wallet_keys(seed);
+    let nu6_3 = NetworkUpgrade::Nu6_3.testnet_activation_height();
+    let mut mixed =
+        BitGoPsbt::new_zcash_v6_at_height(Network::ZcashTestnet, &wallet_keys, nu6_3, None, None)
+            .unwrap();
+    mixed
+        .add_wallet_input(
+            Txid::from_byte_array([0x52u8; 32]),
+            0,
+            200_000_000,
+            &wallet_keys,
+            ScriptId { chain: 0, index: 0 },
+            WalletInputOptions::default(),
+        )
+        .unwrap();
+    let BitGoPsbt::Zcash(mut z, _) = mixed else {
+        panic!("expected Zcash PSBT");
+    };
+    crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::set_ironwood_pczt(
+        &mut z.psbt,
+        pczt_bytes,
+    );
+
+    let error = crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_shielded_transaction(
+        &BitGoPsbt::Zcash(z, Network::ZcashTestnet),
+    )
+    .unwrap_err();
+    assert_eq!(
+        crate::error::WasmErrorCode::code(&error),
+        "ZcashParseTransactionError.MixedInputKinds"
+    );
+}
+
+/// The keyless parse surfaces the key-free verifier's failing check for a tampered bundle
+/// (`IronwoodVerifyError.<Check>`), exactly like `verify_shielded_bundle` does.
+#[test]
+fn keyless_parse_fails_with_the_verifier_check_for_a_tampered_bundle() {
+    let seed = "ironwood_v6_keyless_parse_tampered";
+    let (mut z, map, _ak, _fvk, _ask) = keyless_deshield_psbt(seed);
+    let bytes =
+        crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::get_ironwood_pczt(&z.psbt).unwrap();
+    // The spend's plaintext value no longer commits to its `cv_net`.
+    let spend_action = map.actions.spend_action_index(0).unwrap();
+    let tampered =
+        crate::zcash::ironwood_pczt::with_spend_value(&bytes, spend_action, 100_000_001).unwrap();
+    crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::set_ironwood_pczt(&mut z.psbt, tampered);
+
+    let error = crate::fixed_script_wallet::bitgo_psbt::zcash::parse::parse_shielded_transaction(
+        &BitGoPsbt::Zcash(z, Network::ZcashTestnet),
+    )
+    .unwrap_err();
+    assert_eq!(
+        crate::error::WasmErrorCode::code(&error),
+        "IronwoodVerifyError.CvNet"
+    );
+}
+
 /// One input kind, shielded side: `add_shielded_spends` rejects a PSBT that already carries
 /// transparent inputs, with the typed error code.
 #[test]
