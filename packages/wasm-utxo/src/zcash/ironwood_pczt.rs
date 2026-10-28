@@ -368,6 +368,33 @@ pub fn with_spend_alpha(
     })
 }
 
+/// Replace the bundle's anchor and the Merkle witnesses of the named actions' spends in an
+/// already-serialized PCZT — the anchor-refresh write
+/// ([`ZcashBitGoPsbt::update_anchor_and_witnesses`]).
+///
+/// The caller validates every new witness against the new anchor before this runs; this only
+/// writes. Each named index must exist (`BadFieldEncoding` otherwise).
+pub fn with_anchor_and_witnesses(
+    bytes: &[u8],
+    anchor: super::ironwood_build::AnchorBytes,
+    witnesses: &[(usize, super::ironwood_build::IronwoodWitness)],
+) -> Result<Vec<u8>, IronwoodPcztError> {
+    with_patched_wire(bytes, |wire| {
+        wire.anchor = anchor;
+        for &(action_index, witness) in witnesses {
+            wire.actions
+                .get_mut(action_index)
+                .ok_or(IronwoodPcztError::BadFieldEncoding("actions[action_index]"))?
+                .spend
+                .witness = Some(WitnessWire {
+                position: witness.position,
+                auth_path: witness.auth_path.to_vec(),
+            });
+        }
+        Ok(())
+    })
+}
+
 /// Test-only: the wire action at `action_index`, for the tamper patchers below.
 #[cfg(test)]
 fn wire_action(

@@ -16,6 +16,9 @@ import { ZcashIronwoodBitGoPsbt } from "../../js/fixedScriptWallet/ZcashIronwood
  * - `randomizers` / `signatures` are the stand-in signer's round, keyed to the same run's
  *   ciphertexts (the sighash chain depends on them);
  * - `proofRequest` is the exact alpha-patched PCZT `getProofRequest` must return.
+ * - `refresh` is the anchor refresh the generator applied before the signing rounds (fresh
+ *   witnesses for every spend under the refreshed root), as `updateAnchorAndWitnesses`
+ *   replays it;
  */
 export type IronwoodSpendFixture = {
   name: string;
@@ -41,6 +44,10 @@ export type IronwoodSpendFixture = {
     transparentOutput: { script: string; value: string } | null;
   };
   psbt: string;
+  refresh: {
+    anchor: string;
+    witnesses: Array<{ actionIndex: number; cmx: string; position: number; authPath: string[] }>;
+  };
   spendActionIndices: number[];
   outputActionIndices: number[];
   ak: string;

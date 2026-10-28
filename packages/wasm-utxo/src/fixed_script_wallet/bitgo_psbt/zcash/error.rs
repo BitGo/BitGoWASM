@@ -73,6 +73,13 @@ pub enum IronwoodPsbtError {
         /// The real spends' action indices without an `alpha`.
         action_indices: Vec<usize>,
     },
+    /// The anchor update named no witness for these real spends: the anchor is bundle-level,
+    /// so changing it invalidates every real spend's witness — one re-witnessed path per real
+    /// spend must be supplied.
+    WitnessMissing {
+        /// The real spends' action indices without a witness.
+        action_indices: Vec<usize>,
+    },
     /// The proof is not the canonical size for the bundle's action count.
     ProofLength {
         /// `orchard::Proof::expected_proof_size` for the bundle's actions.
@@ -169,6 +176,11 @@ impl std::fmt::Display for IronwoodPsbtError {
                 f,
                 "no alpha was supplied for real spends {action_indices:?}; the proof request \
                  needs one per real spend"
+            ),
+            IronwoodPsbtError::WitnessMissing { action_indices } => write!(
+                f,
+                "no witness was supplied for real spends {action_indices:?}; changing the \
+                 anchor re-witnesses every real spend"
             ),
             IronwoodPsbtError::ProofLength { expected, actual } => write!(
                 f,

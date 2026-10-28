@@ -3914,6 +3914,24 @@ pub(crate) mod test_util {
         pub witness: IronwoodWitness,
     }
 
+    /// Fold a leaf up to the root through `siblings[d]` (its sibling at depth `d`).
+    /// Orchard's `combine` takes the CHILDREN's level: leaves combine at level 0.
+    pub(crate) fn fold_leaf_to_root(
+        start: MerkleHashOrchard,
+        index: u64,
+        siblings: &[MerkleHashOrchard; IRONWOOD_MERKLE_DEPTH],
+    ) -> MerkleHashOrchard {
+        let mut node = start;
+        for (d, sibling) in siblings.iter().enumerate() {
+            node = if index & (1 << d) == 0 {
+                MerkleHashOrchard::combine(Level::new(d as u8), &node, sibling)
+            } else {
+                MerkleHashOrchard::combine(Level::new(d as u8), sibling, &node)
+            };
+        }
+        node
+    }
+
     /// Build a real, internally consistent 2-leaf Orchard note-commitment tree over two notes
     /// owned by `fvk` — `(value, rho, rseed)` per leaf, recipients `fvk.address_at(i)`. Leaves
     /// are real commitments, the level-1 parent folds them with `MerkleHashOrchard::combine`,
@@ -3957,27 +3975,12 @@ pub(crate) mod test_util {
         };
         let (leaf0, leaf1) = (leaf(&cmxs[0]), leaf(&cmxs[1]));
         let empty = MerkleHashOrchard::empty_leaf();
-        // Fold a leaf up to the root through `siblings[d]` (its sibling at depth `d`).
-        // Orchard's `combine` takes the CHILDREN's level: leaves combine at level 0.
-        let fold = |start: MerkleHashOrchard,
-                    index: u64,
-                    siblings: &[MerkleHashOrchard; IRONWOOD_MERKLE_DEPTH]| {
-            let mut node = start;
-            for (d, sibling) in siblings.iter().enumerate() {
-                node = if index & (1 << d) == 0 {
-                    MerkleHashOrchard::combine(Level::new(d as u8), &node, sibling)
-                } else {
-                    MerkleHashOrchard::combine(Level::new(d as u8), sibling, &node)
-                };
-            }
-            node
-        };
         let mut sibs0 = [empty; IRONWOOD_MERKLE_DEPTH];
         sibs0[0] = leaf1;
         let mut sibs1 = [empty; IRONWOOD_MERKLE_DEPTH];
         sibs1[0] = leaf0;
-        let root0 = fold(leaf0, 0, &sibs0);
-        let root1 = fold(leaf1, 1, &sibs1);
+        let root0 = fold_leaf_to_root(leaf0, 0, &sibs0);
+        let root1 = fold_leaf_to_root(leaf1, 1, &sibs1);
         assert_eq!(root0, root1, "both leaves fold to the same root");
         let to_path = |s: &[MerkleHashOrchard; IRONWOOD_MERKLE_DEPTH]| {
             std::array::from_fn(|i| s[i].to_bytes())
@@ -3997,5 +4000,54 @@ pub(crate) mod test_util {
             }
         };
         (root0.to_bytes(), [mk_leaf(0, &sibs0), mk_leaf(1, &sibs1)])
+    }
+
+    /// Extend the two-leaf fixture tree with a third leaf and re-witness the two original
+    /// leaves under the extended root — the anchor-refresh fixture: the leaves are unchanged
+    /// (they are the spent notes' commitments), only the tree grows past them, so the fresh
+    /// witnesses recomputing to the new root are exactly what an anchor refresh supplies.
+    /// `third_leaf_cmx` is any canonical commitment; nothing spends it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn refreshed_two_leaf_tree(
+        cmxs: &[[u8; 32]; 2],
+        third_leaf_cmx: &[u8; 32],
+    ) -> (AnchorBytes, [IronwoodWitness; 2]) {
+        let leaf = |bytes: &[u8; 32]| {
+            MerkleHashOrchard::from_cmx(
+                &Option::<ExtractedNoteCommitment>::from(ExtractedNoteCommitment::from_bytes(
+                    bytes,
+                ))
+                .unwrap(),
+            )
+        };
+        let (leaf0, leaf1, leaf2) = (leaf(&cmxs[0]), leaf(&cmxs[1]), leaf(third_leaf_cmx));
+        let empty = MerkleHashOrchard::empty_leaf();
+        // The level-1 node covering positions 2-3: the new leaf plus an empty right sibling.
+        let upper = MerkleHashOrchard::combine(Level::new(0), &leaf2, &empty);
+        let mut sibs0 = [empty; IRONWOOD_MERKLE_DEPTH];
+        sibs0[0] = leaf1;
+        sibs0[1] = upper;
+        let mut sibs1 = [empty; IRONWOOD_MERKLE_DEPTH];
+        sibs1[0] = leaf0;
+        sibs1[1] = upper;
+        let root0 = fold_leaf_to_root(leaf0, 0, &sibs0);
+        let root1 = fold_leaf_to_root(leaf1, 1, &sibs1);
+        assert_eq!(root0, root1, "both leaves fold to the extended root");
+        let to_path = |s: &[MerkleHashOrchard; IRONWOOD_MERKLE_DEPTH]| {
+            std::array::from_fn(|i| s[i].to_bytes())
+        };
+        (
+            root0.to_bytes(),
+            [
+                IronwoodWitness {
+                    position: 0,
+                    auth_path: to_path(&sibs0),
+                },
+                IronwoodWitness {
+                    position: 1,
+                    auth_path: to_path(&sibs1),
+                },
+            ],
+        )
     }
 }

@@ -335,13 +335,28 @@ describe("ZcashIronwoodBitGoPsbt shielded spends", function () {
         alpha: hex(entry.alpha),
       }));
       const ak = hex(fixture.ak);
+      /** The anchor refresh: one re-witnessed entry per real spend under the refreshed root. */
+      const refreshEntries = fixture.refresh.witnesses.map((entry) => ({
+        actionIndex: entry.actionIndex,
+        witness: ZcashIronwoodWitness.build(
+          hex(entry.cmx),
+          entry.position,
+          entry.authPath.map(hex),
+          hex(fixture.refresh.anchor),
+        ),
+      }));
+      function refreshAnchor(psbt: ZcashIronwoodBitGoPsbt): void {
+        psbt.updateAnchorAndWitnesses(hex(fixture.refresh.anchor), refreshEntries);
+      }
 
-      /** Drives a fresh PSBT to the signed state (ciphertexts → randomizers → signatures). */
+      /** Drives a fresh PSBT to the signed state (ciphertexts → refresh → randomizers →
+       * signatures), with the anchor refresh before any signature. */
       function psbtReadyForProof(): ZcashIronwoodBitGoPsbt {
         const psbt = freshPsbt(fixture);
         if (ciphertextEntries.length > 0) {
           psbt.addOutCiphertexts(ciphertextEntries);
         }
+        refreshAnchor(psbt);
         psbt.addSpendRandomizers(randomizerEntries, { spendValidatingKey: ak });
         psbt.addSpendSignatures(signatureEntries);
         return psbt;
@@ -372,6 +387,10 @@ describe("ZcashIronwoodBitGoPsbt shielded spends", function () {
           // A pure deshield has no shielded outputs, so there is nothing to request.
           assertErrorCode(() => psbt.getOutCiphertextRequest(), "IronwoodPsbtError.NothingPending");
         }
+
+        // The anchor refresh lands before the signing rounds: the build's approval is
+        // assumed to have sat long enough that the anchor moved.
+        refreshAnchor(psbt);
 
         // Randomizers next: no sighash while any real spend still carries the placeholder rk.
         assertErrorCode(() => psbt.spendSighash(), "IronwoodPsbtError.RandomizerPending");
@@ -406,6 +425,123 @@ describe("ZcashIronwoodBitGoPsbt shielded spends", function () {
           Buffer.from(psbt.getProofRequest(alphaEntries)).toString("hex"),
           fixture.proofRequest,
         );
+      });
+
+      it("refreshes the anchor and every spend's witness, and the lifecycle proceeds over it", function () {
+        const psbt = freshPsbt(fixture);
+        if (ciphertextEntries.length > 0) {
+          psbt.addOutCiphertexts(ciphertextEntries);
+        }
+        assert.strictEqual(
+          Buffer.from(psbt.verifyShieldedBundle().anchor).toString("hex"),
+          fixture.request.anchor,
+          "the bundle anchors to the build-time root before the refresh",
+        );
+
+        // The refresh re-anchors the bundle; the key-free verifier accepts it, since every
+        // fresh witness recomputes to the new root over its spend's own cmx. The refresh
+        // survives the wire round-trip.
+        refreshAnchor(psbt);
+        assert.strictEqual(
+          Buffer.from(psbt.verifyShieldedBundle().anchor).toString("hex"),
+          fixture.refresh.anchor,
+        );
+        const round = roundtrip(psbt);
+        assert.strictEqual(
+          Buffer.from(round.verifyShieldedBundle().anchor).toString("hex"),
+          fixture.refresh.anchor,
+        );
+
+        // The refreshed bundle carries the same digest as the fixture's post-refresh run.
+        round.addSpendRandomizers(randomizerEntries, { spendValidatingKey: ak });
+        assert.strictEqual(Buffer.from(round.spendSighash()).toString("hex"), fixture.sighash);
+      });
+
+      it("rejects a stale witness (still anchoring the old root) and stores nothing", function () {
+        const psbt = freshPsbt(fixture);
+        if (ciphertextEntries.length > 0) {
+          psbt.addOutCiphertexts(ciphertextEntries);
+        }
+        const before = psbt.getPczt();
+        // The build-time witnesses — validated against the old anchor — no longer recompute
+        // to the refreshed root, and one bad entry stores nothing.
+        const stale = fixture.request.spends.map((spend, i) => ({
+          actionIndex: fixture.refresh.witnesses[i].actionIndex,
+          witness: ZcashIronwoodWitness.build(
+            hex(spend.cmx),
+            spend.witness.position,
+            spend.witness.authPath.map(hex),
+            hex(fixture.request.anchor),
+          ),
+        }));
+        assertErrorCode(
+          () => psbt.updateAnchorAndWitnesses(hex(fixture.refresh.anchor), stale),
+          "IronwoodBuildError.WitnessAnchorMismatch",
+        );
+        assert.deepStrictEqual(Buffer.from(psbt.getPczt()), Buffer.from(before));
+      });
+
+      it("rejects bad batches: empty, duplicate, partial coverage, unknown action", function () {
+        const psbt = freshPsbt(fixture);
+        if (ciphertextEntries.length > 0) {
+          psbt.addOutCiphertexts(ciphertextEntries);
+        }
+        const anchor = hex(fixture.refresh.anchor);
+        assertErrorCode(
+          () => psbt.updateAnchorAndWitnesses(anchor, []),
+          "IronwoodPsbtError.NothingPending",
+        );
+        assertErrorCode(
+          () => psbt.updateAnchorAndWitnesses(anchor, [refreshEntries[0], refreshEntries[0]]),
+          "IronwoodPsbtError.DuplicateAction",
+        );
+        if (refreshEntries.length > 1) {
+          // A batch covering only one of the two real spends: the anchor is bundle-level,
+          // so the uncovered spend would be left anchoring the old root.
+          assertErrorCode(
+            () => psbt.updateAnchorAndWitnesses(anchor, [refreshEntries[0]]),
+            "IronwoodPsbtError.WitnessMissing",
+          );
+        }
+        // Every real spend covered, plus one out-of-range index.
+        assertErrorCode(
+          () =>
+            psbt.updateAnchorAndWitnesses(anchor, [
+              ...refreshEntries,
+              { actionIndex: 99, witness: refreshEntries[0].witness },
+            ]),
+          "IronwoodPsbtError.UnknownAction",
+        );
+      });
+
+      it("refreshes the anchor after signing, keeping the signatures valid", function () {
+        // Signed over the build-time anchor: the v6 sighash does not commit the anchor, so the
+        // fixture's signatures (made over the refreshed bundle) are valid here too.
+        let psbt = freshPsbt(fixture);
+        if (ciphertextEntries.length > 0) {
+          psbt.addOutCiphertexts(ciphertextEntries);
+        }
+        psbt.addSpendRandomizers(randomizerEntries, { spendValidatingKey: ak });
+        assert.strictEqual(Buffer.from(psbt.spendSighash()).toString("hex"), fixture.sighash);
+        psbt.addSpendSignatures(signatureEntries);
+        assert.strictEqual(
+          Buffer.from(psbt.verifyShieldedBundle().anchor).toString("hex"),
+          fixture.request.anchor,
+        );
+
+        // The refresh after signing lands the same bundle the refresh-then-sign order builds:
+        // the proof request matches the fixture's byte for byte, and the fixture's proof
+        // combines over it.
+        refreshAnchor(psbt);
+        psbt = roundtrip(psbt);
+        assert.strictEqual(Buffer.from(psbt.spendSighash()).toString("hex"), fixture.sighash);
+        assert.strictEqual(
+          Buffer.from(psbt.getProofRequest(alphaEntries)).toString("hex"),
+          fixture.proofRequest,
+        );
+        const tx = ZcashV6Transaction.fromBytes(psbt.combineProof(hex(fixture.proof)));
+        assert.ok(tx.ironwoodAnchor);
+        assert.strictEqual(Buffer.from(tx.ironwoodAnchor).toString("hex"), fixture.refresh.anchor);
       });
 
       it("keeps the alphas out of the PSBT", function () {
