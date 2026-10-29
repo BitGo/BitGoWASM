@@ -1,7 +1,7 @@
 import * as assert from "assert";
 import {
-  Output,
-  MaxOutput,
+  type Output,
+  type MaxOutput,
   isMaxOutput,
   getMaxOutput,
   getOutputSum,

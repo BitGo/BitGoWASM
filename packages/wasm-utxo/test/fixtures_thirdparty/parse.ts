@@ -1,7 +1,7 @@
 import * as assert from "assert/strict";
 import { describe } from "mocha";
 import { getNetworkList, getNetworkName } from "../networks.js";
-import { testFixtureArray, txValidTestFile, TxValidVector } from "./fixtures.js";
+import { testFixtureArray, txValidTestFile, type TxValidVector } from "./fixtures.js";
 import { Transaction } from "../../js/index.js";
 
 describe("Third-Party Fixtures", function () {

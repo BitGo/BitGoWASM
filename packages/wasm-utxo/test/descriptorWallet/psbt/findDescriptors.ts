@@ -3,8 +3,8 @@ import { Descriptor } from "../../../js/index.js";
 import {
   findDescriptorForInput,
   findDescriptorForOutput,
-  PsbtInput,
-  PsbtOutput,
+  type PsbtInput,
+  type PsbtOutput,
 } from "../../../js/descriptorWallet/psbt/findDescriptors.js";
 import { toDescriptorMap } from "../../../js/descriptorWallet/DescriptorMap.js";
 

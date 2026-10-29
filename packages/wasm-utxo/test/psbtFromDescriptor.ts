@@ -1,9 +1,9 @@
 import assert from "node:assert";
-import { BIP32Interface, ECPair, ECPairInterface } from "@bitgo/utxo-lib";
+import { type BIP32Interface, ECPair, type ECPairInterface } from "@bitgo/utxo-lib";
 import { getKey } from "@bitgo/utxo-lib/dist/src/testutil";
 
-import { DescriptorNode, formatNode } from "../js/ast/index.js";
-import { mockPsbtDefault, PsbtParams } from "./psbtFromDescriptor.util.js";
+import { type DescriptorNode, formatNode } from "../js/ast/index.js";
+import { mockPsbtDefault, type PsbtParams } from "./psbtFromDescriptor.util.js";
 import { Descriptor, Transaction } from "../js/index.js";
 import { toWrappedPsbt } from "./psbt.util.js";
 

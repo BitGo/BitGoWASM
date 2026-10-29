@@ -1,6 +1,10 @@
 import assert from "node:assert";
 import { BIP32, ECPair } from "../../js/index.js";
-import { BitGoPsbt, RootWalletKeys, ParsedTransaction } from "../../js/fixedScriptWallet/index.js";
+import {
+  BitGoPsbt,
+  RootWalletKeys,
+  type ParsedTransaction,
+} from "../../js/fixedScriptWallet/index.js";
 import type { CoinName } from "../../js/coinName.js";
 import {
   loadPsbtFixture,

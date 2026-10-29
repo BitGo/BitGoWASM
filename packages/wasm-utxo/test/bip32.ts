@@ -1,6 +1,6 @@
 import * as assert from "assert";
 import * as crypto from "crypto";
-import { bip32 as utxolibBip32, BIP32Interface } from "@bitgo/utxo-lib";
+import { bip32 as utxolibBip32, type BIP32Interface } from "@bitgo/utxo-lib";
 import { BIP32 } from "../js/bip32.js";
 
 // Test fixtures

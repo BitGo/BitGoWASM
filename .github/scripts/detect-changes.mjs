@@ -3,7 +3,8 @@ import { execSync } from "child_process";
 import { appendFileSync } from "fs";
 
 // Per-package matrix entries. Each object becomes one `matrix.include`
-// combination in the `test` job. The flags gate steps there:
+// combination in the `test` job, and each package fans out across the supported
+// Node versions. The flags gate steps there:
 //   - needs-wasm-pack:      download the build artifact (wasm .js/.wasm)
 //   - has-wasm-pack-tests:  run `npm run test:wasm-pack-{node,chrome}`
 // Keeping the flags here (instead of a static `include:` block in the
@@ -21,7 +22,18 @@ const PACKAGE_CONFIG = [
   { package: "wasm-privacy-coin", "needs-wasm-pack": false, "has-wasm-pack-tests": false },
 ];
 
+const NODE_MATRIX = [{ "node-version": "22.x" }, { "node-version": "24.x" }];
+
 const ALL_PACKAGES = PACKAGE_CONFIG.map((p) => p.package);
+
+function expand(entries) {
+  return entries.flatMap((entry) =>
+    NODE_MATRIX.map((node) => ({
+      ...entry,
+      ...node,
+    })),
+  );
+}
 
 function setOutput(entries) {
   const value = JSON.stringify(entries);
@@ -36,7 +48,7 @@ function entriesFor(pkgs) {
 
 // Non-PR events (push to master, workflow_dispatch): run everything
 if (process.env.GITHUB_EVENT_NAME !== "pull_request") {
-  setOutput(PACKAGE_CONFIG);
+  setOutput(expand(PACKAGE_CONFIG));
   process.exit(0);
 }
 
@@ -54,7 +66,7 @@ const sharedChanged = changedFiles.some((f) =>
   /^(\.github\/|package\.json$|lerna\.json$|package-lock\.json$)/.test(f),
 );
 if (sharedChanged) {
-  setOutput(PACKAGE_CONFIG);
+  setOutput(expand(PACKAGE_CONFIG));
   process.exit(0);
 }
 
@@ -62,4 +74,4 @@ if (sharedChanged) {
 const changed = ALL_PACKAGES.filter((pkg) =>
   changedFiles.some((f) => f.startsWith(`packages/${pkg}/`)),
 );
-setOutput(changed.length > 0 ? entriesFor(changed) : PACKAGE_CONFIG);
+setOutput(expand(changed.length > 0 ? entriesFor(changed) : PACKAGE_CONFIG));
