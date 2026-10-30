@@ -1,7 +1,10 @@
 use core::fmt;
 
+use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::AddWalletInputError;
 use crate::fixed_script_wallet::bitgo_psbt::zcash_psbt::VerifyV6SignatureError;
 use crate::fixed_script_wallet::bitgo_psbt::ParseTransactionError;
+use crate::fixed_script_wallet::wallet_prefix::WalletPrefixError;
+use crate::fixed_script_wallet::WalletKeysError;
 
 pub trait WasmErrorCode {
     fn code(&self) -> String;
@@ -32,6 +35,9 @@ pub enum WasmUtxoError {
     VerifyIronwood(crate::zcash::ironwood_build::IronwoodVerifyError),
     IronwoodPsbt(crate::fixed_script_wallet::bitgo_psbt::zcash::error::IronwoodPsbtError),
     VerifyV6Signature(VerifyV6SignatureError),
+    WalletKeys(WalletKeysError),
+    WalletPrefix(WalletPrefixError),
+    AddWalletInput(AddWalletInputError),
 }
 
 impl std::error::Error for WasmUtxoError {}
@@ -49,6 +55,9 @@ impl fmt::Display for WasmUtxoError {
             WasmUtxoError::VerifyIronwood(e) => write!(f, "{}", e),
             WasmUtxoError::IronwoodPsbt(e) => write!(f, "{}", e),
             WasmUtxoError::VerifyV6Signature(e) => write!(f, "{}", e),
+            WasmUtxoError::WalletKeys(e) => write!(f, "{}", e),
+            WasmUtxoError::WalletPrefix(e) => write!(f, "{}", e),
+            WasmUtxoError::AddWalletInput(e) => write!(f, "{}", e),
         }
     }
 }
@@ -76,6 +85,9 @@ impl WasmErrorCode for WasmUtxoError {
             WasmUtxoError::VerifyIronwood(e) => e.code(),
             WasmUtxoError::IronwoodPsbt(e) => e.code(),
             WasmUtxoError::VerifyV6Signature(e) => e.code(),
+            WasmUtxoError::WalletKeys(e) => e.code(),
+            WasmUtxoError::WalletPrefix(e) => e.code(),
+            WasmUtxoError::AddWalletInput(e) => e.code(),
         }
     }
 }
@@ -156,6 +168,24 @@ impl From<crate::zcash::ironwood_build::IronwoodVerifyError> for WasmUtxoError {
 impl From<VerifyV6SignatureError> for WasmUtxoError {
     fn from(err: VerifyV6SignatureError) -> Self {
         WasmUtxoError::VerifyV6Signature(err)
+    }
+}
+
+impl From<WalletKeysError> for WasmUtxoError {
+    fn from(err: WalletKeysError) -> Self {
+        WasmUtxoError::WalletKeys(err)
+    }
+}
+
+impl From<WalletPrefixError> for WasmUtxoError {
+    fn from(err: WalletPrefixError) -> Self {
+        WasmUtxoError::WalletPrefix(err)
+    }
+}
+
+impl From<AddWalletInputError> for WasmUtxoError {
+    fn from(err: AddWalletInputError) -> Self {
+        WasmUtxoError::AddWalletInput(err)
     }
 }
 

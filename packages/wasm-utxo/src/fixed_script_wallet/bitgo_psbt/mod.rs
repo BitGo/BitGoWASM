@@ -109,7 +109,7 @@ pub enum BitGoPsbt {
 // Re-export types from submodules for convenience
 pub use crate::fixed_script_wallet::{ScriptId, ScriptIdWithValue};
 pub use psbt_wallet_input::{
-    InputScriptType, ParsedInput, ReplayProtectionOptions, WalletInputOptions,
+    AddWalletInputError, InputScriptType, ParsedInput, ReplayProtectionOptions, WalletInputOptions,
 };
 pub use psbt_wallet_output::ParsedOutput;
 
@@ -643,6 +643,7 @@ impl BitGoPsbt {
                             sign_path: None,
                             sequence: Some(tx_in.sequence.0),
                             prev_tx: None,
+                            expected_script: None,
                         },
                     )
                     .map_err(|e| format!("Input {}: {}", i, e))?;
@@ -1032,7 +1033,7 @@ impl BitGoPsbt {
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
         script_id: ScriptId,
         options: WalletInputOptions,
-    ) -> Result<(), String> {
+    ) -> Result<(), AddWalletInputError> {
         use crate::fixed_script_wallet::to_pub_triple;
         use crate::fixed_script_wallet::wallet_scripts::{
             chain_index_path, OutputScriptType, WalletScripts,
@@ -1059,6 +1060,17 @@ impl BitGoPsbt {
             .map_err(|e| format!("Failed to create wallet scripts: {}", e))?;
 
         let output_script = scripts.output_script();
+
+        if let Some(expected) = options.expected_script {
+            if expected != output_script.as_bytes() {
+                return Err(AddWalletInputError::WalletInputScriptMismatch {
+                    chain,
+                    index: derivation_index,
+                    expected: miniscript::bitcoin::ScriptBuf::from_bytes(expected.to_vec()),
+                    actual: output_script,
+                });
+            }
+        }
 
         let tx_in = TxIn {
             previous_output: OutPoint { txid, vout },
@@ -1104,7 +1116,9 @@ impl BitGoPsbt {
                 psbt_input.witness_script = Some(script.witness_script.clone());
             }
             WalletScripts::P2mr(_) => {
-                return Err("P2MR PSBT input signing is not yet supported".to_string());
+                return Err("P2MR PSBT input signing is not yet supported"
+                    .to_string()
+                    .into());
             }
             WalletScripts::P2trLegacy(script) | WalletScripts::P2trMusig2(script) => {
                 let sign_path = options.sign_path.ok_or_else(|| {
@@ -1174,11 +1188,18 @@ impl BitGoPsbt {
             }
         }
 
-        crate::psbt_ops::insert_input(psbt, index, tx_in, psbt_input).map(|_| ())
+        crate::psbt_ops::insert_input(psbt, index, tx_in, psbt_input)
+            .map(|_| ())
+            .map_err(AddWalletInputError::Invalid)
     }
 
+    /// Add a wallet input at `index`, reporting failures as a typed [`AddWalletInputError`].
+    ///
+    /// If `options.expected_script` is set and differs from the script derived for `script_id`
+    /// from `wallet_keys`, fails with [`AddWalletInputError::WalletInputScriptMismatch`] and
+    /// leaves the PSBT unchanged.
     #[allow(clippy::too_many_arguments)]
-    pub fn add_wallet_input_at_index(
+    pub fn try_add_wallet_input_at_index(
         &mut self,
         index: usize,
         txid: Txid,
@@ -1187,7 +1208,7 @@ impl BitGoPsbt {
         wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
         script_id: ScriptId,
         options: WalletInputOptions,
-    ) -> Result<usize, String> {
+    ) -> Result<usize, AddWalletInputError> {
         // One input kind: the Zcash arm rejects a transparent input on a PSBT that already
         // spends shielded notes (see `add_input_at_index`).
         if let BitGoPsbt::Zcash(zcash, _) = self {
@@ -1207,6 +1228,29 @@ impl BitGoPsbt {
             options,
         )?;
         Ok(index)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_wallet_input_at_index(
+        &mut self,
+        index: usize,
+        txid: Txid,
+        vout: u32,
+        value: u64,
+        wallet_keys: &crate::fixed_script_wallet::RootWalletKeys,
+        script_id: ScriptId,
+        options: WalletInputOptions,
+    ) -> Result<usize, String> {
+        self.try_add_wallet_input_at_index(
+            index,
+            txid,
+            vout,
+            value,
+            wallet_keys,
+            script_id,
+            options,
+        )
+        .map_err(|e| e.to_string())
     }
 
     pub fn add_wallet_input(
@@ -3383,12 +3427,54 @@ const XPUB_TRIPLE_PERMUTATIONS: [[usize; 3]; 6] = [
     [2, 1, 0],
 ];
 
+/// The one derivation prefix (path minus the trailing `[chain, index]`) recorded for the keys of
+/// `xpubs` across `inputs`, or `None` if the inputs record none, or more than one (a PSBT
+/// mixing e.g. legacy `0/0` and BIP44-style prefixes).
+fn recorded_derivation_prefix<'a>(
+    xpubs: &crate::fixed_script_wallet::XpubTriple,
+    inputs: impl Iterator<Item = &'a miniscript::bitcoin::psbt::Input>,
+) -> Option<miniscript::bitcoin::bip32::DerivationPath> {
+    use miniscript::bitcoin::bip32::{ChildNumber, DerivationPath};
+
+    let fingerprints: Vec<_> = xpubs.iter().map(|xpub| xpub.fingerprint()).collect();
+    let mut prefix: Option<DerivationPath> = None;
+    for input in inputs {
+        let origins = input
+            .bip32_derivation
+            .values()
+            .map(|(fingerprint, path)| (fingerprint, path))
+            .chain(
+                input
+                    .tap_key_origins
+                    .values()
+                    .map(|(_, (fingerprint, path))| (fingerprint, path)),
+            );
+        for (fingerprint, path) in origins {
+            if !fingerprints.contains(fingerprint) {
+                continue;
+            }
+            let children: Vec<ChildNumber> = path.into_iter().cloned().collect();
+            let prefix_len = children.len().checked_sub(2)?;
+            let candidate = DerivationPath::from(children[..prefix_len].to_vec());
+            if *prefix.get_or_insert_with(|| candidate.clone()) != candidate {
+                return None;
+            }
+        }
+    }
+    prefix
+}
+
 /// Sort an xpub triple into `[user, backup, bitgo]` order by trying all permutations
 /// against the PSBT's wallet inputs.
 ///
 /// For each permutation, constructs `RootWalletKeys` and validates every non-replay-protection
 /// input against it. The first permutation where all inputs pass validation is returned.
 /// Works for all script types including p2tr.
+///
+/// Validation follows the key origins recorded in the PSBT, so legacy (`0/0`), BIP44-style
+/// (`44/ct/h1/h2`) and mixed PSBTs are all resolved. The returned keys carry the derivation
+/// prefix the PSBT records for its wallet inputs; if the inputs record more than one prefix (or
+/// none), the legacy default `m/0/0` is used.
 pub fn to_wallet_keys(
     psbt: &BitGoPsbt,
     xpubs: crate::fixed_script_wallet::XpubTriple,
@@ -3415,7 +3501,8 @@ pub fn to_wallet_keys(
 
     for perm in &XPUB_TRIPLE_PERMUTATIONS {
         let permuted = [xpubs[perm[0]], xpubs[perm[1]], xpubs[perm[2]]];
-        let wallet_keys = RootWalletKeys::new(permuted);
+        // Classification does not depend on the prefix of these keys.
+        let candidate = RootWalletKeys::new(permuted);
 
         let all_match = wallet_inputs.iter().all(|(tx_input, psbt_input)| {
             let output_script = psbt_wallet_input::get_output_script_and_value(
@@ -3424,7 +3511,7 @@ pub fn to_wallet_keys(
             );
             match output_script {
                 Ok((script, _value)) => crate::fixed_script_wallet::WalletOutputScript::from_psbt(
-                    &wallet_keys,
+                    &candidate,
                     &psbt_input.bip32_derivation,
                     &psbt_input.tap_key_origins,
                     psbt_input.witness_script.is_some(),
@@ -3437,7 +3524,17 @@ pub fn to_wallet_keys(
         });
 
         if all_match {
-            return Ok(wallet_keys);
+            let Some(prefix) = recorded_derivation_prefix(
+                &permuted,
+                wallet_inputs.iter().map(|(_, psbt_input)| *psbt_input),
+            ) else {
+                return Ok(candidate);
+            };
+            return RootWalletKeys::new_with_derivation_prefixes(
+                permuted,
+                [prefix.clone(), prefix.clone(), prefix],
+            )
+            .map_err(|e| e.to_string());
         }
     }
 
@@ -5272,6 +5369,7 @@ mod tests {
                         sign_path,
                         sequence: Some(sequence),
                         prev_tx: prev_tx.as_deref(),
+                        expected_script: None,
                     },
                 );
                 assert!(
