@@ -1,11 +1,15 @@
-# RustSec advisories: the patched crypto-bigint (>=0.7.6, RUSTSEC-2026-0387) is unreachable
-# behind k256 0.13.4 (musig2/secp), and wasm-utxo's use of k256 ECDSA does not expose the
-# affected constant-time operations to attacker-controlled input — ignore until k256 moves
-# to elliptic-curve 0.14+, then delete this entry (cargo-deny warns on unmatched ignores).
+# RustSec advisories: RUSTSEC-2026-0387 (crypto-bigint constant-time issues). k256's Scalar
+# add/sub/neg do reach crypto-bigint add_mod/sub_mod/neg_mod during MuSig2 partial signing,
+# so the vulnerable code is exercised — but the advisory's constant-time concern is moot for
+# this target: wasm-utxo executes under a JS JIT, which gives no constant-time guarantees
+# regardless of the crypto-bigint version. Ignore until musig2 moves to k256 0.14+
+# (k256 0.14.0 is out and its elliptic-curve 0.14 line drops crypto-bigint entirely,
+# but musig2 0.4.1 still pins k256 ^0.13 — wasm-utxo's only path to k256), then delete
+# this entry (cargo-deny warns on unmatched ignores).
 # ctutils (RUSTSEC-2026-0385) is fixed by its 0.4.6 lockfile bump, no ignore needed.
 [advisories]
 ignore = [
-    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint >=0.7.6 is unreachable behind k256 0.13.4 (musig2/secp); the affected constant-time ops are not exposed on attacker-controlled input in wasm-utxo's k256 usage" },
+    { id = "RUSTSEC-2026-0387", reason = "k256 Scalar add/sub/neg reach crypto-bigint add_mod/sub_mod/neg_mod in MuSig2 partial signing, but wasm under a JS JIT gives no constant-time guarantees regardless of the crypto-bigint version; delete when musig2 moves to k256 0.14+ (k256 0.14.0 is out and drops crypto-bigint entirely, but musig2 0.4.1 still pins k256 ^0.13 — wasm-utxo's only path) (cargo-deny warns on unmatched ignores)" },
 ]
 # Deny multiple versions of dependencies
 [bans]
