@@ -12,7 +12,9 @@ pub struct ParsedOutput {
     pub value: u64,
     pub script_id: Option<ScriptId>,
     pub paygo: bool,
-    /// Full BIP32 derivation path from the wallet xpub (e.g. `[chain, index]`).
+    /// Full BIP32 derivation path recorded in the PSBT, from the wallet root key: the prefix
+    /// followed by `[chain, index]` (e.g. `0/0/20/5` legacy, `44/0/<h1>/<h2>/20/5` BIP44-style).
+    /// The prefix is everything except the last two components.
     /// `None` for outputs that do not belong to this wallet.
     pub derivation_path: Option<DerivationPath>,
 }

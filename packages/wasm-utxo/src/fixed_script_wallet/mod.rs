@@ -4,6 +4,7 @@ pub mod bitgo_psbt;
 pub mod replay_protection;
 pub mod script_id;
 mod wallet_keys;
+pub mod wallet_prefix;
 pub mod wallet_scripts;
 
 #[cfg(test)]

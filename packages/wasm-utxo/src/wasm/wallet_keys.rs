@@ -49,11 +49,14 @@ impl WasmRootWalletKeys {
                 DerivationPath::from_str("m/0/0").unwrap(),
                 DerivationPath::from_str("m/0/0").unwrap(),
             ],
-        );
+        )?;
         Ok(WasmRootWalletKeys { inner })
     }
 
     /// Create a RootWalletKeys from three BIP32 keys with custom derivation prefixes
+    ///
+    /// Prefixes must be non-hardened: an xpub cannot derive a hardened child, so a hardened
+    /// component (`'` or `h`) is rejected with `WalletKeysError.HardenedDerivationPrefix`.
     ///
     /// # Arguments
     /// - `user`: User key (first xpub)
@@ -93,7 +96,7 @@ impl WasmRootWalletKeys {
             .try_into()
             .map_err(|_| WasmUtxoError::new("Failed to convert derivation paths"))?;
 
-        let inner = RootWalletKeys::new_with_derivation_prefixes(xpubs, derivation_paths);
+        let inner = RootWalletKeys::new_with_derivation_prefixes(xpubs, derivation_paths)?;
         Ok(WasmRootWalletKeys { inner })
     }
 

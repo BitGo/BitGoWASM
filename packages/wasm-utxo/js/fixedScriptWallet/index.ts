@@ -4,6 +4,11 @@ import type { CoinName } from "../coinName.js";
 export { RootWalletKeys, type WalletKeysArg, type IWalletKeys } from "./RootWalletKeys.js";
 export { ReplayProtection, type ReplayProtectionArg } from "./ReplayProtection.js";
 export { outputScript, address } from "./address.js";
+export {
+  deriveWalletAccount,
+  deriveWalletPrefix,
+  type WalletPrefixKeysArg,
+} from "./walletPrefix.js";
 export { Dimensions } from "./Dimensions.js";
 export {
   outputScriptTypes,
