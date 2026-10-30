@@ -91,6 +91,25 @@ describe("ZcashIronwoodBitGoPsbt keyless MPC surface", function () {
     });
   });
 
+  describe("updateAnchorAndWitnesses", function () {
+    it("refuses a PSBT that carries no shielded bundle", function () {
+      const psbt = ZcashIronwoodBitGoPsbt.createEmptyKeyless(
+        "zcashTest",
+        createOptions(NU6_3_TESTNET_HEIGHT),
+      );
+      // A valid witness (the fixture's, against its own anchor): the NotSpendBundle gate
+      // runs before any validation, so the anchor is arbitrary.
+      const [spend] = spendRequests(loadFixture("deshield"));
+      assertErrorCode(
+        () =>
+          psbt.updateAnchorAndWitnesses(new Uint8Array(32), [
+            { actionIndex: 0, witness: spend.witness },
+          ]),
+        "IronwoodPsbtError.NotSpendBundle",
+      );
+    });
+  });
+
   describe("parseShieldedTransaction", function () {
     it("parses a keyless deshield build: the verified spend, the transparent output, fee, value balance", function () {
       const fixture = loadFixture("deshield");

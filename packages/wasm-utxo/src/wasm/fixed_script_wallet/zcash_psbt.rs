@@ -767,6 +767,45 @@ impl BitGoPsbt {
             .map_err(WasmUtxoError::from)
     }
 
+    /// Refresh the bundle's anchor and every real spend's Merkle witness: `anchor` is the new
+    /// note-commitment-tree root (32 bytes), `entries` an array of
+    /// `{ actionIndex: number, witness: { position: number, authPath: Uint8Array } }` —
+    /// exactly one entry per real spend (`IronwoodPsbtError.WitnessMissing` otherwise), each
+    /// `authPath` the 32 sibling hashes flattened (as `IronwoodWitness.auth_path` returns
+    /// it). Every witness is validated against the new anchor over the spend's own note
+    /// commitment before anything is written — **atomic**, one bad entry stores nothing.
+    ///
+    /// **Allowed before and after signing**: the v6 sighash does not commit the anchor (the
+    /// proof does), so existing signatures stay valid. A refresh invalidates any proof request
+    /// already handed out — request the proof after the last refresh.
+    pub fn update_ironwood_anchor_and_witnesses(
+        &mut self,
+        anchor: &[u8],
+        entries: JsValue,
+    ) -> Result<(), WasmUtxoError> {
+        let anchor: AnchorBytes = fixed_bytes(anchor, "anchor")?;
+        let entries: Vec<AnchorWitnessEntry> = serde_wasm_bindgen::from_value(entries)
+            .map_err(|e| WasmUtxoError::new(&format!("invalid anchor/witness entries: {e}")))?;
+        let entries = entries
+            .into_iter()
+            .map(|entry| {
+                Ok((
+                    entry.action_index,
+                    IronwoodWitness {
+                        position: entry.witness.position,
+                        auth_path: split_auth_path(fixed_bytes(
+                            &entry.witness.auth_path,
+                            "authPath",
+                        )?),
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, IronwoodPsbtError>>()?;
+        self.zcash_mut()?
+            .update_anchor_and_witnesses(&anchor, &entries)
+            .map_err(WasmUtxoError::from)
+    }
+
     /// Install the signer's randomized `rk`s: an array of
     /// `{ actionIndex: number, alpha: Uint8Array, rk: Uint8Array }` — one per real spend,
     /// with `rk = ak.randomize(alpha)`. **Only `rk` is stored**: the PSBT never carries
@@ -986,6 +1025,16 @@ fn required_fixed_bytes<const N: usize>(
     Ok(fixed_bytes(&bytes, field)?)
 }
 
+/// Split a flattened `authPath` (as `IronwoodWitness.auth_path` returns it) into its
+/// `IRONWOOD_MERKLE_DEPTH` sibling hashes.
+fn split_auth_path(bytes: [u8; IRONWOOD_MERKLE_DEPTH * 32]) -> WitnessAuthPath {
+    let mut path: WitnessAuthPath = [[0u8; 32]; IRONWOOD_MERKLE_DEPTH];
+    for (node, chunk) in path.iter_mut().zip(bytes.chunks_exact(32)) {
+        node.copy_from_slice(chunk);
+    }
+    path
+}
+
 /// One `add_ironwood_out_ciphertexts` entry from JS: `{ actionIndex, outCiphertext }`.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1011,6 +1060,23 @@ struct SpendSignatureEntry {
     signature: serde_bytes::ByteBuf,
 }
 
+/// One `update_ironwood_anchor_and_witnesses` entry from JS:
+/// `{ actionIndex, witness: { position, authPath } }` — the re-witnessed Merkle path
+/// (`authPath` the 32 sibling hashes flattened, as `IronwoodWitness.auth_path` returns it).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AnchorWitnessEntry {
+    action_index: usize,
+    witness: WitnessEntry,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WitnessEntry {
+    position: u32,
+    auth_path: serde_bytes::ByteBuf,
+}
+
 /// One `ironwood_proof_request` randomizer from JS: `{ actionIndex, alpha }`.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1025,12 +1091,7 @@ struct ProofRequestAlpha {
 impl TryFromJsValue for IronwoodKeylessSpendSpec {
     fn try_from_js_value(item: &JsValue) -> Result<Self, WasmUtxoError> {
         let witness = get_required_raw_field(item, "witness")?;
-        let auth_path: [u8; IRONWOOD_MERKLE_DEPTH * 32] =
-            required_fixed_bytes(&witness, "authPath")?;
-        let mut path: WitnessAuthPath = [[0u8; 32]; IRONWOOD_MERKLE_DEPTH];
-        for (node, chunk) in path.iter_mut().zip(auth_path.chunks_exact(32)) {
-            node.copy_from_slice(chunk);
-        }
+        let path = split_auth_path(required_fixed_bytes(&witness, "authPath")?);
         Ok(Self {
             recipient: required_fixed_bytes(item, "recipient")?,
             value: get_required_u64_field(item, "value")?,

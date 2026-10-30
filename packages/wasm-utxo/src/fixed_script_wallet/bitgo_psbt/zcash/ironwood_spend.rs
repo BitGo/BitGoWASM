@@ -422,8 +422,10 @@ impl ZcashBitGoPsbt {
     /// [`Self::combine_ironwood_proof`]; it is never stored in the PSBT.
     ///
     /// Every real output's `out_ciphertext`, every real spend's randomized `rk`, and every
-    /// real spend's `spend_auth_sig` must be installed first. Signing freezes the bundle, so
-    /// the proof is always made over the final action data.
+    /// real spend's `spend_auth_sig` must be installed first. Signing freezes the action data,
+    /// so the proof is always made over the final action data; the anchor is not action data
+    /// and can still be refreshed ([`Self::update_anchor_and_witnesses`]) — request the proof
+    /// after the last refresh.
     ///
     /// The PSBT never stores `alpha` (with `rk` it would reveal the wallet's `ak`), so the
     /// caller supplies exactly one `(action_index, alpha)` per real spend: each index must
@@ -607,6 +609,98 @@ impl ZcashBitGoPsbt {
         }
 
         let patched = crate::zcash::ironwood_pczt::serialize_pczt(&pczt)?;
+        super::propkv::set_ironwood_pczt(&mut self.psbt, patched);
+        Ok(())
+    }
+
+    /// Refresh the bundle's anchor and every real spend's Merkle witness — the re-witness
+    /// step a build whose approval sat too long runs before proving: the anchor is read once,
+    /// fresh witnesses are fetched for every spent note, and both land in one call. Allowed
+    /// before *and after* signing: the v6 sighash does not commit the anchor (it sits in the
+    /// authorizing digest, bound by the proof), so the spend-auth and transparent signatures
+    /// stay valid across a refresh, and the binding signature is only made at
+    /// [`Self::combine_ironwood_proof`]. A refresh does invalidate any proof request already
+    /// handed out — the proof must be requested ([`Self::proof_request`]) after the last
+    /// refresh, or the combined transaction carries a proof over the old anchor.
+    ///
+    /// `anchor` is the new note-commitment-tree root (32 bytes); `entries` carries exactly
+    /// one `(action_index, witness)` per real spend — each index must exist
+    /// ([`IronwoodPsbtError::UnknownAction`]), name a real spend
+    /// ([`IronwoodPsbtError::DummyAction`]) and appear once
+    /// ([`IronwoodPsbtError::DuplicateAction`]), and every real spend must be covered
+    /// ([`IronwoodPsbtError::WitnessMissing`]: the anchor is bundle-level, so a spend left
+    /// on its old witness would make the bundle internally inconsistent). Every supplied
+    /// witness is validated against the *new* anchor over its spend's own note commitment —
+    /// a stale witness for the old anchor is rejected
+    /// ([`IronwoodBuildError::WitnessAnchorMismatch`] under [`IronwoodPsbtError::Build`]) —
+    /// so the call can never leave the bundle anchoring nothing. **Atomic** — every entry is
+    /// validated before anything is written, so one bad entry stores nothing. Dummy spends
+    /// keep their builder-fabricated witnesses: the circuit checks the anchor only for real
+    /// spends, so dummies need no re-witnessing.
+    ///
+    /// Only spend bundles take an anchor refresh ([`IronwoodPsbtError::NotSpendBundle`]),
+    /// and the batch must not be empty ([`IronwoodPsbtError::NothingPending`]).
+    ///
+    /// [`IronwoodBuildError::WitnessAnchorMismatch`]:
+    /// crate::zcash::ironwood_build::IronwoodBuildError::WitnessAnchorMismatch
+    pub fn update_anchor_and_witnesses(
+        &mut self,
+        anchor: &crate::zcash::ironwood_build::AnchorBytes,
+        entries: &[(usize, crate::zcash::ironwood_build::IronwoodWitness)],
+    ) -> Result<(), IronwoodPsbtError> {
+        use crate::zcash::ironwood_build::build_ironwood_witness;
+
+        let (bytes, pczt) = self.stored_ironwood_pczt()?;
+        if !Self::bundle_has_real_spends(&pczt) {
+            return Err(IronwoodPsbtError::NotSpendBundle);
+        }
+        if entries.is_empty() {
+            return Err(IronwoodPsbtError::NothingPending);
+        }
+        Self::require_distinct_actions(entries.iter().map(|&(action_index, _)| action_index))?;
+        let missing: Vec<usize> = pczt
+            .actions()
+            .iter()
+            .enumerate()
+            .filter(|&(_, action)| action.spend().dummy_sk().is_none())
+            .map(|(action_index, _)| action_index)
+            .filter(|action_index| !entries.iter().any(|&(index, _)| index == *action_index))
+            .collect();
+        if !missing.is_empty() {
+            return Err(IronwoodPsbtError::WitnessMissing {
+                action_indices: missing,
+            });
+        }
+        // The pre-update bundle must verify: the refresh is written only over a consistent
+        // bundle, so a tampered stored PCZT fails here instead of being re-anchored. The
+        // verified report carries each real spend's recomputed note commitment — the leaf
+        // its new witness must anchor; an entry naming no verified spend names an
+        // out-of-range action ([`IronwoodPsbtError::UnknownAction`]) or a dummy one
+        // ([`IronwoodPsbtError::DummyAction`]).
+        let report = self
+            .keyless_verify(&pczt)
+            .map_err(IronwoodPsbtError::Verify)?;
+        for &(action_index, witness) in entries {
+            let cmx = report
+                .spends
+                .iter()
+                .find(|spend| spend.action_index == action_index)
+                .map(|spend| spend.cmx)
+                .ok_or_else(|| {
+                    if action_index < pczt.actions().len() {
+                        IronwoodPsbtError::DummyAction
+                    } else {
+                        IronwoodPsbtError::UnknownAction
+                    }
+                })?;
+            build_ironwood_witness(&cmx, witness.position, &witness.auth_path, anchor)
+                .map_err(IronwoodPsbtError::Build)?;
+        }
+
+        // Validate-then-write: the PSBT is replaced only on full success.
+        let patched =
+            crate::zcash::ironwood_pczt::with_anchor_and_witnesses(&bytes, *anchor, entries)
+                .map_err(IronwoodPsbtError::Pczt)?;
         super::propkv::set_ironwood_pczt(&mut self.psbt, patched);
         Ok(())
     }

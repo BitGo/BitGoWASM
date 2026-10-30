@@ -12,8 +12,10 @@ use crate::fixed_script_wallet::bitgo_psbt::zcash::ironwood_spend::{
 use crate::fixed_script_wallet::bitgo_psbt::BitGoPsbt;
 use crate::fixed_script_wallet::script_id::ScriptId;
 use crate::networks::Network;
+use crate::zcash::ironwood_build::test_util::refreshed_two_leaf_tree;
 use crate::zcash::ironwood_build::{
-    compute_out_ciphertext, IronwoodActionMap, IronwoodVerifyCheck, IronwoodVerifyError,
+    compute_out_ciphertext, test_field_bytes, IronwoodActionMap, IronwoodBuildError,
+    IronwoodVerifyCheck, IronwoodVerifyError, IronwoodWitness,
 };
 use crate::zcash::ironwood_construct::test_util::keyless_fixture;
 #[cfg(feature = "orchard-proving")]
@@ -1413,6 +1415,289 @@ fn add_out_ciphertexts_rejects_after_a_transparent_signature() {
     assert!(matches!(error, IronwoodPsbtError::AlreadySigned));
 }
 
+// ---- The anchor refresh (`update_anchor_and_witnesses`) ----
+
+/// Fresh witnesses for the spent notes under an extended tree: the same leaves (same
+/// commitments, same positions) re-witnessed to a new root, as an anchor refresh delivers.
+/// Tree slots beyond `cmxs` are filled with arbitrary canonical commitments — the tree only
+/// needs to contain the spent leaves.
+fn refreshed_anchor_and_witnesses(
+    cmxs: &[&[u8; 32]],
+    map: &IronwoodActionMap,
+) -> ([u8; 32], Vec<(usize, IronwoodWitness)>) {
+    assert!(
+        (1..=2).contains(&cmxs.len()),
+        "the refreshed fixture tree holds one or two spent leaves"
+    );
+    let filler = test_field_bytes(999);
+    let first = *cmxs[0];
+    let second = cmxs.get(1).copied().unwrap_or(&filler);
+    let (anchor, witnesses) = refreshed_two_leaf_tree(&[first, *second], &test_field_bytes(202));
+    let entries = witnesses
+        .iter()
+        .take(cmxs.len())
+        .enumerate()
+        .map(|(spend_index, witness)| (map.spend_action_index(spend_index).unwrap(), *witness))
+        .collect();
+    (anchor, entries)
+}
+
+/// The anchor refresh: re-point the bundle to a fresh anchor with fresh witnesses — the step
+/// a build whose approval sat too long runs before signing. The refreshed bundle verifies
+/// under the new root, and the rest of the lifecycle (signatures, extraction) proceeds over
+/// it, anchoring the broadcast transaction to the new root.
+#[test]
+fn update_anchor_and_witnesses_repoints_the_bundle_to_a_fresh_anchor() {
+    let seed = "ironwood_v6_keyless_anchor_refresh";
+    let (specs, old_anchor, _fvk, _ak) = keyless_fixture();
+    let (mut z, map, ak, fvk, ask) = keyless_transfer_psbt(seed);
+
+    // Ciphertexts and randomizers land before the refresh; neither freezes the bundle.
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let triples = install_randomizer_triples(&mut z, &map.actions, &ask, &ak);
+    assert_eq!(
+        z.verify_shielded_bundle(None, &[]).unwrap().anchor,
+        old_anchor,
+        "the bundle anchors to the build-time root before the refresh"
+    );
+    let sighash_before = z.spend_sighash().unwrap();
+
+    let (new_anchor, entries) =
+        refreshed_anchor_and_witnesses(&[&specs[0].cmx, &specs[1].cmx], &map.actions);
+    z.update_anchor_and_witnesses(&new_anchor, &entries)
+        .unwrap();
+
+    // The ZIP-244 digest covers action data only: the anchor is excluded (it is the proof,
+    // not the sighash, that commits it), so the refresh leaves the digest untouched.
+    assert_eq!(
+        z.spend_sighash().unwrap(),
+        sighash_before,
+        "the anchor must not affect the ZIP-244 digest"
+    );
+
+    // The refresh survives the PSBT wire, and the verifier accepts the refreshed bundle with
+    // the caller's randomizers.
+    let bytes = z.serialize_v6();
+    let mut z = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap();
+    let report = z.verify_shielded_bundle(Some(&ak), &triples).unwrap();
+    assert_eq!(report.anchor, new_anchor);
+    assert_eq!(z.spend_sighash().unwrap(), sighash_before);
+
+    // Signatures over the post-refresh digest verify against the installed `rk`s, and the
+    // broadcast transaction anchors to the refreshed root.
+    let pairs: Vec<(usize, [u8; 32])> = triples
+        .iter()
+        .map(|&(action_index, alpha, _)| (action_index, alpha))
+        .collect();
+    install_spend_signatures(&mut z, &pairs, &ask);
+    let raw = z
+        .combine_ironwood_proof(vec![0u8; Proof::expected_proof_size(2)], OsRng)
+        .unwrap();
+    let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+    assert_eq!(
+        tx.ironwood_bundle.as_ref().unwrap().anchor,
+        new_anchor,
+        "the broadcast transaction anchors to the refreshed root"
+    );
+}
+
+/// A stale witness — one still anchoring the old root — is rejected against the new anchor,
+/// and a rejected batch stores nothing. Re-delivering the current anchor with the current
+/// witnesses is an accepted no-op.
+#[test]
+fn update_anchor_and_witnesses_rejects_a_stale_witness_atomically() {
+    let seed = "ironwood_v6_keyless_anchor_stale";
+    let (specs, old_anchor, _fvk, _ak) = keyless_fixture();
+    let (mut z, map, ak, fvk, _ask) = keyless_transfer_psbt(seed);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let before = z.raw_ironwood_pczt_bytes().unwrap();
+
+    let (new_anchor, _entries) =
+        refreshed_anchor_and_witnesses(&[&specs[0].cmx, &specs[1].cmx], &map.actions);
+    let stale: Vec<(usize, IronwoodWitness)> = map
+        .actions
+        .spend_action_indices()
+        .iter()
+        .zip(specs.iter())
+        .map(|(&action_index, spec)| (action_index, spec.witness))
+        .collect();
+
+    // The old witnesses do not recompute to the new anchor, and nothing is written.
+    let error = z
+        .update_anchor_and_witnesses(&new_anchor, &stale)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::Build(IronwoodBuildError::WitnessAnchorMismatch)
+    ));
+    assert_eq!(
+        z.raw_ironwood_pczt_bytes().unwrap(),
+        before,
+        "the stale batch stored nothing"
+    );
+
+    // The same anchor with the same witnesses is a no-op rewrite.
+    z.update_anchor_and_witnesses(&old_anchor, &stale).unwrap();
+    assert_eq!(z.raw_ironwood_pczt_bytes().unwrap(), before);
+    assert_eq!(
+        z.verify_shielded_bundle(Some(&ak), &[]).unwrap().anchor,
+        old_anchor
+    );
+
+    // One good entry plus one stale entry rejects the whole batch.
+    let (good_anchor, good_entries) =
+        refreshed_anchor_and_witnesses(&[&specs[0].cmx, &specs[1].cmx], &map.actions);
+    let mixed = vec![good_entries[0], stale[1]];
+    let error = z
+        .update_anchor_and_witnesses(&good_anchor, &mixed)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::Build(IronwoodBuildError::WitnessAnchorMismatch)
+    ));
+    assert_eq!(z.raw_ironwood_pczt_bytes().unwrap(), before);
+}
+
+/// The batch shape: exactly one entry per real spend, no repeats, no dummies, no empty
+/// batch — and a non-canonical anchor is rejected before anything is written.
+#[test]
+fn update_anchor_and_witnesses_rejects_bad_batches_atomically() {
+    let seed = "ironwood_v6_keyless_anchor_batch";
+    let (specs, _old_anchor, _fvk, _ak) = keyless_fixture();
+    let (mut z, map, _ak2, fvk, _ask2) = keyless_transfer_psbt(seed);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let (new_anchor, entries) =
+        refreshed_anchor_and_witnesses(&[&specs[0].cmx, &specs[1].cmx], &map.actions);
+    let before = z.raw_ironwood_pczt_bytes().unwrap();
+
+    // An empty batch.
+    let error = z.update_anchor_and_witnesses(&new_anchor, &[]).unwrap_err();
+    assert!(matches!(error, IronwoodPsbtError::NothingPending));
+
+    // A repeated action index.
+    let duplicate = vec![entries[0], entries[0]];
+    let error = z
+        .update_anchor_and_witnesses(&new_anchor, &duplicate)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::DuplicateAction { action_index } if action_index == entries[0].0
+    ));
+
+    // A batch covering only one of the two real spends: the anchor is bundle-level, so the
+    // uncovered spend would be left anchoring the old root.
+    let partial = vec![entries[0]];
+    let error = z
+        .update_anchor_and_witnesses(&new_anchor, &partial)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::WitnessMissing { action_indices }
+            if action_indices == vec![entries[1].0]
+    ));
+
+    // Every real spend covered, plus one out-of-range index.
+    let mut unknown = entries.clone();
+    unknown.push((usize::MAX, entries[0].1));
+    let error = z
+        .update_anchor_and_witnesses(&new_anchor, &unknown)
+        .unwrap_err();
+    assert!(matches!(error, IronwoodPsbtError::UnknownAction));
+
+    // A non-canonical anchor fails the witness validation before anything is written.
+    let error = z
+        .update_anchor_and_witnesses(&[0xff; 32], &entries)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::Build(IronwoodBuildError::BadAnchor)
+    ));
+    assert_eq!(
+        z.raw_ironwood_pczt_bytes().unwrap(),
+        before,
+        "no rejected batch stored anything"
+    );
+}
+
+/// Dummy spends take no witness — the circuit checks the anchor only for real spends — a
+/// shielding bundle takes no refresh at all, and neither does a PSBT without a PCZT.
+#[test]
+fn update_anchor_and_witnesses_rejects_a_dummy_a_shield_and_an_empty_psbt() {
+    let seed = "ironwood_v6_keyless_anchor_dummy";
+    let (specs, _old_anchor, _fvk, _ak) = keyless_fixture();
+    let (mut z, map, _ak2, fvk, _ask2) = keyless_surplus_psbt(seed);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let (new_anchor, entries) = refreshed_anchor_and_witnesses(&[&specs[0].cmx], &map.actions);
+    let witness = specs[0].witness;
+    // The surplus shape's second action is a dummy spend.
+    let action_count = z.ironwood_pczt().unwrap().actions().len();
+    let real = map.actions.spend_action_indices();
+    let dummy_index = (0..action_count).find(|i| !real.contains(i)).unwrap();
+    let mut batch = entries.clone();
+    batch.push((dummy_index, entries[0].1));
+    let error = z
+        .update_anchor_and_witnesses(&new_anchor, &batch)
+        .unwrap_err();
+    assert!(matches!(error, IronwoodPsbtError::DummyAction));
+
+    // A shielding bundle (dummy spends only) takes no anchor refresh.
+    let mut shield = build_shield_psbt("ironwood_v6_keyless_anchor_shield");
+    let error = shield
+        .update_anchor_and_witnesses(&new_anchor, &[(0, witness)])
+        .unwrap_err();
+    assert!(matches!(error, IronwoodPsbtError::NotSpendBundle));
+
+    // A PSBT without a PCZT has nothing to refresh.
+    let error = empty_v6_psbt("ironwood_v6_keyless_anchor_empty")
+        .update_anchor_and_witnesses(&new_anchor, &[(0, witness)])
+        .unwrap_err();
+    assert!(matches!(error, IronwoodPsbtError::NotSpendBundle));
+}
+
+/// Not frozen by signing: the v6 sighash does not commit the anchor, so a bundle refreshed
+/// after its spend-auth signatures keeps them valid — the proof request is served, and the
+/// combined transaction (which re-verifies every spend-auth signature against the sighash)
+/// anchors to the refreshed root without a re-sign.
+#[test]
+fn update_anchor_and_witnesses_is_allowed_after_spend_signatures() {
+    let seed = "ironwood_v6_keyless_anchor_spend_sig";
+    let (specs, old_anchor, _fvk, _ak) = keyless_fixture();
+    let (mut z, map, _ak2, fvk, ask) = keyless_transfer_psbt(seed);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let pairs = install_randomizers(&mut z, &map.actions, &ask);
+    install_spend_signatures(&mut z, &pairs, &ask);
+    let sighash = z.spend_sighash().unwrap();
+    assert_eq!(
+        z.verify_shielded_bundle(None, &[]).unwrap().anchor,
+        old_anchor
+    );
+
+    let (new_anchor, entries) =
+        refreshed_anchor_and_witnesses(&[&specs[0].cmx, &specs[1].cmx], &map.actions);
+    z.update_anchor_and_witnesses(&new_anchor, &entries)
+        .unwrap();
+
+    // The signatures are over a digest the refresh does not touch.
+    assert_eq!(z.spend_sighash().unwrap(), sighash);
+    assert_eq!(
+        z.verify_shielded_bundle(None, &[]).unwrap().anchor,
+        new_anchor
+    );
+    let request = z.proof_request(&pairs).unwrap();
+    let requested = crate::zcash::ironwood_pczt::deserialize_pczt(&request).unwrap();
+    assert_eq!(
+        requested.anchor().to_bytes(),
+        new_anchor,
+        "the proof request is over the refreshed anchor"
+    );
+
+    let raw = z
+        .combine_ironwood_proof(vec![0u8; Proof::expected_proof_size(2)], OsRng)
+        .unwrap();
+    let tx = crate::zcash::v6::decode_v6_transaction(&raw).unwrap();
+    assert_eq!(tx.ironwood_bundle.as_ref().unwrap().anchor, new_anchor);
+}
+
 /// The proof request refuses a spend bundle until its ciphertexts, then its randomizers,
 /// then its spend signatures are installed; a shielding bundle is served as-is.
 #[test]
@@ -1859,6 +2144,16 @@ fn spend_fixture_json(
         Err(error) => panic!("unexpected out-ciphertext request error: {error}"),
     };
 
+    // The anchor refresh: the build's approval is assumed to have sat long enough that the
+    // anchor moved, so the refresh lands after the ciphertexts and before the signing
+    // rounds. The same leaves (same commitments, same positions) re-witnessed to a
+    // fresh root; the digest, signatures, proof and txid below are all over the refreshed
+    // bundle, and the TS lifecycle replays `updateAnchorAndWitnesses` at this exact point.
+    let cmxs: Vec<&[u8; 32]> = specs.iter().map(|spec| &spec.cmx).collect();
+    let (refresh_anchor, refresh_entries) = refreshed_anchor_and_witnesses(&cmxs, &map.actions);
+    z.update_anchor_and_witnesses(&refresh_anchor, &refresh_entries)
+        .unwrap();
+
     // The FROST stand-in: one (alpha, rk = ak.randomize(alpha)) pair per real spend. Only
     // `rk` is stored; the alphas ride along out of band for the proof request.
     let randomizers: Vec<(usize, [u8; 32], [u8; 32])> = map
@@ -1945,6 +2240,21 @@ fn spend_fixture_json(
                 "actionIndex": action_index,
                 "outCiphertext": to_hex(&out_ciphertext),
             })).collect::<Vec<_>>(),
+        "refresh": {
+            "anchor": to_hex(&refresh_anchor),
+            "witnesses": refresh_entries
+                .iter()
+                .zip(specs.iter())
+                .map(|((action_index, witness), spec)| {
+                    serde_json::json!({
+                        "actionIndex": *action_index,
+                        "cmx": to_hex(&spec.cmx),
+                        "position": witness.position,
+                        "authPath": witness.auth_path.iter().map(|h| to_hex(h)).collect::<Vec<_>>(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        },
         "randomizers": randomizers.iter().map(|&(action_index, alpha, rk)|
             serde_json::json!({
                 "actionIndex": action_index,

@@ -21,6 +21,7 @@ import {
   type ZcashShieldedSpend,
   type ZcashShieldedSpendRequest,
 } from "./ZcashIronwoodTypes.js";
+import { type ZcashIronwoodWitness } from "./ZcashIronwoodWitness.js";
 import { Zip317Dimensions } from "./Zip317Dimensions.js";
 
 /**
@@ -160,7 +161,10 @@ type IronwoodParsedBase = ParsedTransaction<ZcashIronwoodParsedOutput, ZcashPars
  *   FROST round
  *   ({@link addSpendRandomizers} → {@link spendSighash} → FROST →
  *   {@link addSpendSignatures}), and the proof round ({@link getProofRequest} → prover →
- *   {@link combineProof}) follow, in that order. Before signing, the client checks the bundle
+ *   {@link combineProof}) follow, in that order, with the anchor refresh
+ *   ({@link updateAnchorAndWitnesses}) allowed at any point before the proof request — a
+ *   build whose approval sat long enough re-witnesses every spend under a fresh anchor
+ *   without re-signing. Before signing, the client checks the bundle
  *   against its own spend-validating key and randomizers with {@link verifyShieldedBundle}.
  *
  * For custodial MPC shielded wallets — no fixed-script xpub triple at all — the constructor
@@ -184,7 +188,7 @@ type IronwoodParsedBase = ParsedTransaction<ZcashIronwoodParsedOutput, ZcashPars
  * - **Randomizers next** — every real spend's randomized `rk` before any sighash or
  *   signature (`RandomizerPending`);
  * - **Frozen once signed** — ciphertexts and randomizers rejected after any signature
- *   (`AlreadySigned`);
+ *   (`AlreadySigned`); the anchor is not sighash-committed, so its refresh stays open;
  * - **Signed before proven** — the proof is requested only once every real spend is signed
  *   (`SpendSignaturePending`).
  *
@@ -604,6 +608,41 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
   /** Single-output counterpart to {@link addOutCiphertexts}. */
   addOutCiphertext(actionIndex: number, outCiphertext: Uint8Array): void {
     this.addOutCiphertexts([{ actionIndex, outCiphertext }]);
+  }
+
+  /**
+   * Refresh the bundle's anchor and every real spend's Merkle witness — the re-witness step a
+   * build whose approval sat too long runs before proving: the anchor is read once, fresh
+   * witnesses are built for every spent note ({@link ZcashIronwoodWitness.build} against the
+   * new anchor), and both land in one call. Allowed before **and after** signing: the v6
+   * sighash does not commit the anchor (it sits in the authorizing digest, bound by the
+   * proof), so the spend-auth signatures stay valid and no re-sign is needed. A refresh does
+   * invalidate any proof request already handed out — call {@link getProofRequest} after the
+   * last refresh, or {@link combineProof} gets a proof over the old anchor.
+   *
+   * `entries` carries exactly one `{ actionIndex, witness }` per real spend
+   * (`IronwoodPsbtError.WitnessMissing` otherwise — the anchor is bundle-level, so a spend
+   * left on its old witness would make the bundle internally inconsistent). Every witness is
+   * re-validated against the new anchor over the spend's own note commitment: a stale
+   * witness for the old anchor throws (`IronwoodBuildError.WitnessAnchorMismatch`), and
+   * nothing is written unless every entry validates (**atomic** — one bad entry stores
+   * nothing).
+   *
+   * @param anchor - the new Ironwood note-commitment-tree root (32 bytes)
+   * @param entries - one `{ actionIndex, witness }` per real spend; the action indices are
+   *   the `spendActionIndices` {@link addShieldedSpends} returned
+   */
+  updateAnchorAndWitnesses(
+    anchor: Uint8Array,
+    entries: Array<{ actionIndex: number; witness: ZcashIronwoodWitness }>,
+  ): void {
+    this.wasm.update_ironwood_anchor_and_witnesses(
+      anchor,
+      entries.map((entry) => ({
+        actionIndex: entry.actionIndex,
+        witness: { position: entry.witness.position, authPath: entry.witness.authPath },
+      })),
+    );
   }
 
   /**
