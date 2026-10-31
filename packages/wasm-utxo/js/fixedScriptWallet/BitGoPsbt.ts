@@ -40,7 +40,11 @@ export type ParsedInput = {
   scriptId: ScriptId | null;
   scriptType: InputScriptType;
   sequence: number;
-  /** Full BIP32 derivation path from the wallet xpub (e.g. "0/1"). Null for replay-protection inputs. */
+  /**
+   * Full BIP32 derivation path recorded in the PSBT, from the wallet root key: the prefix followed
+   * by `[chain, index]` (e.g. "0/0/20/5" for legacy, "44/0/<h1>/<h2>/20/5" for BIP44-style).
+   * The prefix is everything except the last two components. Null for replay-protection inputs.
+   */
   derivationPath: string | null;
 };
 
@@ -51,7 +55,11 @@ export type ParsedOutput = {
   /** Set only when the derivation path is chain-standard (chain code encodes script type per BitGo convention). */
   scriptId: ScriptId | null;
   paygo: boolean;
-  /** Full BIP32 derivation path from the wallet xpub (e.g. "0/1"). Null for external outputs. */
+  /**
+   * Full BIP32 derivation path recorded in the PSBT, from the wallet root key: the prefix followed
+   * by `[chain, index]` (e.g. "0/0/20/5" for legacy, "44/0/<h1>/<h2>/20/5" for BIP44-style).
+   * The prefix is everything except the last two components. Null for external outputs.
+   */
   derivationPath: string | null;
 };
 
@@ -114,6 +122,14 @@ export type AddWalletInputOptions = {
   scriptId: ScriptId;
   /** Sign path - required for p2tr/p2trMusig2 (chains 30-41) */
   signPath?: SignPath;
+  /**
+   * The output script the input is expected to spend (e.g. the script of the unspent as indexed).
+   * If provided, it is compared with the script derived for `scriptId` from the wallet keys, and
+   * a difference throws a `WasmUtxoError` with code `AddWalletInputError.WalletInputScriptMismatch`
+   * (the PSBT is left unchanged). Catches wallet keys whose derivation prefix does not match the
+   * one the unspent was created under. If omitted, nothing is compared.
+   */
+  expectedScript?: Uint8Array;
 };
 
 export type AddWalletOutputOptions = {
@@ -493,6 +509,7 @@ export class BitGoPsbt<
       walletOptions.signPath?.cosigner,
       inputOptions.sequence,
       inputOptions.prevTx,
+      walletOptions.expectedScript,
     );
   }
 
@@ -513,6 +530,7 @@ export class BitGoPsbt<
       walletOptions.signPath?.cosigner,
       inputOptions.sequence,
       inputOptions.prevTx,
+      walletOptions.expectedScript,
     );
   }
 
@@ -1097,6 +1115,11 @@ export class BitGoPsbt<
  * keys are not available — for example, legacy cold wallets where the PSBT
  * was built with derived keys (from coldDerivationSeed) but the caller only
  * has root xpubs. Prefer passing wallet keys explicitly wherever possible.
+ *
+ * The PSBT's key origins are matched by fingerprint along their full recorded path, so legacy
+ * (`0/0`), BIP44-style (`44/<coinType>/<h1>/<h2>`) and mixed PSBTs are all resolved. The
+ * returned keys carry the derivation prefix recorded in the PSBT's wallet inputs; if the inputs
+ * record more than one prefix (or none), the default `0/0` prefix is used.
  *
  * @returns Sorted [user, backup, bitgo] RootWalletKeys
  */

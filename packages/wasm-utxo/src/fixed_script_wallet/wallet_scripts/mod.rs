@@ -16,9 +16,9 @@ pub use checksigverify::{
 pub use singlesig::{build_p2pk_script, parse_p2pk_script, ScriptP2shP2pk};
 
 use crate::address::networks::OutputScriptSupport;
-use crate::bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint};
+use crate::bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint, Xpub};
 use crate::bitcoin::secp256k1::PublicKey as Secp256k1PublicKey;
-use crate::bitcoin::{ScriptBuf, TapLeafHash, XOnlyPublicKey};
+use crate::bitcoin::{CompressedPublicKey, ScriptBuf, TapLeafHash, XOnlyPublicKey};
 use crate::error::WasmUtxoError;
 use crate::fixed_script_wallet::wallet_keys::{to_pub_triple, PubTriple, RootWalletKeys};
 use crate::Network;
@@ -214,22 +214,20 @@ impl OutputScriptType {
         }
     }
 
-    /// Try to find which script type the wallet uses for `output_script` at `path`.
+    /// Try to find which script type the wallet uses for `output_script`, given the three wallet
+    /// public keys `[user, backup, bitgo]` the script was derived from.
     /// Iterates all known script types; skips types unsupported by the network or
-    /// incompatible with the script shape, then checks by derivation.
+    /// incompatible with the script shape, then checks by building the script.
     /// Returns the first matching type, or `None` if none match.
+    ///
+    /// The keys are derived by the caller, along the derivation path recorded for the script
+    /// (see [`WalletOutputScript::from_psbt`]); this function is independent of any prefix.
     pub fn check(
-        wallet_keys: &RootWalletKeys,
+        pub_triple: &PubTriple,
         output_script: &ScriptBuf,
         has_witness_script: bool,
-        path: &DerivationPath,
         script_support: &OutputScriptSupport,
     ) -> Option<Self> {
-        let (chain, index) = path_chain_index(path)?;
-        let derived_keys = wallet_keys
-            .derive_path(&chain_index_path(chain, index))
-            .ok()?;
-        let pub_triple = to_pub_triple(&derived_keys);
         for &script_type in Self::all() {
             if !script_type.is_network_supported(script_support) {
                 continue;
@@ -237,7 +235,7 @@ impl OutputScriptType {
             if !script_type.is_script_compatible(output_script, has_witness_script) {
                 continue;
             }
-            if WalletScripts::new(&pub_triple, script_type, script_support)
+            if WalletScripts::new(pub_triple, script_type, script_support)
                 .ok()
                 .is_some_and(|s| s.output_script() == *output_script)
             {
@@ -263,16 +261,156 @@ pub(crate) fn path_chain_index(path: &DerivationPath) -> Option<(u32, u32)> {
     }
 }
 
+/// One key-origin record of a PSBT input or output: the root key it was derived from
+/// (identified by fingerprint), the full derivation path from that root key, and the public
+/// key the PSBT records at that path.
+#[derive(Debug, Clone, Copy)]
+struct KeyOrigin<'a> {
+    fingerprint: Fingerprint,
+    path: &'a DerivationPath,
+    key: OriginKey,
+}
+
+/// The public key of a [`KeyOrigin`] as recorded in the PSBT.
+#[derive(Debug, Clone, Copy)]
+enum OriginKey {
+    /// Full compressed key (`bip32_derivation`).
+    Full(Secp256k1PublicKey),
+    /// X-only key (`tap_key_origins`).
+    XOnly(XOnlyPublicKey),
+}
+
+impl OriginKey {
+    fn matches(&self, derived: &Secp256k1PublicKey) -> bool {
+        match self {
+            Self::Full(key) => key == derived,
+            Self::XOnly(key) => *key == derived.x_only_public_key().0,
+        }
+    }
+}
+
+fn collect_key_origins<'a>(
+    bip32_derivation: &'a BTreeMap<Secp256k1PublicKey, (Fingerprint, DerivationPath)>,
+    tap_key_origins: &'a BTreeMap<
+        XOnlyPublicKey,
+        (Vec<TapLeafHash>, (Fingerprint, DerivationPath)),
+    >,
+) -> Vec<KeyOrigin<'a>> {
+    let ecdsa = bip32_derivation
+        .iter()
+        .map(|(key, (fingerprint, path))| KeyOrigin {
+            fingerprint: *fingerprint,
+            path,
+            key: OriginKey::Full(*key),
+        });
+    let taproot = tap_key_origins
+        .iter()
+        .map(|(key, (_, (fingerprint, path)))| KeyOrigin {
+            fingerprint: *fingerprint,
+            path,
+            key: OriginKey::XOnly(*key),
+        });
+    ecdsa.chain(taproot).collect()
+}
+
+/// Derive the three wallet public keys `[user, backup, bitgo]` and the full derivation path
+/// they belong to from the key origins recorded in a PSBT input or output.
+///
+/// Origins are matched to the wallet's root keys by fingerprint, and each key is derived from its
+/// root key along the FULL recorded path (the path is not assumed to start with the prefix of
+/// `wallet_keys`, so legacy `0/0/c/i` and `44/ct/h1/h2/c/i` paths are both understood by the same
+/// `wallet_keys`).
+///
+/// Taproot and MuSig2 inputs only carry the origins of the signer and the cosigner. A root key
+/// without an origin is derived from the supplied root key along the path of the present
+/// origins, which must then agree on their full path. The caller compares the resulting script
+/// with the real one, which is what binds the derived keys to the PSBT.
+///
+/// Returns `Ok(None)` if no origin belongs to the wallet, if the present origins disagree on
+/// `(chain, index)`, or if a missing key cannot be derived. Returns `Err` if an origin carries the
+/// fingerprint of a wallet key and a derivable path, but records a different public key than that
+/// path derives (an inconsistent, i.e. malformed, key origin).
+fn derive_triple_from_origins(
+    wallet_keys: &RootWalletKeys,
+    origins: &[KeyOrigin<'_>],
+) -> Result<Option<(PubTriple, DerivationPath)>, String> {
+    let secp = wallet_keys.secp();
+
+    // Per root key: the derived key and the recorded path of its origin.
+    let mut found: [Option<(Xpub, &DerivationPath)>; 3] = [None, None, None];
+    for (slot, xpub) in found.iter_mut().zip(wallet_keys.xpubs.iter()) {
+        let fingerprint = xpub.fingerprint();
+        for origin in origins.iter().filter(|o| o.fingerprint == fingerprint) {
+            // A path with hardened components cannot be derived from an xpub: it does not
+            // describe a key of this wallet.
+            let Ok(derived) = xpub.derive_pub(secp, origin.path) else {
+                continue;
+            };
+            if !origin.key.matches(&derived.public_key) {
+                return Err(format!(
+                    "key origin {} (fingerprint {:?}) does not derive the recorded public key",
+                    origin.path, origin.fingerprint
+                ));
+            }
+            *slot = Some((derived, origin.path));
+            break;
+        }
+    }
+
+    let Some(reference_path) = found.iter().flatten().map(|(_, path)| *path).next() else {
+        return Ok(None);
+    };
+
+    // The (chain, index) tail must be the same for every present key.
+    let tail = path_chain_index(reference_path);
+    if tail.is_none()
+        || found
+            .iter()
+            .flatten()
+            .any(|(_, path)| path_chain_index(path) != tail)
+    {
+        return Ok(None);
+    }
+
+    // A key without origin is derived along the path of the others, which must be unambiguous.
+    let complete = found.iter().all(Option::is_some);
+    if !complete
+        && found
+            .iter()
+            .flatten()
+            .any(|(_, path)| *path != reference_path)
+    {
+        return Ok(None);
+    }
+
+    let resolve = |i: usize| -> Option<CompressedPublicKey> {
+        match &found[i] {
+            Some((derived, _)) => Some(derived.to_pub()),
+            None => wallet_keys.xpubs[i]
+                .derive_pub(secp, reference_path)
+                .ok()
+                .map(|derived| derived.to_pub()),
+        }
+    };
+    let (Some(user), Some(backup), Some(bitgo)) = (resolve(0), resolve(1), resolve(2)) else {
+        return Ok(None);
+    };
+
+    Ok(Some(([user, backup, bitgo], reference_path.clone())))
+}
+
 /// A wallet output script matched to a derivation path.
 #[derive(Debug, Clone)]
 pub struct WalletOutputScript {
     pub script_type: OutputScriptType,
-    /// The BIP32 derivation path; last two Normal components are (chain, index).
+    /// The full BIP32 derivation path from the wallet root keys, e.g. `0/0/20/5` (legacy) or
+    /// `44/0/<h1>/<h2>/20/5`; the last two Normal components are (chain, index).
     pub derivation_path: DerivationPath,
 }
 
 impl WalletOutputScript {
-    /// Try to match `output_script` at `path` against all script types supported by `network`.
+    /// Try to match `output_script` against all script types supported by `network`, with the
+    /// three keys derived from the root keys along the full `path`.
     /// Returns `None` if no script type produces a match.
     pub fn from(
         wallet_keys: &RootWalletKeys,
@@ -280,11 +418,19 @@ impl WalletOutputScript {
         path: DerivationPath,
         network: Network,
     ) -> Option<Self> {
+        path_chain_index(&path)?;
+        let secp = wallet_keys.secp();
+        let derive = |i: usize| {
+            wallet_keys.xpubs[i]
+                .derive_pub(secp, &path)
+                .ok()
+                .map(|derived| derived.to_pub())
+        };
+        let pub_triple = [derive(0)?, derive(1)?, derive(2)?];
         let script_type = OutputScriptType::check(
-            wallet_keys,
+            &pub_triple,
             output_script,
             false,
-            &path,
             &network.output_script_support(),
         )?;
         Some(Self {
@@ -295,8 +441,15 @@ impl WalletOutputScript {
 
     /// Match `output_script` against wallet keys using PSBT derivation metadata.
     ///
-    /// Returns `Ok(None)` if the derivation maps are empty or belong to a different wallet,
-    /// `Ok(Some(wos))` if the script matches, `Err` if keys are ours but no script type fits.
+    /// Classification follows the key origins recorded in the PSBT, not the derivation prefix of
+    /// `wallet_keys`: see [`derive_triple_from_origins`]. One `RootWalletKeys` therefore
+    /// recognises legacy (`0/0/c/i`), BIP44-style (`44/ct/h1/h2/c/i`) and mixed PSBTs.
+    ///
+    /// Returns `Ok(None)` if the derivation maps are empty, belong to a different wallet, or the
+    /// keys they describe do not produce `output_script`. Callers decide what a missing match
+    /// means: an output is then not a wallet output, an input is invalid.
+    /// Returns `Ok(Some(wos))` if the script matches, and `Err` if a key origin of this wallet is
+    /// inconsistent with the public key it records.
     pub fn from_psbt(
         wallet_keys: &RootWalletKeys,
         bip32_derivation: &BTreeMap<Secp256k1PublicKey, (Fingerprint, DerivationPath)>,
@@ -312,51 +465,22 @@ impl WalletOutputScript {
             return Ok(None);
         }
 
-        let belongs_to_wallet = if !bip32_derivation.is_empty() {
-            bip32_derivation.values().all(|(fp, _)| {
-                wallet_keys
-                    .xpubs
-                    .iter()
-                    .any(|xpub| xpub.fingerprint() == *fp)
-            })
-        } else {
-            tap_key_origins.values().all(|(_, (fp, _))| {
-                wallet_keys
-                    .xpubs
-                    .iter()
-                    .any(|xpub| xpub.fingerprint() == *fp)
-            })
+        let origins = collect_key_origins(bip32_derivation, tap_key_origins);
+        let Some((pub_triple, derivation_path)) =
+            derive_triple_from_origins(wallet_keys, &origins)?
+        else {
+            return Ok(None);
         };
 
-        if !belongs_to_wallet {
-            return Ok(None);
-        }
-
-        let path = if !bip32_derivation.is_empty() {
-            bip32_derivation.values().next().map(|(_, path)| path)
-        } else {
-            tap_key_origins.values().next().map(|(_, (_, path))| path)
-        }
-        .ok_or_else(|| "no derivation paths".to_string())?
-        .clone();
-
-        let script_type = OutputScriptType::check(
-            wallet_keys,
+        Ok(OutputScriptType::check(
+            &pub_triple,
             output_script,
             has_witness_script,
-            &path,
             &network.output_script_support(),
         )
-        .ok_or_else(|| {
-            format!(
-                "wallet keys match but no script type matches actual script {}",
-                output_script
-            )
-        })?;
-
-        Ok(Some(Self {
+        .map(|script_type| Self {
             script_type,
-            derivation_path: path,
+            derivation_path,
         }))
     }
 }

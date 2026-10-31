@@ -432,7 +432,63 @@ pub struct WalletInputOptions<'a> {
     pub sequence: Option<u32>,
     /// Previous transaction bytes; if provided, uses non_witness_utxo
     pub prev_tx: Option<&'a [u8]>,
+    /// The output script the caller expects the input to spend (e.g. the script of the unspent
+    /// as indexed). If provided, it is compared with the script derived for
+    /// `(chain, index)` from the wallet keys, and a difference fails with
+    /// [`AddWalletInputError::WalletInputScriptMismatch`] before the input is added. This catches
+    /// wallet keys whose derivation prefix does not match the one the unspent was created under.
+    /// If omitted, no comparison takes place.
+    pub expected_script: Option<&'a [u8]>,
 }
+
+/// Errors while adding a wallet input to a PSBT.
+#[derive(Debug, Clone, PartialEq, Eq, strum::IntoStaticStr)]
+pub enum AddWalletInputError {
+    /// The script derived for `(chain, index)` from the wallet keys differs from the script the
+    /// caller expected.
+    WalletInputScriptMismatch {
+        chain: u32,
+        index: u32,
+        expected: ScriptBuf,
+        actual: ScriptBuf,
+    },
+    /// Any other failure (invalid chain, derivation, missing sign path, PSBT insertion, ...).
+    Invalid(String),
+}
+
+impl std::fmt::Display for AddWalletInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WalletInputScriptMismatch {
+                chain,
+                index,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "wallet input script mismatch (chain {}, index {}): expected {}, derived {}",
+                chain,
+                index,
+                expected.to_hex_string(),
+                actual.to_hex_string()
+            ),
+            Self::Invalid(message) => write!(f, "{}", message),
+        }
+    }
+}
+
+impl std::error::Error for AddWalletInputError {}
+crate::impl_wasm_error_code!(AddWalletInputError);
+
+impl From<String> for AddWalletInputError {
+    fn from(message: String) -> Self {
+        Self::Invalid(message)
+    }
+}
+
+/// Why an input does not belong to the wallet keys it was parsed with.
+const NO_WALLET_MATCH_MESSAGE: &str =
+    "no key origin of the input derives its script from the wallet keys";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputScriptType {
@@ -492,7 +548,9 @@ pub struct ParsedInput {
     pub script_id: Option<ScriptId>,
     pub script_type: InputScriptType,
     pub sequence: u32,
-    /// Full BIP32 derivation path from the wallet xpub (e.g. `[chain, index]`).
+    /// Full BIP32 derivation path recorded in the PSBT, from the wallet root key: the prefix
+    /// followed by `[chain, index]` (e.g. `0/0/20/5` legacy, `44/0/<h1>/<h2>/20/5` BIP44-style).
+    /// The prefix is everything except the last two components.
     /// `None` for replay-protection inputs which have no wallet derivation.
     pub derivation_path: Option<DerivationPath>,
 }
@@ -525,9 +583,7 @@ impl ParsedInput {
             )
             .map_err(ParseInputError::WalletValidation)?
             .ok_or_else(|| {
-                ParseInputError::WalletValidation(
-                    "no derivation path matched wallet keys".to_string(),
-                )
+                ParseInputError::WalletValidation(NO_WALLET_MATCH_MESSAGE.to_string())
             })?;
 
             let script_id = wos.script_id();
@@ -870,7 +926,7 @@ pub fn validate_psbt_wallet_inputs(
             output_script,
             network,
         )
-        .and_then(|opt| opt.ok_or_else(|| "no derivation path matched wallet keys".to_string()))
+        .and_then(|opt| opt.ok_or_else(|| NO_WALLET_MATCH_MESSAGE.to_string()))
         .and_then(|wos| {
             if wos.chain_standard() {
                 Ok(())
