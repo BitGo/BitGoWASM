@@ -595,13 +595,21 @@ describe("ZcashIronwoodBitGoPsbt shielded spends", function () {
           // Ciphertexts first: the randomizer gate runs before the pair check.
           psbt.addOutCiphertexts(ciphertextEntries);
         }
-        // A perturbed rk no longer satisfies rk == ak.randomize(alpha).
+        // A valid key other than ak.randomize(alpha) — here ak itself — is a mismatched pair.
         const broken = randomizerEntries.map((entry, i) =>
-          i === 0 ? { ...entry, rk: entry.rk.map((b, j) => (j === 0 ? b ^ 1 : b)) } : entry,
+          i === 0 ? { ...entry, rk: ak } : entry,
         );
         assertErrorCode(
           () => psbt.addSpendRandomizers(broken, { spendValidatingKey: ak }),
           "IronwoodBuildError.RandomizerMismatch",
+        );
+        // An rk that is not a canonical point is malformed, not mismatched.
+        const malformed = randomizerEntries.map((entry, i) =>
+          i === 0 ? { ...entry, rk: new Uint8Array(32).fill(0xff) } : entry,
+        );
+        assertErrorCode(
+          () => psbt.addSpendRandomizers(malformed, { spendValidatingKey: ak }),
+          "IronwoodBuildError.BadRk",
         );
         // A perturbed alpha is rejected the same way: ak no longer randomizes under it to the
         // recorded rk.
@@ -626,6 +634,35 @@ describe("ZcashIronwoodBitGoPsbt shielded spends", function () {
         }
         unchecked.addSpendRandomizers(randomizerEntries);
         assert.deepStrictEqual(unchecked.shieldedStatus().pendingRandomizers, []);
+        // rk-only delivery: no alpha, so no pair check — same state as the unchecked install.
+        const rkOnly = freshPsbt(fixture);
+        if (ciphertextEntries.length > 0) {
+          rkOnly.addOutCiphertexts(ciphertextEntries);
+        }
+        const rkEntries = randomizerEntries.map(({ actionIndex, rk }) => ({ actionIndex, rk }));
+        const [firstRk, ...restRks] = rkEntries;
+        // With the wallet's ak, an rk left as ak itself is rejected; the identity and a
+        // short rk are rejected regardless. Each rejection is atomic.
+        assertErrorCode(
+          () =>
+            rkOnly.addSpendRks([...restRks, { ...firstRk, rk: ak }], { spendValidatingKey: ak }),
+          "IronwoodBuildError.UnrandomizedRk",
+        );
+        assertErrorCode(
+          () => rkOnly.addSpendRks([...restRks, { ...firstRk, rk: new Uint8Array(32) }]),
+          "IronwoodBuildError.BadRk",
+        );
+        assertErrorCode(
+          () => rkOnly.addSpendRks([{ ...firstRk, rk: firstRk.rk.subarray(0, 31) }]),
+          "IronwoodPsbtError.BadLength",
+        );
+        assert.strictEqual(
+          rkOnly.shieldedStatus().pendingRandomizers.length,
+          randomizerEntries.length,
+        );
+        rkOnly.addSpendRks(rkEntries, { spendValidatingKey: ak });
+        assert.deepStrictEqual(rkOnly.shieldedStatus().pendingRandomizers, []);
+        assert.deepStrictEqual(rkOnly.spendSighash(), unchecked.spendSighash());
       });
 
       it("rejects a signature that does not verify against the spend's rk", function () {

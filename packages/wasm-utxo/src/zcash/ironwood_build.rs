@@ -253,9 +253,9 @@ pub enum IronwoodBuildError {
     /// were fabricated with its `dummy_sk`, which the IO Finalizer signs with, so replacing them
     /// would break that signature.
     RandomizerOnDummySpend,
-    /// The randomizer pair would leave the spend's `rk` unrandomized: `alpha` is zero (so
-    /// `rk = ak.randomize(alpha)` is the wallet's own, linkable `ak`), or `rk` is
-    /// [`PLACEHOLDER_RK`].
+    /// The randomizer would leave the spend's `rk` unrandomized: `alpha` is zero (so
+    /// `rk = ak.randomize(alpha)` is the wallet's own, linkable `ak`), `rk` is the caller's
+    /// `ak` itself, or `rk` is [`PLACEHOLDER_RK`].
     UnrandomizedRk,
     /// The keyless spend constructor was called without any real spend:
     /// an output-only bundle is a *shielding* build — use [`construct_shield_pczt_multi`]
@@ -273,8 +273,11 @@ pub enum IronwoodBuildError {
     /// RedPallas verification key, so no randomizer pair can be checked against it.
     BadSpendValidatingKey,
     /// The randomizer pair is inconsistent with the caller's spend-validating key: `rk` is not
-    /// `ak.randomize(alpha)`, or `rk` is not a canonical verification key.
+    /// `ak.randomize(alpha)`.
     RandomizerMismatch,
+    /// A delivered `rk` is not a canonical, non-identity RedPallas verification key. The
+    /// identity encodes as all zeros and verifies a signature anyone can produce.
+    BadRk,
     /// A real spend's `rk` is still [`PLACEHOLDER_RK`]: the ZIP-244 digest commits `rk`, so no
     /// sighash computed before every randomizer is installed is final.
     RandomizersNotInstalled,
@@ -529,7 +532,7 @@ impl core::fmt::Display for IronwoodBuildError {
             Self::UnrandomizedRk => write!(
                 f,
                 "ironwood-build: the randomizer leaves the spend's rk unrandomized (alpha is \
-                 zero, or rk is the placeholder)"
+                 zero, or rk is the spend-validating key or the placeholder)"
             ),
             Self::NoSpends => write!(
                 f,
@@ -555,6 +558,10 @@ impl core::fmt::Display for IronwoodBuildError {
                 f,
                 "ironwood-build: the randomizer pair does not match the spend-validating key \
                  (rk must equal ak.randomize(alpha))"
+            ),
+            Self::BadRk => write!(
+                f,
+                "ironwood-build: rk is not a canonical, non-identity RedPallas verification key"
             ),
             Self::RandomizersNotInstalled => write!(
                 f,
@@ -1079,10 +1086,10 @@ pub fn verify_spend_pczt(bundle: &PcztBundle) -> Result<(), IronwoodBuildError> 
 /// reveal the wallet's `ak`) and is delivered to the prover out of band ([`with_spend_alphas`]).
 /// The bundle is replaced only on full success.
 ///
-/// `alpha` must be a canonical, non-zero scalar, and `rk` a canonical verification key other
-/// than [`PLACEHOLDER_RK`]. When the caller supplies the wallet's `ak`, the pair is checked
-/// (`rk == ak.randomize(alpha)`), so a randomizer for a foreign wallet fails here; without it
-/// the pair is checked by the client's key-free verifier and by the keyed prover.
+/// `alpha` must be a canonical, non-zero scalar, and `rk` a canonical, non-identity
+/// verification key other than [`PLACEHOLDER_RK`]. When the caller supplies the wallet's `ak`,
+/// the pair is checked (`rk == ak.randomize(alpha)`), so a randomizer for a foreign wallet
+/// fails here; without it the pair is checked only by the keyed prover.
 ///
 /// Rejected when any action in the bundle carries a spend-auth signature (the digest commits
 /// every action's `rk`, so installing any one invalidates them all) and when the target is a
@@ -1092,6 +1099,34 @@ pub fn set_spend_auth_randomizer(
     bundle: &mut PcztBundle,
     action_index: usize,
     alpha: &[u8; 32],
+    rk: &[u8; 32],
+    ak: Option<&VerificationKey<SpendAuth>>,
+) -> Result<(), IronwoodBuildError> {
+    install_spend_rk(bundle, action_index, Some(alpha), rk, ak)
+}
+
+/// [`set_spend_auth_randomizer`] without the `alpha`: install the signer's randomized `rk` on
+/// one real spend, for a signer that delivers only `rk`. Every check that does not need
+/// `alpha` still runs. Given the wallet's `ak`, an `rk` equal to `ak` (left unrandomized, so
+/// linkable) is rejected — the only `ak` check possible without `alpha`. That
+/// `rk == ak.randomize(alpha)` holds is checked only by the keyed prover, the one party that
+/// receives `alpha`.
+pub fn set_spend_rk(
+    bundle: &mut PcztBundle,
+    action_index: usize,
+    rk: &[u8; 32],
+    ak: Option<&VerificationKey<SpendAuth>>,
+) -> Result<(), IronwoodBuildError> {
+    install_spend_rk(bundle, action_index, None, rk, ak)
+}
+
+/// Shared body of [`set_spend_auth_randomizer`] and [`set_spend_rk`]. Given `ak`, the pair
+/// check runs when `alpha` is given, and the `rk != ak` check when it is not (with `alpha`,
+/// the non-zero `alpha` and the pair check already imply it).
+fn install_spend_rk(
+    bundle: &mut PcztBundle,
+    action_index: usize,
+    alpha: Option<&[u8; 32]>,
     rk: &[u8; 32],
     ak: Option<&VerificationKey<SpendAuth>>,
 ) -> Result<(), IronwoodBuildError> {
@@ -1115,16 +1150,29 @@ pub fn set_spend_auth_randomizer(
     if spend.dummy_sk().is_some() {
         return Err(IronwoodBuildError::RandomizerOnDummySpend);
     }
-    let alpha_scalar = parse_alpha(action_index, alpha)?;
+    let alpha_scalar = alpha
+        .map(|alpha| parse_alpha(action_index, alpha))
+        .transpose()?;
     if *rk == PLACEHOLDER_RK {
         return Err(IronwoodBuildError::UnrandomizedRk);
     }
-    let rk_key = VerificationKey::<SpendAuth>::try_from(*rk)
-        .map_err(|_| IronwoodBuildError::RandomizerMismatch)?;
-    if let Some(ak) = ak {
-        if ak.randomize(&alpha_scalar) != rk_key {
-            return Err(IronwoodBuildError::RandomizerMismatch);
+    if *rk == [0u8; 32] {
+        return Err(IronwoodBuildError::BadRk);
+    }
+    let rk_key =
+        VerificationKey::<SpendAuth>::try_from(*rk).map_err(|_| IronwoodBuildError::BadRk)?;
+    match (ak, alpha_scalar) {
+        (Some(ak), Some(alpha_scalar)) => {
+            if ak.randomize(&alpha_scalar) != rk_key {
+                return Err(IronwoodBuildError::RandomizerMismatch);
+            }
         }
+        (Some(ak), None) => {
+            if <[u8; 32]>::from(ak) == *rk {
+                return Err(IronwoodBuildError::UnrandomizedRk);
+            }
+        }
+        (None, _) => {}
     }
 
     let bytes = serialize_pczt(bundle).map_err(map)?;

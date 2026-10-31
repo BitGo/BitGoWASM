@@ -18,22 +18,21 @@ import {
 
 const hexOf = (bytes: Uint8Array): string => Buffer.from(bytes).toString("hex");
 
-/** The signer's randomizers, as the client received them. */
-function randomizerOptions(fixture: IronwoodSpendFixture): {
+/** The client's expectations: its own `ak` and the signer's randomized `rk`s — never an alpha. */
+function rkOptions(fixture: IronwoodSpendFixture): {
   spendValidatingKey: Uint8Array;
-  randomizers: Array<{ actionIndex: number; alpha: Uint8Array; rk: Uint8Array }>;
+  rks: Array<{ actionIndex: number; rk: Uint8Array }>;
 } {
   return {
     spendValidatingKey: hex(fixture.ak),
-    randomizers: fixture.randomizers.map((entry) => ({
+    rks: fixture.randomizers.map((entry) => ({
       actionIndex: entry.actionIndex,
-      alpha: hex(entry.alpha),
       rk: hex(entry.rk),
     })),
   };
 }
 
-/** Installs the ciphertexts (when the shape has shielded outputs), randomizers and signatures. */
+/** Installs the ciphertexts (when the shape has shielded outputs), `rk`s and signatures. */
 function psbtSigned(fixture: IronwoodSpendFixture): ZcashIronwoodBitGoPsbt {
   const psbt = freshPsbt(fixture);
   if (fixture.outCiphertexts.length > 0) {
@@ -44,8 +43,8 @@ function psbtSigned(fixture: IronwoodSpendFixture): ZcashIronwoodBitGoPsbt {
       })),
     );
   }
-  const { spendValidatingKey, randomizers } = randomizerOptions(fixture);
-  psbt.addSpendRandomizers(randomizers, { spendValidatingKey });
+  const { spendValidatingKey, rks } = rkOptions(fixture);
+  psbt.addSpendRks(rks, { spendValidatingKey });
   psbt.addSpendSignatures(
     fixture.signatures.map((entry) => ({
       actionIndex: entry.actionIndex,
@@ -105,9 +104,9 @@ describe("ZcashIronwoodBitGoPsbt.verifyShieldedBundle", function () {
 
       it("verifies the signed bundle and reports each spend's state", function () {
         const psbt = psbtSigned(fixture);
-        const { spendValidatingKey, randomizers } = randomizerOptions(fixture);
+        const { spendValidatingKey, rks } = rkOptions(fixture);
 
-        const report = psbt.verifyShieldedBundle({ spendValidatingKey, randomizers });
+        const report = psbt.verifyShieldedBundle({ spendValidatingKey, rks });
         const byAction = spendByAction(report);
         for (const entry of fixture.randomizers) {
           const spend = byAction.get(entry.actionIndex);
@@ -120,47 +119,50 @@ describe("ZcashIronwoodBitGoPsbt.verifyShieldedBundle", function () {
         assert.strictEqual(hexOf(psbt.spendSighash()), fixture.sighash);
       });
 
-      it("rejects a foreign spend-validating key and mismatched randomizers", function () {
+      it("rejects an identity spend-validating key and mismatched rks", function () {
         const psbt = psbtSigned(fixture);
-        const { spendValidatingKey, randomizers } = randomizerOptions(fixture);
+        const { spendValidatingKey, rks } = rkOptions(fixture);
 
-        // A foreign key: its randomize(α) is not the installed rk.
-        const foreignKey = new Uint8Array(spendValidatingKey);
-        foreignKey[0] ^= 1;
+        // The ak is optional: without it every other check still runs and passes, and the
+        // ak alone accepts the randomized rks (without alpha nothing more ties them to ak).
+        psbt.verifyShieldedBundle({ rks });
+        psbt.verifyShieldedBundle({ spendValidatingKey });
+
+        // The identity key (all zeros) is rejected before any rk is looked at.
         assertErrorCode(
-          () => psbt.verifyShieldedBundle({ spendValidatingKey: foreignKey, randomizers }),
+          () => psbt.verifyShieldedBundle({ spendValidatingKey: new Uint8Array(32), rks }),
           "IronwoodVerifyError.Rk",
         );
 
-        // A randomizer whose rk does not match the installed one.
-        const [first, ...rest] = randomizers;
+        // An expected rk that does not match the installed one.
+        const [first, ...rest] = rks;
         const broken = new Uint8Array(first.rk);
         broken[0] ^= 1;
         assertErrorCode(
           () =>
             psbt.verifyShieldedBundle({
               spendValidatingKey,
-              randomizers: [{ ...first, rk: broken }, ...rest],
+              rks: [{ ...first, rk: broken }, ...rest],
             }),
           "IronwoodVerifyError.Rk",
         );
 
-        // A randomizer aimed at an action without a real spend.
+        // An expected rk aimed at an action without a real spend.
         assertErrorCode(
           () =>
             psbt.verifyShieldedBundle({
               spendValidatingKey,
-              randomizers: [...randomizers, { actionIndex: 99, alpha: first.alpha, rk: first.rk }],
+              rks: [...rks, { actionIndex: 99, rk: first.rk }],
             }),
           "IronwoodVerifyError.Rk",
         );
       });
 
-      it("rejects randomizer expectations while the spends are still placeholders", function () {
+      it("rejects rk expectations while the spends are still placeholders", function () {
         // Nothing installed yet: expectations aimed at placeholder spends are mismatches.
-        const { spendValidatingKey, randomizers } = randomizerOptions(fixture);
+        const { spendValidatingKey, rks } = rkOptions(fixture);
         assertErrorCode(
-          () => freshPsbt(fixture).verifyShieldedBundle({ spendValidatingKey, randomizers }),
+          () => freshPsbt(fixture).verifyShieldedBundle({ spendValidatingKey, rks }),
           "IronwoodVerifyError.Rk",
         );
       });

@@ -157,8 +157,8 @@ fn install_randomizers(
         .collect()
 }
 
-/// [`install_randomizers`], returning the full `(action, alpha, rk)` triples — what the
-/// signer hands the client for its key-free verification.
+/// [`install_randomizers`], returning the full `(action, alpha, rk)` triples: the alphas for
+/// the prover, the `rk`s ([`rks_of`]) for the client's key-free verification.
 fn install_randomizer_triples(
     z: &mut ZcashBitGoPsbt,
     map: &IronwoodActionMap,
@@ -173,6 +173,14 @@ fn install_randomizer_triples(
     }
     z.add_spend_randomizers(&triples, Some(ak)).unwrap();
     triples
+}
+
+/// The `(action, rk)` pairs of `triples` — what the client receives; it never holds an `alpha`.
+fn rks_of(triples: &[(usize, [u8; 32], [u8; 32])]) -> Vec<(usize, [u8; 32])> {
+    triples
+        .iter()
+        .map(|&(action_index, _, rk)| (action_index, rk))
+        .collect()
 }
 
 /// The PSBT never carries the wallet's `ak` or a spend's `alpha`: neither appears anywhere in
@@ -1479,7 +1487,9 @@ fn update_anchor_and_witnesses_repoints_the_bundle_to_a_fresh_anchor() {
     // the caller's randomizers.
     let bytes = z.serialize_v6();
     let mut z = ZcashBitGoPsbt::deserialize_v6(&bytes, Network::ZcashTestnet).unwrap();
-    let report = z.verify_shielded_bundle(Some(&ak), &triples).unwrap();
+    let report = z
+        .verify_shielded_bundle(Some(&ak), &rks_of(&triples))
+        .unwrap();
     assert_eq!(report.anchor, new_anchor);
     assert_eq!(z.spend_sighash().unwrap(), sighash_before);
 
@@ -1857,7 +1867,7 @@ fn sign_then_prove_lifecycle_combines_the_requested_proof() {
 
 /// `add_spend_randomizers` stores only `rk`, is atomic, and checks the pair only against a
 /// caller-supplied `ak`: without one a mismatched pair is installed, and the client's key-free
-/// verifier (its own `ak` + FROST randomizers) catches it.
+/// verifier (its expected `rk`s — it never holds an `alpha`) catches it.
 #[test]
 fn add_spend_randomizers_is_atomic_and_checks_the_pair_against_the_callers_ak() {
     use crate::zcash::ironwood_build::IronwoodBuildError;
@@ -1918,11 +1928,11 @@ fn add_spend_randomizers_is_atomic_and_checks_the_pair_against_the_callers_ak() 
     assert_no_ak_or_alpha(&z, &ak, &[(good.0, good.1), (mismatched.0, mismatched.1)]);
     assert!(z.shielded_status().unwrap().pending_randomizers.is_empty());
 
-    // …and the client, checking against its own ak and randomizers, rejects it.
+    // …and the client, checking against its expected rks, rejects it.
     let pczt = z.ironwood_pczt().unwrap();
     let honest = KeylessVerifyContext {
         expected_ak: Some(ak),
-        expected_randomizers: vec![good, other],
+        expected_rks: vec![(good.0, good.2), (other.0, other.2)],
         ..Default::default()
     };
     let error = verify_bundle_without_keys(&pczt, &honest).unwrap_err();
@@ -1934,6 +1944,118 @@ fn add_spend_randomizers_is_atomic_and_checks_the_pair_against_the_callers_ak() 
     // Re-installing the honest pair (before any signature) fixes it.
     z.add_spend_randomizers(&[other], Some(&ak)).unwrap();
     verify_bundle_without_keys(&z.ironwood_pczt().unwrap(), &honest).unwrap();
+}
+
+/// `add_spend_rks` keeps every gate of `add_spend_randomizers` without an `alpha`: ciphertexts
+/// first, atomic, distinct real spends only; given the wallet's `ak`, an `rk` left as `ak` is
+/// rejected. The rk-only install reaches the same state as the alpha-carrying one.
+#[test]
+fn add_spend_rks_is_atomic_and_rejects_an_unrandomized_rk() {
+    use crate::zcash::ironwood_build::IronwoodBuildError;
+
+    let seed = "ironwood_v6_keyless_rk_only_batch";
+    let (mut z, map, ak, fvk, ask) = keyless_transfer_psbt(seed);
+    let [first, second] = [
+        map.actions.spend_action_indices()[0],
+        map.actions.spend_action_indices()[1],
+    ];
+    let rk_for = |action_index: usize| {
+        let alpha = pasta_curves::pallas::Scalar::random(&mut OsRng);
+        let rk = <[u8; 32]>::from(VerificationKey::<SpendAuth>::from(&ask.randomize(&alpha)));
+        (action_index, rk)
+    };
+    let (good, other) = (rk_for(first), rk_for(second));
+
+    // Ciphertexts first.
+    assert!(matches!(
+        z.add_spend_rks(&[good, other], Some(&ak)),
+        Err(IronwoodPsbtError::OutCiphertextPending { .. })
+    ));
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let before = z.serialize_v6();
+
+    // One bad entry after a good one stores nothing: the rk left as ak, the identity, and a
+    // non-canonical encoding.
+    let error = z
+        .add_spend_rks(&[good, (second, ak)], Some(&ak))
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            IronwoodPsbtError::Build(IronwoodBuildError::UnrandomizedRk)
+        ),
+        "unexpected: {error:?}"
+    );
+    for bad_rk in [[0u8; 32], [0xffu8; 32]] {
+        let error = z
+            .add_spend_rks(&[good, (second, bad_rk)], None)
+            .unwrap_err();
+        assert!(
+            matches!(error, IronwoodPsbtError::Build(IronwoodBuildError::BadRk)),
+            "unexpected: {error:?}"
+        );
+    }
+    assert_eq!(
+        z.serialize_v6(),
+        before,
+        "a rejected batch leaves the PSBT unchanged"
+    );
+
+    // A repeated index, an empty batch, a bad ak.
+    assert!(matches!(
+        z.add_spend_rks(&[good, good], Some(&ak)),
+        Err(IronwoodPsbtError::DuplicateAction { action_index }) if action_index == first
+    ));
+    assert!(matches!(
+        z.add_spend_rks(&[], Some(&ak)),
+        Err(IronwoodPsbtError::NothingPending)
+    ));
+    assert!(matches!(
+        z.add_spend_rks(&[good], Some(&[0u8; 32])),
+        Err(IronwoodPsbtError::Build(
+            IronwoodBuildError::BadSpendValidatingKey
+        ))
+    ));
+    assert_eq!(z.serialize_v6(), before);
+
+    // Without the wallet's ak, the unrandomized rk is installed (the client's verifier,
+    // given its ak, rejects it)…
+    z.add_spend_rks(&[good, (second, ak)], None).unwrap();
+    let error = z.verify_shielded_bundle(Some(&ak), &[]).unwrap_err();
+    assert!(matches!(
+        error,
+        IronwoodPsbtError::Verify(IronwoodVerifyError::Action {
+            check: IronwoodVerifyCheck::Rk,
+            ..
+        })
+    ));
+
+    // …and re-delivering the honest rk (before any signature) fixes it. Only `rk` is stored.
+    z.add_spend_rks(&[other], Some(&ak)).unwrap();
+    assert!(z.shielded_status().unwrap().pending_randomizers.is_empty());
+    z.verify_shielded_bundle(Some(&ak), &[good, other]).unwrap();
+    assert_no_ak_or_alpha(&z, &ak, &[]);
+}
+
+/// `add_spend_rks` only targets real spends of a spend bundle.
+#[test]
+fn add_spend_rks_rejects_dummy_spends_and_shielding_bundles() {
+    let seed = "ironwood_v6_keyless_rk_only_targets";
+    let (mut z, map, ak, fvk, _ask) = keyless_surplus_psbt(seed);
+    fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
+    let dummy = (0..2)
+        .find(|i| !map.actions.spend_action_indices().contains(i))
+        .unwrap();
+    assert!(matches!(
+        z.add_spend_rks(&[(dummy, [8u8; 32])], Some(&ak)),
+        Err(IronwoodPsbtError::DummyAction)
+    ));
+
+    let mut shield = build_shield_psbt("ironwood_v6_keyless_rk_only_shield");
+    assert!(matches!(
+        shield.add_spend_rks(&[(0, [8u8; 32])], None),
+        Err(IronwoodPsbtError::NotSpendBundle)
+    ));
 }
 
 /// Randomizers only target real spends of a spend bundle.
@@ -2415,13 +2537,14 @@ fn verify_shielded_bundle_tracks_the_lifecycle() {
     z.verify_shielded_bundle(None, &[]).unwrap();
 
     // The real outputs take their ciphertexts before any randomizer is installed. The
-    // installed triples are then checked against a copy whose rks are still placeholders: an
+    // installed rks are then checked against a copy whose rks are still placeholders: an
     // expectation aimed at a spend whose rk is not installed yet is a mismatch, not a pass.
     fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
     let placeholder = z.clone();
     let installed = install_randomizer_triples(&mut z, &map.actions, &ask, &ak);
+    let expected_rks = rks_of(&installed);
     let error = placeholder
-        .verify_shielded_bundle(Some(&ak), &installed)
+        .verify_shielded_bundle(Some(&ak), &expected_rks)
         .unwrap_err();
     assert!(matches!(
         error,
@@ -2431,9 +2554,9 @@ fn verify_shielded_bundle_tracks_the_lifecycle() {
         })
     ));
 
-    // The caller's ak + the signer's triples check every spend's rk, and the sighash is computed
+    // The caller's ak + expected rks check every spend's rk, and the sighash is computed
     // (no signatures yet, so the SpendSignature check is vacuous).
-    let report = z.verify_shielded_bundle(Some(&ak), &installed).unwrap();
+    let report = z.verify_shielded_bundle(Some(&ak), &expected_rks).unwrap();
     assert!(report
         .spends
         .iter()
@@ -2450,35 +2573,28 @@ fn verify_shielded_bundle_tracks_the_lifecycle() {
 
     // Signed: the report shows every spend signed, with the sigs verified over the
     // internally computed sighash.
-    let report = z.verify_shielded_bundle(Some(&ak), &installed).unwrap();
+    let report = z.verify_shielded_bundle(Some(&ak), &expected_rks).unwrap();
     assert!(report
         .spends
         .iter()
         .all(|spend| spend.rk_replaced && spend.signed));
 
-    // A foreign wallet's ak rejects the pairs: its randomize(α) is not the installed rk.
-    let error = z
-        .verify_shielded_bundle(Some(&foreign_ak()), &installed)
-        .unwrap_err();
-    assert!(matches!(
-        error,
-        IronwoodPsbtError::Verify(IronwoodVerifyError::Action {
-            check: IronwoodVerifyCheck::Rk,
-            ..
-        })
-    ));
+    // Without alpha the client cannot tie a randomized rk to its ak: a foreign wallet's ak
+    // passes too, and only the expected rks pin the installed keys.
+    z.verify_shielded_bundle(Some(&foreign_ak()), &expected_rks)
+        .unwrap();
 
-    // A mismatched rk in the caller's own triples is rejected the same way.
-    let mismatched = installed
+    // A mismatched rk in the caller's expected rks is rejected.
+    let mismatched = expected_rks
         .iter()
         .enumerate()
-        .map(|(i, &(action, alpha, rk))| {
+        .map(|(i, &(action, rk))| {
             if i == 0 {
                 let mut broken_rk = rk;
                 broken_rk[0] ^= 1;
-                (action, alpha, broken_rk)
+                (action, broken_rk)
             } else {
-                (action, alpha, rk)
+                (action, rk)
             }
         })
         .collect::<Vec<_>>();
@@ -2509,7 +2625,9 @@ fn verify_shielded_bundle_reports_the_deshield() {
             .collect::<Vec<_>>(),
         &ask,
     );
-    let report = z.verify_shielded_bundle(Some(&ak), &triples).unwrap();
+    let report = z
+        .verify_shielded_bundle(Some(&ak), &rks_of(&triples))
+        .unwrap();
     assert_eq!(report.spends.len(), 1);
     assert_eq!(report.spends[0].value, 100_000_000);
     assert!(report.spends[0].rk_replaced && report.spends[0].signed);
@@ -2544,7 +2662,9 @@ fn verify_shielded_bundle_rejects_a_tampered_bundle() {
     .unwrap();
     crate::fixed_script_wallet::bitgo_psbt::zcash::propkv::set_ironwood_pczt(&mut z.psbt, tampered);
 
-    let error = z.verify_shielded_bundle(Some(&ak), &triples).unwrap_err();
+    let error = z
+        .verify_shielded_bundle(Some(&ak), &rks_of(&triples))
+        .unwrap_err();
     assert!(matches!(
         error,
         IronwoodPsbtError::Verify(IronwoodVerifyError::Action {
@@ -2554,9 +2674,9 @@ fn verify_shielded_bundle_rejects_a_tampered_bundle() {
     ));
 }
 
-/// A randomizer aimed at a fabricated (dummy) spend is rejected instead of silently ignored.
+/// An expected rk aimed at a fabricated (dummy) spend is rejected instead of silently ignored.
 #[test]
-fn verify_shielded_bundle_rejects_a_randomizer_aimed_at_a_dummy() {
+fn verify_shielded_bundle_rejects_an_rk_aimed_at_a_dummy() {
     let seed = "ironwood_v6_verify_dummy";
     let (mut z, map, ak, fvk, ask) = keyless_surplus_psbt(seed);
     fvk_out_ciphertexts(&mut z, &map.actions, &fvk);
@@ -2564,8 +2684,7 @@ fn verify_shielded_bundle_rejects_a_randomizer_aimed_at_a_dummy() {
     let dummy_action = (0..2)
         .find(|action| !map.actions.spend_action_indices().contains(action))
         .unwrap();
-    let alpha = [7u8; 32];
-    let aimed_at_dummy = [(dummy_action, alpha, [8u8; 32])];
+    let aimed_at_dummy = [(dummy_action, [8u8; 32])];
     let error = z
         .verify_shielded_bundle(Some(&ak), &aimed_at_dummy)
         .unwrap_err();
@@ -2577,7 +2696,8 @@ fn verify_shielded_bundle_rejects_a_randomizer_aimed_at_a_dummy() {
         })
     ));
     // The real spends still verify, with the dummy ignored.
-    z.verify_shielded_bundle(Some(&ak), &triples).unwrap();
+    z.verify_shielded_bundle(Some(&ak), &rks_of(&triples))
+        .unwrap();
 }
 
 /// A PSBT without a stored PCZT has nothing to verify; a shielding PCZT verifies its outputs.

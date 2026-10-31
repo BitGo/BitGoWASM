@@ -812,9 +812,9 @@ impl BitGoPsbt {
     /// `alpha` or the wallet's `ak` (with `rk`, an `alpha` would reveal `ak`).
     ///
     /// `spendValidatingKey` (the wallet's 32-byte `ak`, optional) makes the installer check
-    /// `rk == ak.randomize(alpha)` before storing; without it the pair is checked later, by
-    /// the client's key-free verifier and by the keyed prover. **Atomic**, and rejected once
-    /// any signature exists (`IronwoodPsbtError.AlreadySigned`).
+    /// `rk == ak.randomize(alpha)` before storing; without it the pair is checked only by the
+    /// keyed prover. **Atomic**, and rejected once any signature exists
+    /// (`IronwoodPsbtError.AlreadySigned`).
     pub fn add_ironwood_spend_randomizers(
         &mut self,
         entries: JsValue,
@@ -837,6 +837,32 @@ impl BitGoPsbt {
             .collect::<Result<Vec<_>, IronwoodPsbtError>>()?;
         self.zcash_mut()?
             .add_spend_randomizers(&entries, ak.as_ref())
+            .map_err(WasmUtxoError::from)
+    }
+
+    /// `add_ironwood_spend_randomizers` without the `alpha`s: an array of
+    /// `{ actionIndex: number, rk: Uint8Array }` — one per real spend.
+    ///
+    /// `spendValidatingKey` (the wallet's 32-byte `ak`, optional) rejects an `rk` equal to `ak`
+    /// (left unrandomized, so linkable: `IronwoodBuildError.UnrandomizedRk`). Without `alpha`
+    /// that `rk == ak.randomize(alpha)` holds is checked only by the keyed prover. **Atomic**,
+    /// and rejected once any signature exists (`IronwoodPsbtError.AlreadySigned`).
+    pub fn add_ironwood_spend_rks(
+        &mut self,
+        entries: JsValue,
+        spend_validating_key: Option<Vec<u8>>,
+    ) -> Result<(), WasmUtxoError> {
+        let entries: Vec<SpendRkEntry> = serde_wasm_bindgen::from_value(entries)
+            .map_err(|e| WasmUtxoError::new(&format!("invalid spend rk entries: {e}")))?;
+        let ak: Option<[u8; 32]> = spend_validating_key
+            .map(|bytes| fixed_bytes(&bytes, "spendValidatingKey"))
+            .transpose()?;
+        let entries = entries
+            .into_iter()
+            .map(|entry| Ok((entry.action_index, fixed_bytes(&entry.rk, "rk")?)))
+            .collect::<Result<Vec<_>, IronwoodPsbtError>>()?;
+        self.zcash_mut()?
+            .add_spend_rks(&entries, ak.as_ref())
             .map_err(WasmUtxoError::from)
     }
 
@@ -908,17 +934,18 @@ impl BitGoPsbt {
 
     /// The client's key-free verification of the stored shielded bundle: the checks of
     /// `verify_bundle_without_keys`, driven by the caller's own expectations. The PSBT is
-    /// never trusted for who a spend belongs to — the spend-validating key and the signers'
-    /// randomized keys come in from the caller, never from the PSBT.
+    /// never trusted for who a spend belongs to — the spend-validating key and the expected
+    /// randomized keys come in from the caller, never from the PSBT. The caller never holds a
+    /// randomizer `alpha`, so `rk == ak.randomize(alpha)` is not checked here.
     ///
     /// * `spendValidatingKey` - the caller's own spend-validating key (32 bytes, optional).
-    ///   When given, every randomized real spend must carry
-    ///   `rk == ak.randomize(alpha)` for the caller's matching `randomizers` entry: the
-    ///   caller checks it is signing for its own wallet.
-    /// * `randomizers` - the signer's randomizers, an array of
-    ///   `{ actionIndex: number, alpha: Uint8Array, rk: Uint8Array }` (optional). Each entry
-    ///   must land on a real spend; a spend whose installed `rk` does not match its entry is
-    ///   rejected (`IronwoodVerifyError.Rk`).
+    ///   Only when given: it must be a canonical, non-identity key, and no installed `rk` may
+    ///   be `ak` itself (left unrandomized, so linkable: `IronwoodVerifyError.Rk`). Without it
+    ///   every check that does not need `ak` still runs.
+    /// * `rks` - the caller's expected randomized keys, an array of
+    ///   `{ actionIndex: number, rk: Uint8Array }` (optional). Each entry must land on a real
+    ///   spend; a spend whose installed `rk` does not match its entry is rejected
+    ///   (`IronwoodVerifyError.Rk`).
     ///
     /// When every real spend's randomized `rk` is installed, the ZIP-244 sig digest is
     /// computed here and any present spend-auth signature is verified over it
@@ -933,25 +960,19 @@ impl BitGoPsbt {
     pub fn verify_ironwood_shielded_bundle(
         &self,
         spend_validating_key: Option<Vec<u8>>,
-        randomizers: JsValue,
+        rks: JsValue,
     ) -> Result<JsValue, WasmUtxoError> {
-        let randomizers: Vec<SpendRandomizerEntry> = serde_wasm_bindgen::from_value(randomizers)
-            .map_err(|e| WasmUtxoError::new(&format!("invalid randomizer entries: {e}")))?;
+        let rks: Vec<SpendRkEntry> = serde_wasm_bindgen::from_value(rks)
+            .map_err(|e| WasmUtxoError::new(&format!("invalid rk entries: {e}")))?;
         let ak: Option<[u8; 32]> = spend_validating_key
             .map(|bytes| fixed_bytes(&bytes, "spendValidatingKey"))
             .transpose()?;
-        let randomizers = randomizers
+        let rks = rks
             .into_iter()
-            .map(|entry| {
-                Ok((
-                    entry.action_index,
-                    fixed_bytes(&entry.alpha, "alpha")?,
-                    fixed_bytes(&entry.rk, "rk")?,
-                ))
-            })
+            .map(|entry| Ok((entry.action_index, fixed_bytes(&entry.rk, "rk")?)))
             .collect::<Result<Vec<_>, IronwoodPsbtError>>()?;
         self.zcash()?
-            .verify_shielded_bundle(ak.as_ref(), &randomizers)
+            .verify_shielded_bundle(ak.as_ref(), &rks)
             .map_err(WasmUtxoError::from)?
             .try_to_js_value()
     }
@@ -1049,6 +1070,15 @@ struct OutCiphertextEntry {
 struct SpendRandomizerEntry {
     action_index: usize,
     alpha: serde_bytes::ByteBuf,
+    rk: serde_bytes::ByteBuf,
+}
+
+/// One `add_ironwood_spend_rks` / `verify_ironwood_shielded_bundle` entry from JS:
+/// `{ actionIndex, rk }`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpendRkEntry {
+    action_index: usize,
     rk: serde_bytes::ByteBuf,
 }
 
