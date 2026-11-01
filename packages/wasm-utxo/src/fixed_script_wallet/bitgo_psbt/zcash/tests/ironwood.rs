@@ -1817,9 +1817,18 @@ fn sighash_gates_on_uninstalled_randomizers_and_the_batch_rejects_bad_context() 
         .add_spend_randomizers(&[(1, [1u8; 32], [0u8; 32])], Some(&ak))
         .unwrap_err();
     assert!(matches!(err, IronwoodPsbtError::UnknownAction));
-    // An rk that is not `ak.randomize(alpha)` is rejected.
+    // The identity rk (all zeros) is rejected before any pair check.
     let err = z
         .add_spend_randomizers(&[(0, [1u8; 32], [0u8; 32])], Some(&ak))
+        .unwrap_err();
+    assert!(
+        matches!(err, IronwoodPsbtError::Build(IronwoodBuildError::BadRk)),
+        "the identity rk must be rejected: {err:?}"
+    );
+    // An rk that is not `ak.randomize(alpha)` is rejected.
+    let (_other_alpha, _other_rsk, other_rk) = randomized_spend_key(&ask);
+    let err = z
+        .add_spend_randomizers(&[(0, [1u8; 32], other_rk)], Some(&ak))
         .unwrap_err();
     assert!(
         matches!(
@@ -1849,6 +1858,47 @@ fn sighash_gates_on_uninstalled_randomizers_and_the_batch_rejects_bad_context() 
     z.v6_sig_digest().unwrap();
     z.add_spend_randomizers(&[(0, alpha.to_repr(), rk)], Some(&ak))
         .unwrap();
+}
+
+#[test]
+fn rk_only_install_without_alpha_signs_and_freezes() {
+    let (mut z, _keys) = build_unshield_psbt("ironwood_v6_spends_rk_only");
+    let (req, _anchor, ask) = test_spend_request();
+    let ak = <[u8; 32]>::try_from(&req.fvk[0..32]).unwrap();
+
+    // Context checks still apply without an alpha.
+    let err = z.add_spend_rks(&[(1, [0u8; 32])], None).unwrap_err();
+    assert!(matches!(err, IronwoodPsbtError::UnknownAction));
+    let err = z.add_spend_rks(&[(0, PLACEHOLDER_RK)], None).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            IronwoodPsbtError::Build(IronwoodBuildError::UnrandomizedRk)
+        ),
+        "unexpected: {err:?}"
+    );
+    let err = z.add_spend_rks(&[], None).unwrap_err();
+    assert!(matches!(err, IronwoodPsbtError::NothingPending));
+    // Given the wallet's ak, an rk left as ak is rejected.
+    let err = z.add_spend_rks(&[(0, ak)], Some(&ak)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            IronwoodPsbtError::Build(IronwoodBuildError::UnrandomizedRk)
+        ),
+        "unexpected: {err:?}"
+    );
+
+    // Installing only rk fixes the digest, and the spend signature verifies against it.
+    let (_alpha, rsk, rk) = randomized_spend_key(&ask);
+    z.add_spend_rks(&[(0, rk)], Some(&ak)).unwrap();
+    let sighash = z.v6_sig_digest().unwrap();
+    z.add_spend_signatures(&[(0, <[u8; 64]>::from(&rsk.sign(OsRng, &sighash)))])
+        .unwrap();
+
+    // Frozen once signed.
+    let err = z.add_spend_rks(&[(0, rk)], None).unwrap_err();
+    assert!(matches!(err, IronwoodPsbtError::AlreadySigned));
 }
 
 #[test]

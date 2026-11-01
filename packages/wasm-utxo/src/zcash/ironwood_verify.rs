@@ -13,7 +13,10 @@
 //! - `SpendWitness`: every real spend's rebuilt note commits to a leaf under the bundle's anchor
 //!   and matches the spend's recorded `cmx`;
 //! - `Rk`: every real spend's `rk` is either [`PLACEHOLDER_RK`] or a randomized key; given the
-//!   caller's own `ak` and FROST randomizers, each randomized `rk` is `ak.randomize(alpha)`;
+//!   caller's expected `rk`s, each installed `rk` is exactly the expected one; only when the
+//!   caller supplies its `ak`, no installed `rk` is `ak` itself (left unrandomized, so
+//!   linkable). The verifier never holds an `alpha`, so `rk == ak.randomize(alpha)` is not
+//!   checked here — only the keyed prover, which receives `alpha`, checks it;
 //! - `ViewingKeyPresent`: no viewing-key material (`fvk`, ZIP-32 derivation) leaks on a real spend;
 //! - `RandomizerPresent`: no real spend carries its `alpha`, which with `rk` reveals `ak`;
 //! - `BundleVersion`: the bundle is an Ironwood V3 bundle;
@@ -34,7 +37,6 @@
 //!
 //! [`PLACEHOLDER_RK`]: super::ironwood_build::PLACEHOLDER_RK
 
-use ff::Field;
 use orchard::{
     bundle::BundleVersion,
     note::Note,
@@ -52,14 +54,14 @@ use super::ironwood_pczt::PcztSpend;
 /// The caller's own expectations for the keyless verification.
 #[derive(Debug, Clone, Default)]
 pub struct KeylessVerifyContext {
-    /// The caller's own spend-validating key (`ak`) — never read from the PSBT, which does not
-    /// carry it. When given, every randomized real spend must have an entry in
-    /// `expected_randomizers` whose `rk` is `ak.randomize(alpha)`: the client checks it is
-    /// signing for its own wallet.
+    /// The caller's own spend-validating key (`ak`), optional — never read from the PSBT,
+    /// which does not carry it. Only when given: it must be a canonical, non-identity key, and
+    /// no installed `rk` may be `ak` itself (an unrandomized `rk` links the spend to the
+    /// wallet). Without it every check that does not need `ak` still runs.
     pub expected_ak: Option<[u8; 32]>,
-    /// The `(action, alpha, rk)` triples the caller's FROST round produced: when given, each
-    /// spend on those actions must carry exactly that randomized `rk`.
-    pub expected_randomizers: Vec<(usize, [u8; 32], [u8; 32])>,
+    /// The `(action, rk)` pairs the caller expects: each spend on those actions must carry
+    /// exactly that randomized `rk`.
+    pub expected_rks: Vec<(usize, [u8; 32])>,
     /// The ZIP-244 shielded sig digest to verify present spend-auth signatures against
     /// (`SpendSignature`); `None` skips the check.
     pub sighash: Option<[u8; 32]>,
@@ -247,9 +249,9 @@ pub fn verify_bundle_without_keys(
         ));
     }
 
-    // Every caller-expected randomizer must land on a real spend: one aimed at a dummy or a
-    // missing action would otherwise be silently ignored.
-    for (action_index, _, _) in &ctx.expected_randomizers {
+    // Every caller-expected `rk` must land on a real spend: one aimed at a dummy or a missing
+    // action would otherwise be silently ignored.
+    for (action_index, _) in &ctx.expected_rks {
         if !spends
             .iter()
             .any(|spend| spend.action_index == *action_index)
@@ -257,7 +259,7 @@ pub fn verify_bundle_without_keys(
             return Err(action_error(
                 *action_index,
                 IronwoodVerifyCheck::Rk,
-                "an expected randomizer targets an action without a real spend".to_string(),
+                "an expected rk targets an action without a real spend".to_string(),
             ));
         }
     }
@@ -297,7 +299,8 @@ pub fn verify_bundle_without_keys(
     })
 }
 
-/// `Rk` setup: the caller's own `ak`, parsed as a canonical, non-identity verification key.
+/// `Rk` setup: the caller's optional `ak`, parsed as a canonical, non-identity verification
+/// key. `None` when the caller supplied none.
 fn expected_spend_validating_key(
     ctx: &KeylessVerifyContext,
 ) -> Result<Option<VerificationKey<SpendAuth>>, IronwoodVerifyError> {
@@ -528,55 +531,34 @@ fn verify_real_spend(
         ));
     }
 
-    // `Rk`: the `rk` is the placeholder until the signer installs its randomized one; the
-    // caller checks a randomized `rk` against its own `ak` and FROST randomizers.
+    // `Rk`: the `rk` is the placeholder until the signer installs its randomized one. The
+    // verifier never holds `alpha`, so an installed `rk` is checked against the caller's
+    // expected `rk` and, only when the caller supplied it, its `ak` — never against
+    // `ak.randomize(alpha)`.
     let randomizer_installed = !spend_rk_is_placeholder(spend);
-    let expected = ctx
-        .expected_randomizers
+    let rk = <[u8; 32]>::from(spend.rk());
+    if let Some((_, expected_rk)) = ctx
+        .expected_rks
         .iter()
-        .find(|(action, _, _)| *action == action_index);
-    match expected {
-        Some((_, expected_alpha, expected_rk)) => {
-            if !randomizer_installed || <[u8; 32]>::from(spend.rk()) != *expected_rk {
-                return Err(action_error(
-                    action_index,
-                    IronwoodVerifyCheck::Rk,
-                    "the spend's rk does not match the caller's expected rk".to_string(),
-                ));
-            }
-            if let Some(ak) = expected_ak {
-                let alpha = Option::<pasta_curves::pallas::Scalar>::from(
-                    <pasta_curves::pallas::Scalar as ff::PrimeField>::from_repr(*expected_alpha),
-                )
-                .filter(|alpha| !bool::from(alpha.is_zero()))
-                .ok_or_else(|| {
-                    action_error(
-                        action_index,
-                        IronwoodVerifyCheck::Rk,
-                        "the caller's expected alpha is zero or not a canonical scalar".to_string(),
-                    )
-                })?;
-                if ak.randomize(&alpha) != *spend.rk() {
-                    return Err(action_error(
-                        action_index,
-                        IronwoodVerifyCheck::Rk,
-                        "the spend's rk is not ak.randomize(alpha) for the caller's \
-                         spend-validating key"
-                            .to_string(),
-                    ));
-                }
-            }
-        }
-        None if randomizer_installed && expected_ak.is_some() => {
+        .find(|(action, _)| *action == action_index)
+    {
+        if !randomizer_installed || rk != *expected_rk {
             return Err(action_error(
                 action_index,
                 IronwoodVerifyCheck::Rk,
-                "the spend's randomized rk cannot be checked against the caller's \
-                 spend-validating key without its expected randomizer"
+                "the spend's rk does not match the caller's expected rk".to_string(),
+            ));
+        }
+    }
+    if let Some(ak) = expected_ak {
+        if randomizer_installed && <[u8; 32]>::from(ak) == rk {
+            return Err(action_error(
+                action_index,
+                IronwoodVerifyCheck::Rk,
+                "the spend's rk is the caller's own spend-validating key, left unrandomized"
                     .to_string(),
             ));
         }
-        None => {}
     }
 
     // `SpendSignature`: any present spend-auth signature must verify against the spend's `rk` over
@@ -1106,72 +1088,44 @@ mod tests {
     }
 
     #[test]
-    fn installed_randomizer_verifies_against_the_callers_ak() {
+    fn installed_rk_verifies_with_or_without_the_callers_ak() {
         let (bytes, _anchor, _recipient) = test_bundle();
         let alpha = pasta_curves::pallas::Scalar::random(OsRng);
         let (installed, _rsk, rk) = with_installed_randomizer(&bytes, alpha);
         let ctx = KeylessVerifyContext {
-            expected_ak: Some(test_ak()),
-            expected_randomizers: vec![(0, alpha.to_repr(), rk)],
+            expected_rks: vec![(0, rk)],
             ..Default::default()
         };
         let report = verify_check(&installed, &ctx).unwrap();
         assert!(report.spends[0].randomizer_installed);
+        // With the caller's ak the same bundle passes: a randomized rk is not ak itself.
+        let ctx = KeylessVerifyContext {
+            expected_ak: Some(test_ak()),
+            expected_rks: vec![(0, rk)],
+            ..Default::default()
+        };
+        verify_check(&installed, &ctx).unwrap();
         // Without the caller's expectations the installed state is still reported.
         let report = verify_check(&installed, &KeylessVerifyContext::default()).unwrap();
         assert!(report.spends[0].randomizer_installed);
     }
 
     #[test]
-    fn foreign_expected_ak_fails_rk() {
-        let (bytes, _anchor, _recipient) = test_bundle();
-        let alpha = pasta_curves::pallas::Scalar::random(OsRng);
-        let (installed, _rsk, rk) = with_installed_randomizer(&bytes, alpha);
-        let ctx = KeylessVerifyContext {
-            expected_ak: Some(foreign_ak()),
-            expected_randomizers: vec![(0, alpha.to_repr(), rk)],
-            ..Default::default()
-        };
-        assert_eq!(
-            verify_check(&installed, &ctx).unwrap_err(),
-            IronwoodVerifyCheck::Rk
-        );
-    }
-
-    #[test]
-    fn expected_alpha_that_does_not_produce_the_rk_fails_rk() {
-        let (bytes, _anchor, _recipient) = test_bundle();
-        let (installed, _rsk, rk) =
-            with_installed_randomizer(&bytes, pasta_curves::pallas::Scalar::random(OsRng));
-        // The installed `rk`, but a different claimed `alpha`.
-        let other_alpha = pasta_curves::pallas::Scalar::random(OsRng).to_repr();
-        let ctx = KeylessVerifyContext {
-            expected_ak: Some(test_ak()),
-            expected_randomizers: vec![(0, other_alpha, rk)],
-            ..Default::default()
-        };
-        assert_eq!(
-            verify_check(&installed, &ctx).unwrap_err(),
-            IronwoodVerifyCheck::Rk
-        );
-    }
-
-    #[test]
     fn expected_rk_that_differs_from_the_installed_one_fails_rk() {
         let (bytes, _anchor, _recipient) = test_bundle();
-        let alpha = pasta_curves::pallas::Scalar::random(OsRng);
-        let (installed, _rsk, _rk) = with_installed_randomizer(&bytes, alpha);
+        let (installed, _rsk, _rk) =
+            with_installed_randomizer(&bytes, pasta_curves::pallas::Scalar::random(OsRng));
         let (_, _, other_rk) =
             with_installed_randomizer(&bytes, pasta_curves::pallas::Scalar::random(OsRng));
         let ctx = KeylessVerifyContext {
-            expected_randomizers: vec![(0, alpha.to_repr(), other_rk)],
+            expected_rks: vec![(0, other_rk)],
             ..Default::default()
         };
         assert_eq!(
             verify_check(&installed, &ctx).unwrap_err(),
             IronwoodVerifyCheck::Rk
         );
-        // An expected randomizer on a spend still at the placeholder fails too.
+        // An expected rk on a spend still at the placeholder fails too.
         assert_eq!(
             verify_check(&bytes, &ctx).unwrap_err(),
             IronwoodVerifyCheck::Rk
@@ -1179,33 +1133,34 @@ mod tests {
     }
 
     #[test]
-    fn expected_ak_without_the_randomizer_of_an_installed_spend_fails_rk() {
+    fn rk_left_as_the_callers_ak_fails_rk_only_with_the_ak() {
         let (bytes, _anchor, _recipient) = test_bundle();
-        let (installed, _rsk, _rk) =
-            with_installed_randomizer(&bytes, pasta_curves::pallas::Scalar::random(OsRng));
+        let unrandomized = with_spend_rk(&bytes, 0, test_ak()).unwrap();
         let ctx = KeylessVerifyContext {
             expected_ak: Some(test_ak()),
             ..Default::default()
         };
         assert_eq!(
-            verify_check(&installed, &ctx).unwrap_err(),
+            verify_check(&unrandomized, &ctx).unwrap_err(),
             IronwoodVerifyCheck::Rk
         );
-    }
-
-    #[test]
-    fn zero_expected_alpha_fails_rk() {
-        let (bytes, _anchor, _recipient) = test_bundle();
+        // Expecting that very rk does not make it acceptable.
         let ctx = KeylessVerifyContext {
             expected_ak: Some(test_ak()),
-            expected_randomizers: vec![(0, [0u8; 32], test_ak())],
+            expected_rks: vec![(0, test_ak())],
             ..Default::default()
         };
-        let tampered = with_spend_rk(&bytes, 0, test_ak()).unwrap();
         assert_eq!(
-            verify_check(&tampered, &ctx).unwrap_err(),
+            verify_check(&unrandomized, &ctx).unwrap_err(),
             IronwoodVerifyCheck::Rk
         );
+        // Without the ak — or with another wallet's — the check cannot run, and the rest pass.
+        verify_check(&unrandomized, &KeylessVerifyContext::default()).unwrap();
+        let ctx = KeylessVerifyContext {
+            expected_ak: Some(foreign_ak()),
+            ..Default::default()
+        };
+        verify_check(&unrandomized, &ctx).unwrap();
     }
 
     #[test]
@@ -1221,10 +1176,10 @@ mod tests {
     }
 
     #[test]
-    fn expected_randomizer_for_an_action_without_a_real_spend_fails_rk() {
+    fn expected_rk_for_an_action_without_a_real_spend_fails_rk() {
         let (bytes, _anchor, _recipient) = test_bundle();
         let ctx = KeylessVerifyContext {
-            expected_randomizers: vec![(7, [1u8; 32], test_ak())],
+            expected_rks: vec![(7, test_ak())],
             ..Default::default()
         };
         assert_eq!(

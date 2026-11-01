@@ -11,10 +11,10 @@
 // `VersionGroupId`/`ExpiryHeight` subtypes; `version_group_id`'s presence marks the PSBT as v6 so
 // it round-trips through a plain PSBT serialization without the v4 tx-replacement dance.
 //
-// The lifecycle: the PSBT is built first (Constructor, no keys). For
-// real spends, the signer then installs each spend's randomizer pair (`add_spend_randomizers`)
-// before any sighash is fixed, and later its spend-auth signature (`add_spend_signatures`). The
-// signers sign the transparent inputs over the ZIP-244 sighash this module exposes, the
+// The lifecycle: the PSBT is built first (Constructor, no keys). For real spends, the signer
+// then installs each spend's randomized `rk` (`add_spend_randomizers` with its `alpha`, or
+// `add_spend_rks` without) before any sighash is fixed, and later its spend-auth signature
+// (`add_spend_signatures`). The signers sign the transparent inputs over the ZIP-244 sighash this module exposes, the
 // signed PSBT goes to an external prover for the Halo2 `zkproof`, and
 // `combine_ironwood_proof` finalizes the transparent inputs and splices in the proof + shielded
 // bundle to produce the broadcast-ready v6 transaction. See `crate::zcash::ironwood_build` for

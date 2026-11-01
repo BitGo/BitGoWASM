@@ -159,13 +159,14 @@ type IronwoodParsedBase = ParsedTransaction<ZcashIronwoodParsedOutput, ZcashPars
  *   **keyless**: no viewing key is needed to build it. The ciphertext round
  *   ({@link getOutCiphertextRequest} → viewing-key holder → {@link addOutCiphertexts}), the
  *   FROST round
- *   ({@link addSpendRandomizers} → {@link spendSighash} → FROST →
+ *   ({@link addSpendRandomizers} or {@link addSpendRks} → {@link spendSighash} → FROST →
  *   {@link addSpendSignatures}), and the proof round ({@link getProofRequest} → prover →
  *   {@link combineProof}) follow, in that order, with the anchor refresh
  *   ({@link updateAnchorAndWitnesses}) allowed at any point before the proof request — a
  *   build whose approval sat long enough re-witnesses every spend under a fresh anchor
  *   without re-signing. Before signing, the client checks the bundle
- *   against its own spend-validating key and randomizers with {@link verifyShieldedBundle}.
+ *   against its own spend-validating key and expected `rk`s with {@link verifyShieldedBundle};
+ *   the client never receives a randomizer `alpha`.
  *
  * For custodial MPC shielded wallets — no fixed-script xpub triple at all — the constructor
  * is {@link createEmptyKeyless} (no `walletKeys`), and {@link parseShieldedTransaction}
@@ -652,7 +653,7 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
    *
    * `options.spendValidatingKey` (the wallet's spend-validating key `ak`, 32 bytes, optional)
    * makes the installer check `rk == ak.randomize(alpha)` before storing; without it the pair
-   * is checked later, by the client's key-free verifier and by the keyed prover.
+   * is checked only by the keyed prover.
    *
    * Ciphertexts first: rejected while any real output's `out_ciphertext` is pending
    * (`IronwoodPsbtError.OutCiphertextPending`). Frozen once signed
@@ -665,6 +666,26 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
     this.wasm.add_ironwood_spend_randomizers(entries, options?.spendValidatingKey);
   }
 
+  /**
+   * {@link addSpendRandomizers} for a signer that delivers only the randomized `rk`s: one
+   * `{ actionIndex, rk }` entry per real spend, no `alpha`.
+   *
+   * `options.spendValidatingKey` (the wallet's spend-validating key `ak`, 32 bytes, optional)
+   * rejects an `rk` equal to `ak` — left unrandomized, so linkable
+   * (`IronwoodBuildError.UnrandomizedRk`). Without `alpha` that `rk == ak.randomize(alpha)`
+   * holds is checked only by the keyed prover, the one party that receives `alpha`.
+   *
+   * Same gates as {@link addSpendRandomizers}: ciphertexts first
+   * (`IronwoodPsbtError.OutCiphertextPending`), frozen once signed
+   * (`IronwoodPsbtError.AlreadySigned`). **Atomic** — one bad entry stores nothing.
+   */
+  addSpendRks(
+    entries: Array<{ actionIndex: number; rk: Uint8Array }>,
+    options?: { spendValidatingKey?: Uint8Array },
+  ): void {
+    this.wasm.add_ironwood_spend_rks(entries, options?.spendValidatingKey);
+  }
+
   /** Single-spend counterpart to {@link addSpendRandomizers}. */
   setSpendRandomizer(
     actionIndex: number,
@@ -673,6 +694,15 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
     options?: { spendValidatingKey?: Uint8Array },
   ): void {
     this.addSpendRandomizers([{ actionIndex, alpha, rk }], options);
+  }
+
+  /** Single-spend counterpart to {@link addSpendRks}. */
+  setSpendRk(
+    actionIndex: number,
+    rk: Uint8Array,
+    options?: { spendValidatingKey?: Uint8Array },
+  ): void {
+    this.addSpendRks([{ actionIndex, rk }], options);
   }
 
   /**
@@ -730,8 +760,9 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
   /**
    * The client's key-free verification of the stored shielded bundle, driven by the caller's
    * own expectations. The PSBT is never trusted for who a spend belongs to: the
-   * spend-validating key and the signer's randomized keys come in from the caller, never
-   * from the PSBT.
+   * spend-validating key and the expected randomized keys come in from the caller, never
+   * from the PSBT. The client never receives a randomizer `alpha`, so
+   * `rk == ak.randomize(alpha)` is not checked here — only the keyed prover checks it.
    *
    * Runs the key-free verifier's checks — every output's plaintext note commits to its
    * recorded `cmx`, every action's net value commits to its `cv`, the bundle's value balance
@@ -744,13 +775,12 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
    * misdirected.
    *
    * @param options.spendValidatingKey - the client's own spend-validating key (32 bytes,
-   *   optional). When given, every randomized real spend must carry
-   *   `rk == ak.randomize(alpha)` for the matching `randomizers` entry: the client checks it
-   *   is signing for its own wallet (`IronwoodVerifyError.Rk` otherwise).
-   * @param options.randomizers - the signer's randomizers, one
-   *   `{ actionIndex, alpha, rk }` per randomized real spend (optional). Each entry must
-   *   land on a real spend; a spend whose installed `rk` does not match its entry is
-   *   rejected.
+   *   optional). Only when given: it must be a canonical, non-identity key, and no installed
+   *   `rk` may be `ak` itself — left unrandomized, so linkable (`IronwoodVerifyError.Rk`
+   *   otherwise). Without it every check that does not need `ak` still runs.
+   * @param options.rks - the expected randomized keys, one `{ actionIndex, rk }` per
+   *   randomized real spend (optional). Each entry must land on a real spend; a spend whose
+   *   installed `rk` does not match its entry is rejected (`IronwoodVerifyError.Rk`).
    *
    * When every real spend's randomized `rk` is installed, the ZIP-244 sig digest is computed
    * here and any present spend-auth signature is verified over it
@@ -765,11 +795,11 @@ export class ZcashIronwoodBitGoPsbt extends ZcashBitGoPsbt<
    */
   verifyShieldedBundle(options?: {
     spendValidatingKey?: Uint8Array;
-    randomizers?: Array<{ actionIndex: number; alpha: Uint8Array; rk: Uint8Array }>;
+    rks?: Array<{ actionIndex: number; rk: Uint8Array }>;
   }): IronwoodVerificationReport {
     return this.wasm.verify_ironwood_shielded_bundle(
       options?.spendValidatingKey,
-      options?.randomizers ?? [],
+      options?.rks ?? [],
     ) as IronwoodVerificationReport;
   }
 

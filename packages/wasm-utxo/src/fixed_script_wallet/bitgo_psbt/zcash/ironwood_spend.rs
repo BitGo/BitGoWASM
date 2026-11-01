@@ -9,8 +9,9 @@
 //! The PSBT never carries the wallet's spend-validating key `ak`, nor the spends' randomizers
 //! `alpha` (with the randomized `rk` an `alpha` would reveal `ak`): real spends start with the
 //! fixed [`PLACEHOLDER_RK`](crate::zcash::ironwood_build::PLACEHOLDER_RK), the signer installs
-//! only the randomized `rk` ([`ZcashBitGoPsbt::add_spend_randomizers`]), and the alphas reach
-//! the prover out of band ([`ZcashBitGoPsbt::proof_request`]).
+//! only the randomized `rk` ([`ZcashBitGoPsbt::add_spend_randomizers`] with its `alpha`, or
+//! [`ZcashBitGoPsbt::add_spend_rks`] without), and the alphas reach the prover out of band
+//! ([`ZcashBitGoPsbt::proof_request`]). The client never receives an `alpha`.
 //!
 //! One input kind: a v6 PSBT spends **either** transparent inputs (transparent v6 or
 //! shielding) **or** shielded notes (deshield / shielded→shielded), never both. The shielded
@@ -22,6 +23,9 @@
 use super::error::IronwoodPsbtError;
 use super::parse::ZcashShieldedSpend;
 use super::{IronwoodOutputRequest, ZcashBitGoPsbt};
+
+/// One `rk` install: `(action_index, alpha, rk)`, `alpha` absent for an rk-only delivery.
+type RkInstall = (usize, Option<[u8; 32]>, [u8; 32]);
 
 impl ZcashBitGoPsbt {
     /// Constructor role: build the shielded spends (and optionally shielded outputs) as a
@@ -513,7 +517,7 @@ impl ZcashBitGoPsbt {
     /// and `rk` a canonical key other than the placeholder; given the wallet's `ak`, the pair
     /// must satisfy `rk == ak.randomize(alpha)` ([`IronwoodPsbtError::Build`] wrapping the
     /// [`crate::zcash::ironwood_build::IronwoodBuildError`] variants). Without `ak` the pair is
-    /// checked later, by the client's key-free verifier and by the keyed prover.
+    /// checked only by the keyed prover.
     ///
     /// Ciphertexts first: rejected while any real output's `out_ciphertext` is pending. Frozen
     /// once signed: rejected once any signature exists ([`IronwoodPsbtError::AlreadySigned`]).
@@ -525,7 +529,40 @@ impl ZcashBitGoPsbt {
         entries: &[(usize, [u8; 32], [u8; 32])],
         ak: Option<&[u8; 32]>,
     ) -> Result<(), IronwoodPsbtError> {
-        use crate::zcash::ironwood_build::{set_spend_auth_randomizer, IronwoodBuildError};
+        let entries: Vec<_> = entries
+            .iter()
+            .map(|&(action_index, alpha, rk)| (action_index, Some(alpha), rk))
+            .collect();
+        self.install_spend_rks(&entries, ak)
+    }
+
+    /// [`Self::add_spend_randomizers`] for a signer that delivers only `rk`: one
+    /// `(action_index, rk)` entry per real spend. Same gates and atomicity, minus the
+    /// `alpha` checks. Given the wallet's `ak`, an `rk` equal to `ak` (left unrandomized, so
+    /// linkable) is rejected (`IronwoodBuildError::UnrandomizedRk`); that
+    /// `rk == ak.randomize(alpha)` holds is checked only by the keyed prover, the one party
+    /// that receives `alpha`.
+    pub fn add_spend_rks(
+        &mut self,
+        entries: &[(usize, [u8; 32])],
+        ak: Option<&[u8; 32]>,
+    ) -> Result<(), IronwoodPsbtError> {
+        let entries: Vec<_> = entries
+            .iter()
+            .map(|&(action_index, rk)| (action_index, None, rk))
+            .collect();
+        self.install_spend_rks(&entries, ak)
+    }
+
+    /// Shared body of [`Self::add_spend_randomizers`] and [`Self::add_spend_rks`].
+    fn install_spend_rks(
+        &mut self,
+        entries: &[RkInstall],
+        ak: Option<&[u8; 32]>,
+    ) -> Result<(), IronwoodPsbtError> {
+        use crate::zcash::ironwood_build::{
+            set_spend_auth_randomizer, set_spend_rk, IronwoodBuildError,
+        };
         use orchard::primitives::redpallas::{SpendAuth, VerificationKey};
 
         let (_, mut pczt) = self.stored_ironwood_pczt()?;
@@ -552,7 +589,12 @@ impl ZcashBitGoPsbt {
         // Validate-and-install on the working copy: the PSBT is replaced only on full success.
         for &(action_index, alpha, rk) in entries {
             Self::require_real_spend(&pczt, action_index)?;
-            set_spend_auth_randomizer(&mut pczt, action_index, &alpha, &rk, ak.as_ref())?;
+            match alpha {
+                Some(alpha) => {
+                    set_spend_auth_randomizer(&mut pczt, action_index, &alpha, &rk, ak.as_ref())?
+                }
+                None => set_spend_rk(&mut pczt, action_index, &rk, ak.as_ref())?,
+            }
         }
 
         let patched = crate::zcash::ironwood_pczt::serialize_pczt(&pczt)?;
@@ -751,9 +793,12 @@ impl ZcashBitGoPsbt {
     /// The client's key-free verification of the stored shielded bundle, driven by the
     /// caller's own expectations — the PSBT is never trusted for who a spend belongs to.
     ///
-    /// This runs [`verify_bundle_without_keys`] over the stored PCZT with
-    /// the caller's spend-validating key `ak` and its signer's `(action, alpha, rk)`
-    /// triples; nothing is read back from the PSBT for the `Rk` check. When every real
+    /// This runs [`verify_bundle_without_keys`] over the stored PCZT with the caller's
+    /// expected `(action, rk)` pairs (each must be exactly the installed `rk`) and, optionally,
+    /// its spend-validating key `ak`: only when `ak` is given are the `ak` checks run (a
+    /// canonical, non-identity key; no installed `rk` is `ak` itself) — without it every
+    /// other check still runs. The client never holds an `alpha`, so
+    /// `rk == ak.randomize(alpha)` is not checked here. When every real
     /// spend's randomized `rk` is installed, the ZIP-244 sig digest is computed here and any
     /// present spend-auth signature is verified over it; a mid-flow bundle (placeholder
     /// `rk`s still pending) verifies without the signature check instead. On success the
@@ -769,7 +814,7 @@ impl ZcashBitGoPsbt {
     pub fn verify_shielded_bundle(
         &self,
         ak: Option<&[u8; 32]>,
-        randomizers: &[(usize, [u8; 32], [u8; 32])],
+        rks: &[(usize, [u8; 32])],
     ) -> Result<IronwoodVerifiedBundle, IronwoodPsbtError> {
         use crate::zcash::ironwood_verify::{verify_bundle_without_keys, KeylessVerifyContext};
 
@@ -788,7 +833,7 @@ impl ZcashBitGoPsbt {
             &pczt,
             &KeylessVerifyContext {
                 expected_ak: ak.copied(),
-                expected_randomizers: randomizers.to_vec(),
+                expected_rks: rks.to_vec(),
                 sighash,
             },
         )

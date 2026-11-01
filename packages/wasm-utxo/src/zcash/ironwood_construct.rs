@@ -744,12 +744,16 @@ mod tests {
         crate::zcash::ironwood_build::verify_ironwood_spends(&bundle, &fvk.to_bytes(), &alphas)
             .unwrap();
 
-        // …and the key-free verifier passes with the caller's own expectations.
+        // …and the key-free verifier passes with the caller's own expectations (its `ak` and
+        // the installed `rk`s — the client never holds an `alpha`).
         let report = verify_bundle_without_keys(
             &bundle,
             &KeylessVerifyContext {
                 expected_ak: Some(ak),
-                expected_randomizers: randomizers.clone(),
+                expected_rks: randomizers
+                    .iter()
+                    .map(|&(action_index, _, rk)| (action_index, rk))
+                    .collect(),
                 ..Default::default()
             },
         )
