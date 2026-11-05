@@ -216,6 +216,9 @@ fn parse_transaction_inner(
 mod tests {
     use super::*;
     use base64::prelude::*;
+    use solana_pubkey::Pubkey;
+    use solana_stake_interface::instruction::StakeInstruction;
+    use solana_stake_interface::state::Lockup;
 
     // Test transaction from @solana/web3.js - a simple SOL transfer
     const TEST_TX_BASE64: &str = "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDFVMqpim7tqEi2XL8R6KKkP0DYJvY3eiRXLlL1P9EjYgXKQC+k0FKnqyC4AZGJR7OhJXfpPP3NHOhS8t/6G7bLAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/1c7Oaj3RbyLIjU0/ZPpsmVfVUWAzc8g36fK5g6A0JoBAgIAAQwCAAAAoIYBAAAAAAA=";
@@ -250,6 +253,95 @@ mod tests {
     // Marinade staking activate transaction (CreateAccount + StakeInitialize without Delegate)
     // Note: Combining is now done in TypeScript, so we expect raw instructions here
     const MARINADE_STAKING_ACTIVATE: &str = "AuRFS0r7hJ+/+WuDQbbwdjSgxfnKOWi94EnWEha9uaBPt8VZOXiOoSiSoES34VkyBNLlLqlfK0fP3d5eJR+srQvN04gqzpOZPTVzqiomyMXqwQ6FYoQg5nEkdiDVny8SsyhRnAeDMzexkKD+3rwSGP0E+XN/2crTL6PZRnip42YFAgADBUXlebz5JTz2i0ff8fs6OlwsIbrFsjwJrhKm4FVr8ItBYnsvugEnYfm5Gbz5TLtMncgFHZ8JMpkxTTlJIzJovekAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAah2BeRN1QqmDQ3vf4qerJVf1NcinhyK2ikncAAAAAABqfVFxksXFEhjMlMPUrxf1ja7gibof1E49vZigAAAADjMtr5L6vs6LY/96RABeX9/Zr6FYdWthxalfkEs7jQgQICAgABNAAAAADgkwQAAAAAAMgAAAAAAAAABqHYF5E3VCqYNDe9/ip6slV/U1yKeHIraKSdwAAAAAADAgEEdAAAAACx+Xl4mhxH0TxI2HovJxcQ63+TJglRFzFikL1sKdr12UXlebz5JTz2i0ff8fs6OlwsIbrFsjwJrhKm4FVr8ItBAAAAAAAAAAAAAAAAAAAAAEXlebz5JTz2i0ff8fs6OlwsIbrFsjwJrhKm4FVr8ItB";
+
+    fn transaction_with_lockup(lockup: Lockup) -> VersionedTransaction {
+        let bytes = BASE64_STANDARD.decode(MARINADE_STAKING_ACTIVATE).unwrap();
+        let mut tx = VersionedTransaction::from_bytes(&bytes).unwrap();
+        let VersionedMessage::Legacy(message) = &mut tx.message else {
+            panic!("Expected legacy transaction fixture");
+        };
+        let initialize = &mut message.instructions[1];
+        let StakeInstruction::Initialize(authorized, _) =
+            bincode::deserialize(&initialize.data).unwrap()
+        else {
+            panic!("Expected StakeInstruction::Initialize fixture");
+        };
+        initialize.data =
+            bincode::serialize(&StakeInstruction::Initialize(authorized, lockup)).unwrap();
+        tx
+    }
+
+    fn parsed_stake_initialize(
+        tx: &VersionedTransaction,
+    ) -> (String, String, String, i64, u64, String) {
+        let parsed = parse_transaction(&tx.to_bytes().unwrap()).unwrap();
+        let ParsedInstruction::StakeInitialize(params) = &parsed.instructions_data[1] else {
+            panic!("Expected StakeInitialize instruction");
+        };
+        (
+            params.staking_address.clone(),
+            params.staker.clone(),
+            params.withdrawer.clone(),
+            params.lockup.unix_timestamp,
+            params.lockup.epoch,
+            params.lockup.custodian.clone(),
+        )
+    }
+
+    #[test]
+    fn test_parse_stake_initialize_preserves_default_and_adversarial_lockups() {
+        let default_tx = transaction_with_lockup(Lockup::default());
+        let custodian = Pubkey::new_from_array([42; 32]);
+        let adversarial_tx = transaction_with_lockup(Lockup {
+            unix_timestamp: i64::MAX,
+            epoch: u64::MAX,
+            custodian: custodian.clone(),
+        });
+
+        let default = parsed_stake_initialize(&default_tx);
+        let adversarial = parsed_stake_initialize(&adversarial_tx);
+        assert_eq!(
+            (&default.0, &default.1, &default.2),
+            (&adversarial.0, &adversarial.1, &adversarial.2)
+        );
+        assert_eq!(default.3, 0);
+        assert_eq!(default.4, 0);
+        assert_eq!(default.5, Pubkey::default().to_string());
+        assert_eq!(adversarial.3, i64::MAX);
+        assert_eq!(adversarial.4, u64::MAX);
+        assert_eq!(adversarial.5, custodian.to_string());
+
+        let expected_message = adversarial_tx.message.serialize();
+        let serialized = adversarial_tx.to_bytes().unwrap();
+        let roundtrip = VersionedTransaction::from_bytes(&serialized).unwrap();
+        assert_eq!(roundtrip.signable_payload(), expected_message);
+        assert_eq!(parsed_stake_initialize(&roundtrip), adversarial);
+    }
+
+    #[test]
+    fn test_parse_expired_and_single_field_lockups() {
+        let default_custodian = Pubkey::default();
+        let changed_custodian = Pubkey::new_from_array([24; 32]);
+        let cases = [
+            (-1, 0, default_custodian),
+            (i64::MAX, 0, default_custodian),
+            (0, u64::MAX, default_custodian),
+            (0, 0, changed_custodian),
+        ];
+
+        for (timestamp, epoch, custodian) in cases {
+            let expected_custodian = custodian.to_string();
+            let tx = transaction_with_lockup(Lockup {
+                unix_timestamp: timestamp,
+                epoch,
+                custodian,
+            });
+            let parsed = parsed_stake_initialize(&tx);
+            assert_eq!(parsed.3, timestamp);
+            assert_eq!(parsed.4, epoch);
+            assert_eq!(parsed.5, expected_custodian);
+        }
+    }
 
     #[test]
     fn test_parse_marinade_staking_activate() {
@@ -298,6 +390,9 @@ mod tests {
                     params.withdrawer,
                     "5hr5fisPi6DXNuuRpm5XUbzpiEnmdyxXuBDTwzwZj5Pe"
                 );
+                assert_eq!(params.lockup.unix_timestamp, 0);
+                assert_eq!(params.lockup.epoch, 0);
+                assert_eq!(params.lockup.custodian, params.withdrawer);
             }
             other => panic!("Expected StakeInitialize instruction, got {:?}", other),
         }

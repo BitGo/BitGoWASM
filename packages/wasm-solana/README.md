@@ -2,6 +2,18 @@
 
 WASM bindings for Solana cryptographic operations. This package provides Rust-based bindings for Ed25519 keypair generation, public key operations, and signature verification for Solana.
 
+## Reviewing imported transactions
+
+`StakeInitialize` parser results include the complete Stake Program lockup:
+`unixTimestamp` and `epoch` are lossless `bigint` values, and `custodian` is
+its base58 public key. The WebUI displays all three terms and warns whenever
+the lockup differs from Solana's default.
+
+For approval flows, parse and review a `Transaction` instance and use that
+same instance's `signablePayload()` as the approval/signing message. Parsed
+instructions are a semantic view; signing and serialization preserve the
+original message bytes. This package does not implement an approval policy.
+
 ## Building
 
 ### Mac
