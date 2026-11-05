@@ -312,6 +312,15 @@ fn build_stake(
     let intent: StakeIntent = serde_json::from_value(intent_json.clone())
         .map_err(|e| WasmSolanaError::new(&format!("Failed to parse stake intent: {}", e)))?;
 
+    let jito_config =
+        if intent.staking_type == Some(StakingType::Jito) {
+            Some(intent.stake_pool_config.as_ref().ok_or_else(|| {
+                WasmSolanaError::new("stakePoolConfig is required for JITO staking")
+            })?)
+        } else {
+            None
+        };
+
     let fee_payer: Pubkey = params
         .fee_payer
         .parse()
@@ -319,11 +328,8 @@ fn build_stake(
 
     let amount: u64 = intent.amount.as_ref().map(|a| a.value).unwrap_or(0);
 
-    // Check if Jito staking
-    if intent.staking_type == Some(StakingType::Jito) {
-        if let Some(config) = &intent.stake_pool_config {
-            return build_jito_stake(config, &fee_payer, &intent.validator_address, amount);
-        }
+    if let Some(config) = jito_config {
+        return build_jito_stake(config, &fee_payer, &intent.validator_address, amount);
     }
 
     // Generate stake account keypair (used by both native and Marinade)
@@ -524,6 +530,14 @@ fn build_unstake(
     let intent: UnstakeIntent = serde_json::from_value(intent_json.clone())
         .map_err(|e| WasmSolanaError::new(&format!("Failed to parse unstake intent: {}", e)))?;
 
+    let jito_config = if intent.staking_type == Some(StakingType::Jito) {
+        Some(intent.stake_pool_config.as_ref().ok_or_else(|| {
+            WasmSolanaError::new("stakePoolConfig is required for JITO unstaking")
+        })?)
+    } else {
+        None
+    };
+
     let fee_payer: Pubkey = params
         .fee_payer
         .parse()
@@ -543,12 +557,9 @@ fn build_unstake(
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid stakingAddress"))?;
 
-    // Check if Jito unstaking
-    if intent.staking_type == Some(StakingType::Jito) {
-        if let Some(config) = &intent.stake_pool_config {
-            let amount: u64 = intent.amount.as_ref().map(|a| a.value).unwrap_or(0);
-            return build_jito_unstake(config, &fee_payer, &intent.validator_address, amount);
-        }
+    if let Some(config) = jito_config {
+        let amount: u64 = intent.amount.as_ref().map(|a| a.value).unwrap_or(0);
+        return build_jito_unstake(config, &fee_payer, &intent.validator_address, amount);
     }
 
     // Check if partial unstake
@@ -663,16 +674,6 @@ fn build_jito_unstake(
     let ata_program: Pubkey = SPL_ATA_PROGRAM_ID.parse().unwrap();
     let clock_sysvar: Pubkey = solana_sdk::sysvar::clock::ID;
 
-    // Generate destination stake account
-    let unstake_keypair = Keypair::new();
-    let unstake_address = unstake_keypair.address();
-    let unstake_pubkey: Pubkey = unstake_address.parse().unwrap();
-
-    // Generate transfer authority
-    let transfer_authority_keypair = Keypair::new();
-    let transfer_authority_address = transfer_authority_keypair.address();
-    let transfer_authority_pubkey: Pubkey = transfer_authority_address.parse().unwrap();
-
     // Parse config addresses (with derivation for missing fields)
     let stake_pool: Pubkey = config
         .stake_pool_address
@@ -730,6 +731,15 @@ fn build_jito_unstake(
         .ok_or_else(|| WasmSolanaError::new("Missing managerFeeAccount"))?
         .parse()
         .map_err(|_| WasmSolanaError::new("Invalid managerFeeAccount"))?;
+
+    // Generate keys only after all Jito configuration fields are validated.
+    let unstake_keypair = Keypair::new();
+    let unstake_address = unstake_keypair.address();
+    let unstake_pubkey: Pubkey = unstake_address.parse().unwrap();
+
+    let transfer_authority_keypair = Keypair::new();
+    let transfer_authority_address = transfer_authority_keypair.address();
+    let transfer_authority_pubkey: Pubkey = transfer_authority_address.parse().unwrap();
 
     // 1. Approve: allow transfer_authority to spend pool tokens from user's ATA
     //    SPL Token Approve instruction (index 4): [4u8] + amount as u64 LE
@@ -1314,6 +1324,21 @@ mod tests {
     }
 
     #[test]
+    fn test_jito_stake_requires_stake_pool_config() {
+        let intent = serde_json::json!({
+            "intentType": "stake",
+            "validatorAddress": "invalid-validator",
+            "stakingType": "JITO",
+            "amount": { "value": "1000000000" }
+        });
+
+        let error = build_from_intent(&intent, &test_params()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("stakePoolConfig is required for JITO staking"));
+    }
+
+    #[test]
     fn test_stake_with_durable_nonce_structure() {
         use crate::transaction::TransactionExt;
 
@@ -1354,6 +1379,21 @@ mod tests {
             non_zero_count, 1,
             "build_from_intent should sign generated keypairs in Rust"
         );
+    }
+
+    #[test]
+    fn test_jito_unstake_requires_stake_pool_config() {
+        let intent = serde_json::json!({
+            "intentType": "unstake",
+            "stakingType": "JITO",
+            "stakingAddress": "invalid-staking-address",
+            "amount": { "value": "1000000000" }
+        });
+
+        let error = build_from_intent(&intent, &test_params()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("stakePoolConfig is required for JITO unstaking"));
     }
 
     #[test]

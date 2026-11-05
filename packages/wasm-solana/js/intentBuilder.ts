@@ -103,14 +103,28 @@ export interface PaymentIntent extends BaseIntent {
   recipients?: Recipient[];
 }
 
+/** goUnstake intent (payment-shaped unstaking operation) */
+export interface GoUnstakeIntent extends BaseIntent {
+  intentType: "goUnstake";
+  recipients?: Recipient[];
+}
+
 /** Stake intent */
-export interface StakeIntent extends BaseIntent {
+type StakeIntentFields = BaseIntent & {
   intentType: "stake";
   validatorAddress: string;
   amount?: { value: bigint };
-  stakingType?: "NATIVE" | "JITO" | "MARINADE";
-  stakePoolConfig?: StakePoolConfig;
-}
+};
+
+export type StakeIntent =
+  | (StakeIntentFields & {
+      stakingType?: "NATIVE" | "MARINADE";
+      stakePoolConfig?: StakePoolConfig;
+    })
+  | (StakeIntentFields & {
+      stakingType: "JITO";
+      stakePoolConfig: StakePoolConfig;
+    });
 
 /** Stake pool configuration (for Jito) */
 export interface StakePoolConfig {
@@ -126,15 +140,24 @@ export interface StakePoolConfig {
 }
 
 /** Unstake intent */
-export interface UnstakeIntent extends BaseIntent {
+type UnstakeIntentFields = BaseIntent & {
   intentType: "unstake";
   stakingAddress: string;
   validatorAddress?: string;
   amount?: { value: bigint };
   remainingStakingAmount?: { value: bigint };
-  stakingType?: "NATIVE" | "JITO" | "MARINADE";
-  stakePoolConfig?: StakePoolConfig;
-}
+};
+
+export type UnstakeIntent =
+  | (UnstakeIntentFields & {
+      stakingType?: "NATIVE" | "MARINADE";
+      stakePoolConfig?: StakePoolConfig;
+    })
+  | (UnstakeIntentFields & {
+      stakingType: "JITO";
+      validatorAddress: string;
+      stakePoolConfig: StakePoolConfig & { validatorList: string };
+    });
 
 /** Claim intent (withdraw from deactivated stake) */
 export interface ClaimIntent extends BaseIntent {
@@ -223,6 +246,7 @@ export interface CustomTxKey {
 /** Union of all supported intent types */
 export type SolanaIntent =
   | PaymentIntent
+  | GoUnstakeIntent
   | StakeIntent
   | UnstakeIntent
   | ClaimIntent
@@ -272,7 +296,7 @@ export type SolanaIntent =
  * ```
  */
 export function buildFromIntent(
-  intent: BaseIntent,
+  intent: SolanaIntent,
   params: BuildFromIntentParams,
 ): BuildFromIntentResult {
   const result = IntentNamespace.build_from_intent(intent, params) as WasmBuildResult;

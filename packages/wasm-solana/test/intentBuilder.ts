@@ -9,17 +9,34 @@
 
 import assert from "assert";
 import {
-  buildFromIntent,
+  buildFromIntent as buildFromIntentApi,
   Transaction,
   parseTransaction,
   getAssociatedTokenAddress,
 } from "../dist/cjs/js/index.js";
+import type { BaseIntent, BuildFromIntentParams, SolanaIntent } from "../js/intentBuilder.js";
+
+// Keep runtime-invalid inputs available to exercise Rust/WASM validation.
+function buildFromIntent<T extends BaseIntent>(intent: T, params: BuildFromIntentParams) {
+  return buildFromIntentApi(intent as SolanaIntent, params);
+}
 
 describe("buildFromIntent", function () {
   // Common test params
   const feePayer = "DgT9qyYwYKBRDyDw3EfR12LHQCQjtNrKu2qMsXHuosmB";
   const blockhash = "GWaQEymC3Z9SHM2gkh8u12xL1zJPMHPCSVR3pSDpEXE4";
   const splTokenProgramId = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+  const stakePoolProgramId = "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy";
+  const jitoStakePoolConfig = {
+    stakePoolAddress: feePayer,
+    withdrawAuthority: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN",
+    reserveStake: feePayer,
+    destinationPoolAccount: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN",
+    managerFeeAccount: feePayer,
+    poolMint: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN",
+    validatorList: feePayer,
+    sourcePoolAccount: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN",
+  };
 
   describe("payment intent", function () {
     it("should build a simple payment transaction", function () {
@@ -144,6 +161,173 @@ describe("buildFromIntent", function () {
 
       const stakeDelegate = parsed.instructionsData.find((i: any) => i.type === "StakingDelegate");
       assert(stakeDelegate, "Should have StakingDelegate instruction");
+    });
+
+    it("should preserve explicitly selected native staking", function () {
+      const result = buildFromIntent(
+        {
+          intentType: "stake",
+          validatorAddress: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN",
+          amount: { value: 1000000000n },
+          stakingType: "NATIVE",
+        },
+        { feePayer, nonce: { type: "blockhash", value: blockhash } },
+      );
+      const parsed = parseTransaction(result.transaction);
+
+      assert.equal(result.generatedKeypairs.length, 1);
+      assert(parsed.instructionsData.some((i: any) => i.type === "CreateAccount"));
+      assert(parsed.instructionsData.some((i: any) => i.type === "StakeInitialize"));
+      assert(parsed.instructionsData.some((i: any) => i.type === "StakingDelegate"));
+    });
+  });
+
+  describe("Jito stake intent", function () {
+    it("should reject missing pool configuration before native stake construction", function () {
+      assert.throws(
+        () =>
+          buildFromIntent(
+            {
+              intentType: "stake",
+              validatorAddress: "invalid-validator",
+              amount: { value: 1000000000n },
+              stakingType: "JITO",
+            },
+            { feePayer, nonce: { type: "blockhash", value: blockhash } },
+          ),
+        /stakePoolConfig is required for JITO staking/,
+      );
+    });
+
+    it("should retain required-field errors for incomplete pool configuration", function () {
+      assert.throws(
+        () =>
+          buildFromIntent(
+            {
+              intentType: "stake",
+              validatorAddress: feePayer,
+              amount: { value: 1000000000n },
+              stakingType: "JITO",
+              stakePoolConfig: {},
+            },
+            { feePayer, nonce: { type: "blockhash", value: blockhash } },
+          ),
+        /Missing reserveStake/,
+      );
+    });
+
+    it("should build a stake-pool deposit for complete Jito configuration", function () {
+      const result = buildFromIntent(
+        {
+          intentType: "stake",
+          validatorAddress: feePayer,
+          amount: { value: 1000000000n },
+          stakingType: "JITO",
+          stakePoolConfig: jitoStakePoolConfig,
+        },
+        { feePayer, nonce: { type: "blockhash", value: blockhash } },
+      );
+      const parsed = parseTransaction(result.transaction);
+      const deposit = parsed.instructionsData.find((i: any) => i.type === "StakePoolDepositSol");
+
+      assert.equal(
+        result.generatedKeypairs.length,
+        0,
+        "Jito deposit should not generate a stake keypair",
+      );
+      assert.equal(result.transaction.instructions.length, 1, "Should emit only the pool deposit");
+      assert.equal(result.transaction.instructions[0].programId, stakePoolProgramId);
+      assert(deposit, "Should emit StakePoolDepositSol");
+      assert.equal((deposit as any).lamports, 1000000000n);
+      assert(
+        !parsed.instructionsData.some((i: any) => i.type === "StakingDelegate"),
+        "Jito deposit must not contain native delegation",
+      );
+    });
+  });
+
+  describe("Jito unstake intent", function () {
+    it("should reject missing pool configuration before native unstake construction", function () {
+      assert.throws(
+        () =>
+          buildFromIntent(
+            {
+              intentType: "unstake",
+              stakingAddress: "invalid-staking-address",
+              amount: { value: 1000000n },
+              stakingType: "JITO",
+            },
+            { feePayer, nonce: { type: "blockhash", value: blockhash } },
+          ),
+        /stakePoolConfig is required for JITO unstaking/,
+      );
+    });
+
+    it("should retain required-field errors for incomplete pool configuration", function () {
+      assert.throws(
+        () =>
+          buildFromIntent(
+            {
+              intentType: "unstake",
+              stakingAddress: feePayer,
+              validatorAddress: feePayer,
+              amount: { value: 1000000n },
+              stakingType: "JITO",
+              stakePoolConfig: { stakePoolAddress: feePayer },
+            },
+            { feePayer, nonce: { type: "blockhash", value: blockhash } },
+          ),
+        /Missing validatorList/,
+      );
+    });
+
+    it("should build a stake-pool withdrawal for complete Jito configuration", function () {
+      const result = buildFromIntent(
+        {
+          intentType: "unstake",
+          stakingAddress: feePayer,
+          validatorAddress: "5ZWgXcyqrrNpQHCme5SdC5hCeYb2o3fEJhF7Gok3bTVN",
+          amount: { value: 1000000n },
+          stakingType: "JITO",
+          stakePoolConfig: jitoStakePoolConfig,
+        },
+        { feePayer, nonce: { type: "blockhash", value: blockhash } },
+      );
+      const parsed = parseTransaction(result.transaction);
+      const withdrawal = parsed.instructionsData.find(
+        (i: any) => i.type === "StakePoolWithdrawStake",
+      );
+
+      assert.equal(
+        result.transaction.instructions.some((i) => i.programId === stakePoolProgramId),
+        true,
+      );
+      assert(withdrawal, "Should emit StakePoolWithdrawStake");
+      assert.equal((withdrawal as any).poolTokens, 1000000n);
+    });
+  });
+
+  describe("native unstake intent", function () {
+    it("should preserve explicit native deactivation", function () {
+      const result = buildFromIntent(
+        {
+          intentType: "unstake",
+          stakingAddress: "FKjSjCqByQRwSzZoMXA7bKnDbJe41YgJTHFFzBeC42bH",
+          stakingType: "NATIVE",
+        },
+        { feePayer, nonce: { type: "blockhash", value: blockhash } },
+      );
+      const parsed = parseTransaction(result.transaction);
+
+      assert.equal(result.generatedKeypairs.length, 0);
+      assert(
+        parsed.instructionsData.some((i: any) => i.type === "StakingDeactivate"),
+        "Native unstake should still deactivate the existing stake account",
+      );
+      assert(
+        !result.transaction.instructions.some((i) => i.programId === stakePoolProgramId),
+        "Native unstake must not use the Jito stake-pool program",
+      );
     });
   });
 
