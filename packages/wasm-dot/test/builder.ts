@@ -1,5 +1,10 @@
 import * as assert from "assert";
-import { buildTransaction, type TransactionIntent, type BuildContext } from "../js/index.js";
+import {
+  buildTransaction,
+  DotTransaction,
+  type TransactionIntent,
+  type BuildContext,
+} from "../js/index.js";
 import { getWestendMetadata } from "./resources/westend.js";
 
 /** Convert Uint8Array to hex string (no 0x prefix) */
@@ -34,6 +39,68 @@ describe("buildTransaction", () => {
     material: WESTEND_MATERIAL,
     validity: { firstValid: 1000, maxDuration: 2400 },
     referenceBlock: REFERENCE_BLOCK,
+  });
+
+  describe("mortality era", () => {
+    const intent: TransactionIntent = {
+      type: "payment",
+      to: RECIPIENT,
+      amount: 1000000000000n,
+    };
+
+    it("uses one normalized era for inspection, payload, and signed bytes", () => {
+      for (const [maxDuration, expected] of [
+        [0, { type: "immortal" }],
+        [4, { type: "mortal", period: 4, phase: 0 }],
+        [5, { type: "mortal", period: 8, phase: 0 }],
+        [2400, { type: "mortal", period: 4096, phase: 1000 }],
+        [65536, { type: "mortal", period: 65536, phase: 992 }],
+      ] as const) {
+        const context = testContext();
+        context.validity.maxDuration = maxDuration;
+        const tx = buildTransaction(intent, context);
+
+        assert.deepStrictEqual(tx.era, expected);
+        assert.deepStrictEqual(
+          DotTransaction.fromBytes(tx.signablePayload(), WESTEND_MATERIAL).era,
+          expected,
+          `signable payload for maxDuration=${maxDuration}`,
+        );
+
+        tx.addSignature(new Uint8Array(64), new Uint8Array(32));
+        assert.deepStrictEqual(
+          DotTransaction.fromBytes(tx.toBytes(), WESTEND_MATERIAL).era,
+          expected,
+          `signed extrinsic for maxDuration=${maxDuration}`,
+        );
+      }
+    });
+
+    it("rejects unsupported durations with an invalid-era error", () => {
+      for (const maxDuration of [1, 2, 3, 65537, 2 ** 31, 2 ** 31 + 1, 0xffffffff]) {
+        const context = testContext();
+        context.validity.maxDuration = maxDuration;
+
+        assert.throws(
+          () => buildTransaction(intent, context),
+          /invalid transaction: invalid era/i,
+          `maxDuration=${maxDuration}`,
+        );
+      }
+    });
+
+    it("rejects signing context with a different normalized era", () => {
+      const tx = buildTransaction(intent, testContext());
+      assert.throws(
+        () =>
+          tx.setContext(
+            WESTEND_MATERIAL,
+            { firstValid: 1000, maxDuration: 65536 },
+            REFERENCE_BLOCK,
+          ),
+        /validity does not match transaction era/i,
+      );
+    });
   });
 
   describe("payment", () => {
