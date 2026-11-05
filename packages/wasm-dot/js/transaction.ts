@@ -144,6 +144,8 @@ export class DotTransaction {
       material.specVersion,
       material.txVersion,
       material.metadata,
+      material.ss58AddressPolicy?.prefix,
+      material.ss58AddressPolicy?.allowGeneric,
     );
     const validityJs = new ValidityJs(validity.firstValid, validity.maxDuration);
     this._wasm.setContext(materialJs, validityJs, referenceBlock);
@@ -219,6 +221,8 @@ function createContext(material: Material): ParseContextJs {
     material.specVersion,
     material.txVersion,
     material.metadata,
+    material.ss58AddressPolicy?.prefix,
+    material.ss58AddressPolicy?.allowGeneric,
   );
   return new ParseContextJs(m, null);
 }
