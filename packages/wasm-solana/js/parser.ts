@@ -148,6 +148,21 @@ export interface CreateAtaParams {
   programId: string;
 }
 
+/**
+ * Recover all tokens and lamports from a nested ATA into the wallet's
+ * canonical accounts, then close the nested ATA.
+ */
+export interface RecoverNestedAtaParams {
+  type: "RecoverNestedAssociatedTokenAccount";
+  nestedAtaAddress: string;
+  nestedMintAddress: string;
+  destinationAtaAddress: string;
+  ownerAtaAddress: string;
+  ownerMintAddress: string;
+  walletAddress: string;
+  tokenProgramId: string;
+}
+
 /** Close associated token account parameters */
 export interface CloseAtaParams {
   type: "CloseAssociatedTokenAccount";
@@ -224,6 +239,7 @@ export type InstructionParams =
   | SetPriorityFeeParams
   | TokenTransferParams
   | CreateAtaParams
+  | RecoverNestedAtaParams
   | CloseAtaParams
   | MemoParams
   | StakePoolDepositSolParams
