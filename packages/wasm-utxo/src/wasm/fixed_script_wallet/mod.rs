@@ -274,6 +274,39 @@ impl FixedScriptWalletNamespace {
         Ok(WasmRootWalletKeys::from_inner(wallet_keys))
     }
 
+    /// Compute the `[h1, h2]` account indices of a wallet from its three root keys
+    /// `[user, backup, bitgo]` (xpubs or xprvs; private keys are neutered first).
+    ///
+    /// `h1` and `h2` are non-hardened BIP32 indices (`0..=2^31-1`), derived as
+    /// `sha256("BitGo/utxo/wallet-prefix/v1" || K_user || K_backup || K_bitgo)` where
+    /// `K = compressed public key || chain code`. Returns a two-element array.
+    #[wasm_bindgen]
+    pub fn derive_wallet_account(
+        user: &WasmBIP32,
+        backup: &WasmBIP32,
+        bitgo: &WasmBIP32,
+    ) -> Result<Vec<u32>, WasmUtxoError> {
+        let xpubs = [user.to_xpub()?, backup.to_xpub()?, bitgo.to_xpub()?];
+        let (h1, h2) = crate::fixed_script_wallet::wallet_prefix::derive_wallet_account(&xpubs);
+        Ok(vec![h1, h2])
+    }
+
+    /// Compute the relative derivation prefix `44/<coin_type>/<h1>/<h2>` of a wallet from its
+    /// three root keys `[user, backup, bitgo]` (no leading `/` or `m/`).
+    ///
+    /// `coin_type` must be a non-hardened index (`<= 2^31-1`), otherwise this fails with
+    /// `WalletPrefixError.CoinTypeOutOfRange`.
+    #[wasm_bindgen]
+    pub fn derive_wallet_prefix(
+        user: &WasmBIP32,
+        backup: &WasmBIP32,
+        bitgo: &WasmBIP32,
+        coin_type: u32,
+    ) -> Result<String, WasmUtxoError> {
+        let xpubs = [user.to_xpub()?, backup.to_xpub()?, bitgo.to_xpub()?];
+        Ok(crate::fixed_script_wallet::wallet_prefix::derive_wallet_prefix(&xpubs, coin_type)?)
+    }
+
     /// Returns an object mapping BitGo proprietary key subtype names to their `u8` values.
     /// Values are loaded directly from the Rust enum at build time — no duplication in TypeScript.
     #[wasm_bindgen]
@@ -621,6 +654,7 @@ impl BitGoPsbt {
         cosigner: Option<String>,
         sequence: Option<u32>,
         prev_tx: Option<Vec<u8>>,
+        expected_script: Option<Vec<u8>>,
     ) -> Result<usize, WasmUtxoError> {
         use crate::fixed_script_wallet::bitgo_psbt::psbt_wallet_input::{SignPath, SignerKey};
         use crate::fixed_script_wallet::bitgo_psbt::WalletInputOptions;
@@ -654,21 +688,20 @@ impl BitGoPsbt {
             }
         };
 
-        self.psbt
-            .add_wallet_input_at_index(
-                index,
-                txid,
-                vout,
-                value,
-                wallet_keys,
-                script_id,
-                WalletInputOptions {
-                    sign_path,
-                    sequence,
-                    prev_tx: prev_tx.as_deref(),
-                },
-            )
-            .map_err(|e| WasmUtxoError::new(&e))
+        Ok(self.psbt.try_add_wallet_input_at_index(
+            index,
+            txid,
+            vout,
+            value,
+            wallet_keys,
+            script_id,
+            WalletInputOptions {
+                sign_path,
+                sequence,
+                prev_tx: prev_tx.as_deref(),
+                expected_script: expected_script.as_deref(),
+            },
+        )?)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -684,6 +717,7 @@ impl BitGoPsbt {
         cosigner: Option<String>,
         sequence: Option<u32>,
         prev_tx: Option<Vec<u8>>,
+        expected_script: Option<Vec<u8>>,
     ) -> Result<usize, WasmUtxoError> {
         let insert_index = self.psbt.psbt().inputs.len();
         self.add_wallet_input_at_index(
@@ -698,6 +732,7 @@ impl BitGoPsbt {
             cosigner,
             sequence,
             prev_tx,
+            expected_script,
         )
     }
 
