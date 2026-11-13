@@ -137,6 +137,7 @@ pub struct StakingDeactivateParams {
 pub struct StakingWithdrawParams {
     pub from_address: String,
     pub staking_address: String,
+    pub to_address: String,
     pub amount: u64,
 }
 

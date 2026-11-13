@@ -159,8 +159,13 @@ fn parse_transaction_inner(
         let accounts: Vec<String> = instruction
             .accounts
             .iter()
-            .filter_map(|&i| account_keys.get(i as usize).cloned())
-            .collect();
+            .map(|&i| {
+                account_keys
+                    .get(i as usize)
+                    .cloned()
+                    .ok_or_else(|| format!("Invalid account index {} in instruction {}", i, idx))
+            })
+            .collect::<Result<_, _>>()?;
 
         // Decode the instruction
         let ctx = InstructionContext {
