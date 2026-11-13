@@ -2,7 +2,7 @@
 //!
 //! Thin wrapper around core Transaction with #[wasm_bindgen]
 
-use crate::transaction::{decode_metadata, Transaction};
+use crate::transaction::Transaction;
 use crate::types::{Material, ParseContext, Validity};
 use crate::WasmDotError;
 use wasm_bindgen::prelude::*;
@@ -23,10 +23,7 @@ impl WasmTransaction {
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8], context: Option<ParseContextJs>) -> Result<WasmTransaction, JsValue> {
         let ctx = context.map(|c| c.into_inner());
-        let metadata = ctx
-            .as_ref()
-            .and_then(|c| decode_metadata(&c.material.metadata).ok());
-        let inner = Transaction::from_bytes(bytes, ctx, metadata.as_ref())?;
+        let inner = Transaction::from_bytes(bytes, ctx)?;
         Ok(WasmTransaction { inner })
     }
 
@@ -46,10 +43,7 @@ impl WasmTransaction {
         let bytes = hex::decode(hex)
             .map_err(|e| WasmDotError::InvalidInput(format!("Invalid hex: {}", e)))?;
         let ctx = context.map(|c| c.into_inner());
-        let metadata = ctx
-            .as_ref()
-            .and_then(|c| decode_metadata(&c.material.metadata).ok());
-        let inner = Transaction::from_bytes(&bytes, ctx, metadata.as_ref())?;
+        let inner = Transaction::from_bytes(&bytes, ctx)?;
         Ok(WasmTransaction { inner })
     }
 

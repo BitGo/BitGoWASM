@@ -199,18 +199,18 @@ const tx = Transaction.fromBytes(bytes);  // Unnecessary round-trip
 
 ### Context/material must be passed at deserialization time
 
-For chains where the byte layout depends on runtime configuration (e.g. Substrate signed extensions), the deserializer needs chain material/metadata to correctly identify field boundaries in the extrinsic bytes. This context must be passed to `fromHex()`/`fromBytes()`, not to `parseTransaction()`.
+For chains where the byte layout depends on runtime configuration (e.g. Substrate signed extensions), the deserializer needs chain material/metadata to correctly identify field boundaries in the extrinsic bytes. This context must be passed to `fromHex()`/`fromBytes()`. `parseTransaction(tx)` derives material from the transaction and does not accept a separate parsing context.
 
-If you deserialize without material and the chain has non-standard extensions (e.g. Westend's `AuthorizeCall`, `StorageWeightReclaim`), the call_data boundary lands in the wrong place. At that point the damage is done — `tx.callData` returns wrong bytes. `parseTransaction()` only uses context for name resolution (pallet index → name) and address formatting, not for re-parsing the byte layout.
+If you deserialize without material and the chain has non-standard extensions (e.g. Westend's `AuthorizeCall`, `StorageWeightReclaim`), the call_data boundary lands in the wrong place. At that point the damage is done — `tx.callData` returns wrong bytes. `parseTransaction()` uses the transaction's stored material for name resolution (pallet index → name) and address formatting, not for re-parsing the byte layout.
 
 ```typescript
-// ✅ Material passed at deserialization time
+// ✅ Material passed at deserialization time and reused for parsing
 const tx = DotTransaction.fromHex(hex, material);
-const parsed = parseTransaction(tx, { material });
+const parsed = parseTransaction(tx);
 
 // ❌ Material passed only at parse time — call_data boundaries are already wrong
 const tx = DotTransaction.fromHex(hex); // Wrong boundaries baked in
-const parsed = parseTransaction(tx, { material }); // Can't fix it
+const parsed = parseTransaction(tx); // Cannot recover the correct boundaries
 ```
 
 **Good:**
@@ -344,14 +344,14 @@ The wasm package exports `parseTransaction(tx) → ParsedTransaction`. BitGoJS i
 
 ```typescript
 // In @bitgo/wasm-dot (wasm package)
-export function parseTransaction(tx: DotTransaction, context?: ParseContext): ParsedTransaction;
+export function parseTransaction(tx: DotTransaction): ParsedTransaction;
 
 // In sdk-coin-dot (BitGoJS) — wasmParser.ts
 import { DotTransaction, parseTransaction } from "@bitgo/wasm-dot";
 
 function buildExplanation(params) {
   const tx = DotTransaction.fromHex(params.txHex, params.material);
-  const parsed = parseTransaction(tx, { material: params.material });
+  const parsed = parseTransaction(tx);
   // derive transaction type, extract outputs, map to TransactionExplanation...
 }
 ```
