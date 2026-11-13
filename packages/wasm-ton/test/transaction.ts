@@ -56,7 +56,16 @@ describe("Transaction", () => {
       assert.ok(parsed.sendActions.length > 0);
       assert.ok(parsed.sender);
       assert.ok(parsed.signature);
-      assert.equal(parsed.sendActions[0].withdrawAmount, undefined);
+      const action = parsed.sendActions[0];
+      assert.equal(action.withdrawAmount, undefined);
+      assert.equal(action.mode, 3);
+      assert.equal(typeof action.nominalAmount, "bigint");
+      assert.equal(action.effectiveAmountKind, "Exact");
+      assert.equal(action.payFeesSeparately, true);
+      assert.equal(action.ignoreActionErrors, true);
+      assert.equal(action.carriesAllBalance, false);
+      assert.equal(action.destroyAccountIfZero, false);
+      assert.equal("amount" in action, false);
     });
 
     it("should parse a whales deposit transaction", () => {

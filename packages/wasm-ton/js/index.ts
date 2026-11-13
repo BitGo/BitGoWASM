@@ -17,7 +17,13 @@ export { buildTransaction } from "./builder.js";
 
 // Type exports
 export type { DecodedAddress } from "./address.js";
-export type { ParsedTransaction, ParsedSendAction, JettonTransferFields } from "./parser.js";
+export { EffectiveAmountKinds } from "./parser.js";
+export type {
+  EffectiveAmountKind,
+  ParsedTransaction,
+  ParsedSendAction,
+  JettonTransferFields,
+} from "./parser.js";
 export type {
   BuildContext,
   PaymentIntent,
