@@ -49,11 +49,14 @@ impl WasmRootWalletKeys {
                 DerivationPath::from_str("m/0/0").unwrap(),
                 DerivationPath::from_str("m/0/0").unwrap(),
             ],
-        );
+        )?;
         Ok(WasmRootWalletKeys { inner })
     }
 
     /// Create a RootWalletKeys from three BIP32 keys with custom derivation prefixes
+    ///
+    /// Prefixes must be non-hardened: an xpub cannot derive a hardened child, so a hardened
+    /// component (`'` or `h`) is rejected with `WalletKeysError.HardenedDerivationPrefix`.
     ///
     /// # Arguments
     /// - `user`: User key (first xpub)
@@ -93,8 +96,29 @@ impl WasmRootWalletKeys {
             .try_into()
             .map_err(|_| WasmUtxoError::new("Failed to convert derivation paths"))?;
 
-        let inner = RootWalletKeys::new_with_derivation_prefixes(xpubs, derivation_paths);
+        let inner = RootWalletKeys::new_with_derivation_prefixes(xpubs, derivation_paths)?;
         Ok(WasmRootWalletKeys { inner })
+    }
+
+    /// Return a copy of these keys that also recognises the wallet's BIP44-style subtree
+    /// `44/<coin_type>/<h1>/<h2>` when parsing PSBTs (`(h1, h2)` computed from the three root
+    /// keys). Building is unaffected: the keys' own derivation prefixes are still used.
+    ///
+    /// `coin_type` is the BIP44 coin type of the coin family, supplied by the caller. Fails with
+    /// `WalletPrefixError.CoinTypeOutOfRange` if it is larger than `2^31-1`.
+    #[wasm_bindgen]
+    pub fn with_bip44_coin_type(
+        &self,
+        coin_type: u32,
+    ) -> Result<WasmRootWalletKeys, WasmUtxoError> {
+        let inner = self.inner.clone().with_bip44_coin_type(coin_type)?;
+        Ok(WasmRootWalletKeys { inner })
+    }
+
+    /// The BIP44-style prefix `44/<coin_type>/<h1>/<h2>` these keys recognise, if set.
+    #[wasm_bindgen]
+    pub fn bip44_prefix(&self) -> Option<String> {
+        self.inner.bip44_prefix().map(|p| p.to_string())
     }
 
     /// Get the user key (first xpub)

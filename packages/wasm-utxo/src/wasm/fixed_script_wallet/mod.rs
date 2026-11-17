@@ -257,21 +257,66 @@ impl FixedScriptWalletNamespace {
     /// Sort an xpub triple into [user, backup, bitgo] order by validating
     /// against the PSBT's wallet inputs. Returns a RootWalletKeys with the
     /// correct ordering.
+    ///
+    /// If `bip44_coin_type` is set, inputs under the wallet's BIP44-style prefix
+    /// `44/<coin_type>/<h1>/<h2>` are recognised as well, and the returned keys recognise it too.
     #[wasm_bindgen]
     pub fn to_wallet_keys(
         psbt: &BitGoPsbt,
         user_or_a: &WasmBIP32,
         backup_or_b: &WasmBIP32,
         bitgo_or_c: &WasmBIP32,
+        bip44_coin_type: Option<u32>,
     ) -> Result<WasmRootWalletKeys, WasmUtxoError> {
         let xpubs = [
             user_or_a.to_xpub()?,
             backup_or_b.to_xpub()?,
             bitgo_or_c.to_xpub()?,
         ];
-        let wallet_keys = crate::fixed_script_wallet::bitgo_psbt::to_wallet_keys(&psbt.psbt, xpubs)
-            .map_err(|e| WasmUtxoError::new(&e))?;
+        if let Some(coin_type) = bip44_coin_type {
+            // Fail on a bad coin type before trying permutations.
+            crate::fixed_script_wallet::wallet_prefix::derive_wallet_prefix(&xpubs, coin_type)?;
+        }
+        let wallet_keys = crate::fixed_script_wallet::bitgo_psbt::to_wallet_keys(
+            &psbt.psbt,
+            xpubs,
+            bip44_coin_type,
+        )
+        .map_err(|e| WasmUtxoError::new(&e))?;
         Ok(WasmRootWalletKeys::from_inner(wallet_keys))
+    }
+
+    /// Compute the `[h1, h2]` account indices of a wallet from its three root keys
+    /// `[user, backup, bitgo]` (xpubs or xprvs; private keys are neutered first).
+    ///
+    /// `h1` and `h2` are non-hardened BIP32 indices (`0..=2^31-1`), derived as
+    /// `sha256("BitGo/utxo/wallet-prefix/v1" || K_user || K_backup || K_bitgo)` where
+    /// `K = compressed public key || chain code`. Returns a two-element array.
+    #[wasm_bindgen]
+    pub fn derive_wallet_account(
+        user: &WasmBIP32,
+        backup: &WasmBIP32,
+        bitgo: &WasmBIP32,
+    ) -> Result<Vec<u32>, WasmUtxoError> {
+        let xpubs = [user.to_xpub()?, backup.to_xpub()?, bitgo.to_xpub()?];
+        let (h1, h2) = crate::fixed_script_wallet::wallet_prefix::derive_wallet_account(&xpubs);
+        Ok(vec![h1, h2])
+    }
+
+    /// Compute the relative derivation prefix `44/<coin_type>/<h1>/<h2>` of a wallet from its
+    /// three root keys `[user, backup, bitgo]` (no leading `/` or `m/`).
+    ///
+    /// `coin_type` must be a non-hardened index (`<= 2^31-1`), otherwise this fails with
+    /// `WalletPrefixError.CoinTypeOutOfRange`.
+    #[wasm_bindgen]
+    pub fn derive_wallet_prefix(
+        user: &WasmBIP32,
+        backup: &WasmBIP32,
+        bitgo: &WasmBIP32,
+        coin_type: u32,
+    ) -> Result<String, WasmUtxoError> {
+        let xpubs = [user.to_xpub()?, backup.to_xpub()?, bitgo.to_xpub()?];
+        Ok(crate::fixed_script_wallet::wallet_prefix::derive_wallet_prefix(&xpubs, coin_type)?)
     }
 
     /// Returns an object mapping BitGo proprietary key subtype names to their `u8` values.

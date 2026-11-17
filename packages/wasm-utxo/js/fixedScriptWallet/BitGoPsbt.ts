@@ -5,7 +5,7 @@ import {
 } from "../wasm/wasm_utxo.js";
 import type { IPsbtWithAddress } from "../psbt.js";
 import { PsbtBase } from "../psbtBase.js";
-import { type WalletKeysArg, RootWalletKeys } from "./RootWalletKeys.js";
+import { type WalletKeysArg, RootWalletKeys, assertCoinTypeU32 } from "./RootWalletKeys.js";
 import { type ReplayProtectionArg, ReplayProtection } from "./ReplayProtection.js";
 import { type BIP32Arg, BIP32, isBIP32Arg } from "../bip32.js";
 import { type ECPairArg, ECPair } from "../ecpair.js";
@@ -40,7 +40,11 @@ export type ParsedInput = {
   scriptId: ScriptId | null;
   scriptType: InputScriptType;
   sequence: number;
-  /** Full BIP32 derivation path from the wallet xpub (e.g. "0/1"). Null for replay-protection inputs. */
+  /**
+   * Full BIP32 derivation path recorded in the PSBT, from the wallet root key: the prefix followed
+   * by `[chain, index]` (e.g. "0/0/20/5" for legacy, "44/0/<h1>/<h2>/20/5" for BIP44-style).
+   * Null for replay-protection inputs.
+   */
   derivationPath: string | null;
 };
 
@@ -51,7 +55,11 @@ export type ParsedOutput = {
   /** Set only when the derivation path is chain-standard (chain code encodes script type per BitGo convention). */
   scriptId: ScriptId | null;
   paygo: boolean;
-  /** Full BIP32 derivation path from the wallet xpub (e.g. "0/1"). Null for external outputs. */
+  /**
+   * Full BIP32 derivation path recorded in the PSBT, from the wallet root key: the prefix followed
+   * by `[chain, index]` (e.g. "0/0/20/5" for legacy, "44/0/<h1>/<h2>/20/5" for BIP44-style).
+   * Null for external outputs.
+   */
   derivationPath: string | null;
 };
 
@@ -1098,14 +1106,25 @@ export class BitGoPsbt<
  * was built with derived keys (from coldDerivationSeed) but the caller only
  * has root xpubs. Prefer passing wallet keys explicitly wherever possible.
  *
+ * @param options.bip44CoinType - BIP44 coin type of the coin family. If set, inputs under the
+ *   wallet's BIP44-style prefix `44/<coinType>/<h1>/<h2>` are resolved too, and the returned keys
+ *   recognise that prefix (see {@link RootWalletKeys.withBip44CoinType}).
  * @returns Sorted [user, backup, bitgo] RootWalletKeys
  */
-export function getWalletKeysFromPsbt(psbt: BitGoPsbt, xpubs: BIP32[]): RootWalletKeys {
+export function getWalletKeysFromPsbt(
+  psbt: BitGoPsbt,
+  xpubs: BIP32[],
+  options: { bip44CoinType?: number } = {},
+): RootWalletKeys {
+  if (options.bip44CoinType !== undefined) {
+    assertCoinTypeU32(options.bip44CoinType);
+  }
   const wasmKeys = FixedScriptWalletNamespace.to_wallet_keys(
     psbt.wasm,
     xpubs[0].wasm,
     xpubs[1].wasm,
     xpubs[2].wasm,
+    options.bip44CoinType,
   );
   return RootWalletKeys.fromWasm(wasmKeys);
 }

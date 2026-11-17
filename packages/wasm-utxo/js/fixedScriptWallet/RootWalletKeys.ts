@@ -4,6 +4,18 @@ import { Triple } from "../triple.js";
 import { WasmRootWalletKeys, WasmBIP32 } from "../wasm/wasm_utxo.js";
 
 /**
+ * wasm-bindgen wraps numbers into u32, so reject what cannot be a u32 before it gets there.
+ * Values in `(2^31-1, 2^32-1]` are rejected by the Rust side with the typed
+ * `WalletPrefixError.CoinTypeOutOfRange`.
+ * @internal
+ */
+export function assertCoinTypeU32(coinType: number): void {
+  if (!Number.isInteger(coinType) || coinType < 0 || coinType > 0xffffffff) {
+    throw new RangeError(`coinType must be an integer in 0..=2^31-1, got ${coinType}`);
+  }
+}
+
+/**
  * IWalletKeys represents the various forms that wallet keys can take
  * before being converted to a RootWalletKeys instance
  */
@@ -125,6 +137,30 @@ export class RootWalletKeys {
       derivationPrefixes[2],
     );
     return new RootWalletKeys(wasm);
+  }
+
+  /**
+   * Return keys that also recognise the wallet's BIP44-style subtree `44/<coinType>/<h1>/<h2>`
+   * (`h1`, `h2` from `deriveWalletAccount`) when parsing and explaining PSBTs, in addition to
+   * these keys' own derivation prefixes. Inputs and outputs recorded under any other prefix are
+   * not recognised. Building (addresses, inputs, outputs) keeps using the keys' own prefixes.
+   *
+   * @param coinType - BIP44 coin type of the coin family, an integer in `0..=2^31-1`. wasm-utxo
+   *   has no coin registry: the caller supplies it (e.g. `coin.bip44CoinType` from `@bitgo/statics`).
+   * @throws a `WasmUtxoError` with code `WalletPrefixError.CoinTypeOutOfRange` if `coinType` is
+   *   larger than `2^31-1`
+   */
+  withBip44CoinType(coinType: number): RootWalletKeys {
+    assertCoinTypeU32(coinType);
+    return new RootWalletKeys(this._wasm.with_bip44_coin_type(coinType));
+  }
+
+  /**
+   * The BIP44-style prefix `44/<coinType>/<h1>/<h2>` these keys recognise, set by
+   * {@link withBip44CoinType}; `undefined` otherwise.
+   */
+  bip44Prefix(): string | undefined {
+    return this._wasm.bip44_prefix() ?? undefined;
   }
 
   /**
