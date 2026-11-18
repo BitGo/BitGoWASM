@@ -55,12 +55,23 @@ export interface NonceInitializeParams {
   authAddress: string;
 }
 
+/** Lockup terms stored by the Stake Program. */
+export interface StakeLockup {
+  /** Unix timestamp as a lossless signed 64-bit integer. */
+  unixTimestamp: bigint;
+  /** Epoch as a lossless unsigned 64-bit integer. */
+  epoch: bigint;
+  /** Stake lockup custodian public key. */
+  custodian: string;
+}
+
 /** Stake initialize parameters (intermediate - combined into StakingActivate) */
 export interface StakeInitializeParams {
   type: "StakeInitialize";
   stakingAddress: string;
   staker: string;
   withdrawer: string;
+  lockup: StakeLockup;
 }
 
 /** Staking activate parameters (combined type) */
@@ -71,6 +82,7 @@ export interface StakingActivateParams {
   amount: bigint;
   validator: string;
   stakingType: "NATIVE" | "JITO" | "MARINADE";
+  lockup: StakeLockup;
 }
 
 /** Staking deactivate parameters */
@@ -104,14 +116,6 @@ export interface StakingAuthorizeParams {
   newAuthorizeAddress: string;
   authorizeType: "Staker" | "Withdrawer";
   custodianAddress?: string;
-}
-
-/** Stake initialize parameters (intermediate type) */
-export interface StakeInitializeParams {
-  type: "StakeInitialize";
-  stakingAddress: string;
-  staker: string;
-  withdrawer: string;
 }
 
 /** Set compute unit limit parameters */

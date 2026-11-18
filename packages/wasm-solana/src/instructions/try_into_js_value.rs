@@ -114,6 +114,16 @@ impl TryIntoJsValue for NonceInitializeParams {
 // Stake Program Params
 // =============================================================================
 
+impl TryIntoJsValue for StakeLockupParams {
+    fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
+        js_obj!(
+            "unixTimestamp" => self.unix_timestamp,
+            "epoch" => self.epoch,
+            "custodian" => self.custodian
+        )
+    }
+}
+
 impl TryIntoJsValue for StakingActivateParams {
     fn try_to_js_value(&self) -> Result<JsValue, JsConversionError> {
         js_obj!(
@@ -122,7 +132,8 @@ impl TryIntoJsValue for StakingActivateParams {
             "stakingAddress" => self.staking_address,
             "amount" => self.amount,
             "validator" => self.validator,
-            "stakingType" => self.staking_type
+            "stakingType" => self.staking_type,
+            "lockup" => self.lockup
         )
     }
 }
@@ -178,7 +189,8 @@ impl TryIntoJsValue for StakeInitializeParams {
             "type" => "StakeInitialize",
             "stakingAddress" => self.staking_address,
             "staker" => self.staker,
-            "withdrawer" => self.withdrawer
+            "withdrawer" => self.withdrawer,
+            "lockup" => self.lockup
         )
     }
 }
