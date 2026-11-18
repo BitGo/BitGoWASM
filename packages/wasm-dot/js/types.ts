@@ -45,7 +45,7 @@ export interface Material {
 export interface Validity {
   /** Block number when transaction becomes valid */
   firstValid: number;
-  /** Maximum duration in blocks (default: 2400, ~4 hours) */
+  /** Maximum duration in blocks (0 for immortal, 4..=65,536 for mortal; default: 2400) */
   maxDuration: number;
 }
 
