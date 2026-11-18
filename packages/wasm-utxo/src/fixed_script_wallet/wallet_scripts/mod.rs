@@ -218,6 +218,11 @@ impl OutputScriptType {
     /// Iterates all known script types; skips types unsupported by the network or
     /// incompatible with the script shape, then checks by derivation.
     /// Returns the first matching type, or `None` if none match.
+    ///
+    /// `(chain, index)` are the last two components of `path`. The keys are derived under the
+    /// wallet's BIP44-style prefix if `path` is `<that prefix>/<chain>/<index>` (see
+    /// [`RootWalletKeys::with_bip44_coin_type`]), and under the keys' own derivation prefixes
+    /// otherwise. No other prefix is accepted: a script derived under one does not match.
     pub fn check(
         wallet_keys: &RootWalletKeys,
         output_script: &ScriptBuf,
@@ -227,7 +232,7 @@ impl OutputScriptType {
     ) -> Option<Self> {
         let (chain, index) = path_chain_index(path)?;
         let derived_keys = wallet_keys
-            .derive_path(&chain_index_path(chain, index))
+            .derive_for_recorded_path(path, chain, index)
             .ok()?;
         let pub_triple = to_pub_triple(&derived_keys);
         for &script_type in Self::all() {

@@ -3,6 +3,8 @@
 //! This module provides PSBT deserialization that works across different
 //! bitcoin-like networks, including those with non-standard transaction formats.
 
+#[cfg(test)]
+mod bip44_prefix_tests;
 pub mod dash_psbt;
 mod legacy_txformat;
 pub mod p2tr_musig2_input;
@@ -3389,9 +3391,14 @@ const XPUB_TRIPLE_PERMUTATIONS: [[usize; 3]; 6] = [
 /// For each permutation, constructs `RootWalletKeys` and validates every non-replay-protection
 /// input against it. The first permutation where all inputs pass validation is returned.
 /// Works for all script types including p2tr.
+///
+/// If `bip44_coin_type` is set, the candidate keys also recognise the wallet's BIP44-style
+/// prefix (see [`RootWalletKeys::with_bip44_coin_type`]), so BIP44-style and mixed PSBTs
+/// resolve too, and the returned keys carry it.
 pub fn to_wallet_keys(
     psbt: &BitGoPsbt,
     xpubs: crate::fixed_script_wallet::XpubTriple,
+    bip44_coin_type: Option<u32>,
 ) -> Result<crate::fixed_script_wallet::RootWalletKeys, String> {
     use crate::fixed_script_wallet::RootWalletKeys;
 
@@ -3415,7 +3422,12 @@ pub fn to_wallet_keys(
 
     for perm in &XPUB_TRIPLE_PERMUTATIONS {
         let permuted = [xpubs[perm[0]], xpubs[perm[1]], xpubs[perm[2]]];
-        let wallet_keys = RootWalletKeys::new(permuted);
+        let wallet_keys = match bip44_coin_type {
+            Some(coin_type) => RootWalletKeys::new(permuted)
+                .with_bip44_coin_type(coin_type)
+                .map_err(|e| e.to_string())?,
+            None => RootWalletKeys::new(permuted),
+        };
 
         let all_match = wallet_inputs.iter().all(|(tx_input, psbt_input)| {
             let output_script = psbt_wallet_input::get_output_script_and_value(
@@ -5664,7 +5676,7 @@ mod tests {
         )
         .expect("add_wallet_input");
 
-        let result = to_wallet_keys(&psbt, xpubs).expect("should find correct order");
+        let result = to_wallet_keys(&psbt, xpubs, None).expect("should find correct order");
         assert_eq!(result.xpubs, xpubs);
     }
 
@@ -5693,7 +5705,7 @@ mod tests {
 
         // Shuffle the xpubs: [bitgo, user, backup] instead of [user, backup, bitgo]
         let shuffled = [xpubs[2], xpubs[0], xpubs[1]];
-        let result = to_wallet_keys(&psbt, shuffled).expect("should find correct order");
+        let result = to_wallet_keys(&psbt, shuffled, None).expect("should find correct order");
         // Result should be sorted back to [user, backup, bitgo]
         assert_eq!(result.xpubs, xpubs);
     }
