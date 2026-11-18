@@ -6,6 +6,10 @@
 [advisories]
 ignore = [
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint >=0.7.6 is unreachable behind k256 0.13.4 (musig2/secp); the affected constant-time ops are not exposed on attacker-controlled input in wasm-utxo's k256 usage" },
+    # zebra-chain is a native-only dev dependency for Zcash cross-checks, not shipped WASM.
+    # No patched versions exist; remove each ignore when zebra-chain drops that dependency.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono is used through native-only dev dependency zebra-chain" },
+    { id = "RUSTSEC-2026-0542", reason = "unmaintained humantime is used through native-only dev dependency zebra-chain" },
 ]
 # Deny multiple versions of dependencies
 [bans]
