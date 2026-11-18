@@ -59,6 +59,7 @@ pub enum ParsedInstruction {
     // Token instructions (basic support)
     TokenTransfer(TokenTransferParams),
     CreateAssociatedTokenAccount(CreateAtaParams),
+    RecoverNestedAssociatedTokenAccount(RecoverNestedAtaParams),
     CloseAssociatedTokenAccount(CloseAtaParams),
 
     // Memo
@@ -201,6 +202,18 @@ pub struct CreateAtaParams {
     pub owner_address: String,
     pub payer_address: String,
     pub program_id: String,
+}
+
+/// Recover all tokens and lamports from a nested ATA, then close that account.
+#[derive(Debug, Clone)]
+pub struct RecoverNestedAtaParams {
+    pub nested_ata_address: String,
+    pub nested_mint_address: String,
+    pub destination_ata_address: String,
+    pub owner_ata_address: String,
+    pub owner_mint_address: String,
+    pub wallet_address: String,
+    pub token_program_id: String,
 }
 
 #[derive(Debug, Clone)]
