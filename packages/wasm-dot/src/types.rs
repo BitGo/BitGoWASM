@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Chain material metadata required for transaction encoding/decoding
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Material {
     /// Chain genesis hash (e.g., "0x91b171bb158e2d...")
