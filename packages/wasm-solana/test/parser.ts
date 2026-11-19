@@ -84,6 +84,75 @@ describe("parseTransaction", () => {
   });
 });
 
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function decodeBase58(value: string): Uint8Array {
+  const bytes = [0];
+  for (const character of value) {
+    let carry = BASE58_ALPHABET.indexOf(character);
+    assert.notStrictEqual(carry, -1);
+    for (let i = 0; i < bytes.length; i++) {
+      carry += bytes[i] * 58;
+      bytes[i] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+
+  const leadingZeroes = value.match(/^1*/)?.[0].length ?? 0;
+  const decoded = bytes.reverse();
+  while (decoded.length > 0 && decoded[0] === 0) {
+    decoded.shift();
+  }
+  return new Uint8Array([...new Array(leadingZeroes).fill(0), ...decoded]);
+}
+
+function shortVec(value: number): number[] {
+  const bytes: number[] = [];
+  while (value >= 0x80) {
+    bytes.push((value & 0x7f) | 0x80);
+    value >>= 7;
+  }
+  bytes.push(value);
+  return bytes;
+}
+
+function createStakeWithdrawTransaction(recipientByte: number, missingRecipient = false): Uint8Array {
+  const accountKeys = [
+    new Uint8Array(32).fill(1), // withdraw authority and fee payer
+    new Uint8Array(32).fill(2), // stake account
+    new Uint8Array(32).fill(recipientByte),
+    decodeBase58("SysvarC1ock11111111111111111111111111111111"),
+    decodeBase58("SysvarStakeHistory1111111111111111111111111"),
+    decodeBase58("Stake11111111111111111111111111111111111111"),
+    ...(missingRecipient ? [new Uint8Array(32).fill(7)] : []),
+  ];
+  for (const key of accountKeys) {
+    assert.strictEqual(key.length, 32);
+  }
+
+  const instructionAccounts = missingRecipient ? [1, 255, 3, 4, 0, 6] : [1, 2, 3, 4, 0];
+  const instructionData = new Uint8Array(12);
+  const dataView = new DataView(instructionData.buffer);
+  dataView.setUint32(0, 4, true); // StakeInstruction::Withdraw
+  dataView.setBigUint64(4, 100_000n, true);
+
+  const message = [1, ...new Uint8Array(64)]; // one unsigned signature
+  message.push(1, 0, accountKeys.length - 3); // legacy header
+  message.push(...shortVec(accountKeys.length));
+  for (const key of accountKeys) {
+    message.push(...key);
+  }
+  message.push(...new Uint8Array(32)); // recent blockhash
+  message.push(...shortVec(1), 5); // one instruction, stake program at index 5
+  message.push(...shortVec(instructionAccounts.length), ...instructionAccounts);
+  message.push(...shortVec(instructionData.length), ...instructionData);
+  return Uint8Array.from(message);
+}
+
 describe("StakingAuthorize parsing", () => {
   it("should parse CLI-generated StakingAuthorize transaction that web3.js cannot decode", () => {
     // This is a raw CLI-generated Stake Authorize transaction that web3.js fails to decode
@@ -110,5 +179,33 @@ describe("StakingAuthorize parsing", () => {
       "J8cECxcT6Q6H4fcQCvd4LbhmmSjsHL63kpJtrUcrF74Q",
     );
     assert.strictEqual(authorizeInstr.authorizeType, "Withdrawer");
+  });
+});
+
+describe("StakingWithdraw parsing", () => {
+  it("preserves the recipient and distinguishes withdrawals that differ only by recipient", () => {
+    const first = parseTransaction(Transaction.fromBytes(createStakeWithdrawTransaction(3)));
+    const second = parseTransaction(Transaction.fromBytes(createStakeWithdrawTransaction(4)));
+    const firstWithdraw = first.instructionsData[0];
+    const secondWithdraw = second.instructionsData[0];
+
+    assert.strictEqual(firstWithdraw.type, "StakingWithdraw");
+    assert.strictEqual(secondWithdraw.type, "StakingWithdraw");
+    if (firstWithdraw.type !== "StakingWithdraw" || secondWithdraw.type !== "StakingWithdraw") {
+      return;
+    }
+
+    assert.strictEqual(firstWithdraw.toAddress, first.accountKeys[2]);
+    assert.strictEqual(secondWithdraw.toAddress, second.accountKeys[2]);
+    assert.notStrictEqual(firstWithdraw.toAddress, secondWithdraw.toAddress);
+    assert.strictEqual(firstWithdraw.stakingAddress, secondWithdraw.stakingAddress);
+    assert.strictEqual(firstWithdraw.fromAddress, secondWithdraw.fromAddress);
+    assert.strictEqual(firstWithdraw.amount, secondWithdraw.amount);
+  });
+
+  it("rejects a withdraw whose recipient account index cannot be resolved", () => {
+    assert.throws(() => {
+      parseTransaction(Transaction.fromBytes(createStakeWithdrawTransaction(3, true)));
+    });
   });
 });
