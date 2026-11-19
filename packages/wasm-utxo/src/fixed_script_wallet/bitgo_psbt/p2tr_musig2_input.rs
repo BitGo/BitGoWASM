@@ -24,20 +24,35 @@ pub type TapKeyOrigins = std::collections::BTreeMap<XOnlyPublicKey, (Vec<TapLeaf
 
 /// Get the TapSighashType from a PSBT input
 ///
-/// This function reads the sighash_type field from the PSBT input and converts it
-/// to a TapSighashType. If not set or invalid for taproot, returns Default.
-pub fn get_tap_sighash_type(input: &Input) -> crate::bitcoin::sighash::TapSighashType {
+/// This function reads the complete 32-bit sighash value from the PSBT input.
+/// An absent value selects Default; any present non-Taproot value is rejected.
+pub fn get_tap_sighash_type(
+    input: &Input,
+) -> Result<crate::bitcoin::sighash::TapSighashType, Musig2Error> {
     use crate::bitcoin::sighash::TapSighashType;
 
-    match input.sighash_type {
-        Some(psbt_sighash) => {
-            // PsbtSighashType::to_u32() returns the raw sighash value
-            // For taproot, valid values are 0x00-0x03 and 0x81-0x83
-            TapSighashType::from_consensus_u8(psbt_sighash.to_u32() as u8)
-                .unwrap_or(TapSighashType::Default)
+    let Some(psbt_sighash) = input.sighash_type else {
+        return Ok(TapSighashType::Default);
+    };
+
+    let raw = psbt_sighash.to_u32();
+    match raw {
+        0x00 | 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83 => {
+            TapSighashType::from_consensus_u8(raw as u8)
+                .map_err(|_| Musig2Error::InvalidSighashType { value: raw })
         }
-        None => TapSighashType::Default,
+        value => Err(Musig2Error::InvalidSighashType { value }),
     }
+}
+
+/// Validate the sighash declarations of every MuSig2 input before a bulk operation.
+pub fn validate_musig2_sighash_types(psbt: &Psbt) -> Result<(), Musig2Error> {
+    for input in &psbt.inputs {
+        if Musig2Input::is_musig2_input(input) {
+            get_tap_sighash_type(input)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn derive_xpriv_for_input_tap(
@@ -91,6 +106,8 @@ pub enum Musig2Error {
     SignatureAggregation(String),
     /// Missing nonces for aggregation
     MissingNonces,
+    /// Invalid full-width PSBT sighash value
+    InvalidSighashType { value: u32 },
     /// Tap output key mismatch
     TapOutputKeyMismatch { expected: String, got: String },
 }
@@ -131,6 +148,9 @@ impl std::fmt::Display for Musig2Error {
                 write!(f, "Signature aggregation error: {}", msg)
             }
             Musig2Error::MissingNonces => write!(f, "Missing nonces for aggregation"),
+            Musig2Error::InvalidSighashType { value } => {
+                write!(f, "Invalid Taproot sighash type: {:#010x}", value)
+            }
             Musig2Error::TapOutputKeyMismatch { expected, got } => {
                 write!(
                     f,
@@ -569,6 +589,9 @@ impl<'a> Musig2Context<'a> {
         use crate::bitcoin::sighash::SighashCache;
         use miniscript::psbt::PsbtExt;
 
+        // Reject malformed declarations before any finalization work or mutation.
+        let expected_sighash_type = get_tap_sighash_type(&self.psbt.inputs[self.input_index])?;
+
         // Step 1: Collect all prevouts for sighash computation
         let prevouts = collect_prevouts(self.psbt)?;
 
@@ -585,22 +608,24 @@ impl<'a> Musig2Context<'a> {
             &prevouts,
             self.input_index,
             &tap_merkle_root,
+            expected_sighash_type,
         )?;
 
-        // Step 3: Set tap_key_sig
+        // Restore the input if standard finalization rejects the aggregated signature.
+        let original_input = self.psbt.inputs[self.input_index].clone();
         self.psbt.inputs[self.input_index].tap_key_sig = Some(taproot_sig);
+        if let Err(e) = self.psbt.finalize_inp_mut(secp, self.input_index) {
+            self.psbt.inputs[self.input_index] = original_input;
+            return Err(Musig2Error::SignatureAggregation(format!(
+                "Finalization failed: {}",
+                e
+            )));
+        }
 
-        // Step 4: Clear MuSig2 proprietary fields (they're no longer needed)
+        // Clear MuSig2 proprietary fields only after finalization succeeds.
         self.psbt.inputs[self.input_index]
             .proprietary
             .retain(|key, _| !is_musig2_key(key));
-
-        // Step 5: Use standard miniscript finalization for the rest!
-        self.psbt
-            .finalize_inp_mut(secp, self.input_index)
-            .map_err(|e| {
-                Musig2Error::SignatureAggregation(format!("Finalization failed: {}", e))
-            })?;
 
         Ok(())
     }
@@ -617,6 +642,7 @@ impl<'a> Musig2Context<'a> {
         tap_output_key: crate::bitcoin::key::UntweakedPublicKey,
         pub_nonce: PubNonce,
     ) -> Result<(), Musig2Error> {
+        get_tap_sighash_type(&self.psbt.inputs[self.input_index])?;
         let musig2_nonce = Musig2PubNonce {
             participant_pub_key,
             tap_output_key,
@@ -649,6 +675,14 @@ impl<'a> Musig2Context<'a> {
         sighash_type: crate::bitcoin::sighash::TapSighashType,
     ) -> Result<(), Musig2Error> {
         use crate::bitcoin::sighash::TapSighashType;
+
+        let expected_sighash_type = get_tap_sighash_type(&self.psbt.inputs[self.input_index])?;
+        if sighash_type != expected_sighash_type {
+            return Err(Musig2Error::SignatureAggregation(format!(
+                "Sighash type mismatch: PSBT declares {:?}, signature uses {:?}",
+                expected_sighash_type, sighash_type
+            )));
+        }
 
         // Serialize the partial signature (32 bytes)
         let mut sig_bytes = partial_sig.serialize().to_vec();
@@ -698,6 +732,8 @@ impl<'a> Musig2Context<'a> {
         xpriv: &Xpriv,
         session_id: [u8; 32],
     ) -> Result<(musig2::FirstRound, musig2::PubNonce), Musig2Error> {
+        let sighash_type = get_tap_sighash_type(&self.psbt.inputs[self.input_index])?;
+
         use crate::bitcoin::bip32::Xpub;
         use crate::bitcoin::sighash::{Prevouts, SighashCache};
         use crate::bitcoin::taproot::TapNodeHash;
@@ -732,9 +768,6 @@ impl<'a> Musig2Context<'a> {
             .map_err(|e| {
                 Musig2Error::SignatureAggregation(format!("Failed to apply taproot tweak: {}", e))
             })?;
-
-        // Get sighash type from PSBT input
-        let sighash_type = get_tap_sighash_type(&self.psbt.inputs[self.input_index]);
 
         // Compute sighash for SecNonceSpices
         let prevouts = collect_prevouts(self.psbt)?;
@@ -803,8 +836,8 @@ impl<'a> Musig2Context<'a> {
     ) -> Result<(), Musig2Error> {
         use crate::bitcoin::sighash::{Prevouts, SighashCache};
 
-        // Get sighash type from PSBT input
-        let sighash_type = get_tap_sighash_type(&self.psbt.inputs[self.input_index]);
+        // Get the validated sighash type before computing or signing anything.
+        let sighash_type = get_tap_sighash_type(&self.psbt.inputs[self.input_index])?;
 
         // Compute sighash message (needed for finalize)
         let prevouts = collect_prevouts(self.psbt)?;
@@ -845,8 +878,8 @@ impl<'a> Musig2Context<'a> {
     ) -> Result<(), Musig2Error> {
         use crate::bitcoin::sighash::Prevouts;
 
-        // Get sighash type from PSBT input
-        let sighash_type = get_tap_sighash_type(&self.psbt.inputs[self.input_index]);
+        // Get the validated sighash type before computing or signing anything.
+        let sighash_type = get_tap_sighash_type(&self.psbt.inputs[self.input_index])?;
 
         // Compute sighash using the shared cache
         let sighash = sighash_cache
@@ -1060,6 +1093,7 @@ impl Musig2Input {
         prevouts: &[crate::bitcoin::TxOut],
         input_index: usize,
         tap_merkle_root: &crate::bitcoin::taproot::TapNodeHash,
+        expected_sighash_type: crate::bitcoin::sighash::TapSighashType,
     ) -> Result<crate::bitcoin::taproot::Signature, Musig2Error> {
         use crate::bitcoin::sighash::Prevouts;
         use musig2::{AggNonce, BinaryEncoding, KeyAggContext};
@@ -1078,17 +1112,17 @@ impl Musig2Input {
             )));
         }
 
-        // Extract sighash type from partial signatures (all must match)
-        let sighash_type = self.partial_sigs[0].sighash_type()?;
-        for sig in &self.partial_sigs[1..] {
+        // Every partial signature must agree with the validated PSBT declaration.
+        for sig in &self.partial_sigs {
             let sig_sighash = sig.sighash_type()?;
-            if sig_sighash != sighash_type {
+            if sig_sighash != expected_sighash_type {
                 return Err(Musig2Error::SignatureAggregation(format!(
-                    "Sighash type mismatch: expected {:?}, got {:?}",
-                    sighash_type, sig_sighash
+                    "Sighash type mismatch: PSBT declares {:?}, partial signature uses {:?}",
+                    expected_sighash_type, sig_sighash
                 )));
             }
         }
+        let sighash_type = expected_sighash_type;
 
         // Extract data
         let pub_nonces = self.get_pub_nonces();
@@ -1415,6 +1449,8 @@ mod tests {
                 &prevouts,
                 *musig2_input_index,
                 &tap_tree_root,
+                get_tap_sighash_type(&psbt.inputs[*musig2_input_index])
+                    .expect("fixture PSBT has a valid sighash type"),
             )
             .expect("Failed to aggregate signatures");
 
@@ -1576,7 +1612,7 @@ mod tests {
         psbt.inputs[input_index].sighash_type = Some(PsbtSighashType::from(TapSighashType::All));
 
         // Verify the sighash type is correctly read
-        let sighash_type = get_tap_sighash_type(&psbt.inputs[input_index]);
+        let sighash_type = get_tap_sighash_type(&psbt.inputs[input_index]).unwrap();
         assert_eq!(
             sighash_type,
             TapSighashType::All,
@@ -1705,7 +1741,7 @@ mod tests {
             .expect("Failed to convert to BitGoPsbt");
 
         // Verify the sighash type is correctly read as Default
-        let sighash_type = get_tap_sighash_type(&bitgo_psbt.psbt().inputs[input_index]);
+        let sighash_type = get_tap_sighash_type(&bitgo_psbt.psbt().inputs[input_index]).unwrap();
         assert_eq!(
             sighash_type,
             TapSighashType::Default,
@@ -1796,5 +1832,97 @@ mod tests {
         );
 
         println!("✓ SIGHASH_DEFAULT produces correct 32-byte partial sigs and 64-byte final sig");
+    }
+
+    #[test]
+    fn test_invalid_full_width_sighash_rejected_before_nonce_mutation() {
+        use miniscript::bitcoin::psbt::PsbtSighashType;
+
+        let mut input = miniscript::bitcoin::psbt::Input::default();
+        for raw in [0x00, 0x01, 0x02, 0x03, 0x81, 0x82, 0x83] {
+            input.sighash_type = Some(PsbtSighashType::from_u32(raw));
+            assert_eq!(get_tap_sighash_type(&input).unwrap() as u8, raw as u8);
+        }
+        for raw in [0x04, 0x100, 0x182, u32::MAX] {
+            input.sighash_type = Some(PsbtSighashType::from_u32(raw));
+            assert_eq!(
+                get_tap_sighash_type(&input),
+                Err(Musig2Error::InvalidSighashType { value: raw }),
+                "raw sighash {raw:#010x} must not be truncated or defaulted"
+            );
+        }
+
+        let psbt_stages =
+            fixtures::PsbtStages::load_utxolib_compat(Network::Bitcoin, TxFormat::Psbt)
+                .expect("Failed to load PSBT stages");
+        let (input_index, _) = psbt_stages
+            .unsigned
+            .find_input_with_script_type(ScriptType::P2trMusig2TaprootKeypath)
+            .expect("Failed to find MuSig2 keypath input");
+        let mut bitgo_psbt = psbt_stages
+            .unsigned
+            .to_bitgo_psbt(Network::Bitcoin)
+            .expect("Failed to convert to BitGoPsbt");
+        let original_proprietary = {
+            let input = &mut bitgo_psbt.psbt_mut().inputs[input_index];
+            input.sighash_type = Some(PsbtSighashType::from_u32(0x0000_0182));
+            input.proprietary.clone()
+        };
+        assert_eq!(
+            validate_musig2_sighash_types(bitgo_psbt.psbt()),
+            Err(Musig2Error::InvalidSighashType { value: 0x0000_0182 })
+        );
+
+        let result = {
+            let mut context = Musig2Context::new(bitgo_psbt.psbt_mut(), input_index)
+                .expect("Failed to create MuSig2 context");
+            context.generate_nonce_first_round(psbt_stages.wallet_keys.user_key(), [1u8; 32])
+        };
+        assert!(matches!(
+            result,
+            Err(Musig2Error::InvalidSighashType { value: 0x0000_0182 })
+        ));
+
+        let input = &bitgo_psbt.psbt().inputs[input_index];
+        assert_eq!(input.proprietary, original_proprietary);
+        assert!(Musig2Input::from_input(input)
+            .expect("Failed to parse MuSig2 input")
+            .nonces
+            .is_empty());
+    }
+
+    #[test]
+    fn test_finalize_rejects_partial_sighash_mismatch_without_mutation() {
+        use miniscript::bitcoin::psbt::PsbtSighashType;
+
+        let fixture_data = get_musig2_fixture_data(SignatureState::Fullsigned)
+            .expect("Failed to load fullsigned MuSig2 fixture");
+        let mut bitgo_psbt = fixture_data
+            .fixture
+            .to_bitgo_psbt(Network::Bitcoin)
+            .expect("Failed to convert to BitGoPsbt");
+        let input_index = fixture_data.musig2_input_index;
+        let input = &mut bitgo_psbt.psbt_mut().inputs[input_index];
+        input.sighash_type = Some(PsbtSighashType::from_u32(0x01));
+        let original_proprietary = input.proprietary.clone();
+        let original_tap_key_sig = input.tap_key_sig.clone();
+        let original_final_witness = input.final_script_witness.clone();
+
+        let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
+        let result = {
+            let mut context = Musig2Context::new(bitgo_psbt.psbt_mut(), input_index)
+                .expect("Failed to create MuSig2 context");
+            context.finalize_input(&secp)
+        };
+        assert!(matches!(
+            result,
+            Err(Musig2Error::SignatureAggregation(message))
+                if message.contains("Sighash type mismatch")
+        ));
+
+        let input = &bitgo_psbt.psbt().inputs[input_index];
+        assert_eq!(input.proprietary, original_proprietary);
+        assert_eq!(input.tap_key_sig, original_tap_key_sig);
+        assert_eq!(input.final_script_witness, original_final_witness);
     }
 }
