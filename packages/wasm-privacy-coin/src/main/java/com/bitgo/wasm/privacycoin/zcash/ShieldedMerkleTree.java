@@ -116,13 +116,16 @@ public final class ShieldedMerkleTree implements AutoCloseable {
 
   /**
    * Appends note commitments for a block, checkpoints the tree, and optionally
-   * verifies the root.
+   * verifies the root. The block height must be strictly greater than the highest
+   * retained checkpoint. Any failure leaves the tree unchanged.
    *
    * @param blockHeight   block height (u32 range)
    * @param commitments   shielded note commitment values (cmx) for this block
    * @param owned         per-commitment ownership flags; {@code null} or shorter list → remaining are false
    * @param expectedRoot  root to verify against; {@code null} to skip
    * @return computed root after appending
+   * @throws WasmException with code {@code BLOCK_HEIGHT_OUT_OF_ORDER} if the
+   *         height is not increasing
    * @throws WasmException with code {@code ROOT_MISMATCH} if verification fails
    */
   public ShieldedRoot appendCommitments(
