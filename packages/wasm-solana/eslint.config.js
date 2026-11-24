@@ -13,7 +13,7 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ["dist/", "pkg/", "target/", "node_modules/", "js/wasm/", "*.config.js"],
+    ignores: ["dist/", "pkg/", "target/", "node_modules/", "js/wasm/", "reference/", "*.config.js"],
   },
   // Ban Node.js globals in production code
   {

@@ -1,22 +1,22 @@
 //! High-level transaction parser.
 //!
-//! Provides a single `parse_transaction` function that deserializes transaction bytes
-//! and decodes all instructions into semantic types matching BitGoJS's TxData format.
+//! Best-effort semantic decoding of instructions matching BitGoJS's TxData format.
+//! Unknown instructions remain explicit and are not an admission or review result.
 //!
 //! This parser returns raw decoded instructions. Instruction combining (e.g.,
 //! CreateAccount + NonceInitialize → CreateNonceAccount) is handled by the
 //! TypeScript consumer (mapWasmInstructionsToBitGoJS in BitGoJS).
 
-use crate::instructions::{decode_instruction, InstructionContext, ParsedInstruction};
+use crate::instructions::{decode_instruction, AccountMeta, InstructionContext, ParsedInstruction};
 use crate::js_obj;
 use crate::transaction::Transaction;
 use crate::versioned::VersionedTransactionExt;
 use crate::wasm::try_into_js_value::{JsConversionError, TryIntoJsValue};
-use solana_message::VersionedMessage;
+use solana_message::{MessageHeader, VersionedMessage};
 use solana_transaction::versioned::VersionedTransaction;
 use wasm_bindgen::JsValue;
 
-/// A fully parsed Solana transaction with decoded instructions.
+/// A best-effort semantic view of a Solana transaction.
 ///
 /// This structure matches BitGoJS's `TxData` interface for seamless integration.
 #[derive(Debug, Clone)]
@@ -39,7 +39,7 @@ pub struct ParsedTransaction {
     /// All account keys (base58 strings).
     pub account_keys: Vec<String>,
 
-    /// All signatures (base58 strings). Non-empty signatures indicate signed transaction.
+    /// Signature slots as base58 strings; their validity has not been checked.
     pub signatures: Vec<String>,
 }
 
@@ -82,25 +82,24 @@ impl TryIntoJsValue for ParsedTransaction {
 /// * `bytes` - The raw transaction bytes (wire format)
 ///
 /// # Returns
-/// A `ParsedTransaction` with all instructions decoded to semantic types.
-pub fn parse_transaction(bytes: &[u8]) -> Result<ParsedTransaction, String> {
+/// A best-effort `ParsedTransaction` that may contain unknown instructions.
+pub(crate) fn parse_transaction(bytes: &[u8]) -> Result<ParsedTransaction, String> {
     // Deserialize the transaction - VersionedTransaction handles both legacy and V0
     let tx = VersionedTransaction::from_bytes(bytes).map_err(|e| e.to_string())?;
 
     // Extract account keys and instructions based on message type
-    let (account_keys, instructions, recent_blockhash, num_required_signatures) = match &tx.message
-    {
+    let (account_keys, instructions, recent_blockhash, header) = match &tx.message {
         VersionedMessage::Legacy(msg) => (
             msg.account_keys.iter().map(|k| k.to_string()).collect(),
             &msg.instructions[..],
             msg.recent_blockhash.to_string(),
-            msg.header.num_required_signatures,
+            &msg.header,
         ),
         VersionedMessage::V0(msg) => (
             msg.account_keys.iter().map(|k| k.to_string()).collect(),
             &msg.instructions[..],
             msg.recent_blockhash.to_string(),
-            msg.header.num_required_signatures,
+            &msg.header,
         ),
     };
 
@@ -108,15 +107,16 @@ pub fn parse_transaction(bytes: &[u8]) -> Result<ParsedTransaction, String> {
         account_keys,
         instructions,
         recent_blockhash,
-        num_required_signatures,
+        header,
         &tx.signatures,
     )
 }
 
 /// Parse a pre-deserialized legacy Transaction into structured data.
 ///
-/// Same logic as `parse_transaction(bytes)` but skips deserialization.
-/// Used when the caller already has a `Transaction` from `fromBytes()`.
+/// Use a `Transaction` returned by `TransactionExt::from_bytes` when strict
+/// legacy wire validation is required. Parsing is best-effort and does not
+/// validate signatures or establish that the transaction is understood.
 pub fn parse_from_transaction(tx: &Transaction) -> Result<ParsedTransaction, String> {
     let msg = &tx.message;
     let account_keys: Vec<String> = msg.account_keys.iter().map(|k| k.to_string()).collect();
@@ -125,7 +125,7 @@ pub fn parse_from_transaction(tx: &Transaction) -> Result<ParsedTransaction, Str
         account_keys,
         &msg.instructions,
         msg.recent_blockhash.to_string(),
-        msg.header.num_required_signatures,
+        &msg.header,
         &tx.signatures,
     )
 }
@@ -135,7 +135,7 @@ fn parse_transaction_inner(
     account_keys: Vec<String>,
     instructions: &[solana_message::compiled_instruction::CompiledInstruction],
     recent_blockhash: String,
-    num_required_signatures: u8,
+    header: &MessageHeader,
     signatures: &[solana_signature::Signature],
 ) -> Result<ParsedTransaction, String> {
     // Extract fee payer (first account key)
@@ -143,6 +143,16 @@ fn parse_transaction_inner(
         .first()
         .cloned()
         .ok_or("Transaction has no account keys")?;
+
+    let signed = usize::from(header.num_required_signatures);
+    let writable_signed = signed
+        .checked_sub(usize::from(header.num_readonly_signed_accounts))
+        .ok_or("invalid signed account header")?;
+    let writable_unsigned_end = account_keys
+        .len()
+        .checked_sub(usize::from(header.num_readonly_unsigned_accounts))
+        .filter(|end| *end >= signed)
+        .ok_or("invalid unsigned account header")?;
 
     // Decode all instructions
     let mut instructions_data = Vec::with_capacity(instructions.len());
@@ -156,16 +166,38 @@ fn parse_transaction_inner(
             .ok_or_else(|| format!("Invalid program_id_index in instruction {}", idx))?;
 
         // Resolve account indices to addresses
-        let accounts: Vec<String> = instruction
+        let account_metas: Vec<AccountMeta> = instruction
             .accounts
             .iter()
-            .filter_map(|&i| account_keys.get(i as usize).cloned())
+            .map(|&i| {
+                let index = usize::from(i);
+                let pubkey = account_keys.get(index).cloned().ok_or_else(|| {
+                    format!(
+                        "instruction {} references unresolved account index {}",
+                        idx, index
+                    )
+                })?;
+                Ok(AccountMeta {
+                    pubkey,
+                    is_signer: index < signed,
+                    is_writable: if index < signed {
+                        index < writable_signed
+                    } else {
+                        index < writable_unsigned_end
+                    },
+                })
+            })
+            .collect::<Result<_, String>>()?;
+        let accounts: Vec<String> = account_metas
+            .iter()
+            .map(|meta| meta.pubkey.clone())
             .collect();
 
         // Decode the instruction
         let ctx = InstructionContext {
             program_id: &program_id,
             accounts: &accounts,
+            account_metas: &account_metas,
             data: &instruction.data,
         };
         let parsed = decode_instruction(ctx);
@@ -203,7 +235,7 @@ fn parse_transaction_inner(
 
     Ok(ParsedTransaction {
         fee_payer,
-        num_signatures: num_required_signatures,
+        num_signatures: header.num_required_signatures,
         nonce: recent_blockhash,
         durable_nonce,
         instructions_data,
