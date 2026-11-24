@@ -1050,8 +1050,8 @@ fn required_fixed_bytes<const N: usize>(
 /// `IRONWOOD_MERKLE_DEPTH` sibling hashes.
 fn split_auth_path(bytes: [u8; IRONWOOD_MERKLE_DEPTH * 32]) -> WitnessAuthPath {
     let mut path: WitnessAuthPath = [[0u8; 32]; IRONWOOD_MERKLE_DEPTH];
-    for (node, chunk) in path.iter_mut().zip(bytes.chunks_exact(32)) {
-        node.copy_from_slice(chunk);
+    for (node, chunk) in path.iter_mut().zip(bytes.as_chunks::<32>().0) {
+        *node = *chunk;
     }
     path
 }

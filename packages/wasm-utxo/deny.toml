@@ -4,6 +4,8 @@
 # to elliptic-curve 0.14+, then delete this entry (cargo-deny warns on unmatched ignores).
 # ctutils (RUSTSEC-2026-0385) is fixed by its 0.4.6 lockfile bump, no ignore needed.
 [advisories]
+# Preserve the pre-0.22 default of checking unmaintained dependencies throughout the graph.
+unmaintained = "all"
 ignore = [
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint >=0.7.6 is unreachable behind k256 0.13.4 (musig2/secp); the affected constant-time ops are not exposed on attacker-controlled input in wasm-utxo's k256 usage" },
     # zebra-chain is a native-only dev dependency for Zcash cross-checks, not shipped WASM.

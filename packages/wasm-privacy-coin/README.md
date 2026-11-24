@@ -28,12 +28,12 @@ are defined in `proto/privacy_coin.proto` and code is generated at build time by
 
 ## Prerequisites
 
-| Tool                            | Version              | Notes                                      |
-| ------------------------------- | -------------------- | ------------------------------------------ |
-| Rust toolchain                  | `nightly-2025-10-23` | via `rustup`                               |
-| `wasm32-unknown-unknown` target | —                    | `rustup target add wasm32-unknown-unknown` |
-| Java                            | 17                   | required by the Maven build                |
-| Maven                           | 3.9+                 | invoked through `make` targets             |
+| Tool                            | Version   | Notes                                      |
+| ------------------------------- | --------- | ------------------------------------------ |
+| Rust toolchain                  | `1.100.0` | via `rustup`                               |
+| `wasm32-unknown-unknown` target | —         | `rustup target add wasm32-unknown-unknown` |
+| Java                            | 17        | required by the Maven build                |
+| Maven                           | 3.9+      | invoked through `make` targets             |
 
 No `cargo-component` or native Wasmtime installation required.
 
