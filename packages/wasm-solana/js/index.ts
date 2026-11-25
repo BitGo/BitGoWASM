@@ -80,6 +80,7 @@ export type {
   NonceAdvanceParams,
   CreateNonceAccountParams,
   NonceInitializeParams,
+  StakeLockup,
   StakeInitializeParams,
   StakingActivateParams,
   StakingDeactivateParams,
