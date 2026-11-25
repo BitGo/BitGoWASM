@@ -11,6 +11,7 @@ use spl_stake_pool::instruction::StakePoolInstruction;
 pub struct InstructionContext<'a> {
     pub program_id: &'a str,
     pub accounts: &'a [String],
+    pub account_metas: &'a [AccountMeta],
     pub data: &'a [u8],
 }
 
@@ -36,10 +37,13 @@ fn decode_system_instruction(ctx: InstructionContext) -> ParsedInstruction {
     let Ok(instr) = bincode::deserialize::<SystemInstruction>(ctx.data) else {
         return make_unknown(ctx);
     };
+    if bincode::serialize(&instr).ok().as_deref() != Some(ctx.data) {
+        return make_unknown(ctx);
+    }
 
     match instr {
         SystemInstruction::Transfer { lamports } => {
-            if ctx.accounts.len() >= 2 {
+            if ctx.accounts.len() == 2 {
                 ParsedInstruction::Transfer(TransferParams {
                     from_address: ctx.accounts[0].clone(),
                     to_address: ctx.accounts[1].clone(),
@@ -67,7 +71,7 @@ fn decode_system_instruction(ctx: InstructionContext) -> ParsedInstruction {
             }
         }
         SystemInstruction::AdvanceNonceAccount => {
-            if ctx.accounts.len() >= 3 {
+            if ctx.accounts.len() == 3 && ctx.accounts[1] == SYSVAR_RECENT_BLOCKHASHES {
                 ParsedInstruction::NonceAdvance(NonceAdvanceParams {
                     wallet_nonce_address: ctx.accounts[0].clone(),
                     auth_wallet_address: ctx.accounts[2].clone(), // authority is at index 2
@@ -454,15 +458,7 @@ fn decode_stake_pool_instruction(ctx: InstructionContext) -> ParsedInstruction {
 fn make_unknown(ctx: InstructionContext) -> ParsedInstruction {
     ParsedInstruction::Unknown(UnknownInstructionParams {
         program_id: ctx.program_id.to_string(),
-        accounts: ctx
-            .accounts
-            .iter()
-            .map(|a| AccountMeta {
-                pubkey: a.clone(),
-                is_signer: false,   // We don't have this info at decode time
-                is_writable: false, // We don't have this info at decode time
-            })
-            .collect(),
+        accounts: ctx.account_metas.to_vec(),
         data: ctx.data.to_vec(),
     })
 }

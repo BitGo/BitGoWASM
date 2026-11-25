@@ -176,6 +176,7 @@ pub struct SetComputeUnitLimitParams {
 
 #[derive(Debug, Clone)]
 pub struct SetPriorityFeeParams {
+    /// Compute-unit price in micro-lamports per unit, not the total fee.
     pub fee: u64,
 }
 

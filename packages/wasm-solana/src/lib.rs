@@ -24,10 +24,10 @@
 //! ```
 
 mod error;
-mod instructions;
+pub mod instructions;
 pub mod intent;
 pub mod keypair;
-mod parser;
+pub mod parser;
 pub mod pubkey;
 pub mod transaction;
 pub mod versioned;

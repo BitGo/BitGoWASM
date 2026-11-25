@@ -55,7 +55,8 @@ export class Transaction {
   private constructor(private _wasm: WasmTransaction) {}
 
   /**
-   * Deserialize a transaction from raw bytes
+   * Deserialize a canonical, structurally valid legacy transaction of at most
+   * 1232 bytes. Signature slots are preserved, but are not verified.
    * @param bytes - The raw transaction bytes
    * @returns A Transaction instance
    */
@@ -157,7 +158,8 @@ export class Transaction {
   /**
    * Get all signatures as byte arrays.
    * Provides compatibility with @solana/web3.js Transaction.signatures API.
-   * @returns Array of signature byte arrays
+   * @returns Unverified signature slots, in the same order as the required
+   * signer keys at the beginning of `accountKeys()`.
    */
   get signatures(): Uint8Array[] {
     return Array.from(this._wasm.signatures()) as Uint8Array[];

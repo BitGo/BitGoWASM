@@ -120,9 +120,10 @@ export interface SetComputeUnitLimitParams {
   units: number;
 }
 
-/** Set priority fee parameters */
+/** Compute-unit price; this is not the total transaction fee. */
 export interface SetPriorityFeeParams {
   type: "SetPriorityFee";
+  /** Micro-lamports per compute unit. */
   fee: bigint;
 }
 
@@ -192,10 +193,11 @@ export interface StakePoolWithdrawStakeParams {
   poolTokens: bigint;
 }
 
-/** Account metadata for unknown instructions */
+/** Account metadata for unknown instructions, as requested by the message. */
 export interface AccountMeta {
   pubkey: string;
   isSigner: boolean;
+  /** Requested writable role before any runtime demotion. */
   isWritable: boolean;
 }
 
@@ -241,7 +243,8 @@ export interface DurableNonce {
 }
 
 /**
- * A fully parsed Solana transaction with decoded instructions.
+ * A best-effort semantic view of a Solana transaction. Unknown instructions
+ * remain explicit and do not establish complete transaction understanding.
  *
  * This structure matches BitGoJS's TxData interface for seamless integration.
  * All monetary amounts are returned as bigint directly from WASM.
@@ -259,13 +262,13 @@ export interface ParsedTransaction {
   /** If this is a durable nonce transaction, contains the nonce info */
   durableNonce?: DurableNonce;
 
-  /** All decoded instructions with semantic types */
+  /** Best-effort instruction decodings, including explicit unknown instructions. */
   instructionsData: InstructionParams[];
 
   /** All account keys (base58 strings) */
   accountKeys: string[];
 
-  /** All signatures (base58 strings). Non-empty signatures indicate signed transaction. */
+  /** Signature slots as base58 strings. Their validity has not been checked. */
   signatures: string[];
 }
 
@@ -274,17 +277,17 @@ export interface ParsedTransaction {
 // =============================================================================
 
 /**
- * Parse a Transaction into a plain data object with decoded instructions.
+ * Parse a Transaction into a best-effort semantic view.
  *
- * This is the main parsing function that returns structured data with all
- * instructions decoded into semantic types (Transfer, StakingActivate, etc.)
- * with amounts as bigint.
+ * Recognized instructions have semantic types such as Transfer, with amounts
+ * as bigint. Unknown instructions remain explicit; a successful parse does not
+ * establish that the whole transaction is understood or admitted for signing.
  *
  * Accepts a `Transaction` object (from `Transaction.fromBytes()`), avoiding
  * double deserialization.
  *
  * @param tx - A Transaction instance (from Transaction.fromBytes())
- * @returns A ParsedTransaction with all instructions decoded
+ * @returns A best-effort ParsedTransaction
  *
  * @example
  * ```typescript

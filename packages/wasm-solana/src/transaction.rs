@@ -13,6 +13,7 @@
 
 use crate::error::WasmSolanaError;
 use solana_address::Address;
+use solana_sdk::sanitize::Sanitize;
 use solana_signature::Signature;
 use std::str::FromStr;
 
@@ -21,7 +22,7 @@ pub use solana_transaction::Transaction;
 
 /// Extension trait for Transaction to add WASM-friendly methods.
 pub trait TransactionExt {
-    /// Deserialize a transaction from raw bytes (wire format).
+    /// Deserialize a canonical, structurally valid legacy transaction.
     fn from_bytes(bytes: &[u8]) -> Result<Transaction, WasmSolanaError>;
 
     /// Get the fee payer address as base58 string.
@@ -54,8 +55,28 @@ pub trait TransactionExt {
 
 impl TransactionExt for Transaction {
     fn from_bytes(bytes: &[u8]) -> Result<Transaction, WasmSolanaError> {
-        bincode::deserialize(bytes)
-            .map_err(|e| WasmSolanaError::new(&format!("Failed to deserialize transaction: {}", e)))
+        // A packet can hold at most 19 signatures. Reject impossible signature
+        // counts before serde can reserve a vector based on untrusted input.
+        const MAX_PACKET_BYTES: usize = 1232;
+        let invalid =
+            || WasmSolanaError::new("Failed to deserialize transaction: invalid wire format");
+        if bytes.len() > MAX_PACKET_BYTES {
+            return Err(invalid());
+        }
+        let count = usize::from(*bytes.first().ok_or_else(invalid)?);
+        if count > (MAX_PACKET_BYTES - 1) / 64 || 1 + count * 64 >= bytes.len() {
+            return Err(invalid());
+        }
+
+        let transaction: Transaction = bincode::deserialize(bytes).map_err(|_| invalid())?;
+        transaction.sanitize().map_err(|_| invalid())?;
+        if transaction.signatures.len()
+            != usize::from(transaction.message.header.num_required_signatures)
+            || bincode::serialize(&transaction).map_err(|_| invalid())? != bytes
+        {
+            return Err(invalid());
+        }
+        Ok(transaction)
     }
 
     fn fee_payer_string(&self) -> Option<String> {
@@ -88,7 +109,7 @@ impl TransactionExt for Transaction {
         let num_signers = self.message.header.num_required_signatures as usize;
 
         // Use the same pattern as Solana's get_signing_keypair_positions
-        let signed_keys = &self.message.account_keys[0..num_signers];
+        let signed_keys = self.message.account_keys.get(..num_signers)?;
         signed_keys.iter().position(|x| *x == target_address)
     }
 
