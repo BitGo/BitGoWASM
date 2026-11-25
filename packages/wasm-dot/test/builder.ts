@@ -1,5 +1,11 @@
 import * as assert from "assert";
-import { buildTransaction, type TransactionIntent, type BuildContext } from "../js/index.js";
+import {
+  buildTransaction,
+  encodeSs58,
+  parseTransaction,
+  type TransactionIntent,
+  type BuildContext,
+} from "../js/index.js";
 import { getWestendMetadata } from "./resources/westend.js";
 
 /** Convert Uint8Array to hex string (no 0x prefix) */
@@ -180,6 +186,138 @@ describe("buildTransaction", () => {
       const tx = buildTransaction(intent, testContext(42));
       assert.ok(tx);
       assert.strictEqual(tx.nonce, 42);
+    });
+  });
+
+  describe("SS58 address domains", () => {
+    const pubkey = new Uint8Array(32).fill(7);
+    const addresses = new Map(
+      ([0, 2, 42] as const).map((prefix) => [prefix, encodeSs58(pubkey, prefix)] as const),
+    );
+    const address = (prefix: number): string => addresses.get(prefix)!;
+
+    // Reuse Westend runtime metadata to isolate address-domain handling.
+    // The chainName controls the trusted prefix, not the metadata contents.
+    const context = (chainName: string, prefix: number): BuildContext => ({
+      ...testContext(),
+      sender: address(prefix),
+      material: { ...WESTEND_MATERIAL, chainName },
+    });
+
+    const destinations = (to: string, proxy: string): [string, TransactionIntent][] => [
+      ["payment", { type: "payment", to, amount: 1n }],
+      ["consolidate", { type: "consolidate", to }],
+      [
+        "account payee",
+        {
+          type: "stake",
+          amount: 1n,
+          proxyAddress: proxy,
+          payee: { type: "account", address: to },
+        },
+      ],
+      ["add proxy", { type: "stake", amount: 1n, proxyAddress: to }],
+      ["remove proxy", { type: "unstake", amount: 1n, stopStaking: true, proxyAddress: to }],
+    ];
+
+    for (const [chainName, expected, wrong] of [
+      ["Polkadot", 0, 2],
+      ["Kusama", 2, 0],
+    ] as const) {
+      for (const [name, intent] of destinations(address(wrong), address(expected))) {
+        it(`${chainName} rejects ${name} from prefix ${wrong} before creating a payload`, () => {
+          assert.throws(
+            () => buildTransaction(intent, context(chainName, expected)),
+            { code: "WrongNetwork", actualPrefix: wrong, expectedPrefix: expected },
+          );
+        });
+      }
+
+      it(`${chainName} rejects generic destinations unless allowed`, () => {
+        assert.throws(
+          () =>
+            buildTransaction(
+              { type: "payment", to: address(42), amount: 1n },
+              context(chainName, expected),
+            ),
+          /Wrong SS58 network/,
+        );
+      });
+
+      for (const [name, intent] of destinations(address(expected), address(expected))) {
+        it(`${chainName} parses ${name} in the approved domain`, () => {
+          const ctx = context(chainName, expected);
+          const tx = buildTransaction(intent, ctx);
+          const args = parseTransaction(tx, { material: ctx.material }).method.args;
+          const calls = args.calls as { args: Record<string, unknown> }[] | undefined;
+          const actual =
+            name === "account payee"
+              ? calls?.[0].args.payee
+              : name === "add proxy"
+                ? calls?.[1].args.delegate
+                : name === "remove proxy"
+                  ? calls?.[0].args.delegate
+                  : args.dest;
+          assert.strictEqual(actual, address(expected));
+        });
+      }
+    }
+
+    it("accepts explicit generic inputs but parses the canonical chain address", () => {
+      const ctx = context("Polkadot", 0);
+      ctx.material.ss58AddressPolicy = { prefix: 0, allowGeneric: true };
+      const tx = buildTransaction({ type: "payment", to: address(42), amount: 1n }, ctx);
+      assert.strictEqual(
+        parseTransaction(tx, { material: ctx.material }).method.args.dest,
+        address(0),
+      );
+    });
+
+    it("keeps generic-chain inputs in the approved domain", () => {
+      const ctx = context("Westend", 42);
+      const tx = buildTransaction({ type: "consolidate", to: address(42) }, ctx);
+      assert.strictEqual(
+        parseTransaction(tx, { material: ctx.material }).method.args.dest,
+        address(42),
+      );
+    });
+
+    it("requires an explicit format for unmapped chains", () => {
+      const ctx = context("Custom chain", 42);
+      const intent: TransactionIntent = { type: "payment", to: address(42), amount: 1n };
+      assert.throws(() => buildTransaction(intent, ctx), /SS58 prefix required/);
+      ctx.material.ss58AddressPolicy = { prefix: 42 };
+      const tx = buildTransaction(intent, ctx);
+      assert.strictEqual(
+        parseTransaction(tx, { material: ctx.material }).method.args.dest,
+        address(42),
+      );
+    });
+
+    it("rejects an incorrect known-chain policy and an out-of-range prefix", () => {
+      const ctx = context("Polkadot", 0);
+      const intent: TransactionIntent = { type: "payment", to: address(0), amount: 1n };
+      ctx.material.ss58AddressPolicy = { prefix: 2 };
+      assert.throws(() => buildTransaction(intent, ctx), /conflicts with chain Polkadot/);
+      ctx.material = {
+        ...ctx.material,
+        chainName: "Custom chain",
+        ss58AddressPolicy: { prefix: 16384 },
+      };
+      assert.throws(() => buildTransaction(intent, ctx), /Invalid SS58 prefix/);
+    });
+
+    it("rejects malformed destination and wrong-domain fillNonce sender", () => {
+      const ctx = context("Polkadot", 0);
+      assert.throws(
+        () => buildTransaction({ type: "payment", to: "invalid!", amount: 1n }, ctx),
+        /Invalid address/,
+      );
+      ctx.sender = address(2);
+      assert.throws(
+        () => buildTransaction({ type: "fillNonce" }, ctx),
+        /Wrong SS58 network: prefix 2/,
+      );
     });
   });
 

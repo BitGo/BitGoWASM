@@ -1,5 +1,6 @@
 //! Shared types for DOT transactions
 
+use crate::error::WasmDotError;
 use serde::{Deserialize, Serialize};
 
 /// Chain material metadata required for transaction encoding/decoding
@@ -24,6 +25,53 @@ pub struct Material {
     /// APIs. The hex-to-bytes decode happens once internally (in `decode_metadata`)
     /// right before SCALE decoding.
     pub metadata: String,
+    /// Explicit format for chains not in the built-in mapping and optional
+    /// generic-prefix acceptance for known chains.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ss58_address_policy: Option<Ss58AddressPolicy>,
+}
+
+/// Address-domain policy supplied with trusted chain material.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ss58AddressPolicy {
+    pub prefix: u16,
+    #[serde(default)]
+    pub allow_generic: bool,
+}
+
+impl Material {
+    /// Derive the expected SS58 format; unknown chains must provide a verified prefix.
+    pub fn address_policy(&self) -> Result<Ss58AddressPolicy, WasmDotError> {
+        let known = AddressFormat::from_chain_name(&self.chain_name);
+        let policy = match (known, self.ss58_address_policy) {
+            (Some(format), None) => Ss58AddressPolicy {
+                prefix: format.prefix(),
+                allow_generic: false,
+            },
+            (Some(format), Some(policy)) if policy.prefix == format.prefix() => policy,
+            (Some(format), Some(policy)) => {
+                return Err(WasmDotError::InvalidInput(format!(
+                    "SS58 prefix {} conflicts with chain {} (prefix {})",
+                    policy.prefix, self.chain_name, format.prefix()
+                )));
+            }
+            (None, Some(policy)) => policy,
+            (None, None) => {
+                return Err(WasmDotError::MissingContext(format!(
+                    "SS58 prefix required for chain {}",
+                    self.chain_name
+                )));
+            }
+        };
+        if policy.prefix >= 16384 {
+            return Err(WasmDotError::InvalidInput(format!(
+                "Invalid SS58 prefix: {}",
+                policy.prefix
+            )));
+        }
+        Ok(policy)
+    }
 }
 
 /// Validity window for mortal transactions
@@ -95,12 +143,13 @@ impl AddressFormat {
         self as u16
     }
 
-    /// Get format from chain name
-    pub fn from_chain_name(name: &str) -> Self {
+    /// Get a format only for known chains; unknown chains require a policy.
+    pub fn from_chain_name(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
-            "polkadot" | "statemint" | "polkadot asset hub" => AddressFormat::Polkadot,
-            "kusama" | "statemine" | "kusama asset hub" => AddressFormat::Kusama,
-            _ => AddressFormat::Substrate,
+            "polkadot" | "statemint" | "polkadot asset hub" => Some(Self::Polkadot),
+            "kusama" | "statemine" | "kusama asset hub" => Some(Self::Kusama),
+            "westend" | "substrate" => Some(Self::Substrate),
+            _ => None,
         }
     }
 }
@@ -123,11 +172,36 @@ mod tests {
     fn test_address_format_from_chain() {
         assert_eq!(
             AddressFormat::from_chain_name("Polkadot"),
-            AddressFormat::Polkadot
+            Some(AddressFormat::Polkadot)
         );
         assert_eq!(
             AddressFormat::from_chain_name("westend"),
-            AddressFormat::Substrate
+            Some(AddressFormat::Substrate)
         );
+        assert_eq!(AddressFormat::from_chain_name("unknown"), None);
+    }
+
+    #[test]
+    fn test_material_address_policy() {
+        let mut material: Material = serde_json::from_value(serde_json::json!({
+            "genesisHash": "0x00", "chainName": "Polkadot", "specName": "polkadot",
+            "specVersion": 1, "txVersion": 1, "metadata": "0x00"
+        }))
+        .unwrap();
+        assert_eq!(material.address_policy().unwrap().prefix, 0);
+        material.chain_name = "Kusama".into();
+        assert_eq!(material.address_policy().unwrap().prefix, 2);
+        material.chain_name = "Westend".into();
+        assert_eq!(material.address_policy().unwrap().prefix, 42);
+        material.chain_name = "Custom chain".into();
+        assert!(matches!(material.address_policy(), Err(WasmDotError::MissingContext(_))));
+
+        material.ss58_address_policy = Some(Ss58AddressPolicy { prefix: 1000, allow_generic: false });
+        assert_eq!(material.address_policy().unwrap().prefix, 1000);
+        material.chain_name = "Polkadot".into();
+        assert!(matches!(material.address_policy(), Err(WasmDotError::InvalidInput(_))));
+        material.chain_name = "Custom chain".into();
+        material.ss58_address_policy = Some(Ss58AddressPolicy { prefix: 16384, allow_generic: false });
+        assert!(matches!(material.address_policy(), Err(WasmDotError::InvalidInput(_))));
     }
 }
