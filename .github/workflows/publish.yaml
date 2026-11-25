@@ -73,9 +73,9 @@ jobs:
           node-version-file: .nvmrc
           registry-url: https://registry.npmjs.org
 
-      - name: Ensure npm 11.5.1
+      - name: Ensure npm 11.21.3
         run: |
-          npm install -g npm@11.5.1
+          npm install -g npm@11.21.3
 
       - name: Configure Git
         run: |

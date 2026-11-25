@@ -14,7 +14,7 @@ on:
 
 env:
   RUST_TOOLCHAIN: 1.100.0
-  NPM_VERSION: 11.5.1
+  NPM_VERSION: 11.21.3
   WASM_PACK_VERSION: 0.14.0
   WASM_OPT_VERSION: 0.116.1
   CARGO_DENY_VERSION: 0.22.1
@@ -55,7 +55,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
             packages/wasm-utxo
@@ -171,7 +171,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: packages/${{ matrix.package }}
           cache-on-failure: true
