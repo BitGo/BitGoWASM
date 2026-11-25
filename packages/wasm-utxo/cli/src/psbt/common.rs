@@ -97,8 +97,8 @@ pub fn auth_path_from_hashes<S: AsRef<str>>(hashes: &[S], what: &str) -> Result<
 pub fn auth_path_from_flat_hex(input: &str, what: &str) -> Result<WitnessAuthPath> {
     let flattened = parse_hex::<{ IRONWOOD_MERKLE_DEPTH * 32 }>(input, what)?;
     let mut auth_path: WitnessAuthPath = [[0u8; 32]; IRONWOOD_MERKLE_DEPTH];
-    for (node, chunk) in auth_path.iter_mut().zip(flattened.chunks_exact(32)) {
-        node.copy_from_slice(chunk);
+    for (node, chunk) in auth_path.iter_mut().zip(flattened.as_chunks::<32>().0) {
+        *node = *chunk;
     }
     Ok(auth_path)
 }

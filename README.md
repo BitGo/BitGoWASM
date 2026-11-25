@@ -4,7 +4,7 @@ This repo is the home of BitGo's WASM libraries.
 
 # Dependencies
 
-- [Rust](https://www.rust-lang.org/) nightly
+- [Rust](https://www.rust-lang.org/) 1.100.0
 - [wasm-pack](https://rustwasm.github.io/wasm-pack/) (install with `cargo install wasm-pack`)
 - [Node.js](https://nodejs.org/en/)
 

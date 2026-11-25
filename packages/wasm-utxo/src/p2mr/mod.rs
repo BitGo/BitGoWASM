@@ -175,9 +175,8 @@ pub fn verify_control_block(
     }
 
     let mut current = *leaf_hash;
-    for chunk in path_bytes.chunks_exact(32) {
-        let sibling: [u8; 32] = chunk.try_into().unwrap();
-        current = tap_branch_hash(&current, &sibling);
+    for sibling in path_bytes.as_chunks::<32>().0 {
+        current = tap_branch_hash(&current, sibling);
     }
     current == *expected_root
 }
