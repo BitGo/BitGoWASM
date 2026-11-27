@@ -10,6 +10,16 @@ This repo is the home of BitGo's WASM libraries.
 
 # Developer Setup
 
+Enter the repository's Nix development shell to load the pinned toolchains:
+
+```bash
+nix develop
+```
+
+The shell provides Node.js 24.11.0 (matching `.nvmrc`), Rust nightly
+2025-10-23 (matching CI), and the WASM build tools. Install the JavaScript
+workspace dependencies from the repository root:
+
 ```bash
 npm install
 ```
@@ -18,6 +28,26 @@ This will:
 
 - Install all dependencies
 - Set up pre-commit hooks via Husky
+
+# wasm-ton Verification
+
+The wasm-ton npm tests import generated WebAssembly bindings, so build them
+before running the package tests:
+
+```bash
+npm run build:wasm --prefix packages/wasm-ton
+npm test --prefix packages/wasm-ton
+```
+
+Run the Rust parser tests and TypeScript build with:
+
+```bash
+cargo test --manifest-path packages/wasm-ton/Cargo.toml parser_tests
+npm run build:ts --prefix packages/wasm-ton
+```
+
+TypeScript and test tools are installed as npm workspace dependencies; no
+global TypeScript compiler is required.
 
 Pre-commit hooks automatically run on staged files:
 
