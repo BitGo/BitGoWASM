@@ -14,6 +14,7 @@ pub(crate) mod propkv;
 pub mod psbt_wallet_input;
 pub mod psbt_wallet_output;
 mod sighash;
+pub mod signing_digest;
 pub mod zcash;
 pub use zcash as zcash_psbt;
 
@@ -22,6 +23,10 @@ pub use dash_psbt::DashBitGoPsbt;
 use miniscript::bitcoin::{psbt::Psbt, secp256k1, CompressedPublicKey, FeeRate, Txid};
 pub use propkv::{find_kv, BitGoKeyValue, ProprietaryKeySubtype, WasmUtxoVersionInfo, BITGO};
 pub use sighash::validate_sighash_type;
+pub use signing_digest::{
+    taproot_script_path, DigestScheme, PartialSignature, SignerKey as StoredSignerKey,
+    SigningDigest, SigningDigestError, TaprootScriptPath,
+};
 pub use zcash::{
     decode_zcash_transaction_meta, ZcashBitGoPsbt, ZcashTransactionMeta,
     ZCASH_SAPLING_VERSION_GROUP_ID,

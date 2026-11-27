@@ -733,7 +733,7 @@ pub(crate) fn new_bitgo_psbt_zcash_at_height(
 impl ZcashBitGoPsbt {
     /// The ZIP-243 sighash parameters: `(consensus_branch_id, version_group_id, expiry_height)`.
     /// `None` when the PSBT carries no `ZecConsensusBranchId`.
-    fn zip243_sighash_params(&self) -> Option<(u32, u32, u32)> {
+    pub(crate) fn zip243_sighash_params(&self) -> Option<(u32, u32, u32)> {
         let branch_id = propkv::get_zec_consensus_branch_id(&self.psbt)?;
         let version_group_id = self
             .version_group_id
