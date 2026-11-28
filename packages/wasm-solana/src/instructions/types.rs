@@ -46,6 +46,7 @@ pub enum ParsedInstruction {
     #[allow(dead_code)]
     StakingActivate(StakingActivateParams),
     StakingDeactivate(StakingDeactivateParams),
+    StakingSplit(StakingSplitParams),
     StakingWithdraw(StakingWithdrawParams),
     StakingDelegate(StakingDelegateParams),
     StakingAuthorize(StakingAuthorizeParams),
@@ -131,6 +132,14 @@ pub struct StakingActivateParams {
 pub struct StakingDeactivateParams {
     pub staking_address: String,
     pub from_address: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct StakingSplitParams {
+    pub staking_address: String,
+    pub destination_staking_address: String,
+    pub from_address: String,
+    pub amount: u64,
 }
 
 #[derive(Debug, Clone)]
