@@ -132,6 +132,7 @@ fn decode_stake_instruction(ctx: InstructionContext) -> ParsedInstruction {
                 ParsedInstruction::StakingWithdraw(StakingWithdrawParams {
                     staking_address: ctx.accounts[0].clone(),
                     from_address: ctx.accounts[4].clone(),
+                    to_address: ctx.accounts[1].clone(),
                     amount: lamports,
                 })
             } else {
@@ -465,4 +466,46 @@ fn make_unknown(ctx: InstructionContext) -> ParsedInstruction {
             .collect(),
         data: ctx.data.to_vec(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_stake_interface::instruction::StakeInstruction;
+
+    fn decode_withdraw(recipient: &str) -> StakingWithdrawParams {
+        let data = bincode::serialize(&StakeInstruction::Withdraw(100_000)).unwrap();
+        let accounts = vec![
+            "stake-account".to_owned(),
+            recipient.to_owned(),
+            "clock-sysvar".to_owned(),
+            "stake-history-sysvar".to_owned(),
+            "withdraw-authority".to_owned(),
+        ];
+
+        match decode_instruction(InstructionContext {
+            program_id: STAKE_PROGRAM_ID,
+            accounts: &accounts,
+            data: &data,
+        }) {
+            ParsedInstruction::StakingWithdraw(params) => params,
+            other => panic!("Expected StakingWithdraw, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stake_withdraw_preserves_distinct_recipients() {
+        let first = decode_withdraw("recipient-one");
+        let second = decode_withdraw("recipient-two");
+
+        assert_eq!(first.staking_address, "stake-account");
+        assert_eq!(first.from_address, "withdraw-authority");
+        assert_eq!(first.to_address, "recipient-one");
+        assert_eq!(first.amount, 100_000);
+        assert_eq!(second.staking_address, first.staking_address);
+        assert_eq!(second.from_address, first.from_address);
+        assert_eq!(second.amount, first.amount);
+        assert_eq!(second.to_address, "recipient-two");
+        assert_ne!(first.to_address, second.to_address);
+    }
 }
