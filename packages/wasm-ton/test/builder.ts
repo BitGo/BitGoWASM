@@ -36,7 +36,9 @@ describe("Builder", () => {
 
       assert.equal(parsed.transactionType, "Transfer");
       assert.equal(parsed.sendActions.length, 1);
-      assert.equal(parsed.sendActions[0].amount, 10_000_000n);
+      assert.equal(parsed.sendActions[0].nominalAmount, 10_000_000n);
+      assert.equal(parsed.sendActions[0].effectiveAmountKind, "Exact");
+      assert.equal(parsed.sendActions[0].carriesAllBalance, false);
     });
 
     it("should build a transfer with memo", () => {
@@ -83,7 +85,7 @@ describe("Builder", () => {
       const parsed = parseTransaction(tx);
 
       assert.equal(parsed.transactionType, "Transfer");
-      assert.equal(parsed.sendActions[0].amount, 1n);
+      assert.equal(parsed.sendActions[0].nominalAmount, 1n);
     });
 
     it("should build a token fill nonce", () => {
